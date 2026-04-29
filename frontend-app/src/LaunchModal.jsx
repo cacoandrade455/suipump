@@ -322,13 +322,61 @@ export default function LaunchModal({ onClose, onLaunched }) {
                 />
               </div>
               <div>
-                <label className="block text-[10px] tracking-widest text-lime-700 mb-1">ICON URL</label>
-                <input
-                  value={form.iconUrl}
-                  onChange={e => setForm({ ...form, iconUrl: e.target.value })}
-                  placeholder="https://example.com/icon.png"
-                  className="w-full bg-lime-950/20 border border-lime-900 px-3 py-2 text-lime-100 text-sm focus:outline-none focus:border-lime-400"
-                />
+                <label className="block text-[10px] tracking-widest text-lime-700 mb-1">TOKEN ICON</label>
+                <div className="flex gap-2 items-start">
+                  {/* Preview */}
+                  <div className="w-14 h-14 shrink-0 border border-lime-900 flex items-center justify-center bg-lime-950/20 overflow-hidden">
+                    {form.iconUrl
+                      ? <img src={form.iconUrl} alt="icon" className="w-full h-full object-cover" onError={e => { e.target.style.display='none'; }} />
+                      : <span className="text-2xl">🔥</span>
+                    }
+                  </div>
+                  <div className="flex-1 space-y-2">
+                    <label className={`flex items-center justify-center gap-2 w-full py-2 border text-[10px] font-mono cursor-pointer transition-colors ${
+                      form.uploading ? 'border-lime-900 text-lime-900 cursor-not-allowed' : 'border-lime-900 text-lime-700 hover:border-lime-600 hover:text-lime-400'
+                    }`}>
+                      <input
+                        type="file"
+                        accept="image/jpeg,image/png,image/gif,image/webp"
+                        className="hidden"
+                        disabled={form.uploading}
+                        onChange={async (e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          if (file.size > 5 * 1024 * 1024) { alert('Image must be under 5MB'); return; }
+                          setForm(f => ({ ...f, uploading: true, uploadError: null }));
+                          try {
+                            const data = new FormData();
+                            data.append('image', file);
+                            const res = await fetch('https://api.imgur.com/3/image', {
+                              method: 'POST',
+                              headers: { Authorization: 'Client-ID 546c25a59c58ad7' },
+                              body: data,
+                            });
+                            const json = await res.json();
+                            if (json.success) {
+                              setForm(f => ({ ...f, iconUrl: json.data.link, uploading: false }));
+                            } else {
+                              throw new Error(json.data?.error || 'Upload failed');
+                            }
+                          } catch (err) {
+                            setForm(f => ({ ...f, uploading: false, uploadError: err.message }));
+                          }
+                        }}
+                      />
+                      {form.uploading ? 'UPLOADING…' : '📁 UPLOAD IMAGE (JPEG / PNG / GIF)'}
+                    </label>
+                    <input
+                      value={form.iconUrl}
+                      onChange={e => setForm({ ...form, iconUrl: e.target.value })}
+                      placeholder="or paste a URL directly"
+                      className="w-full bg-lime-950/20 border border-lime-900 px-3 py-1.5 text-lime-600 text-xs focus:outline-none focus:border-lime-400"
+                    />
+                    {form.uploadError && (
+                      <div className="text-[10px] text-red-500">{form.uploadError}</div>
+                    )}
+                  </div>
+                </div>
               </div>
             </div>
           )}
