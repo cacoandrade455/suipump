@@ -37,6 +37,54 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
   const [status, setStatus] = useState(null);
   const [metadata, setMetadata] = useState(null);
   const [chartRefresh, setChartRefresh] = useState(0);
+  const [creatorCapId, setCreatorCapId] = useState(null);
+  const [claiming, setClaiming] = useState(false);
+
+  // Look for a CreatorCap in the wallet that matches this curve
+  useEffect(() => {
+    if (!account?.address) return;
+    let cancelled = false;
+    async function findCap() {
+      try {
+        const owned = await client.getOwnedObjects({
+          owner: account.address,
+          filter: { StructType: `${PACKAGE_ID}::bonding_curve::CreatorCap` },
+          options: { showContent: true },
+        });
+        for (const obj of owned.data) {
+          const capCurveId = obj.data?.content?.fields?.curve_id;
+          if (capCurveId === curveId) {
+            if (!cancelled) setCreatorCapId(obj.data.objectId);
+            return;
+          }
+        }
+        if (!cancelled) setCreatorCapId(null);
+      } catch { }
+    }
+    findCap();
+    return () => { cancelled = true; };
+  }, [account?.address, curveId, client]);
+
+  const claimFees = async () => {
+    if (!creatorCapId || !account) return;
+    setClaiming(true);
+    setStatus(null);
+    try {
+      const tx = new Transaction();
+      tx.moveCall({
+        target: `${PACKAGE_ID}::bonding_curve::claim_creator_fees`,
+        typeArguments: [tokenType],
+        arguments: [tx.object(creatorCapId), tx.object(curveId)],
+      });
+      const result = await signAndExecute({ transaction: tx });
+      setStatus({ kind: 'success', msg: `Fees claimed!`, digest: result.digest });
+      curveQuery.refetch();
+    } catch (err) {
+      setStatus({ kind: 'error', msg: err.message || String(err) });
+    } finally {
+      setClaiming(false);
+    }
+  };
 
   // Fetch CoinMetadata (description, iconUrl)
   useEffect(() => {
@@ -225,7 +273,19 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
                 <div className="text-3xl font-bold text-amber-200 font-mono tabular-nums">
                   {fmtSui(creatorFees)}
                 </div>
-                <div className="text-xs text-amber-600 font-mono">SUI</div>
+                <div className="text-xs text-amber-600 font-mono mb-2">SUI</div>
+                {creatorCapId && creatorFees > 0n && (
+                  <button
+                    onClick={claimFees}
+                    disabled={claiming}
+                    className="px-4 py-1.5 bg-amber-400 text-black text-xs font-mono tracking-widest hover:bg-amber-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {claiming ? 'CLAIMING…' : 'CLAIM FEES'}
+                  </button>
+                )}
+                {creatorCapId && creatorFees === 0n && (
+                  <div className="text-[10px] font-mono text-amber-800">NO FEES TO CLAIM</div>
+                )}
               </div>
             </div>
           </div>
