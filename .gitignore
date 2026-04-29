@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+
+# Sui build artifacts
+contracts/build/
+coin-template/build/
+
+# Frontend build output
+frontend-app/dist/
+
+# Environment files (never commit these)
+.env
+*.env
+*.secret
+
+# Windows junk
+Thumbs.db
+Desktop.ini
+
+coin-template/template.hex
+frontend/

@@ -1,0 +1,6 @@
+@import '@mysten/dapp-kit/dist/index.css';
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body { background: #000; margin: 0; }
