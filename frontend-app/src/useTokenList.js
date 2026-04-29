@@ -42,12 +42,25 @@ export function useTokenList() {
             creator: j.creator,
             name: j.name,
             symbol: j.symbol,
-            // Timestamp from event for display
             timestamp: evt.timestampMs ? Number(evt.timestampMs) : null,
           };
         });
 
-        setTokens(list);
+        // Fetch each curve object to extract the real token type from its
+        // type string: Curve<PACKAGE::module::TYPE> → PACKAGE::module::TYPE
+        const enriched = await Promise.all(list.map(async (token) => {
+          try {
+            const obj = await client.getObject({ id: token.curveId, options: { showType: true } });
+            const typeStr = obj.data?.type ?? '';
+            const match = typeStr.match(/Curve<(.+)>$/);
+            const tokenType = match ? match[1] : null;
+            return { ...token, tokenType };
+          } catch {
+            return { ...token, tokenType: null };
+          }
+        }));
+
+        if (!cancelled) setTokens(enriched);
       } catch (err) {
         if (!cancelled) setError(err.message || String(err));
       } finally {

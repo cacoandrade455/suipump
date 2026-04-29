@@ -3,7 +3,7 @@
 // from the router, fetches live curve state, and handles buy/sell.
 // This is the existing App.jsx trading logic made generic.
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   useCurrentAccount,
   useSignAndExecuteTransaction,
@@ -15,6 +15,7 @@ import { Crown, Rocket, ExternalLink, ArrowLeft } from 'lucide-react';
 
 import { PACKAGE_ID, DRAIN_SUI_APPROX, TOKEN_DECIMALS, MIST_PER_SUI } from './constants.js';
 import { quoteBuy, quoteSell, priceMistPerToken, mistToSui, tokenUnitsToWhole } from './curve.js';
+import PriceChart from './PriceChart.jsx';
 
 function fmt(n, d = 2) {
   if (!Number.isFinite(n)) return '—';
@@ -34,6 +35,17 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
   const [amount, setAmount] = useState('');
   const [side, setSide] = useState('buy');
   const [status, setStatus] = useState(null);
+  const [metadata, setMetadata] = useState(null);
+  const [chartRefresh, setChartRefresh] = useState(0);
+
+  // Fetch CoinMetadata (description, iconUrl)
+  useEffect(() => {
+    let cancelled = false;
+    client.getCoinMetadata({ coinType: tokenType }).then(m => {
+      if (!cancelled) setMetadata(m);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [tokenType, client]);
 
   // Live curve state
   const curveQuery = useSuiClientQuery(
@@ -120,6 +132,7 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
       setAmount('');
       curveQuery.refetch();
       balanceQuery.refetch();
+      setChartRefresh(r => r + 1);
     } catch (err) {
       setStatus({ kind: 'error', msg: err.message || String(err) });
     }
@@ -149,10 +162,20 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
           <div className="border border-lime-900/50 bg-black p-5">
             <div className="flex items-start justify-between mb-4">
               <div className="flex items-center gap-4">
-                <div className="text-5xl">🔥</div>
+                {metadata?.iconUrl ? (
+                  <img src={metadata.iconUrl} alt={fields.symbol}
+                    className="w-14 h-14 rounded-full object-cover border border-lime-900"
+                    onError={e => { e.target.style.display='none'; }}
+                  />
+                ) : (
+                  <div className="text-5xl">🔥</div>
+                )}
                 <div>
                   <h2 className="text-2xl font-bold text-lime-100">{fields.name}</h2>
                   <div className="text-sm text-lime-600 font-mono">${fields.symbol}</div>
+                  {metadata?.description && (
+                    <div className="text-xs text-lime-700 font-mono mt-1 max-w-xs">{metadata.description}</div>
+                  )}
                 </div>
               </div>
               <div className="text-right">
@@ -179,6 +202,11 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
                   style={{ width: `${progress}%` }}
                 />
               </div>
+            </div>
+
+            {/* Price chart */}
+            <div className="border-t border-lime-950 pt-3 mt-3">
+              <PriceChart curveId={curveId} refreshKey={chartRefresh} />
             </div>
           </div>
 

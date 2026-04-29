@@ -10,7 +10,7 @@ import { Flame, Rocket, Plus } from 'lucide-react';
 import { useTokenList } from './useTokenList.js';
 import TokenPage from './TokenPage.jsx';
 import LaunchModal from './LaunchModal.jsx';
-import { PACKAGE_ID, DRAIN_SUI_APPROX, TOKEN_DECIMALS } from './constants.js';
+import { DRAIN_SUI_APPROX, TOKEN_DECIMALS } from './constants.js';
 import { mistToSui, priceMistPerToken } from './curve.js';
 
 function fmt(n, d = 2) {
@@ -190,9 +190,9 @@ export default function App() {
                 <TokenCard
                   key={token.curveId}
                   token={token}
-                  onClick={() => setActivePage({
+                  onClick={() => token.tokenType && setActivePage({
                     curveId: token.curveId,
-                    tokenType: `${PACKAGE_ID}::${token.symbol.toLowerCase()}::${token.symbol}`,
+                    tokenType: token.tokenType,
                     name: token.name,
                     symbol: token.symbol,
                   })}
