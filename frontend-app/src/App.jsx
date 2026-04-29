@@ -8,6 +8,7 @@ import { useTokenList } from './useTokenList.js';
 import TokenPage from './TokenPage.jsx';
 import LaunchModal from './LaunchModal.jsx';
 import AirdropPage from './AirdropPage.jsx';
+import WhitepaperPage from './WhitepaperPage.jsx';
 import { PACKAGE_ID, DRAIN_SUI_APPROX, TOKEN_DECIMALS } from './constants.js';
 import { mistToSui, priceMistPerToken } from './curve.js';
 
@@ -179,6 +180,14 @@ export default function App() {
               )}
             </button>
 
+            {/* Whitepaper link */}
+            <button
+              onClick={() => setActivePage('whitepaper')}
+              className="px-3 py-1.5 border border-lime-900/60 text-[10px] font-mono text-lime-700 hover:border-lime-600 hover:text-lime-400 transition-colors hidden sm:block"
+            >
+              WHITEPAPER
+            </button>
+
             {account && (
               <button onClick={() => setShowLaunch(true)}
                 className="flex items-center gap-2 px-4 py-2 bg-lime-400 text-black text-xs font-mono tracking-widest hover:bg-lime-300 transition-colors"
@@ -195,6 +204,8 @@ export default function App() {
       <main className="max-w-6xl mx-auto px-4 py-6">
         {activePage === 'airdrop' ? (
           <AirdropPage onBack={() => setActivePage(null)} />
+        ) : activePage === 'whitepaper' ? (
+          <WhitepaperPage onBack={() => setActivePage(null)} />
         ) : activePage ? (
           <TokenPage
             curveId={activePage.curveId}
