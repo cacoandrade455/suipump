@@ -16,6 +16,7 @@ import { Crown, Rocket, ExternalLink, ArrowLeft } from 'lucide-react';
 import { PACKAGE_ID, DRAIN_SUI_APPROX, TOKEN_DECIMALS, MIST_PER_SUI } from './constants.js';
 import { quoteBuy, quoteSell, priceMistPerToken, mistToSui, tokenUnitsToWhole } from './curve.js';
 import PriceChart from './PriceChart.jsx';
+import HolderList from './HolderList.jsx';
 
 function fmt(n, d = 2) {
   if (!Number.isFinite(n)) return '—';
@@ -289,6 +290,9 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
               </div>
             </div>
           </div>
+
+          {/* Holder distribution */}
+          <HolderList curveId={curveId} refreshKey={chartRefresh} />
 
           {/* Balance */}
           <div className="border border-lime-900/50 bg-black p-4 flex items-center justify-between text-xs font-mono">

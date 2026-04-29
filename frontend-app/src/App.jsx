@@ -1,17 +1,17 @@
 // App.jsx
-// Root component. Manages navigation between:
-//   - Homepage: token list grid + launch button
-//   - Token page: individual curve trading UI
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ConnectButton, useCurrentAccount, useSuiClient } from '@mysten/dapp-kit';
-import { Flame, Rocket, Plus } from 'lucide-react';
+import { Flame, Rocket, Plus, Gift } from 'lucide-react';
 
 import { useTokenList } from './useTokenList.js';
 import TokenPage from './TokenPage.jsx';
 import LaunchModal from './LaunchModal.jsx';
-import { DRAIN_SUI_APPROX, TOKEN_DECIMALS } from './constants.js';
+import AirdropPage from './AirdropPage.jsx';
+import { PACKAGE_ID, DRAIN_SUI_APPROX, TOKEN_DECIMALS } from './constants.js';
 import { mistToSui, priceMistPerToken } from './curve.js';
+
+const MIST_PER_SUI = 1e9;
 
 function fmt(n, d = 2) {
   if (!Number.isFinite(n)) return '—';
@@ -21,7 +21,45 @@ function fmt(n, d = 2) {
   return n.toFixed(d);
 }
 
-// ── Token card ──────────────────────────────────────────────────────────────
+// Minimal hook for header stats — pool SUI + trade count
+function useHeaderStats() {
+  const client = useSuiClient();
+  const [poolSui, setPoolSui] = useState(null);
+  const [tradeCount, setTradeCount] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const [buys, sells] = await Promise.all([
+          client.queryEvents({
+            query: { MoveEventType: `${PACKAGE_ID}::bonding_curve::TokensPurchased` },
+            limit: 100, order: 'descending',
+          }),
+          client.queryEvents({
+            query: { MoveEventType: `${PACKAGE_ID}::bonding_curve::TokensSold` },
+            limit: 100, order: 'descending',
+          }),
+        ]);
+        let protocolMist = 0;
+        for (const e of [...buys.data, ...sells.data]) {
+          protocolMist += Number(e.parsedJson?.protocol_fee ?? 0);
+        }
+        if (!cancelled) {
+          setPoolSui((protocolMist * 0.5) / MIST_PER_SUI);
+          setTradeCount(buys.data.length + sells.data.length);
+        }
+      } catch { }
+    }
+    load();
+    const t = setInterval(load, 30_000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [client]);
+
+  return { poolSui, tradeCount };
+}
+
+// ── Token card ───────────────────────────────────────────────────────────────
 function TokenCard({ token, onClick }) {
   const client = useSuiClient();
   const [curveState, setCurveState] = React.useState(null);
@@ -86,11 +124,12 @@ function TokenCard({ token, onClick }) {
   );
 }
 
-// ── Main App ────────────────────────────────────────────────────────────────
+// ── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
   const account = useCurrentAccount();
   const { tokens, loading, error } = useTokenList();
-  const [activePage, setActivePage] = useState(null);
+  const { poolSui, tradeCount } = useHeaderStats();
+  const [activePage, setActivePage] = useState(null); // null | {curveId,...} | 'airdrop'
   const [showLaunch, setShowLaunch] = useState(false);
 
   const handleLaunched = ({ curveId, tokenType, name, symbol }) => {
@@ -107,6 +146,7 @@ export default function App() {
         backgroundSize: '40px 40px',
       }} />
 
+      {/* Header */}
       <header className="border-b border-lime-900/60 bg-black/80 backdrop-blur sticky top-0 z-40">
         <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
           <button onClick={() => setActivePage(null)} className="flex items-center gap-3 hover:opacity-80 transition-opacity">
@@ -121,7 +161,24 @@ export default function App() {
               <div className="text-[9px] font-mono text-lime-700 tracking-[0.2em] -mt-1">TESTNET · LIVE</div>
             </div>
           </button>
-          <div className="flex items-center gap-3">
+
+          <div className="flex items-center gap-2">
+            {/* S1 airdrop pill */}
+            <button
+              onClick={() => setActivePage('airdrop')}
+              className="flex items-center gap-1.5 px-3 py-1.5 border border-lime-900/60 text-[10px] font-mono text-lime-700 hover:border-lime-600 hover:text-lime-400 transition-colors"
+            >
+              <Gift size={10} />
+              {poolSui !== null ? (
+                <span>S1 {poolSui.toFixed(4)} SUI</span>
+              ) : (
+                <span>S1 AIRDROP</span>
+              )}
+              {tradeCount !== null && (
+                <span className="text-lime-900 ml-1">· {tradeCount} trades</span>
+              )}
+            </button>
+
             {account && (
               <button onClick={() => setShowLaunch(true)}
                 className="flex items-center gap-2 px-4 py-2 bg-lime-400 text-black text-xs font-mono tracking-widest hover:bg-lime-300 transition-colors"
@@ -134,8 +191,11 @@ export default function App() {
         </div>
       </header>
 
+      {/* Main content */}
       <main className="max-w-6xl mx-auto px-4 py-6">
-        {activePage ? (
+        {activePage === 'airdrop' ? (
+          <AirdropPage onBack={() => setActivePage(null)} />
+        ) : activePage ? (
           <TokenPage
             curveId={activePage.curveId}
             tokenType={activePage.tokenType}
@@ -143,6 +203,7 @@ export default function App() {
           />
         ) : (
           <div>
+            {/* Hero */}
             <div className="border border-lime-900/30 bg-gradient-to-br from-lime-950/10 to-black p-8 mb-8 text-center">
               <div className="flex items-center justify-center gap-3 mb-3">
                 <Flame className="text-lime-400" size={28} />
@@ -164,6 +225,7 @@ export default function App() {
               )}
             </div>
 
+            {/* Token list header */}
             <div className="mb-4 flex items-center justify-between">
               <div className="text-xs font-mono text-lime-700 tracking-widest">
                 {loading ? 'LOADING TOKENS…' : `${tokens.length} TOKEN${tokens.length !== 1 ? 'S' : ''} LAUNCHED`}
