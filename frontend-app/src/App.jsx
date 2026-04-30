@@ -64,6 +64,7 @@ function useHeaderStats() {
 function TokenCard({ token, onClick }) {
   const client = useSuiClient();
   const [curveState, setCurveState] = React.useState(null);
+  const [iconUrl, setIconUrl] = React.useState(null);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -77,6 +78,16 @@ function TokenCard({ token, onClick }) {
     const t = setInterval(load, 10_000);
     return () => { cancelled = true; clearInterval(t); };
   }, [token.curveId, client]);
+
+  // Fetch icon from CoinMetadata
+  React.useEffect(() => {
+    if (!token.tokenType) return;
+    let cancelled = false;
+    client.getCoinMetadata({ coinType: token.tokenType })
+      .then(m => { if (!cancelled && m?.iconUrl) setIconUrl(m.iconUrl); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [token.tokenType, client]);
 
   const reserveMist = curveState ? BigInt(curveState.sui_reserve) : 0n;
   const tokensRemaining = curveState ? BigInt(curveState.token_reserve) : 0n;
@@ -99,7 +110,12 @@ function TokenCard({ token, onClick }) {
     >
       <div className="flex items-start justify-between mb-3">
         <div className="flex items-center gap-3">
-          <div className="text-3xl">🔥</div>
+          <div className="w-10 h-10 rounded-full overflow-hidden border border-lime-900 flex items-center justify-center bg-lime-950/20 shrink-0">
+            {iconUrl
+              ? <img src={iconUrl} alt={token.symbol} className="w-full h-full object-cover" onError={e => { e.target.style.display='none'; }} />
+              : <span className="text-xl">🔥</span>
+            }
+          </div>
           <div>
             <div className="text-sm font-bold text-lime-100 font-mono">{token.name}</div>
             <div className="text-[10px] text-lime-600 font-mono">${token.symbol}</div>
