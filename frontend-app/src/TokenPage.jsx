@@ -214,7 +214,7 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
                 {metadata?.iconUrl ? (
                   <img src={metadata.iconUrl} alt={fields.symbol}
                     className="w-14 h-14 rounded-full object-cover border border-lime-900"
-                    onError={e => { e.target.style.display='none'; }}
+                    onError={e => { e.target.style.display='none'; e.target.parentNode.innerHTML='<span style="font-size:2.5rem">🔥</span>'; }}
                   />
                 ) : (
                   <div className="text-5xl">🔥</div>
