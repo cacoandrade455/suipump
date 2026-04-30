@@ -211,14 +211,15 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
           <div className="border border-lime-900/50 bg-black p-5">
             <div className="flex items-start justify-between mb-4">
               <div className="flex items-center gap-4">
-                {metadata?.iconUrl ? (
-                  <img src={metadata.iconUrl} alt={fields.symbol}
-                    className="w-14 h-14 rounded-full object-cover border border-lime-900"
-                    onError={e => { e.target.style.display='none'; e.target.parentNode.innerHTML='<span style="font-size:2.5rem">🔥</span>'; }}
-                  />
-                ) : (
-                  <div className="text-5xl">🔥</div>
-                )}
+                <div className="w-14 h-14 rounded-full overflow-hidden border border-lime-900 flex items-center justify-center bg-lime-950/20 shrink-0">
+                  {metadata?.iconUrl
+                    ? <img src={metadata.iconUrl} alt={fields.symbol}
+                        className="w-full h-full object-cover"
+                        onError={e => { e.target.style.display='none'; e.target.nextSibling.style.display='block'; }}
+                      />
+                    : null}
+                  <span className="text-3xl" style={{ display: metadata?.iconUrl ? 'none' : 'block' }}>🔥</span>
+                </div>
                 <div>
                   <h2 className="text-2xl font-bold text-lime-100">{fields.name}</h2>
                   <div className="text-sm text-lime-600 font-mono">${fields.symbol}</div>
