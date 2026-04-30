@@ -112,7 +112,8 @@ function TokenCard({ token, onClick }) {
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-full overflow-hidden border border-lime-900 flex items-center justify-center bg-lime-950/20 shrink-0">
             {iconUrl
-              ? <img src={iconUrl} alt={token.symbol} className="w-full h-full object-cover" onError={e => { e.target.style.display='none'; }} />
+              ? <img src={iconUrl} alt={token.symbol} className="w-full h-full object-cover"
+                  onError={e => { e.target.style.display='none'; e.target.parentNode.innerHTML='<span style="font-size:1.25rem">🔥</span>'; }} />
               : <span className="text-xl">🔥</span>
             }
           </div>
