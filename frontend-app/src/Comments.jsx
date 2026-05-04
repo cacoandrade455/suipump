@@ -94,18 +94,10 @@ export default function Comments({ curveId, tokenType }) {
     setError(null);
     try {
       const tx = new Transaction();
-      // Fetch the curve object version for shared object reference
-      const curveObj = await client.getObject({ id: curveId, options: { showOwner: true } });
-      const initialSharedVersion = curveObj.data?.owner?.Shared?.initial_shared_version;
       tx.moveCall({
         target: `${PACKAGE_ID}::bonding_curve::post_comment`,
-        typeArguments: [tokenType],
         arguments: [
-          tx.sharedObjectRef({
-            objectId: curveId,
-            initialSharedVersion,
-            mutable: false,
-          }),
+          tx.pure.address(curveId),
           tx.pure.string(text.trim()),
         ],
       });

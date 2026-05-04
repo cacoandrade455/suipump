@@ -714,20 +714,20 @@ module suipump::bonding_curve {
 
     // ---------- Comments ----------
     /// Post a comment on any curve. Purely event-based — no storage, no objects.
-    /// The comment is permanently on-chain via the emitted event.
+    /// Takes the curve_id as a pure ID argument to avoid generic type resolution issues.
     /// Any wallet can comment on any curve.
     /// Text is capped at 280 bytes (UTF-8). Empty comments are rejected.
-    public fun post_comment<T>(
-        curve:  &Curve<T>,
-        text:   String,
-        ctx:    &mut TxContext,
+    public fun post_comment(
+        curve_id: ID,
+        text:     String,
+        ctx:      &mut TxContext,
     ) {
         let bytes = std::string::as_bytes(&text);
         assert!(std::vector::length(bytes) > 0, ECommentEmpty);
         assert!(std::vector::length(bytes) <= MAX_COMMENT_BYTES, ECommentTooLong);
         event::emit(Comment {
-            curve_id: object::id(curve),
-            author:   tx_context::sender(ctx),
+            curve_id,
+            author: tx_context::sender(ctx),
             text,
         });
     }
