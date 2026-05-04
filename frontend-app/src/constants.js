@@ -2,7 +2,7 @@
 // Update these after each redeploy.
 
 export const PACKAGE_ID =
-  '0x22839b3e46129a42ebc2518013105bbf91f435e6664640cb922815659985d349';
+  '0x87d24b0242c1fe503c5b7d72489eeed0361b19be485de0bd49b749be6d3b2c4c';
 export const CURVE_ID =
   '0xe69a7df93bc69c0273f33de152fe6c517ad6ed5ebef8199898d20037a9d258f9';
 export const TOKEN_TYPE = `${PACKAGE_ID}::token_template::TOKEN_TEMPLATE`;

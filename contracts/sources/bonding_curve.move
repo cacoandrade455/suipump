@@ -54,6 +54,11 @@ module suipump::bonding_curve {
     const EDuplicatePayoutAddress: u64 = 13;
     const EWrongLaunchFee: u64 = 14;
     const ECapMismatch: u64 = 15;
+    const ECommentTooLong: u64 = 16;
+    const ECommentEmpty: u64 = 17;
+
+    /// Maximum comment length in bytes.
+    const MAX_COMMENT_BYTES: u64 = 280;
 
     // ---------- Fee tunables (basis points; 10_000 = 100%) ----------
     /// Total trade fee: 1.00%.
@@ -207,6 +212,12 @@ module suipump::bonding_curve {
     public struct LaunchFeeCollected has copy, drop {
         curve_id: ID,
         amount: u64,
+    }
+
+    public struct Comment has copy, drop {
+        curve_id: ID,
+        author:   address,
+        text:     String,
     }
 
     // ---------- Creation ----------
@@ -376,9 +387,9 @@ module suipump::bonding_curve {
 
     // ---------- Pricing math ----------
     /// Constant product: (x + dx)(y - dy) = xy  =>  dy = y*dx / (x + dx)
-    /// Combined with virtual reserves, this reproduces a bonding-curve pricing
-    /// model with pure integer math — no fixed-point, no exponentiation,
-    /// no rounding drift.
+    /// Combined with virtual reserves, this exactly reproduces the leading Solana launchpad's
+    /// bonding-curve pricing with pure integer math — no fixed-point, no
+    /// exponentiation, no rounding drift.
     fun quote_out(dx: u64, x_reserve: u64, y_reserve: u64): u64 {
         let dx_u128 = dx as u128;
         let x_u128 = x_reserve as u128;
@@ -428,8 +439,8 @@ module suipump::bonding_curve {
 
         // Tail-buy handling: if the naive quote wants more tokens than remain,
         // buy exactly the remainder and compute the actual swap cost in reverse.
-        // Any unspent SUI is refunded. This prevents dust getting stuck and
-        // allows the final buyer to drain the curve cleanly.
+        // Any unspent SUI is refunded. This is how a "final buyer" drains the
+        // curve — matches the leading Solana launchpad's behavior and prevents dust getting stuck.
         let remaining = balance::value(&curve.token_reserve);
         let (tokens_out, actual_swap) = if (naive_tokens_out > remaining) {
             // dx needed to buy exactly `remaining`:  dx = x * remaining / (y - remaining)
@@ -611,12 +622,13 @@ module suipump::bonding_curve {
     }
 
     // ---------- Graduation ----------
-    /// Graduate the curve to a DEX pool. Can only be called once the curve
-    /// has sold all CURVE_SUPPLY tokens — graduation is a consequence of the
-    /// curve filling up, not a separate threshold that could be mis-set.
+    /// Graduate the curve to a DEX pool. Triggers when the curve has sold
+    /// all CURVE_SUPPLY tokens — matches the leading Solana launchpad's actual behavior where
+    /// graduation is a consequence of the curve filling up, not a separate
+    /// threshold that could be mis-set.
     ///
     /// Returns (SUI side, token side, creator bonus) so the PTB can compose
-    /// a Cetus pool creation in the same transaction.
+    /// a Cetus/Turbos pool creation in the same transaction.
     public fun graduate<T>(
         curve: &mut Curve<T>,
         ctx: &mut TxContext,
@@ -700,6 +712,26 @@ module suipump::bonding_curve {
 
     public fun creator_cap_curve_id(cap: &CreatorCap): ID { cap.curve_id }
 
+    // ---------- Comments ----------
+    /// Post a comment on any curve. Purely event-based — no storage, no objects.
+    /// The comment is permanently on-chain via the emitted event.
+    /// Any wallet can comment on any curve.
+    /// Text is capped at 280 bytes (UTF-8). Empty comments are rejected.
+    public fun post_comment<T>(
+        curve:  &Curve<T>,
+        text:   String,
+        ctx:    &mut TxContext,
+    ) {
+        let bytes = std::string::as_bytes(&text);
+        assert!(std::vector::length(bytes) > 0, ECommentEmpty);
+        assert!(std::vector::length(bytes) <= MAX_COMMENT_BYTES, ECommentTooLong);
+        event::emit(Comment {
+            curve_id: object::id(curve),
+            author:   tx_context::sender(ctx),
+            text,
+        });
+    }
+
     // ---------- Test-only helpers ----------
     #[test_only]
     public fun init_for_testing(ctx: &mut TxContext) {
@@ -718,4 +750,6 @@ module suipump::bonding_curve {
     #[test_only] public fun e_duplicate_payout_address(): u64 { EDuplicatePayoutAddress }
     #[test_only] public fun e_wrong_launch_fee(): u64 { EWrongLaunchFee }
     #[test_only] public fun e_cap_mismatch(): u64 { ECapMismatch }
+    #[test_only] public fun e_comment_too_long(): u64 { ECommentTooLong }
+    #[test_only] public fun e_comment_empty(): u64 { ECommentEmpty }
 }

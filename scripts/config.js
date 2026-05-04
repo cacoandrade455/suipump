@@ -10,8 +10,8 @@ import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { SuiClient, getFullnodeUrl } from '@mysten/sui/client';
 
 export const PACKAGE_ID = '0x22839b3e46129a42ebc2518013105bbf91f435e6664640cb922815659985d349';
-export const ADMIN_CAP_ID = '0x42e4c2b399cd09eec1248551fb6e762c1a06444093c061eef452f5bef6ffc340';
-export const CURVE_ID = '0xe69a7df93bc69c0273f33de152fe6c517ad6ed5ebef8199898d20037a9d258f9';
+export const ADMIN_CAP_ID = '0x9b0e7a691fe5b7884e0c977fa436f8905c1ab8b12c835388730ee12925cecd4c';
+export const CURVE_ID = '0x6ab36ec5322deae69e16db956ebd4ac01a15b38134d157b64ad29ef97f89c4e4';
 export const TOKEN_TYPE = `${PACKAGE_ID}::token_template::TOKEN_TEMPLATE`;
 
 export const client = new SuiClient({ url: getFullnodeUrl('testnet') });

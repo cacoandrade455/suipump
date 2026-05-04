@@ -14,6 +14,7 @@ import { quoteBuy, quoteSell, priceMistPerToken, mistToSui, tokenUnitsToWhole } 
 import PriceChart from './PriceChart.jsx';
 import HolderList from './HolderList.jsx';
 import TradeHistory from './TradeHistory.jsx';
+import Comments from './Comments.jsx';
 
 function fmt(n, d = 2) {
   if (!Number.isFinite(n)) return '—';
@@ -288,6 +289,9 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
 
           {/* Trade history */}
           <TradeHistory curveId={curveId} symbol={fields.symbol} refreshKey={chartRefresh} />
+
+          {/* Comments */}
+          <Comments curveId={curveId} tokenType={tokenType} />
 
           {/* Creator revenue */}
           <div className="rounded-2xl border border-amber-500/20 bg-amber-950/10 p-5">
