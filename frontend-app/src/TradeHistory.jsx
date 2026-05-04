@@ -116,8 +116,9 @@ export default function TradeHistory({ curveId, symbol, refreshKey }) {
       {!loading && trades.length > 0 && (
         <div className="space-y-1">
           {/* Header */}
-          <div className="grid grid-cols-4 text-[9px] font-mono text-white/20 tracking-widest pb-2 border-b border-white/5">
+          <div className="grid grid-cols-5 text-[9px] font-mono text-white/20 tracking-widest pb-2 border-b border-white/5">
             <span>TYPE</span>
+            <span>WALLET</span>
             <span className="text-right">SUI</span>
             <span className="text-right">{symbol}</span>
             <span className="text-right">TIME</span>
@@ -129,10 +130,10 @@ export default function TradeHistory({ curveId, symbol, refreshKey }) {
               href={`https://testnet.suivision.xyz/txblock/${trade.digest}`}
               target="_blank"
               rel="noreferrer"
-              className="grid grid-cols-4 items-center py-2 border-b border-white/[0.03] last:border-0 hover:bg-white/5 rounded-lg px-1 -mx-1 transition-colors group"
+              className="grid grid-cols-5 items-center py-2 border-b border-white/[0.03] last:border-0 hover:bg-white/5 rounded-lg px-1 -mx-1 transition-colors group"
             >
-              {/* Type + address */}
-              <div className="flex items-center gap-2">
+              {/* Type */}
+              <div className="flex items-center gap-1">
                 {trade.kind === 'buy' ? (
                   <div className="flex items-center gap-1 text-lime-400">
                     <ArrowUpRight size={11} />
@@ -144,6 +145,11 @@ export default function TradeHistory({ curveId, symbol, refreshKey }) {
                     <span className="text-[10px] font-mono font-bold">SELL</span>
                   </div>
                 )}
+              </div>
+
+              {/* Wallet */}
+              <div className="text-[10px] font-mono text-white/30 group-hover:text-white/50 transition-colors">
+                {shortAddr(trade.addr)}
               </div>
 
               {/* SUI amount */}
