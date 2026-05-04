@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, useNavigate, useParams, Link, useLocation } from 'react-router-dom';
 import { ConnectButton, useCurrentAccount, useSuiClient } from '@mysten/dapp-kit';
-import { Flame, Rocket, Plus, Gift, TrendingUp, Coins, Users, Trophy, Wallet, Search, Menu, X } from 'lucide-react';
+import { Flame, Rocket, Plus, Gift, TrendingUp, Coins, Users, Trophy, Wallet, Search, Menu, X, Map } from 'lucide-react';
 
 import { useTokenList } from './useTokenList.js';
 import { useTokenStats } from './useTokenStats.js';
@@ -12,6 +12,7 @@ import AirdropPage from './AirdropPage.jsx';
 import WhitepaperPage from './WhitepaperPage.jsx';
 import LeaderboardPage from './LeaderboardPage.jsx';
 import PortfolioPage from './PortfolioPage.jsx';
+import RoadmapPage from './RoadmapPage.jsx';
 import { PACKAGE_ID, DRAIN_SUI_APPROX, TOKEN_DECIMALS } from './constants.js';
 import { mistToSui, priceMistPerToken } from './curve.js';
 
@@ -221,6 +222,9 @@ function Header({ onLaunch }) {
           <Link to="/whitepaper" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all">
             WHITEPAPER
           </Link>
+          <Link to="/roadmap" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5">
+            <Map size={10} /> ROADMAP
+          </Link>
           {account && (
             <button onClick={onLaunch} className="flex items-center gap-2 px-4 py-2 bg-lime-400 text-black text-xs font-mono tracking-widest hover:bg-lime-300 transition-colors rounded-xl font-bold">
               <Plus size={12} /> LAUNCH TOKEN
@@ -256,8 +260,11 @@ function Header({ onLaunch }) {
           <Link to="/portfolio" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/60 hover:text-lime-400 transition-colors border-b border-white/5">
             <Wallet size={14} /> PORTFOLIO
           </Link>
-          <Link to="/whitepaper" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/60 hover:text-lime-400 transition-colors">
+          <Link to="/whitepaper" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/60 hover:text-lime-400 transition-colors border-b border-white/5">
             WHITEPAPER
+          </Link>
+          <Link to="/roadmap" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/60 hover:text-lime-400 transition-colors">
+            <Map size={14} /> ROADMAP
           </Link>
         </div>
       )}
@@ -499,6 +506,7 @@ export default function App() {
           <Route path="/whitepaper" element={<WhitepaperPage onBack={() => navigate('/')} />} />
           <Route path="/leaderboard" element={<LeaderboardPage onBack={() => navigate('/')} />} />
           <Route path="/portfolio" element={<PortfolioPage onBack={() => navigate('/')} />} />
+          <Route path="/roadmap" element={<RoadmapPage onBack={() => navigate('/')} />} />
         </Routes>
       </main>
 
