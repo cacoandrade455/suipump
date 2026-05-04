@@ -1,39 +1,25 @@
 // LaunchModal.jsx
-// Two-transaction token launch flow in the browser.
-// Tx1: patch template bytecode + publish new coin module
-// Tx2: create_and_return + optional dev-buy + share_curve
-// Uses @mysten/move-bytecode-template for client-side bytecode patching.
-
 import React, { useState, useCallback } from 'react';
 import { useCurrentAccount, useSignAndExecuteTransaction, useSuiClient } from '@mysten/dapp-kit';
 import { Transaction } from '@mysten/sui/transactions';
-import { X, Plus, Trash2, ExternalLink } from 'lucide-react';
+import { X, Plus, Trash2, ExternalLink, Rocket, CheckCircle } from 'lucide-react';
 import wasmInit, * as bytecodeTemplate from '@mysten/move-bytecode-template';
-
 import { PACKAGE_ID, MIST_PER_SUI } from './constants.js';
 
 const LAUNCH_FEE_MIST = 2_000_000_000n;
 const TEMPLATE_URL = '/template.mv';
 
-// Initialise the WASM module once — safe to call multiple times.
 let wasmReady = false;
 async function ensureWasm() {
-  if (!wasmReady) {
-    await wasmInit();
-    wasmReady = true;
-  }
+  if (!wasmReady) { await wasmInit(); wasmReady = true; }
 }
 
-// BCS helpers
 function bcsBytes(str) {
   const buf = new TextEncoder().encode(str);
   if (buf.length > 127) throw new Error(`String too long for BCS: ${str}`);
   const out = new Uint8Array(buf.length + 1);
-  out[0] = buf.length;
-  out.set(buf, 1);
-  return out;
+  out[0] = buf.length; out.set(buf, 1); return out;
 }
-
 function bcsVectorAddress(addrs) {
   const out = [addrs.length];
   for (const a of addrs) {
@@ -42,7 +28,6 @@ function bcsVectorAddress(addrs) {
   }
   return new Uint8Array(out);
 }
-
 function bcsVectorU64(nums) {
   const buf = new DataView(new ArrayBuffer(1 + nums.length * 8));
   buf.setUint8(0, nums.length);
@@ -50,8 +35,40 @@ function bcsVectorU64(nums) {
   return new Uint8Array(buf.buffer);
 }
 
-const STEPS = ['details', 'payouts', 'devbuy', 'launch'];
-const STEP_LABELS = ['Token details', 'Payout splits', 'Dev buy', 'Launch'];
+const STEPS = [
+  { id: 'details', label: 'Details' },
+  { id: 'payouts', label: 'Payouts' },
+  { id: 'devbuy',  label: 'Dev Buy' },
+  { id: 'launch',  label: 'Launch' },
+];
+
+// Token card preview
+function TokenPreview({ name, symbol, iconUrl }) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+      <div className="text-[9px] font-mono text-white/20 tracking-widest mb-3">PREVIEW</div>
+      <div className="flex items-center gap-3">
+        <div className="w-12 h-12 rounded-full border-2 border-white/10 flex items-center justify-center bg-lime-950/30 overflow-hidden shrink-0">
+          {iconUrl
+            ? <img src={iconUrl} alt="icon" className="w-full h-full object-cover" onError={e => { e.target.style.display='none'; e.target.nextSibling.style.display='block'; }} />
+            : null}
+          <span className="text-2xl" style={{ display: iconUrl ? 'none' : 'block' }}>🔥</span>
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-bold text-white font-mono truncate">{name || 'Token Name'}</div>
+          <div className="text-xs text-lime-400/70 font-mono">${symbol || 'SYMBOL'}</div>
+        </div>
+        <div className="text-right">
+          <div className="text-[9px] text-white/20 font-mono">BONDING CURVE</div>
+          <div className="text-xs text-white/40 font-mono">0.0%</div>
+        </div>
+      </div>
+      <div className="mt-3 h-1.5 bg-white/5 rounded-full overflow-hidden">
+        <div className="h-full w-0 bg-gradient-to-r from-lime-600 to-lime-400 rounded-full" />
+      </div>
+    </div>
+  );
+}
 
 export default function LaunchModal({ onClose, onLaunched }) {
   const account = useCurrentAccount();
@@ -59,61 +76,38 @@ export default function LaunchModal({ onClose, onLaunched }) {
   const { mutateAsync: signAndExecute } = useSignAndExecuteTransaction();
 
   const [step, setStep] = useState(0);
-  const [form, setForm] = useState({
-    name: '',
-    symbol: '',
-    description: '',
-    iconUrl: '',
-  });
-  const [payouts, setPayouts] = useState([
-    { address: account?.address ?? '', bps: 10000 },
-  ]);
+  const [form, setForm] = useState({ name: '', symbol: '', description: '', iconUrl: '', uploading: false, uploadError: null });
+  const [payouts, setPayouts] = useState([{ address: account?.address ?? '', bps: 10000 }]);
   const [devBuy, setDevBuy] = useState('');
   const [launching, setLaunching] = useState(false);
-  const [txStep, setTxStep] = useState(null); // 'tx1' | 'tx2' | 'done'
+  const [txStep, setTxStep] = useState(null);
   const [tx1Digest, setTx1Digest] = useState(null);
   const [tx2Digest, setTx2Digest] = useState(null);
   const [error, setError] = useState(null);
   const [newCurveId, setNewCurveId] = useState(null);
 
-  // ── Validation ──────────────────────────────────────────────────────────
   const symbolValid = /^[A-Z][A-Z0-9]{0,4}$/.test(form.symbol);
   const nameValid = form.name.trim().length >= 2 && form.name.trim().length <= 64;
   const payoutSum = payouts.reduce((s, p) => s + (parseInt(p.bps) || 0), 0);
   const payoutsValid = payouts.length >= 1 && payouts.length <= 10 && payoutSum === 10000
     && payouts.every(p => p.address.startsWith('0x') && p.address.length === 66);
 
-  const canNext = [
-    nameValid && symbolValid,
-    payoutsValid,
-    true, // dev buy optional
-    true,
-  ][step];
+  const canNext = [nameValid && symbolValid, payoutsValid, true, true][step];
 
-  // ── Payout helpers ───────────────────────────────────────────────────────
   const addPayout = () => {
     if (payouts.length >= 10) return;
     const remaining = 10000 - payouts.slice(0, -1).reduce((s, p) => s + (parseInt(p.bps) || 0), 0);
     setPayouts([...payouts, { address: '', bps: remaining }]);
   };
-
-  const removePayout = (i) => {
-    if (payouts.length === 1) return;
-    const next = payouts.filter((_, idx) => idx !== i);
-    setPayouts(next);
-  };
-
+  const removePayout = (i) => { if (payouts.length > 1) setPayouts(payouts.filter((_, idx) => idx !== i)); };
   const updatePayout = (i, field, value) => {
     const next = [...payouts];
     next[i] = { ...next[i], [field]: field === 'bps' ? parseInt(value) || 0 : value };
     setPayouts(next);
   };
 
-  // ── Launch ───────────────────────────────────────────────────────────────
   const launch = useCallback(async () => {
-    setError(null);
-    setLaunching(true);
-
+    setError(null); setLaunching(true);
     try {
       const tokenSymbol = form.symbol.toUpperCase();
       const moduleName = tokenSymbol.toLowerCase();
@@ -121,33 +115,16 @@ export default function LaunchModal({ onClose, onLaunched }) {
       const tokenDesc = form.description.trim() || `${tokenName} — launched on SuiPump`;
       const tokenIcon = form.iconUrl.trim() || 'https://suipump.test/icon-placeholder.png';
 
-      // ── Tx1: patch + publish ───────────────────────────────────────────
       setTxStep('tx1');
-
-      // Ensure WASM is initialised before calling bytecode template functions
       await ensureWasm();
-
       const templateRes = await fetch(TEMPLATE_URL);
       if (!templateRes.ok) throw new Error('Could not load template bytecode');
       const templateBuf = await templateRes.arrayBuffer();
-      let patched = bytecodeTemplate.update_identifiers(
-        new Uint8Array(templateBuf),
-        { 'TEMPLATE': tokenSymbol, 'template': moduleName }
-      );
+      let patched = bytecodeTemplate.update_identifiers(new Uint8Array(templateBuf), { 'TEMPLATE': tokenSymbol, 'template': moduleName });
       patched = bytecodeTemplate.update_constants(patched, bcsBytes(tokenSymbol), bcsBytes('TMPL'), 'Vector(U8)');
       patched = bytecodeTemplate.update_constants(patched, bcsBytes(tokenName), bcsBytes('Template Coin'), 'Vector(U8)');
-      patched = bytecodeTemplate.update_constants(
-        patched,
-        bcsBytes(tokenDesc),
-        bcsBytes('Template description placeholder that is intentionally long to accommodate real token descriptions.'),
-        'Vector(U8)'
-      );
-      patched = bytecodeTemplate.update_constants(
-        patched,
-        bcsBytes(tokenIcon),
-        bcsBytes('https://suipump.test/icon-placeholder.png'),
-        'Vector(U8)'
-      );
+      patched = bytecodeTemplate.update_constants(patched, bcsBytes(tokenDesc), bcsBytes('Template description placeholder that is intentionally long to accommodate real token descriptions.'), 'Vector(U8)');
+      patched = bytecodeTemplate.update_constants(patched, bcsBytes(tokenIcon), bcsBytes('https://suipump.test/icon-placeholder.png'), 'Vector(U8)');
 
       const tx1 = new Transaction();
       const [upgradeCap] = tx1.publish({
@@ -158,54 +135,29 @@ export default function LaunchModal({ onClose, onLaunched }) {
         ],
       });
       tx1.transferObjects([upgradeCap], account.address);
-
       const res1raw = await signAndExecute({ transaction: tx1 });
-
-      // Fetch the full transaction result — dapp-kit hook only returns digest by default
-      const res1 = await client.waitForTransaction({
-        digest: res1raw.digest,
-        options: { showEffects: true, showObjectChanges: true },
-      });
-
-      if (res1.effects.status.status !== 'success') {
-        throw new Error('Tx1 failed: ' + res1.effects.status.error);
-      }
-
+      const res1 = await client.waitForTransaction({ digest: res1raw.digest, options: { showEffects: true, showObjectChanges: true } });
+      if (res1.effects.status.status !== 'success') throw new Error('Tx1 failed: ' + res1.effects.status.error);
       setTx1Digest(res1raw.digest);
 
       const published = res1.objectChanges.find(c => c.type === 'published');
       const newPackageId = published.packageId;
       const newTokenType = `${newPackageId}::${moduleName}::${tokenSymbol}`;
-
-      const treasuryCapObj = res1.objectChanges.find(c =>
-        c.type === 'created' && c.objectType?.includes('TreasuryCap')
-      );
+      const treasuryCapObj = res1.objectChanges.find(c => c.type === 'created' && c.objectType?.includes('TreasuryCap'));
       if (!treasuryCapObj) throw new Error('TreasuryCap not found in Tx1 effects');
       const treasuryCapId = treasuryCapObj.objectId;
 
-      // Wait for indexing
       await new Promise(r => setTimeout(r, 3000));
-
-      // ── Tx2: configure + optional dev-buy ─────────────────────────────
       setTxStep('tx2');
 
       const tx2 = new Transaction();
       const [launchFeeCoin] = tx2.splitCoins(tx2.gas, [tx2.pure.u64(LAUNCH_FEE_MIST)]);
-
       const payoutAddrs = payouts.map(p => p.address);
       const payoutBps = payouts.map(p => parseInt(p.bps));
-
       const [curve, cap] = tx2.moveCall({
         target: `${PACKAGE_ID}::bonding_curve::create_and_return`,
         typeArguments: [newTokenType],
-        arguments: [
-          tx2.object(treasuryCapId),
-          launchFeeCoin,
-          tx2.pure.string(tokenName),
-          tx2.pure.string(tokenSymbol),
-          tx2.pure(bcsVectorAddress(payoutAddrs)),
-          tx2.pure(bcsVectorU64(payoutBps)),
-        ],
+        arguments: [tx2.object(treasuryCapId), launchFeeCoin, tx2.pure.string(tokenName), tx2.pure.string(tokenSymbol), tx2.pure(bcsVectorAddress(payoutAddrs)), tx2.pure(bcsVectorU64(payoutBps))],
       });
 
       const devBuyAmount = parseFloat(devBuy);
@@ -220,34 +172,19 @@ export default function LaunchModal({ onClose, onLaunched }) {
         tx2.transferObjects([tokens, refund], account.address);
       }
 
-      tx2.moveCall({
-        target: `${PACKAGE_ID}::bonding_curve::share_curve`,
-        typeArguments: [newTokenType],
-        arguments: [curve],
-      });
+      tx2.moveCall({ target: `${PACKAGE_ID}::bonding_curve::share_curve`, typeArguments: [newTokenType], arguments: [curve] });
       tx2.transferObjects([cap], account.address);
 
       const res2raw = await signAndExecute({ transaction: tx2 });
-
-      const res2 = await client.waitForTransaction({
-        digest: res2raw.digest,
-        options: { showEffects: true, showObjectChanges: true, showEvents: true },
-      });
-
-      if (res2.effects.status.status !== 'success') {
-        throw new Error('Tx2 failed: ' + res2.effects.status.error);
-      }
-
+      const res2 = await client.waitForTransaction({ digest: res2raw.digest, options: { showEffects: true, showObjectChanges: true, showEvents: true } });
+      if (res2.effects.status.status !== 'success') throw new Error('Tx2 failed: ' + res2.effects.status.error);
       setTx2Digest(res2raw.digest);
 
       const curveEvent = res2.events?.find(e => e.type?.includes('CurveCreated'));
       const curveId = curveEvent?.parsedJson?.curve_id;
       setNewCurveId(curveId);
       setTxStep('done');
-
-      // Notify parent so it can add the token to the list
       if (onLaunched) onLaunched({ curveId, tokenType: newTokenType, name: tokenName, symbol: tokenSymbol });
-
     } catch (err) {
       setError(err.message || String(err));
       setTxStep(null);
@@ -256,135 +193,132 @@ export default function LaunchModal({ onClose, onLaunched }) {
     }
   }, [form, payouts, devBuy, account, client, signAndExecute, onLaunched]);
 
-  // ── Render ───────────────────────────────────────────────────────────────
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm px-4">
-      <div className="w-full max-w-lg border border-lime-900/60 bg-black font-mono">
+      <div className="w-full max-w-lg rounded-3xl border border-white/10 bg-[#0a0a0a] font-mono shadow-2xl shadow-black/50 overflow-hidden">
 
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-lime-900/40">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-white/5">
           <div>
-            <div className="text-xs tracking-widest text-lime-600">SUIPUMP</div>
-            <div className="text-lg font-bold text-lime-100">LAUNCH A TOKEN</div>
+            <div className="text-[9px] tracking-widest text-white/20">SUIPUMP</div>
+            <div className="text-lg font-bold text-white">LAUNCH A TOKEN</div>
           </div>
-          <button onClick={onClose} className="text-lime-700 hover:text-lime-400">
+          <button onClick={onClose} className="text-white/30 hover:text-white transition-colors rounded-xl p-1.5 hover:bg-white/5">
             <X size={18} />
           </button>
         </div>
 
         {/* Step indicator */}
-        <div className="flex border-b border-lime-900/40">
-          {STEP_LABELS.map((label, i) => (
-            <div key={i} className={`flex-1 py-2 text-center text-[10px] tracking-widest border-r border-lime-900/40 last:border-r-0 ${
-              i === step ? 'text-lime-400 bg-lime-950/30' : i < step ? 'text-lime-700' : 'text-lime-900'
-            }`}>
-              {i < step ? '✓ ' : ''}{label.toUpperCase()}
+        <div className="flex px-6 pt-5 gap-2">
+          {STEPS.map((s, i) => (
+            <div key={s.id} className="flex-1 flex flex-col items-center gap-1.5">
+              <div className={`w-full h-1 rounded-full transition-all duration-300 ${
+                i < step ? 'bg-lime-400' : i === step ? 'bg-lime-400/60' : 'bg-white/10'
+              }`} />
+              <div className={`text-[9px] font-mono tracking-widest transition-colors ${
+                i === step ? 'text-lime-400' : i < step ? 'text-lime-400/50' : 'text-white/20'
+              }`}>
+                {i < step ? '✓' : s.label.toUpperCase()}
+              </div>
             </div>
           ))}
         </div>
 
-        <div className="px-6 py-5 space-y-4 min-h-[260px]">
+        <div className="px-6 py-5 space-y-4 min-h-[320px]">
 
-          {/* ── Step 0: Token details ── */}
+          {/* Step 0: Token details */}
           {step === 0 && (
             <div className="space-y-4">
-              <div>
-                <label className="block text-[10px] tracking-widest text-lime-700 mb-1">TOKEN NAME *</label>
-                <input
-                  value={form.name}
-                  onChange={e => setForm({ ...form, name: e.target.value })}
-                  placeholder="Moon Coin"
-                  className="w-full bg-lime-950/20 border border-lime-900 px-3 py-2 text-lime-100 text-sm focus:outline-none focus:border-lime-400"
-                />
+              {/* Live preview */}
+              <TokenPreview name={form.name} symbol={form.symbol} iconUrl={form.iconUrl} />
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[9px] tracking-widest text-white/30 mb-1.5">TOKEN NAME *</label>
+                  <input
+                    value={form.name}
+                    onChange={e => setForm({ ...form, name: e.target.value })}
+                    placeholder="Moon Coin"
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-lime-400/50 transition-colors"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[9px] tracking-widest text-white/30 mb-1.5">SYMBOL *</label>
+                  <input
+                    value={form.symbol}
+                    onChange={e => setForm({ ...form, symbol: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 5) })}
+                    placeholder="MOON"
+                    className={`w-full bg-white/5 border rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none transition-colors ${
+                      form.symbol && !symbolValid ? 'border-red-500/50 focus:border-red-400' : 'border-white/10 focus:border-lime-400/50'
+                    }`}
+                  />
+                </div>
               </div>
+
               <div>
-                <label className="block text-[10px] tracking-widest text-lime-700 mb-1">SYMBOL * (1-5 uppercase letters)</label>
-                <input
-                  value={form.symbol}
-                  onChange={e => setForm({ ...form, symbol: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 5) })}
-                  placeholder="MOON"
-                  className={`w-full bg-lime-950/20 border px-3 py-2 text-lime-100 text-sm focus:outline-none ${
-                    form.symbol && !symbolValid ? 'border-red-700 focus:border-red-400' : 'border-lime-900 focus:border-lime-400'
-                  }`}
-                />
-                {form.symbol && !symbolValid && (
-                  <div className="text-[10px] text-red-500 mt-1">Must start with a letter, max 5 chars, uppercase only</div>
-                )}
-              </div>
-              <div>
-                <label className="block text-[10px] tracking-widest text-lime-700 mb-1">DESCRIPTION</label>
+                <label className="block text-[9px] tracking-widest text-white/30 mb-1.5">DESCRIPTION</label>
                 <textarea
                   value={form.description}
                   onChange={e => setForm({ ...form, description: e.target.value })}
                   placeholder="What is this token about?"
                   rows={2}
-                  className="w-full bg-lime-950/20 border border-lime-900 px-3 py-2 text-lime-100 text-sm focus:outline-none focus:border-lime-400 resize-none"
+                  className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-lime-400/50 resize-none transition-colors"
                 />
               </div>
+
               <div>
-                <label className="block text-[10px] tracking-widest text-lime-700 mb-1">TOKEN ICON</label>
-                <div className="flex gap-2 items-start">
-                  {/* Preview */}
-                  <div className="w-14 h-14 shrink-0 border border-lime-900 flex items-center justify-center bg-lime-950/20 overflow-hidden">
-                    {form.iconUrl
-                      ? <img src={form.iconUrl} alt="icon" className="w-full h-full object-cover" onError={e => { e.target.style.display='none'; }} />
-                      : <span className="text-2xl">🔥</span>
-                    }
-                  </div>
-                  <div className="flex-1 space-y-2">
-                    <label className={`flex items-center justify-center gap-2 w-full py-2 border text-[10px] font-mono cursor-pointer transition-colors ${
-                      form.uploading ? 'border-lime-900 text-lime-900 cursor-not-allowed' : 'border-lime-900 text-lime-700 hover:border-lime-600 hover:text-lime-400'
-                    }`}>
-                      <input
-                        type="file"
-                        accept="image/jpeg,image/png,image/gif,image/webp"
-                        className="hidden"
-                        disabled={form.uploading}
-                        onChange={async (e) => {
-                          const file = e.target.files?.[0];
-                          if (!file) return;
-                          if (file.size > 5 * 1024 * 1024) { alert('Image must be under 5MB'); return; }
-                          setForm(f => ({ ...f, uploading: true, uploadError: null }));
-                          try {
-                            const data = new FormData();
-                            data.append('image', file);
-                            const res = await fetch('https://api.imgur.com/3/image', {
-                              method: 'POST',
-                              headers: { Authorization: 'Client-ID 546c25a59c58ad7' },
-                              body: data,
-                            });
-                            const json = await res.json();
-                            if (json.success) {
-                              setForm(f => ({ ...f, iconUrl: json.data.link, uploading: false }));
-                            } else {
-                              throw new Error(json.data?.error || 'Upload failed');
-                            }
-                          } catch (err) {
-                            setForm(f => ({ ...f, uploading: false, uploadError: err.message }));
-                          }
-                        }}
-                      />
-                      {form.uploading ? 'UPLOADING…' : '📁 UPLOAD IMAGE (JPEG / PNG / GIF)'}
-                    </label>
+                <label className="block text-[9px] tracking-widest text-white/30 mb-1.5">TOKEN ICON</label>
+                <div className="flex gap-3 items-center">
+                  <label className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl border text-[10px] font-mono cursor-pointer transition-all ${
+                    form.uploading ? 'border-white/5 text-white/20 cursor-not-allowed' : 'border-white/10 text-white/40 hover:border-lime-400/40 hover:text-lime-400'
+                  }`}>
                     <input
-                      value={form.iconUrl}
-                      onChange={e => setForm({ ...form, iconUrl: e.target.value })}
-                      placeholder="or paste a URL directly"
-                      className="w-full bg-lime-950/20 border border-lime-900 px-3 py-1.5 text-lime-600 text-xs focus:outline-none focus:border-lime-400"
+                      type="file"
+                      accept="image/jpeg,image/png,image/gif,image/webp"
+                      className="hidden"
+                      disabled={form.uploading}
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        if (file.size > 5 * 1024 * 1024) { alert('Image must be under 5MB'); return; }
+                        setForm(f => ({ ...f, uploading: true, uploadError: null }));
+                        try {
+                          const data = new FormData();
+                          data.append('image', file);
+                          const res = await fetch('https://api.imgur.com/3/image', {
+                            method: 'POST',
+                            headers: { Authorization: 'Client-ID 546c25a59c58ad7' },
+                            body: data,
+                          });
+                          const json = await res.json();
+                          if (json.success) {
+                            setForm(f => ({ ...f, iconUrl: json.data.link, uploading: false }));
+                          } else {
+                            throw new Error(json.data?.error || 'Upload failed');
+                          }
+                        } catch (err) {
+                          setForm(f => ({ ...f, uploading: false, uploadError: err.message }));
+                        }
+                      }}
                     />
-                    {form.uploadError && (
-                      <div className="text-[10px] text-red-500">{form.uploadError}</div>
-                    )}
-                  </div>
+                    {form.uploading ? 'UPLOADING…' : '📁 UPLOAD IMAGE'}
+                  </label>
+                  <input
+                    value={form.iconUrl}
+                    onChange={e => setForm({ ...form, iconUrl: e.target.value })}
+                    placeholder="or paste URL"
+                    className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-white/60 text-xs focus:outline-none focus:border-lime-400/50 transition-colors"
+                  />
                 </div>
+                {form.uploadError && <div className="text-[10px] text-red-400 mt-1">{form.uploadError}</div>}
               </div>
             </div>
           )}
 
-          {/* ── Step 1: Payout splits ── */}
+          {/* Step 1: Payouts */}
           {step === 1 && (
             <div className="space-y-3">
-              <div className="text-[10px] text-lime-600 leading-relaxed">
+              <div className="text-[10px] text-white/30 leading-relaxed">
                 Set who receives creator fees. Percentages must sum to 100%. Up to 10 recipients.
               </div>
               {payouts.map((p, i) => (
@@ -393,127 +327,161 @@ export default function LaunchModal({ onClose, onLaunched }) {
                     value={p.address}
                     onChange={e => updatePayout(i, 'address', e.target.value)}
                     placeholder="0x..."
-                    className="flex-1 bg-lime-950/20 border border-lime-900 px-2 py-2 text-lime-100 text-xs focus:outline-none focus:border-lime-400 min-w-0"
+                    className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-white text-xs focus:outline-none focus:border-lime-400/50 min-w-0 transition-colors"
                   />
-                  <div className="flex items-center gap-1 shrink-0">
+                  <div className="flex items-center gap-1.5 shrink-0">
                     <input
                       type="number"
                       value={Math.round(p.bps / 100)}
                       onChange={e => updatePayout(i, 'bps', Math.round(parseFloat(e.target.value || 0) * 100))}
                       min={1} max={100}
-                      className="w-16 bg-lime-950/20 border border-lime-900 px-2 py-2 text-lime-100 text-xs focus:outline-none focus:border-lime-400 text-right"
+                      className="w-16 bg-white/5 border border-white/10 rounded-xl px-2 py-2.5 text-white text-xs focus:outline-none focus:border-lime-400/50 text-right transition-colors"
                     />
-                    <span className="text-lime-700 text-xs">%</span>
+                    <span className="text-white/30 text-xs">%</span>
                     {payouts.length > 1 && (
-                      <button onClick={() => removePayout(i)} className="text-lime-900 hover:text-red-400 ml-1">
-                        <Trash2 size={12} />
+                      <button onClick={() => removePayout(i)} className="text-white/20 hover:text-red-400 transition-colors">
+                        <Trash2 size={13} />
                       </button>
                     )}
                   </div>
                 </div>
               ))}
-              <div className="flex items-center justify-between">
-                <button
-                  onClick={addPayout}
-                  disabled={payouts.length >= 10}
-                  className="flex items-center gap-1 text-[10px] text-lime-700 hover:text-lime-400 disabled:opacity-30"
+              <div className="flex items-center justify-between pt-1">
+                <button onClick={addPayout} disabled={payouts.length >= 10}
+                  className="flex items-center gap-1 text-[10px] text-white/30 hover:text-lime-400 disabled:opacity-20 transition-colors"
                 >
                   <Plus size={10} /> ADD RECIPIENT
                 </button>
-                <div className={`text-[10px] ${payoutSum === 10000 ? 'text-lime-500' : 'text-red-500'}`}>
-                  TOTAL: {payoutSum / 100}%{payoutSum !== 10000 ? ' (must be 100%)' : ' ✓'}
+                <div className={`text-[10px] font-bold ${payoutSum === 10000 ? 'text-lime-400' : 'text-red-400'}`}>
+                  {payoutSum / 100}% {payoutSum !== 10000 ? '≠ 100%' : '✓'}
                 </div>
               </div>
             </div>
           )}
 
-          {/* ── Step 2: Dev buy ── */}
+          {/* Step 2: Dev buy */}
           {step === 2 && (
             <div className="space-y-4">
-              <div className="text-[10px] text-lime-600 leading-relaxed">
-                Optional: buy tokens immediately at launch in the same transaction. Can be any amount — even enough to graduate the curve instantly.
+              <div className="text-[10px] text-white/30 leading-relaxed">
+                Optional: buy tokens at launch in the same transaction. Leave blank to skip.
               </div>
-              <div className="border border-amber-900/40 bg-amber-950/10 p-3 text-[10px] text-amber-600 leading-relaxed">
-                ⚠ Large dev buys signal insider advantage and may reduce community trust. This data is permanently visible on-chain.
+              <div className="rounded-2xl border border-amber-500/20 bg-amber-950/10 p-3 text-[10px] text-amber-400/70 leading-relaxed">
+                ⚠ Large dev buys are permanently visible on-chain and may reduce community trust.
               </div>
               <div>
-                <label className="block text-[10px] tracking-widest text-lime-700 mb-1">DEV BUY AMOUNT (SUI)</label>
+                <label className="block text-[9px] tracking-widest text-white/30 mb-1.5">DEV BUY AMOUNT (SUI)</label>
                 <input
                   value={devBuy}
                   onChange={e => setDevBuy(e.target.value)}
-                  placeholder="0 (leave blank to skip)"
-                  className="w-full bg-lime-950/20 border border-lime-900 px-3 py-2 text-lime-100 text-sm focus:outline-none focus:border-lime-400"
+                  placeholder="0 — leave blank to skip"
+                  className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-lime-400/50 transition-colors"
                 />
               </div>
-              {devBuy && parseFloat(devBuy) > 0 && (
-                <div className="text-[10px] text-lime-600">
-                  Total cost: {(2 + parseFloat(devBuy)).toFixed(4)} SUI (2 SUI launch fee + {devBuy} SUI dev buy)
+              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-2 text-xs font-mono">
+                <div className="flex justify-between text-white/30">
+                  <span>LAUNCH FEE</span><span className="text-white">2 SUI</span>
                 </div>
-              )}
-              {!devBuy && (
-                <div className="text-[10px] text-lime-600">
-                  Total cost: 2 SUI launch fee
+                {devBuy && parseFloat(devBuy) > 0 && (
+                  <div className="flex justify-between text-white/30">
+                    <span>DEV BUY</span><span className="text-white">{devBuy} SUI</span>
+                  </div>
+                )}
+                <div className="flex justify-between border-t border-white/5 pt-2 text-white/50">
+                  <span>TOTAL</span>
+                  <span className="text-lime-400 font-bold">
+                    {(2 + (parseFloat(devBuy) || 0)).toFixed(4)} SUI
+                  </span>
                 </div>
-              )}
+              </div>
             </div>
           )}
 
-          {/* ── Step 3: Launch / progress ── */}
+          {/* Step 3: Review + Launch */}
           {step === 3 && (
             <div className="space-y-4">
               {!txStep && !error && (
                 <>
-                  <div className="text-[10px] text-lime-600 leading-relaxed">
-                    Review your launch details. Two wallet signatures required.
+                  {/* Token preview */}
+                  <TokenPreview name={form.name} symbol={form.symbol} iconUrl={form.iconUrl} />
+
+                  <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-2.5 text-xs font-mono">
+                    {[
+                      { label: 'NAME', value: form.name },
+                      { label: 'SYMBOL', value: `$${form.symbol}` },
+                      { label: 'PAYOUTS', value: `${payouts.length} recipient${payouts.length > 1 ? 's' : ''}` },
+                      { label: 'DEV BUY', value: parseFloat(devBuy) > 0 ? `${devBuy} SUI` : 'None' },
+                    ].map(({ label, value }) => (
+                      <div key={label} className="flex justify-between">
+                        <span className="text-white/30">{label}</span>
+                        <span className="text-white">{value}</span>
+                      </div>
+                    ))}
+                    <div className="flex justify-between border-t border-white/5 pt-2.5">
+                      <span className="text-white/30">LAUNCH FEE</span>
+                      <span className="text-lime-400 font-bold">2 SUI</span>
+                    </div>
                   </div>
-                  <div className="border border-lime-900/40 bg-lime-950/20 p-4 space-y-2 text-xs">
-                    <div className="flex justify-between"><span className="text-lime-700">NAME</span><span className="text-lime-100">{form.name}</span></div>
-                    <div className="flex justify-between"><span className="text-lime-700">SYMBOL</span><span className="text-lime-100">${form.symbol}</span></div>
-                    <div className="flex justify-between"><span className="text-lime-700">PAYOUTS</span><span className="text-lime-100">{payouts.length} recipient{payouts.length > 1 ? 's' : ''}</span></div>
-                    <div className="flex justify-between"><span className="text-lime-700">DEV BUY</span><span className="text-lime-100">{parseFloat(devBuy) > 0 ? `${devBuy} SUI` : 'None'}</span></div>
-                    <div className="flex justify-between border-t border-lime-900 pt-2"><span className="text-lime-700">LAUNCH FEE</span><span className="text-lime-400">2 SUI</span></div>
-                  </div>
+                  <div className="text-[10px] text-white/20 text-center">Two wallet signatures required</div>
                 </>
               )}
 
               {txStep === 'tx1' && (
-                <div className="space-y-3">
-                  <div className="text-xs text-lime-400 animate-pulse">⬡ PUBLISHING COIN MODULE…</div>
-                  <div className="text-[10px] text-lime-700">Patching bytecode and publishing to Sui. Approve in your wallet.</div>
+                <div className="space-y-4 py-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-full border-2 border-lime-400 border-t-transparent animate-spin" />
+                    <div>
+                      <div className="text-sm text-white font-bold">Publishing coin module…</div>
+                      <div className="text-[10px] text-white/30">Approve in your wallet — Tx 1 of 2</div>
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <div className="flex-1 h-1.5 bg-lime-400/60 rounded-full animate-pulse" />
+                    <div className="flex-1 h-1.5 bg-white/10 rounded-full" />
+                  </div>
                 </div>
               )}
 
               {txStep === 'tx2' && (
-                <div className="space-y-3">
-                  <div className="text-xs text-lime-500">✓ Module published</div>
-                  {tx1Digest && (
-                    <a href={`https://testnet.suivision.xyz/txblock/${tx1Digest}`} target="_blank" rel="noreferrer"
-                      className="flex items-center gap-1 text-[10px] text-lime-700 hover:text-lime-400">
-                      Tx 1 <ExternalLink size={9} />
-                    </a>
-                  )}
-                  <div className="text-xs text-lime-400 animate-pulse">⬡ CONFIGURING CURVE…</div>
-                  <div className="text-[10px] text-lime-700">Setting payouts and launch fee. Approve in your wallet.</div>
+                <div className="space-y-4 py-4">
+                  <div className="flex items-center gap-3 text-lime-400/60">
+                    <CheckCircle size={20} />
+                    <div className="text-sm text-white/50">Module published</div>
+                    {tx1Digest && (
+                      <a href={`https://testnet.suivision.xyz/txblock/${tx1Digest}`} target="_blank" rel="noreferrer"
+                        className="flex items-center gap-1 text-[10px] text-white/20 hover:text-lime-400 ml-auto transition-colors">
+                        Tx 1 <ExternalLink size={9} />
+                      </a>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-full border-2 border-lime-400 border-t-transparent animate-spin" />
+                    <div>
+                      <div className="text-sm text-white font-bold">Configuring curve…</div>
+                      <div className="text-[10px] text-white/30">Approve in your wallet — Tx 2 of 2</div>
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <div className="flex-1 h-1.5 bg-lime-400 rounded-full" />
+                    <div className="flex-1 h-1.5 bg-lime-400/60 rounded-full animate-pulse" />
+                  </div>
                 </div>
               )}
 
               {txStep === 'done' && (
-                <div className="space-y-3">
-                  <div className="text-sm text-lime-400 font-bold">🎉 TOKEN LAUNCHED</div>
-                  <div className="text-xs text-lime-100">${form.symbol} is live on Sui testnet.</div>
-                  {newCurveId && (
-                    <div className="text-[10px] text-lime-700 break-all">Curve: {newCurveId}</div>
-                  )}
-                  <div className="flex gap-2 flex-wrap">
+                <div className="space-y-4 py-4 text-center">
+                  <div className="text-4xl">🎉</div>
+                  <div className="text-xl font-bold text-white">${form.symbol} IS LIVE</div>
+                  <div className="text-sm text-white/40">{form.name} launched on Sui testnet</div>
+                  <div className="flex gap-3 justify-center pt-2">
                     {tx1Digest && (
                       <a href={`https://testnet.suivision.xyz/txblock/${tx1Digest}`} target="_blank" rel="noreferrer"
-                        className="flex items-center gap-1 text-[10px] text-lime-700 hover:text-lime-400">
+                        className="flex items-center gap-1 text-[10px] text-white/30 hover:text-lime-400 transition-colors">
                         Publish tx <ExternalLink size={9} />
                       </a>
                     )}
                     {tx2Digest && (
                       <a href={`https://testnet.suivision.xyz/txblock/${tx2Digest}`} target="_blank" rel="noreferrer"
-                        className="flex items-center gap-1 text-[10px] text-lime-700 hover:text-lime-400">
+                        className="flex items-center gap-1 text-[10px] text-white/30 hover:text-lime-400 transition-colors">
                         Configure tx <ExternalLink size={9} />
                       </a>
                     )}
@@ -522,11 +490,11 @@ export default function LaunchModal({ onClose, onLaunched }) {
               )}
 
               {error && (
-                <div className="border border-red-800 bg-red-950/20 p-3 text-xs text-red-400 break-all">
-                  {error}
+                <div className="rounded-2xl border border-red-500/20 bg-red-950/10 p-4 text-xs text-red-400 break-all space-y-2">
+                  <div>{error}</div>
                   {error.includes('TreasuryCap') && (
-                    <div className="mt-2 text-[10px] text-red-600">
-                      Tip: The coin module published successfully (Tx 1). You can retry the configuration step manually.
+                    <div className="text-[10px] text-red-600">
+                      Tip: The coin module published (Tx 1 succeeded). You can retry the configuration step.
                     </div>
                   )}
                 </div>
@@ -535,18 +503,19 @@ export default function LaunchModal({ onClose, onLaunched }) {
           )}
         </div>
 
-        {/* Footer navigation */}
-        <div className="flex gap-3 px-6 py-4 border-t border-lime-900/40">
+        {/* Footer */}
+        <div className="flex gap-3 px-6 py-4 border-t border-white/5">
           {txStep === 'done' ? (
-            <button onClick={onClose} className="flex-1 py-2 bg-lime-400 text-black text-xs font-mono tracking-widest hover:bg-lime-300">
-              VIEW TOKEN
+            <button onClick={onClose}
+              className="flex-1 py-3 bg-lime-400 text-black text-xs font-mono tracking-widest hover:bg-lime-300 rounded-xl font-bold transition-colors">
+              VIEW TOKEN →
             </button>
           ) : (
             <>
               <button
                 onClick={() => step > 0 ? setStep(s => s - 1) : onClose()}
                 disabled={launching}
-                className="flex-1 py-2 border border-lime-900 text-lime-700 text-xs font-mono tracking-widest hover:border-lime-600 disabled:opacity-30"
+                className="flex-1 py-3 rounded-xl border border-white/10 text-white/40 text-xs font-mono tracking-widest hover:border-white/20 hover:text-white/60 disabled:opacity-20 transition-all"
               >
                 {step === 0 ? 'CANCEL' : 'BACK'}
               </button>
@@ -554,22 +523,22 @@ export default function LaunchModal({ onClose, onLaunched }) {
                 <button
                   onClick={() => setStep(s => s + 1)}
                   disabled={!canNext}
-                  className="flex-1 py-2 bg-lime-400 text-black text-xs font-mono tracking-widest hover:bg-lime-300 disabled:bg-lime-950 disabled:text-lime-800 disabled:cursor-not-allowed"
+                  className="flex-1 py-3 bg-lime-400 text-black text-xs font-mono tracking-widest hover:bg-lime-300 disabled:bg-white/5 disabled:text-white/20 disabled:cursor-not-allowed rounded-xl font-bold transition-all"
                 >
-                  NEXT
+                  NEXT →
                 </button>
               ) : !txStep && !error ? (
                 <button
                   onClick={launch}
                   disabled={launching}
-                  className="flex-1 py-2 bg-lime-400 text-black text-xs font-mono tracking-widest hover:bg-lime-300 disabled:opacity-50"
+                  className="flex-1 py-3 bg-lime-400 text-black text-xs font-mono tracking-widest hover:bg-lime-300 disabled:opacity-50 rounded-xl font-bold transition-all flex items-center justify-center gap-2"
                 >
-                  {launching ? 'LAUNCHING…' : 'LAUNCH TOKEN'}
+                  <Rocket size={13} /> LAUNCH TOKEN
                 </button>
               ) : error ? (
                 <button
                   onClick={() => { setError(null); setTxStep(null); }}
-                  className="flex-1 py-2 border border-lime-900 text-lime-700 text-xs font-mono tracking-widest hover:border-lime-600"
+                  className="flex-1 py-3 rounded-xl border border-white/10 text-white/40 text-xs font-mono tracking-widest hover:border-lime-400/40 hover:text-lime-400 transition-all"
                 >
                   TRY AGAIN
                 </button>
