@@ -2,14 +2,16 @@
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, useNavigate, useParams, Link, useLocation } from 'react-router-dom';
 import { ConnectButton, useCurrentAccount, useSuiClient } from '@mysten/dapp-kit';
-import { Flame, Rocket, Plus, Gift, TrendingUp, Coins, Users, Trophy } from 'lucide-react';
+import { Flame, Rocket, Plus, Gift, TrendingUp, Coins, Users, Trophy, Wallet, Search } from 'lucide-react';
 
 import { useTokenList } from './useTokenList.js';
+import { useTokenStats } from './useTokenStats.js';
 import TokenPage from './TokenPage.jsx';
 import LaunchModal from './LaunchModal.jsx';
 import AirdropPage from './AirdropPage.jsx';
 import WhitepaperPage from './WhitepaperPage.jsx';
 import LeaderboardPage from './LeaderboardPage.jsx';
+import PortfolioPage from './PortfolioPage.jsx';
 import { PACKAGE_ID, DRAIN_SUI_APPROX, TOKEN_DECIMALS } from './constants.js';
 import { mistToSui, priceMistPerToken } from './curve.js';
 
@@ -215,6 +217,11 @@ function Header({ onLaunch }) {
           >
             <Trophy size={10} /> LEADERBOARD
           </Link>
+          <Link to="/portfolio"
+            className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all hidden sm:flex items-center gap-1.5"
+          >
+            <Wallet size={10} /> PORTFOLIO
+          </Link>
           <Link to="/whitepaper"
             className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all hidden sm:block"
           >
@@ -258,19 +265,49 @@ function StatsBar({ tokenCount, stats }) {
   );
 }
 
+const SORT_OPTIONS = [
+  { id: 'newest',   label: 'NEWEST' },
+  { id: 'oldest',   label: 'OLDEST' },
+  { id: 'volume',   label: 'VOLUME' },
+  { id: 'trades',   label: 'TRADES' },
+  { id: 'reserve',  label: 'RESERVE' },
+  { id: 'progress', label: 'PROGRESS' },
+];
+
 // Homepage
 function HomePage({ onLaunch }) {
   const account = useCurrentAccount();
   const { tokens, loading, error } = useTokenList();
   const stats = useStats();
+  const tokenStats = useTokenStats(tokens);
+  const [search, setSearch] = useState('');
+  const [sort, setSort] = useState('newest');
+
+  const filtered = tokens.filter(t => {
+    if (!search.trim()) return true;
+    const q = search.toLowerCase();
+    return t.name?.toLowerCase().includes(q) || t.symbol?.toLowerCase().includes(q);
+  });
+
+  const sorted = [...filtered].sort((a, b) => {
+    const sa = tokenStats[a.curveId];
+    const sb = tokenStats[b.curveId];
+    switch (sort) {
+      case 'newest':   return (b.timestamp || 0) - (a.timestamp || 0);
+      case 'oldest':   return (a.timestamp || 0) - (b.timestamp || 0);
+      case 'volume':   return (sb?.volume || 0) - (sa?.volume || 0);
+      case 'trades':   return (sb?.trades || 0) - (sa?.trades || 0);
+      case 'reserve':  return (sb?.reserveSui || 0) - (sa?.reserveSui || 0);
+      case 'progress': return (sb?.reserveSui || 0) - (sa?.reserveSui || 0);
+      default: return 0;
+    }
+  });
 
   return (
     <div>
       {/* Hero */}
       <div className="relative rounded-3xl border border-white/10 bg-gradient-to-br from-lime-950/20 via-black to-black p-8 sm:p-12 mb-8 text-center overflow-hidden">
-        {/* Glow */}
         <div className="absolute top-0 left-1/2 -translate-x-1/2 w-96 h-32 bg-lime-400/10 blur-3xl rounded-full pointer-events-none" />
-
         <div className="relative">
           <div className="flex items-center justify-center gap-3 mb-4">
             <div className="relative">
@@ -281,14 +318,12 @@ function HomePage({ onLaunch }) {
               SUIPUMP<span className="text-lime-400">.</span>
             </h1>
           </div>
-
           <p className="text-sm sm:text-base text-white/50 font-mono mb-2 max-w-lg mx-auto leading-relaxed">
             Permissionless token launchpad on Sui.
           </p>
           <p className="text-xs text-white/30 font-mono mb-8 max-w-lg mx-auto">
             Fair launch · No pre-mine · 40% creator fees · Graduates to Cetus
           </p>
-
           {account ? (
             <button onClick={onLaunch}
               className="inline-flex items-center gap-2 px-8 py-3.5 bg-lime-400 text-black font-mono text-sm tracking-widest hover:bg-lime-300 transition-colors rounded-2xl font-bold shadow-lg shadow-lime-400/20"
@@ -306,12 +341,38 @@ function HomePage({ onLaunch }) {
       {/* Stats */}
       <StatsBar tokenCount={tokens.length} stats={stats} />
 
-      {/* Token grid header */}
-      <div className="mb-4 flex items-center justify-between">
-        <div className="text-xs font-mono text-white/40 tracking-widest">
-          {loading ? 'LOADING TOKENS…' : `${tokens.length} TOKEN${tokens.length !== 1 ? 'S' : ''} LAUNCHED`}
+      {/* Search + Sort */}
+      <div className="flex flex-col sm:flex-row gap-3 mb-4">
+        <div className="relative flex-1">
+          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/20 pointer-events-none" />
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search tokens…"
+            className="w-full bg-white/5 border border-white/10 rounded-xl pl-9 pr-4 py-2.5 text-white text-xs font-mono focus:outline-none focus:border-lime-400/40 transition-colors placeholder-white/20"
+          />
         </div>
-        <div className="text-[10px] font-mono text-white/20">SORTED BY NEWEST</div>
+        <div className="flex gap-1.5 flex-wrap">
+          {SORT_OPTIONS.map(opt => (
+            <button
+              key={opt.id}
+              onClick={() => setSort(opt.id)}
+              className={`px-3 py-2 rounded-xl text-[10px] font-mono tracking-widest transition-all whitespace-nowrap ${
+                sort === opt.id
+                  ? 'bg-lime-400 text-black font-bold'
+                  : 'bg-white/5 text-white/30 hover:bg-white/10 hover:text-white/60'
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="mb-3">
+        <div className="text-xs font-mono text-white/30 tracking-widest">
+          {loading ? 'LOADING TOKENS…' : `${sorted.length} TOKEN${sorted.length !== 1 ? 'S' : ''}${search ? ' FOUND' : ' LAUNCHED'}`}
+        </div>
       </div>
 
       {error && (
@@ -320,24 +381,25 @@ function HomePage({ onLaunch }) {
         </div>
       )}
 
-      {/* Skeletons while loading */}
       {loading && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {[...Array(6)].map((_, i) => <SkeletonCard key={i} />)}
         </div>
       )}
 
-      {!loading && tokens.length === 0 && !error && (
+      {!loading && sorted.length === 0 && !error && (
         <div className="rounded-3xl border border-white/10 p-16 text-center">
-          <div className="text-5xl mb-4">🔥</div>
-          <div className="text-sm font-mono text-white/40 mb-2">NO TOKENS YET</div>
-          <div className="text-xs font-mono text-white/20">Be the first to launch a token on SuiPump.</div>
+          <div className="text-5xl mb-4">{search ? '🔍' : '🔥'}</div>
+          <div className="text-sm font-mono text-white/40 mb-2">
+            {search ? `No tokens matching "${search}"` : 'NO TOKENS YET'}
+          </div>
+          {!search && <div className="text-xs font-mono text-white/20">Be the first to launch a token on SuiPump.</div>}
         </div>
       )}
 
-      {!loading && (
+      {!loading && sorted.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          {tokens.map((token) => <TokenCard key={token.curveId} token={token} />)}
+          {sorted.map((token) => <TokenCard key={token.curveId} token={token} />)}
         </div>
       )}
     </div>
@@ -412,6 +474,7 @@ export default function App() {
           <Route path="/airdrop" element={<AirdropPage onBack={() => navigate('/')} />} />
           <Route path="/whitepaper" element={<WhitepaperPage onBack={() => navigate('/')} />} />
           <Route path="/leaderboard" element={<LeaderboardPage onBack={() => navigate('/')} />} />
+          <Route path="/portfolio" element={<PortfolioPage onBack={() => navigate('/')} />} />
         </Routes>
       </main>
 
