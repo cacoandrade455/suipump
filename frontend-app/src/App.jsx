@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, useNavigate, useParams, Link, useLocation } from 'react-router-dom';
 import { ConnectButton, useCurrentAccount, useSuiClient } from '@mysten/dapp-kit';
-import { Flame, Rocket, Plus, Gift, TrendingUp, Coins, Users, Trophy, Wallet, Search } from 'lucide-react';
+import { Flame, Rocket, Plus, Gift, TrendingUp, Coins, Users, Trophy, Wallet, Search, Menu, X } from 'lucide-react';
 
 import { useTokenList } from './useTokenList.js';
 import { useTokenStats } from './useTokenStats.js';
@@ -187,56 +187,80 @@ function SkeletonCard() {
 function Header({ onLaunch }) {
   const account = useCurrentAccount();
   const { poolSui, tradeCount } = useStats();
+  const [menuOpen, setMenuOpen] = useState(false);
 
   return (
     <header className="border-b border-white/5 bg-black/80 backdrop-blur sticky top-0 z-40">
       <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
-        <Link to="/" className="flex items-center gap-3 hover:opacity-80 transition-opacity">
+        <Link to="/" className="flex items-center gap-2.5 hover:opacity-80 transition-opacity" onClick={() => setMenuOpen(false)}>
           <div className="relative">
-            <Flame className="text-lime-400" size={22} />
+            <Flame className="text-lime-400" size={20} />
             <div className="absolute inset-0 blur-lg bg-lime-400/40 -z-10" />
           </div>
           <div>
-            <div className="text-base font-bold tracking-tight text-white" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
+            <div className="text-sm font-bold tracking-tight text-white" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
               SUIPUMP<span className="text-lime-400">.</span>
             </div>
-            <div className="text-[9px] font-mono text-white/30 tracking-[0.2em] -mt-0.5">TESTNET · LIVE</div>
+            <div className="text-[8px] font-mono text-white/30 tracking-[0.2em] -mt-0.5">TESTNET · LIVE</div>
           </div>
         </Link>
 
-        <div className="flex items-center gap-2">
-          <Link to="/airdrop"
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all"
-          >
+        {/* Desktop nav */}
+        <div className="hidden sm:flex items-center gap-2">
+          <Link to="/airdrop" className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all">
             <Gift size={10} />
             {poolSui !== null ? <span>S1 {poolSui.toFixed(4)} SUI</span> : <span>S1 AIRDROP</span>}
             {tradeCount !== null && <span className="text-white/20 ml-1">· {tradeCount} trades</span>}
           </Link>
-          <Link to="/leaderboard"
-            className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all hidden sm:flex items-center gap-1.5"
-          >
+          <Link to="/leaderboard" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5">
             <Trophy size={10} /> LEADERBOARD
           </Link>
-          <Link to="/portfolio"
-            className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all hidden sm:flex items-center gap-1.5"
-          >
+          <Link to="/portfolio" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5">
             <Wallet size={10} /> PORTFOLIO
           </Link>
-          <Link to="/whitepaper"
-            className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all hidden sm:block"
-          >
+          <Link to="/whitepaper" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all">
             WHITEPAPER
           </Link>
           {account && (
-            <button onClick={onLaunch}
-              className="flex items-center gap-2 px-4 py-2 bg-lime-400 text-black text-xs font-mono tracking-widest hover:bg-lime-300 transition-colors rounded-xl font-bold"
-            >
+            <button onClick={onLaunch} className="flex items-center gap-2 px-4 py-2 bg-lime-400 text-black text-xs font-mono tracking-widest hover:bg-lime-300 transition-colors rounded-xl font-bold">
               <Plus size={12} /> LAUNCH TOKEN
             </button>
           )}
           <ConnectButton />
         </div>
+
+        {/* Mobile nav */}
+        <div className="flex sm:hidden items-center gap-2">
+          {account && (
+            <button onClick={onLaunch} className="flex items-center gap-1 px-3 py-1.5 bg-lime-400 text-black text-[10px] font-mono font-bold rounded-xl hover:bg-lime-300 transition-colors">
+              <Plus size={11} /> LAUNCH
+            </button>
+          )}
+          <ConnectButton />
+          <button onClick={() => setMenuOpen(o => !o)} className="p-1.5 rounded-lg border border-white/10 text-white/50 hover:text-white transition-colors">
+            {menuOpen ? <X size={16} /> : <Menu size={16} />}
+          </button>
+        </div>
       </div>
+
+      {/* Mobile dropdown menu */}
+      {menuOpen && (
+        <div className="sm:hidden border-t border-white/5 bg-black/95 px-4 py-3 space-y-2">
+          <Link to="/airdrop" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/60 hover:text-lime-400 transition-colors border-b border-white/5">
+            <Gift size={14} /> S1 AIRDROP
+            {poolSui !== null && <span className="ml-auto text-xs text-white/30">{poolSui.toFixed(4)} SUI</span>}
+          </Link>
+          <Link to="/leaderboard" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/60 hover:text-lime-400 transition-colors border-b border-white/5">
+            <Trophy size={14} /> LEADERBOARD
+          </Link>
+          <Link to="/portfolio" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/60 hover:text-lime-400 transition-colors border-b border-white/5">
+            <Wallet size={14} /> PORTFOLIO
+          </Link>
+          <Link to="/whitepaper" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/60 hover:text-lime-400 transition-colors">
+            WHITEPAPER
+          </Link>
+        </div>
+      )}
     </header>
   );
 }

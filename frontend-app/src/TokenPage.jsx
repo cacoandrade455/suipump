@@ -238,14 +238,214 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
     <div>
       <button
         onClick={onBack}
-        className="flex items-center gap-2 text-xs font-mono text-white/40 hover:text-white mb-6 transition-colors"
+        className="flex items-center gap-2 text-xs font-mono text-white/40 hover:text-white mb-4 transition-colors"
       >
         <ArrowLeft size={12} /> BACK TO ALL TOKENS
       </button>
 
-      <div className="grid lg:grid-cols-3 gap-4">
+      {/* Mobile: single column. Desktop: 3-col grid */}
+      <div className="lg:grid lg:grid-cols-3 lg:gap-4">
         {/* Left: curve state */}
-        <div className="lg:col-span-2 space-y-4">
+        <div className="lg:col-span-2 space-y-4 mb-4 lg:mb-0">
+
+          {/* Token header card */}
+          <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+            {/* Name + price row */}
+            <div className="flex items-start gap-3 mb-4">
+              <div className="w-12 h-12 rounded-full overflow-hidden border-2 border-white/10 flex items-center justify-center bg-lime-950/30 shrink-0">
+                {metadata?.iconUrl
+                  ? <img src={metadata.iconUrl} alt={fields.symbol}
+                      className="w-full h-full object-cover"
+                      onError={e => { e.target.style.display='none'; e.target.nextSibling.style.display='block'; }}
+                    />
+                  : null}
+                <span className="text-2xl" style={{ display: metadata?.iconUrl ? 'none' : 'block' }}>🔥</span>
+              </div>
+              <div className="flex-1 min-w-0">
+                <h2 className="text-lg font-bold text-white truncate">{fields.name}</h2>
+                <div className="text-xs text-lime-400/70 font-mono">${fields.symbol}</div>
+                {metadata?.description && (
+                  <div className="text-xs text-white/40 font-mono mt-0.5 line-clamp-2">{metadata.description}</div>
+                )}
+              </div>
+              <div className="text-right shrink-0">
+                <div className="text-[9px] text-white/30 font-mono tracking-widest">PRICE</div>
+                <div className="text-base font-bold text-white font-mono">
+                  {(Number(priceMist) / 1e9).toFixed(9)}
+                </div>
+                <div className="text-[10px] text-white/40 font-mono">SUI</div>
+              </div>
+            </div>
+
+            {/* Bonding curve progress */}
+            <div className="border-t border-white/5 pt-3">
+              <div className="flex justify-between items-center mb-2">
+                <div className="flex items-center gap-2 text-xs font-mono tracking-widest text-lime-400">
+                  <Rocket size={11} /> BONDING CURVE {graduated ? '· GRADUATED ✓' : ''}
+                </div>
+                <div className="text-xs font-mono text-white/50">
+                  {fmt(reserveSui)} / ~{fmt(DRAIN_SUI_APPROX)} SUI
+                </div>
+              </div>
+              <div className="h-2 bg-white/5 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-lime-600 via-lime-400 to-lime-300 rounded-full transition-all duration-500"
+                  style={{ width: `${Math.max(progress, 0.5)}%` }}
+                />
+              </div>
+            </div>
+
+            {/* Price chart */}
+            <div className="border-t border-white/5 pt-4 mt-3">
+              <PriceChart curveId={curveId} refreshKey={chartRefresh} />
+            </div>
+          </div>
+
+          {/* Trade history */}
+          <TradeHistory curveId={curveId} symbol={fields.symbol} refreshKey={chartRefresh} />
+
+          {/* Comments */}
+          <Comments curveId={curveId} tokenType={tokenType} />
+
+          {/* Creator revenue */}
+          <div className="rounded-2xl border border-amber-500/20 bg-amber-950/10 p-4">
+            <div className="flex items-center justify-between">
+              <div className="flex-1 min-w-0 mr-4">
+                <div className="flex items-center gap-2 text-xs font-mono tracking-widest text-amber-400 mb-2">
+                  <Crown size={12} /> CREATOR REVENUE · 40% OF 1% FEES
+                </div>
+                <div className="text-[10px] font-mono text-white/30 mb-0.5">CREATOR</div>
+                <div className="text-xs font-mono text-white/50 truncate">{fields.creator}</div>
+              </div>
+              <div className="text-right shrink-0">
+                <div className="text-[10px] font-mono text-white/30 mb-0.5">ACCRUED</div>
+                <div className="text-2xl font-bold text-amber-300 font-mono tabular-nums">
+                  {fmtSui(creatorFees)}
+                </div>
+                <div className="text-xs text-amber-600 font-mono mb-2">SUI</div>
+                {creatorCapId && creatorFees > 0n && (
+                  <button onClick={claimFees} disabled={claiming}
+                    className="px-3 py-1.5 bg-amber-400 text-black text-xs font-mono tracking-widest hover:bg-amber-300 disabled:opacity-50 rounded-xl transition-colors"
+                  >
+                    {claiming ? 'CLAIMING…' : 'CLAIM FEES'}
+                  </button>
+                )}
+                {creatorCapId && creatorFees === 0n && (
+                  <div className="text-[10px] font-mono text-amber-900">NO FEES YET</div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Holder distribution */}
+          <HolderList curveId={curveId} refreshKey={chartRefresh} />
+
+          {/* Balance */}
+          <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 flex items-center justify-between text-xs font-mono mb-24 lg:mb-0">
+            <span className="text-white/30 tracking-widest">YOUR ${fields.symbol}</span>
+            <span className="text-white font-bold">{fmt(tokenBalanceWhole)} {fields.symbol}</span>
+          </div>
+
+          {/* Status */}
+          {status && (
+            <div className={`rounded-2xl border p-3 text-xs font-mono ${
+              status.kind === 'success'
+                ? 'border-lime-500/30 bg-lime-950/20 text-lime-300'
+                : 'border-red-500/30 bg-red-950/20 text-red-300'
+            }`}>
+              {status.msg}
+              {status.digest && (
+                <a href={`https://testnet.suivision.xyz/txblock/${status.digest}`}
+                  target="_blank" rel="noreferrer"
+                  className="ml-2 underline inline-flex items-center gap-1"
+                >
+                  view tx <ExternalLink size={10} />
+                </a>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Desktop trade panel — sticky sidebar */}
+        <div className="hidden lg:block">
+          {graduated ? (
+            <div className="space-y-4 h-fit sticky top-20">
+              <div className="rounded-2xl border border-emerald-400/20 bg-gradient-to-br from-emerald-950/30 to-black p-5 relative overflow-hidden">
+                <div className="absolute top-0 left-1/2 -translate-x-1/2 w-48 h-16 bg-emerald-400/10 blur-3xl rounded-full pointer-events-none" />
+                <div className="relative">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Trophy className="text-emerald-400" size={16} />
+                    <span className="text-xs font-mono font-bold text-emerald-400 tracking-widest">GRADUATED</span>
+                  </div>
+                  <p className="text-xs font-mono text-white/50 mb-4 leading-relaxed">
+                    This token has graduated. Permanent liquidity seeded on Cetus.
+                  </p>
+                  {graduationData && (
+                    <div className="rounded-xl border border-white/10 bg-white/5 p-3 space-y-2 text-xs font-mono mb-4">
+                      <div className="flex justify-between">
+                        <span className="text-white/30">FINAL RESERVE</span>
+                        <span className="text-white font-bold">{graduationData.finalReserve.toFixed(2)} SUI</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-white/30">CREATOR BONUS</span>
+                        <span className="text-emerald-400">{graduationData.creatorBonus.toFixed(4)} SUI</span>
+                      </div>
+                    </div>
+                  )}
+                  <a href={`https://app.cetus.zone/swap?from=0x2::sui::SUI&to=${tokenType}`}
+                    target="_blank" rel="noreferrer"
+                    className="flex items-center justify-center gap-2 w-full py-3 bg-emerald-400 text-black text-xs font-mono tracking-widest hover:bg-emerald-300 rounded-xl font-bold transition-colors"
+                  >
+                    <Droplets size={13} /> TRADE ON CETUS
+                  </a>
+                </div>
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 flex items-center justify-between text-xs font-mono">
+                <span className="text-white/30 tracking-widest">YOUR ${fields.symbol}</span>
+                <span className="text-white font-bold">{fmt(tokenBalanceWhole)} {fields.symbol}</span>
+              </div>
+            </div>
+          ) : (
+            <TradePanelContent
+              side={side} setSide={setSide}
+              amount={amount} setAmount={setAmount}
+              fields={fields} quote={quote}
+              account={account} isPending={isPending}
+              graduated={graduated} execute={execute}
+              tokenBalanceWhole={tokenBalanceWhole}
+            />
+          )}
+        </div>
+      </div>
+
+      {/* Mobile sticky bottom trade panel */}
+      {!graduated && (
+        <div className="lg:hidden fixed bottom-0 left-0 right-0 z-50 bg-black/95 border-t border-white/10 backdrop-blur-sm">
+          <TradePanelContent
+            side={side} setSide={setSide}
+            amount={amount} setAmount={setAmount}
+            fields={fields} quote={quote}
+            account={account} isPending={isPending}
+            graduated={graduated} execute={execute}
+            tokenBalanceWhole={tokenBalanceWhole}
+            mobile
+          />
+        </div>
+      )}
+
+      {/* Mobile graduated bottom bar */}
+      {graduated && (
+        <div className="lg:hidden fixed bottom-0 left-0 right-0 z-50 bg-black/95 border-t border-white/10 p-3">
+          <a href={`https://app.cetus.zone/swap?from=0x2::sui::SUI&to=${tokenType}`}
+            target="_blank" rel="noreferrer"
+            className="flex items-center justify-center gap-2 w-full py-3 bg-emerald-400 text-black text-sm font-mono tracking-widest hover:bg-emerald-300 rounded-xl font-bold transition-colors"
+          >
+            <Droplets size={14} /> GRADUATED — TRADE ON CETUS
+          </a>
+        </div>
+      )}
+    </div>
+  );
 
           {/* Token header card */}
           <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5">
@@ -397,8 +597,7 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
                     {graduationData.digest && (
                       <div className="flex justify-between items-center pt-1 border-t border-white/5">
                         <span className="text-white/20">TX</span>
-                        <a
-                          href={`https://testnet.suivision.xyz/txblock/${graduationData.digest}`}
+                        <a href={`https://testnet.suivision.xyz/txblock/${graduationData.digest}`}
                           target="_blank" rel="noreferrer"
                           className="flex items-center gap-1 text-white/30 hover:text-emerald-400 transition-colors"
                         >
@@ -409,137 +608,163 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
                   </div>
                 )}
 
-                {/* Cetus link */}
-                <a
-                  href={`https://app.cetus.zone/swap?from=0x2::sui::SUI&to=${tokenType}`}
-                  target="_blank"
-                  rel="noreferrer"
+                <a href={`https://app.cetus.zone/swap?from=0x2::sui::SUI&to=${tokenType}`}
+                  target="_blank" rel="noreferrer"
                   className="flex items-center justify-center gap-2 w-full py-3 bg-emerald-400 text-black text-xs font-mono tracking-widest hover:bg-emerald-300 rounded-xl font-bold transition-colors"
                 >
                   <Droplets size={13} /> TRADE ON CETUS
                 </a>
-                <div className="mt-2 text-[9px] font-mono text-white/20 text-center">
-                  Opens Cetus CLMM swap with this token pre-selected
-                </div>
               </div>
             </div>
-
-            {/* Balance still shown */}
             <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 flex items-center justify-between text-xs font-mono">
               <span className="text-white/30 tracking-widest">YOUR ${fields.symbol}</span>
               <span className="text-white font-bold">{fmt(tokenBalanceWhole)} {fields.symbol}</span>
             </div>
           </div>
         ) : (
-        <div className="rounded-2xl border border-lime-400/20 bg-white/[0.03] p-5 h-fit sticky top-20">
-          <div className="flex gap-2 mb-4">
-            <button onClick={() => setSide('buy')}
-              className={`flex-1 py-2.5 text-xs font-mono tracking-widest rounded-xl transition-all ${
-                side === 'buy'
-                  ? 'bg-lime-400 text-black font-bold'
-                  : 'bg-white/5 text-white/50 hover:bg-white/10'
-              }`}
-            >BUY</button>
-            <button onClick={() => setSide('sell')}
-              className={`flex-1 py-2.5 text-xs font-mono tracking-widest rounded-xl transition-all ${
-                side === 'sell'
-                  ? 'bg-red-400 text-black font-bold'
-                  : 'bg-white/5 text-white/50 hover:bg-white/10'
-              }`}
-            >SELL</button>
-          </div>
-
-          <div className="mb-1 text-[10px] font-mono text-white/30 tracking-widest">
-            {side === 'buy' ? 'YOU PAY (SUI)' : `YOU SELL (${fields.symbol})`}
-          </div>
-          <input
-            value={amount}
-            onChange={(e) => setAmount(e.target.value)}
-            placeholder="0.0"
-            className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-3 text-white font-mono text-xl focus:outline-none focus:border-lime-400/50 transition-colors"
+          <TradePanelContent
+            side={side} setSide={setSide}
+            amount={amount} setAmount={setAmount}
+            fields={fields} quote={quote}
+            account={account} isPending={isPending}
+            graduated={graduated} execute={execute}
+            tokenBalanceWhole={tokenBalanceWhole}
           />
+        )}
+      </div>
 
-          {side === 'buy' && (
-            <div className="flex gap-1 mt-2">
-              {[0.1, 0.5, 1, 5].map((v) => (
-                <button key={v} onClick={() => setAmount(String(v))}
-                  className="flex-1 text-[10px] font-mono py-1.5 rounded-lg bg-white/5 border border-white/10 text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all"
-                >{v}</button>
-              ))}
-            </div>
-          )}
-          {side === 'sell' && tokenBalanceWhole > 0 && (
-            <div className="flex gap-1 mt-2">
-              {[25, 50, 100].map((pct) => (
-                <button key={pct}
-                  onClick={() => setAmount(String((tokenBalanceWhole * pct / 100).toFixed(TOKEN_DECIMALS)))}
-                  className="flex-1 text-[10px] font-mono py-1.5 rounded-lg bg-white/5 border border-white/10 text-white/50 hover:border-red-400/40 hover:text-red-400 transition-all"
-                >{pct}%</button>
-              ))}
-            </div>
-          )}
+      {/* Mobile sticky bottom trade panel */}
+      {!graduated && (
+        <div className="lg:hidden fixed bottom-0 left-0 right-0 z-50 bg-black/95 border-t border-white/10 backdrop-blur-sm">
+          <TradePanelContent
+            side={side} setSide={setSide}
+            amount={amount} setAmount={setAmount}
+            fields={fields} quote={quote}
+            account={account} isPending={isPending}
+            graduated={graduated} execute={execute}
+            tokenBalanceWhole={tokenBalanceWhole}
+            mobile
+          />
+        </div>
+      )}
 
-          {quote && (
-            <div className="mt-4 p-3 rounded-xl border border-white/10 bg-white/5 space-y-1 text-xs font-mono">
-              <div className="flex justify-between">
-                <span className="text-white/40">YOU RECEIVE</span>
-                <span className="text-white font-bold">
-                  {side === 'buy'
-                    ? `${fmt(tokenUnitsToWhole(quote.tokensOut))} ${fields.symbol}`
-                    : `${fmtSui(quote.suiOut)} SUI`}
-                </span>
-              </div>
-              {side === 'buy' && quote.clipped && (
-                <div className="flex justify-between">
-                  <span className="text-amber-500/70">REFUND (TAIL CLIP)</span>
-                  <span className="text-amber-400">{fmtSui(quote.refund)} SUI</span>
-                </div>
-              )}
-              <div className="flex justify-between pt-1 border-t border-white/5">
-                <span className="text-white/30">TOTAL FEE (1%)</span>
-                <span className="text-white/50">{fmtSui(quote.fee)} SUI</span>
-              </div>
-              <div className="flex justify-between pl-3">
-                <span className="text-amber-500/60">├ CREATOR (0.40%)</span>
-                <span className="text-amber-400/70">{fmtSui(quote.fees.creator)}</span>
-              </div>
-              <div className="flex justify-between pl-3">
-                <span className="text-white/30">├ PROTOCOL (0.50%)</span>
-                <span className="text-white/40">{fmtSui(quote.fees.protocol)}</span>
-              </div>
-              <div className="flex justify-between pl-3">
-                <span className="text-cyan-500/60">└ LIQUIDITY (0.10%)</span>
-                <span className="text-cyan-400/70">{fmtSui(quote.fees.lp)}</span>
-              </div>
-            </div>
-          )}
-
-          <button
-            onClick={execute}
-            disabled={!quote || isPending || graduated || !account}
-            className={`w-full mt-4 py-3 font-mono tracking-widest text-sm rounded-xl transition-all ${
-              graduated ? 'bg-white/5 text-white/20 cursor-not-allowed'
-              : !account ? 'bg-white/5 text-white/20 cursor-not-allowed'
-              : quote && !isPending
-                ? side === 'buy'
-                  ? 'bg-lime-400 text-black hover:bg-lime-300 font-bold shadow-lg shadow-lime-400/20'
-                  : 'bg-red-400 text-black hover:bg-red-300 font-bold'
-                : 'bg-white/5 text-white/20 cursor-not-allowed'
-            }`}
+      {graduated && (
+        <div className="lg:hidden fixed bottom-0 left-0 right-0 z-50 bg-black/95 border-t border-white/10 p-3">
+          <a href={`https://app.cetus.zone/swap?from=0x2::sui::SUI&to=${tokenType}`}
+            target="_blank" rel="noreferrer"
+            className="flex items-center justify-center gap-2 w-full py-3 bg-emerald-400 text-black text-sm font-mono tracking-widest hover:bg-emerald-300 rounded-xl font-bold transition-colors"
           >
-            {graduated ? 'GRADUATED — TRADE ON DEX'
-              : !account ? 'CONNECT WALLET'
-              : isPending ? 'CONFIRMING…'
-              : !quote ? 'ENTER AMOUNT'
-              : `EXECUTE ${side.toUpperCase()}`}
-          </button>
+            <Droplets size={14} /> GRADUATED — TRADE ON CETUS
+          </a>
+        </div>
+      )}
+    </div>
+  );
+}
 
-          <div className="mt-4 text-[10px] font-mono text-white/20 leading-relaxed text-center">
-            TESTNET · SLIPPAGE 1% · FAIR LAUNCH · NO TEAM ALLOCATION
+function TradePanelContent({ side, setSide, amount, setAmount, fields, quote, account, isPending, graduated, execute, tokenBalanceWhole, mobile }) {
+  return (
+    <div className={`rounded-2xl border border-lime-400/20 bg-white/[0.03] ${mobile ? 'p-3' : 'p-5 h-fit sticky top-20'}`}>
+      <div className="flex gap-2 mb-3">
+        <button onClick={() => setSide('buy')}
+          className={`flex-1 py-2.5 text-xs font-mono tracking-widest rounded-xl transition-all ${
+            side === 'buy' ? 'bg-lime-400 text-black font-bold' : 'bg-white/5 text-white/50 hover:bg-white/10'
+          }`}
+        >BUY</button>
+        <button onClick={() => setSide('sell')}
+          className={`flex-1 py-2.5 text-xs font-mono tracking-widest rounded-xl transition-all ${
+            side === 'sell' ? 'bg-red-400 text-black font-bold' : 'bg-white/5 text-white/50 hover:bg-white/10'
+          }`}
+        >SELL</button>
+      </div>
+
+      <div className="mb-1 text-[10px] font-mono text-white/30 tracking-widest">
+        {side === 'buy' ? 'YOU PAY (SUI)' : `YOU SELL (${fields.symbol})`}
+      </div>
+      <input
+        value={amount}
+        onChange={(e) => setAmount(e.target.value)}
+        placeholder="0.0"
+        className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-white font-mono text-lg focus:outline-none focus:border-lime-400/50 transition-colors"
+      />
+
+      {side === 'buy' && (
+        <div className="flex gap-1 mt-2">
+          {[0.1, 0.5, 1, 5].map((v) => (
+            <button key={v} onClick={() => setAmount(String(v))}
+              className="flex-1 text-[10px] font-mono py-1.5 rounded-lg bg-white/5 border border-white/10 text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all"
+            >{v}</button>
+          ))}
+        </div>
+      )}
+      {side === 'sell' && tokenBalanceWhole > 0 && (
+        <div className="flex gap-1 mt-2">
+          {[25, 50, 100].map((pct) => (
+            <button key={pct}
+              onClick={() => setAmount(String((tokenBalanceWhole * pct / 100).toFixed(TOKEN_DECIMALS)))}
+              className="flex-1 text-[10px] font-mono py-1.5 rounded-lg bg-white/5 border border-white/10 text-white/50 hover:border-red-400/40 hover:text-red-400 transition-all"
+            >{pct}%</button>
+          ))}
+        </div>
+      )}
+
+      {!mobile && quote && (
+        <div className="mt-3 p-3 rounded-xl border border-white/10 bg-white/5 space-y-1 text-xs font-mono">
+          <div className="flex justify-between">
+            <span className="text-white/40">YOU RECEIVE</span>
+            <span className="text-white font-bold">
+              {side === 'buy'
+                ? `${fmt(tokenUnitsToWhole(quote.tokensOut))} ${fields.symbol}`
+                : `${fmtSui(quote.suiOut)} SUI`}
+            </span>
+          </div>
+          {side === 'buy' && quote.clipped && (
+            <div className="flex justify-between">
+              <span className="text-amber-500/70">REFUND</span>
+              <span className="text-amber-400">{fmtSui(quote.refund)} SUI</span>
+            </div>
+          )}
+          <div className="flex justify-between pt-1 border-t border-white/5">
+            <span className="text-white/30">FEE (1%)</span>
+            <span className="text-white/50">{fmtSui(quote.fee)} SUI</span>
           </div>
         </div>
-        )} {/* end graduated ternary */}
-      </div>
+      )}
+
+      {mobile && quote && (
+        <div className="mt-2 flex justify-between text-xs font-mono">
+          <span className="text-white/30">YOU RECEIVE</span>
+          <span className="text-white font-bold">
+            {side === 'buy'
+              ? `${fmt(tokenUnitsToWhole(quote.tokensOut))} ${fields.symbol}`
+              : `${fmtSui(quote.suiOut)} SUI`}
+          </span>
+        </div>
+      )}
+
+      <button
+        onClick={execute}
+        disabled={!quote || isPending || graduated || !account}
+        className={`w-full mt-3 py-3 font-mono tracking-widest text-sm rounded-xl transition-all ${
+          !account ? 'bg-white/5 text-white/20 cursor-not-allowed'
+          : quote && !isPending
+            ? side === 'buy'
+              ? 'bg-lime-400 text-black hover:bg-lime-300 font-bold shadow-lg shadow-lime-400/20'
+              : 'bg-red-400 text-black hover:bg-red-300 font-bold'
+            : 'bg-white/5 text-white/20 cursor-not-allowed'
+        }`}
+      >
+        {!account ? 'CONNECT WALLET'
+          : isPending ? 'CONFIRMING…'
+          : !quote ? 'ENTER AMOUNT'
+          : `EXECUTE ${side.toUpperCase()}`}
+      </button>
+
+      {!mobile && (
+        <div className="mt-3 text-[10px] font-mono text-white/20 text-center">
+          TESTNET · SLIPPAGE 1% · FAIR LAUNCH · NO TEAM ALLOCATION
+        </div>
+      )}
     </div>
   );
 }
