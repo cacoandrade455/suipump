@@ -45,7 +45,6 @@ module suipump::bonding_curve {
     const ESlippageExceeded: u64 = 3;
     const EAlreadyGraduated: u64 = 4;
     const ENotGraduated: u64 = 5;
-    const ENotCreator: u64 = 6;
     const EZeroAmount: u64 = 7;
     const ENoFees: u64 = 8;
     const EFeeSplitInvalid: u64 = 9;
@@ -377,9 +376,9 @@ module suipump::bonding_curve {
 
     // ---------- Pricing math ----------
     /// Constant product: (x + dx)(y - dy) = xy  =>  dy = y*dx / (x + dx)
-    /// Combined with virtual reserves, this exactly reproduces the leading Solana launchpad's
-    /// bonding-curve pricing with pure integer math — no fixed-point, no
-    /// exponentiation, no rounding drift.
+    /// Combined with virtual reserves, this reproduces a bonding-curve pricing
+    /// model with pure integer math — no fixed-point, no exponentiation,
+    /// no rounding drift.
     fun quote_out(dx: u64, x_reserve: u64, y_reserve: u64): u64 {
         let dx_u128 = dx as u128;
         let x_u128 = x_reserve as u128;
@@ -429,8 +428,8 @@ module suipump::bonding_curve {
 
         // Tail-buy handling: if the naive quote wants more tokens than remain,
         // buy exactly the remainder and compute the actual swap cost in reverse.
-        // Any unspent SUI is refunded. This is how a "final buyer" drains the
-        // curve — matches the leading Solana launchpad's behavior and prevents dust getting stuck.
+        // Any unspent SUI is refunded. This prevents dust getting stuck and
+        // allows the final buyer to drain the curve cleanly.
         let remaining = balance::value(&curve.token_reserve);
         let (tokens_out, actual_swap) = if (naive_tokens_out > remaining) {
             // dx needed to buy exactly `remaining`:  dx = x * remaining / (y - remaining)
@@ -612,13 +611,12 @@ module suipump::bonding_curve {
     }
 
     // ---------- Graduation ----------
-    /// Graduate the curve to a DEX pool. Triggers when the curve has sold
-    /// all CURVE_SUPPLY tokens — matches the leading Solana launchpad's actual behavior where
-    /// graduation is a consequence of the curve filling up, not a separate
-    /// threshold that could be mis-set.
+    /// Graduate the curve to a DEX pool. Can only be called once the curve
+    /// has sold all CURVE_SUPPLY tokens — graduation is a consequence of the
+    /// curve filling up, not a separate threshold that could be mis-set.
     ///
     /// Returns (SUI side, token side, creator bonus) so the PTB can compose
-    /// a Cetus/Turbos pool creation in the same transaction.
+    /// a Cetus pool creation in the same transaction.
     public fun graduate<T>(
         curve: &mut Curve<T>,
         ctx: &mut TxContext,
@@ -711,7 +709,6 @@ module suipump::bonding_curve {
 
     #[test_only] public fun e_already_graduated(): u64 { EAlreadyGraduated }
     #[test_only] public fun e_not_graduated(): u64 { ENotGraduated }
-    #[test_only] public fun e_not_creator(): u64 { ENotCreator }
     #[test_only] public fun e_zero_amount(): u64 { EZeroAmount }
     #[test_only] public fun e_no_fees(): u64 { ENoFees }
     #[test_only] public fun e_slippage_exceeded(): u64 { ESlippageExceeded }
