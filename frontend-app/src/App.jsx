@@ -1,6 +1,12 @@
-// App.jsx
+// App.jsx — react-router-dom based routing
+// Routes:
+//   /                    — homepage (token list)
+//   /token/:curveId      — individual token trading page
+//   /airdrop             — S1 airdrop page
+//   /whitepaper          — whitepaper page
 
 import React, { useState, useEffect } from 'react';
+import { Routes, Route, useNavigate, useParams, Link } from 'react-router-dom';
 import { ConnectButton, useCurrentAccount, useSuiClient } from '@mysten/dapp-kit';
 import { Flame, Rocket, Plus, Gift } from 'lucide-react';
 
@@ -22,7 +28,7 @@ function fmt(n, d = 2) {
   return n.toFixed(d);
 }
 
-// Minimal hook for header stats — pool SUI + trade count
+// Header stats hook
 function useHeaderStats() {
   const client = useSuiClient();
   const [poolSui, setPoolSui] = useState(null);
@@ -33,23 +39,12 @@ function useHeaderStats() {
     async function load() {
       try {
         const [buys, sells] = await Promise.all([
-          client.queryEvents({
-            query: { MoveEventType: `${PACKAGE_ID}::bonding_curve::TokensPurchased` },
-            limit: 100, order: 'descending',
-          }),
-          client.queryEvents({
-            query: { MoveEventType: `${PACKAGE_ID}::bonding_curve::TokensSold` },
-            limit: 100, order: 'descending',
-          }),
+          client.queryEvents({ query: { MoveEventType: `${PACKAGE_ID}::bonding_curve::TokensPurchased` }, limit: 100, order: 'descending' }),
+          client.queryEvents({ query: { MoveEventType: `${PACKAGE_ID}::bonding_curve::TokensSold` }, limit: 100, order: 'descending' }),
         ]);
         let protocolMist = 0;
-        for (const e of [...buys.data, ...sells.data]) {
-          protocolMist += Number(e.parsedJson?.protocol_fee ?? 0);
-        }
-        if (!cancelled) {
-          setPoolSui((protocolMist * 0.5) / MIST_PER_SUI);
-          setTradeCount(buys.data.length + sells.data.length);
-        }
+        for (const e of [...buys.data, ...sells.data]) protocolMist += Number(e.parsedJson?.protocol_fee ?? 0);
+        if (!cancelled) { setPoolSui((protocolMist * 0.5) / MIST_PER_SUI); setTradeCount(buys.data.length + sells.data.length); }
       } catch { }
     }
     load();
@@ -60,13 +55,14 @@ function useHeaderStats() {
   return { poolSui, tradeCount };
 }
 
-// ── Token card ───────────────────────────────────────────────────────────────
-function TokenCard({ token, onClick }) {
+// Token card
+function TokenCard({ token }) {
   const client = useSuiClient();
-  const [curveState, setCurveState] = React.useState(null);
-  const [iconUrl, setIconUrl] = React.useState(null);
+  const navigate = useNavigate();
+  const [curveState, setCurveState] = useState(null);
+  const [iconUrl, setIconUrl] = useState(null);
 
-  React.useEffect(() => {
+  useEffect(() => {
     let cancelled = false;
     async function load() {
       try {
@@ -79,8 +75,7 @@ function TokenCard({ token, onClick }) {
     return () => { cancelled = true; clearInterval(t); };
   }, [token.curveId, client]);
 
-  // Fetch icon from CoinMetadata
-  React.useEffect(() => {
+  useEffect(() => {
     if (!token.tokenType) return;
     let cancelled = false;
     client.getCoinMetadata({ coinType: token.tokenType })
@@ -105,7 +100,8 @@ function TokenCard({ token, onClick }) {
   })() : '';
 
   return (
-    <button onClick={onClick}
+    <button
+      onClick={() => token.tokenType && navigate(`/token/${token.curveId}`)}
       className="text-left border border-lime-900/50 bg-black hover:border-lime-500/60 hover:bg-lime-950/10 transition-all p-4 w-full"
     >
       <div className="flex items-start justify-between mb-3">
@@ -113,18 +109,16 @@ function TokenCard({ token, onClick }) {
           <div className="w-10 h-10 rounded-full overflow-hidden border border-lime-900 flex items-center justify-center bg-lime-950/20 shrink-0">
             {iconUrl
               ? <img src={iconUrl} alt={token.symbol} className="w-full h-full object-cover"
-                  onError={e => { e.target.style.display='none'; e.target.parentNode.innerHTML='<span style="font-size:1.25rem">🔥</span>'; }} />
-              : <span className="text-xl">🔥</span>
-            }
+                  onError={e => { e.target.style.display='none'; e.target.nextSibling.style.display='block'; }} />
+              : null}
+            <span className="text-xl" style={{ display: iconUrl ? 'none' : 'block' }}>🔥</span>
           </div>
           <div>
             <div className="text-sm font-bold text-lime-100 font-mono">{token.name}</div>
             <div className="text-[10px] text-lime-600 font-mono">${token.symbol}</div>
           </div>
         </div>
-        {graduated && (
-          <div className="text-[10px] font-mono text-emerald-400 border border-emerald-800 px-2 py-0.5">GRAD</div>
-        )}
+        {graduated && <div className="text-[10px] font-mono text-emerald-400 border border-emerald-800 px-2 py-0.5">GRAD</div>}
       </div>
       <div className="mb-2">
         <div className="flex justify-between text-[9px] font-mono text-lime-800 mb-1">
@@ -142,155 +136,189 @@ function TokenCard({ token, onClick }) {
   );
 }
 
-// ── Main App ─────────────────────────────────────────────────────────────────
-export default function App() {
+// Header
+function Header({ onLaunch }) {
+  const account = useCurrentAccount();
+  const { poolSui, tradeCount } = useHeaderStats();
+  const navigate = useNavigate();
+
+  return (
+    <header className="border-b border-lime-900/60 bg-black/80 backdrop-blur sticky top-0 z-40">
+      <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
+        <Link to="/" className="flex items-center gap-3 hover:opacity-80 transition-opacity">
+          <div className="relative">
+            <Flame className="text-lime-400" size={24} />
+            <div className="absolute inset-0 blur-md bg-lime-400/50 -z-10" />
+          </div>
+          <div>
+            <div className="text-lg font-bold tracking-tight" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
+              SUIPUMP<span className="text-lime-400">.</span>
+            </div>
+            <div className="text-[9px] font-mono text-lime-700 tracking-[0.2em] -mt-1">TESTNET · LIVE</div>
+          </div>
+        </Link>
+
+        <div className="flex items-center gap-2">
+          <Link to="/airdrop"
+            className="flex items-center gap-1.5 px-3 py-1.5 border border-lime-900/60 text-[10px] font-mono text-lime-700 hover:border-lime-600 hover:text-lime-400 transition-colors"
+          >
+            <Gift size={10} />
+            {poolSui !== null ? <span>S1 {poolSui.toFixed(4)} SUI</span> : <span>S1 AIRDROP</span>}
+            {tradeCount !== null && <span className="text-lime-900 ml-1">· {tradeCount} trades</span>}
+          </Link>
+          <Link to="/whitepaper"
+            className="px-3 py-1.5 border border-lime-900/60 text-[10px] font-mono text-lime-700 hover:border-lime-600 hover:text-lime-400 transition-colors hidden sm:block"
+          >
+            WHITEPAPER
+          </Link>
+          {account && (
+            <button onClick={onLaunch}
+              className="flex items-center gap-2 px-4 py-2 bg-lime-400 text-black text-xs font-mono tracking-widest hover:bg-lime-300 transition-colors"
+            >
+              <Plus size={12} /> LAUNCH TOKEN
+            </button>
+          )}
+          <ConnectButton />
+        </div>
+      </div>
+    </header>
+  );
+}
+
+// Homepage
+function HomePage({ onLaunch }) {
   const account = useCurrentAccount();
   const { tokens, loading, error } = useTokenList();
-  const { poolSui, tradeCount } = useHeaderStats();
-  const [activePage, setActivePage] = useState(null); // null | {curveId,...} | 'airdrop'
+
+  return (
+    <div>
+      <div className="border border-lime-900/30 bg-gradient-to-br from-lime-950/10 to-black p-8 mb-8 text-center">
+        <div className="flex items-center justify-center gap-3 mb-3">
+          <Flame className="text-lime-400" size={28} />
+          <h1 className="text-3xl font-bold tracking-tight" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
+            SUIPUMP<span className="text-lime-400">.</span>
+          </h1>
+        </div>
+        <p className="text-sm text-lime-600 font-mono mb-6 max-w-md mx-auto">
+          Permissionless token launchpad on Sui. Fair launch. No pre-mine. Creator-first fees.
+        </p>
+        {account ? (
+          <button onClick={onLaunch}
+            className="flex items-center gap-2 px-6 py-3 bg-lime-400 text-black font-mono text-sm tracking-widest hover:bg-lime-300 transition-colors mx-auto"
+          >
+            <Rocket size={14} /> LAUNCH A TOKEN
+          </button>
+        ) : (
+          <div className="text-xs font-mono text-lime-700">CONNECT WALLET TO LAUNCH A TOKEN</div>
+        )}
+      </div>
+
+      <div className="mb-4 flex items-center justify-between">
+        <div className="text-xs font-mono text-lime-700 tracking-widest">
+          {loading ? 'LOADING TOKENS…' : `${tokens.length} TOKEN${tokens.length !== 1 ? 'S' : ''} LAUNCHED`}
+        </div>
+        <div className="text-[10px] font-mono text-lime-900">SORTED BY NEWEST</div>
+      </div>
+
+      {error && (
+        <div className="border border-red-900/50 bg-red-950/20 p-4 text-xs font-mono text-red-400 mb-4">
+          Failed to load tokens: {error}
+        </div>
+      )}
+
+      {!loading && tokens.length === 0 && !error && (
+        <div className="border border-lime-900/30 p-12 text-center">
+          <div className="text-4xl mb-4">🔥</div>
+          <div className="text-sm font-mono text-lime-700 mb-2">NO TOKENS YET</div>
+          <div className="text-xs font-mono text-lime-900">Be the first to launch a token on SuiPump.</div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        {tokens.map((token) => <TokenCard key={token.curveId} token={token} />)}
+      </div>
+    </div>
+  );
+}
+
+// Token page wrapper — reads curveId from URL, fetches token type directly
+function TokenPageWrapper() {
+  const { curveId } = useParams();
+  const navigate = useNavigate();
+  const client = useSuiClient();
+  const [tokenType, setTokenType] = useState(null);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (!curveId) return;
+    let cancelled = false;
+    async function load() {
+      try {
+        const obj = await client.getObject({
+          id: curveId,
+          options: { showContent: true, showType: true },
+        });
+        if (cancelled) return;
+        const typeStr = obj.data?.type ?? '';
+        const match = typeStr.match(/Curve<(.+)>$/);
+        if (match) setTokenType(match[1]);
+        else setError('Could not determine token type');
+      } catch (err) {
+        if (!cancelled) setError(err.message || String(err));
+      }
+    }
+    load();
+    return () => { cancelled = true; };
+  }, [curveId, client]);
+
+  if (error) return (
+    <div className="text-xs font-mono text-red-500 p-8">
+      Failed to load token: {error}
+    </div>
+  );
+
+  if (!tokenType) return (
+    <div className="text-xs font-mono text-lime-700 p-8 animate-pulse">
+      Loading token…
+    </div>
+  );
+
+  return (
+    <TokenPage
+      curveId={curveId}
+      tokenType={tokenType}
+      onBack={() => navigate('/')}
+    />
+  );
+}
+
+// Root app
+export default function App() {
+  const navigate = useNavigate();
   const [showLaunch, setShowLaunch] = useState(false);
 
-  const handleLaunched = ({ curveId, tokenType, name, symbol }) => {
+  const handleLaunched = ({ curveId }) => {
     setShowLaunch(false);
-    setActivePage({ curveId, tokenType, name, symbol });
+    navigate(`/token/${curveId}`);
   };
 
   return (
     <div className="min-h-screen bg-black text-lime-100" style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@700&display=swap');`}</style>
-
       <div className="fixed inset-0 pointer-events-none opacity-[0.04]" style={{
         backgroundImage: 'linear-gradient(rgba(132,204,22,0.8) 1px, transparent 1px), linear-gradient(90deg, rgba(132,204,22,0.8) 1px, transparent 1px)',
         backgroundSize: '40px 40px',
       }} />
 
-      {/* Header */}
-      <header className="border-b border-lime-900/60 bg-black/80 backdrop-blur sticky top-0 z-40">
-        <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
-          <button onClick={() => setActivePage(null)} className="flex items-center gap-3 hover:opacity-80 transition-opacity">
-            <div className="relative">
-              <Flame className="text-lime-400" size={24} />
-              <div className="absolute inset-0 blur-md bg-lime-400/50 -z-10" />
-            </div>
-            <div>
-              <div className="text-lg font-bold tracking-tight" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
-                SUIPUMP<span className="text-lime-400">.</span>
-              </div>
-              <div className="text-[9px] font-mono text-lime-700 tracking-[0.2em] -mt-1">TESTNET · LIVE</div>
-            </div>
-          </button>
+      <Header onLaunch={() => setShowLaunch(true)} />
 
-          <div className="flex items-center gap-2">
-            {/* S1 airdrop pill */}
-            <button
-              onClick={() => setActivePage('airdrop')}
-              className="flex items-center gap-1.5 px-3 py-1.5 border border-lime-900/60 text-[10px] font-mono text-lime-700 hover:border-lime-600 hover:text-lime-400 transition-colors"
-            >
-              <Gift size={10} />
-              {poolSui !== null ? (
-                <span>S1 {poolSui.toFixed(4)} SUI</span>
-              ) : (
-                <span>S1 AIRDROP</span>
-              )}
-              {tradeCount !== null && (
-                <span className="text-lime-900 ml-1">· {tradeCount} trades</span>
-              )}
-            </button>
-
-            {/* Whitepaper link */}
-            <button
-              onClick={() => setActivePage('whitepaper')}
-              className="px-3 py-1.5 border border-lime-900/60 text-[10px] font-mono text-lime-700 hover:border-lime-600 hover:text-lime-400 transition-colors hidden sm:block"
-            >
-              WHITEPAPER
-            </button>
-
-            {account && (
-              <button onClick={() => setShowLaunch(true)}
-                className="flex items-center gap-2 px-4 py-2 bg-lime-400 text-black text-xs font-mono tracking-widest hover:bg-lime-300 transition-colors"
-              >
-                <Plus size={12} /> LAUNCH TOKEN
-              </button>
-            )}
-            <ConnectButton />
-          </div>
-        </div>
-      </header>
-
-      {/* Main content */}
       <main className="max-w-6xl mx-auto px-4 py-6">
-        {activePage === 'airdrop' ? (
-          <AirdropPage onBack={() => setActivePage(null)} />
-        ) : activePage === 'whitepaper' ? (
-          <WhitepaperPage onBack={() => setActivePage(null)} />
-        ) : activePage ? (
-          <TokenPage
-            curveId={activePage.curveId}
-            tokenType={activePage.tokenType}
-            onBack={() => setActivePage(null)}
-          />
-        ) : (
-          <div>
-            {/* Hero */}
-            <div className="border border-lime-900/30 bg-gradient-to-br from-lime-950/10 to-black p-8 mb-8 text-center">
-              <div className="flex items-center justify-center gap-3 mb-3">
-                <Flame className="text-lime-400" size={28} />
-                <h1 className="text-3xl font-bold tracking-tight" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
-                  SUIPUMP<span className="text-lime-400">.</span>
-                </h1>
-              </div>
-              <p className="text-sm text-lime-600 font-mono mb-6 max-w-md mx-auto">
-                Permissionless token launchpad on Sui. Fair launch. No pre-mine. Creator-first fees.
-              </p>
-              {account ? (
-                <button onClick={() => setShowLaunch(true)}
-                  className="flex items-center gap-2 px-6 py-3 bg-lime-400 text-black font-mono text-sm tracking-widest hover:bg-lime-300 transition-colors mx-auto"
-                >
-                  <Rocket size={14} /> LAUNCH A TOKEN
-                </button>
-              ) : (
-                <div className="text-xs font-mono text-lime-700">CONNECT WALLET TO LAUNCH A TOKEN</div>
-              )}
-            </div>
-
-            {/* Token list header */}
-            <div className="mb-4 flex items-center justify-between">
-              <div className="text-xs font-mono text-lime-700 tracking-widest">
-                {loading ? 'LOADING TOKENS…' : `${tokens.length} TOKEN${tokens.length !== 1 ? 'S' : ''} LAUNCHED`}
-              </div>
-              <div className="text-[10px] font-mono text-lime-900">SORTED BY NEWEST</div>
-            </div>
-
-            {error && (
-              <div className="border border-red-900/50 bg-red-950/20 p-4 text-xs font-mono text-red-400 mb-4">
-                Failed to load tokens: {error}
-              </div>
-            )}
-
-            {!loading && tokens.length === 0 && !error && (
-              <div className="border border-lime-900/30 p-12 text-center">
-                <div className="text-4xl mb-4">🔥</div>
-                <div className="text-sm font-mono text-lime-700 mb-2">NO TOKENS YET</div>
-                <div className="text-xs font-mono text-lime-900">Be the first to launch a token on SuiPump.</div>
-              </div>
-            )}
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {tokens.map((token) => (
-                <TokenCard
-                  key={token.curveId}
-                  token={token}
-                  onClick={() => token.tokenType && setActivePage({
-                    curveId: token.curveId,
-                    tokenType: token.tokenType,
-                    name: token.name,
-                    symbol: token.symbol,
-                  })}
-                />
-              ))}
-            </div>
-          </div>
-        )}
+        <Routes>
+          <Route path="/" element={<HomePage onLaunch={() => setShowLaunch(true)} />} />
+          <Route path="/token/:curveId" element={<TokenPageWrapper />} />
+          <Route path="/airdrop" element={<AirdropPage onBack={() => navigate('/')} />} />
+          <Route path="/whitepaper" element={<WhitepaperPage onBack={() => navigate('/')} />} />
+        </Routes>
       </main>
 
       <footer className="max-w-6xl mx-auto px-4 py-8 text-[10px] font-mono text-lime-900 text-center tracking-widest">
