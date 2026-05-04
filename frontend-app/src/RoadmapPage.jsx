@@ -73,20 +73,20 @@ const phases = [
 ];
 
 const statusColors = {
-  complete: 'border-lime-400/30 bg-lime-950/10',
-  active:   'border-amber-400/30 bg-amber-950/10',
+  complete: 'border-lime-400/20 bg-lime-950/10',
+  active:   'border-white/10 bg-white/[0.03]',
   upcoming: 'border-white/10 bg-white/[0.03]',
 };
 
 const labelColors = {
   complete: 'text-lime-400 bg-lime-400/10 border-lime-400/20',
-  active:   'text-amber-400 bg-amber-400/10 border-amber-400/20',
+  active:   'text-lime-400 bg-lime-400/10 border-lime-400/20',
   upcoming: 'text-white/30 bg-white/5 border-white/10',
 };
 
 const dotColors = {
   complete: 'bg-lime-400',
-  active:   'bg-amber-400 animate-pulse',
+  active:   'bg-lime-400 animate-pulse',
   upcoming: 'bg-white/20',
 };
 
@@ -113,7 +113,7 @@ export default function RoadmapPage({ onBack }) {
               </h1>
             </div>
             <p className="text-xs font-mono text-white/40 mb-4">
-              From testnet to the leading token launchpad on Sui.
+              From testnet to the leading token launchpad in crypto.
             </p>
             {/* Progress bar */}
             <div className="flex gap-1.5 justify-center">
@@ -143,7 +143,7 @@ export default function RoadmapPage({ onBack }) {
                 <span className="ml-auto text-[10px] font-mono text-lime-400">✓ COMPLETE</span>
               )}
               {phase.status === 'active' && (
-                <span className="ml-auto text-[10px] font-mono text-amber-400">⬡ IN PROGRESS</span>
+                <span className="ml-auto text-[10px] font-mono text-lime-400/60">⬡ IN PROGRESS</span>
               )}
             </div>
 
@@ -155,7 +155,7 @@ export default function RoadmapPage({ onBack }) {
                     item.done
                       ? 'bg-lime-400/20 border-lime-400/40'
                       : phase.status === 'active'
-                      ? 'border-amber-400/20'
+                      ? 'border-white/10'
                       : 'border-white/10'
                   }`}>
                     {item.done && <div className="w-1.5 h-1.5 rounded-full bg-lime-400" />}
