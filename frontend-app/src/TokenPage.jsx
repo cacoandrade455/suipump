@@ -70,10 +70,15 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
     setStatus(null);
     try {
       const tx = new Transaction();
+      const curveObj = await client.getObject({ id: curveId, options: { showOwner: true } });
+      const initialSharedVersion = curveObj.data?.owner?.Shared?.initial_shared_version;
       tx.moveCall({
         target: `${PACKAGE_ID}::bonding_curve::claim_creator_fees`,
         typeArguments: [tokenType],
-        arguments: [tx.object(creatorCapId), tx.object(curveId)],
+        arguments: [
+          tx.object(creatorCapId),
+          tx.sharedObjectRef({ objectId: curveId, initialSharedVersion, mutable: true }),
+        ],
       });
       const result = await signAndExecute({ transaction: tx });
       setStatus({ kind: 'success', msg: `Fees claimed!`, digest: result.digest });
@@ -165,6 +170,15 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
     setStatus(null);
     const tx = new Transaction();
 
+    // Fetch initial shared version for the curve object
+    const curveObj = await client.getObject({ id: curveId, options: { showOwner: true } });
+    const initialSharedVersion = curveObj.data?.owner?.Shared?.initial_shared_version;
+    const curveRef = tx.sharedObjectRef({
+      objectId: curveId,
+      initialSharedVersion,
+      mutable: true,
+    });
+
     if (side === 'buy') {
       const mistAmount = BigInt(Math.floor(parseFloat(amount) * MIST_PER_SUI));
       const [payment] = tx.splitCoins(tx.gas, [tx.pure.u64(mistAmount)]);
@@ -172,7 +186,7 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
       const [tokens, refund] = tx.moveCall({
         target: `${PACKAGE_ID}::bonding_curve::buy`,
         typeArguments: [tokenType],
-        arguments: [tx.object(curveId), payment, tx.pure.u64(minOut)],
+        arguments: [curveRef, payment, tx.pure.u64(minOut)],
       });
       tx.transferObjects([tokens, refund], account.address);
     } else {
@@ -190,7 +204,7 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
       const suiOut = tx.moveCall({
         target: `${PACKAGE_ID}::bonding_curve::sell`,
         typeArguments: [tokenType],
-        arguments: [tx.object(curveId), toSell, tx.pure.u64(minOut)],
+        arguments: [curveRef, toSell, tx.pure.u64(minOut)],
       });
       tx.transferObjects([suiOut], account.address);
     }
