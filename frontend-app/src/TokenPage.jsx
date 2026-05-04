@@ -13,6 +13,7 @@ import { PACKAGE_ID, DRAIN_SUI_APPROX, TOKEN_DECIMALS, MIST_PER_SUI } from './co
 import { quoteBuy, quoteSell, priceMistPerToken, mistToSui, tokenUnitsToWhole } from './curve.js';
 import PriceChart from './PriceChart.jsx';
 import HolderList from './HolderList.jsx';
+import TradeHistory from './TradeHistory.jsx';
 
 function fmt(n, d = 2) {
   if (!Number.isFinite(n)) return '—';
@@ -258,6 +259,9 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
               <PriceChart curveId={curveId} refreshKey={chartRefresh} />
             </div>
           </div>
+
+          {/* Trade history */}
+          <TradeHistory curveId={curveId} symbol={fields.symbol} refreshKey={chartRefresh} />
 
           {/* Creator revenue */}
           <div className="rounded-2xl border border-amber-500/20 bg-amber-950/10 p-5">
