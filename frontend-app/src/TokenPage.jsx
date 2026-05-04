@@ -1,8 +1,4 @@
 // TokenPage.jsx
-// Full trading UI for a single token. Receives curveId + tokenType as props
-// from the router, fetches live curve state, and handles buy/sell.
-// This is the existing App.jsx trading logic made generic.
-
 import React, { useState, useMemo, useEffect } from 'react';
 import {
   useCurrentAccount,
@@ -41,7 +37,6 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
   const [creatorCapId, setCreatorCapId] = useState(null);
   const [claiming, setClaiming] = useState(false);
 
-  // Look for a CreatorCap in the wallet that matches this curve
   useEffect(() => {
     if (!account?.address) return;
     let cancelled = false;
@@ -87,7 +82,6 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
     }
   };
 
-  // Fetch CoinMetadata (description, iconUrl)
   useEffect(() => {
     let cancelled = false;
     client.getCoinMetadata({ coinType: tokenType }).then(m => {
@@ -96,14 +90,12 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
     return () => { cancelled = true; };
   }, [tokenType, client]);
 
-  // Live curve state
   const curveQuery = useSuiClientQuery(
     'getObject',
     { id: curveId, options: { showContent: true } },
     { refetchInterval: 5000 }
   );
 
-  // Token balance for sells
   const balanceQuery = useSuiClientQuery(
     'getBalance',
     { owner: account?.address, coinType: tokenType },
@@ -188,7 +180,12 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
   };
 
   if (curveQuery.isLoading) {
-    return <div className="text-lime-600 font-mono text-sm p-8">Loading curve…</div>;
+    return (
+      <div className="rounded-2xl border border-white/5 bg-white/[0.02] p-8 animate-pulse">
+        <div className="h-4 bg-white/5 rounded w-48 mb-3" />
+        <div className="h-3 bg-white/5 rounded w-32" />
+      </div>
+    );
   }
 
   if (!fields) {
@@ -197,10 +194,9 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
 
   return (
     <div>
-      {/* Back button */}
       <button
         onClick={onBack}
-        className="flex items-center gap-2 text-xs font-mono text-lime-700 hover:text-lime-400 mb-6"
+        className="flex items-center gap-2 text-xs font-mono text-white/40 hover:text-white mb-6 transition-colors"
       >
         <ArrowLeft size={12} /> BACK TO ALL TOKENS
       </button>
@@ -208,10 +204,12 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
       <div className="grid lg:grid-cols-3 gap-4">
         {/* Left: curve state */}
         <div className="lg:col-span-2 space-y-4">
-          <div className="border border-lime-900/50 bg-black p-5">
-            <div className="flex items-start justify-between mb-4">
+
+          {/* Token header card */}
+          <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5">
+            <div className="flex items-start justify-between mb-5">
               <div className="flex items-center gap-4">
-                <div className="w-14 h-14 rounded-full overflow-hidden border border-lime-900 flex items-center justify-center bg-lime-950/20 shrink-0">
+                <div className="w-14 h-14 rounded-full overflow-hidden border-2 border-white/10 flex items-center justify-center bg-lime-950/30 shrink-0">
                   {metadata?.iconUrl
                     ? <img src={metadata.iconUrl} alt={fields.symbol}
                         className="w-full h-full object-cover"
@@ -221,72 +219,73 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
                   <span className="text-3xl" style={{ display: metadata?.iconUrl ? 'none' : 'block' }}>🔥</span>
                 </div>
                 <div>
-                  <h2 className="text-2xl font-bold text-lime-100">{fields.name}</h2>
-                  <div className="text-sm text-lime-600 font-mono">${fields.symbol}</div>
+                  <h2 className="text-2xl font-bold text-white">{fields.name}</h2>
+                  <div className="text-sm text-lime-400/70 font-mono">${fields.symbol}</div>
                   {metadata?.description && (
-                    <div className="text-xs text-lime-700 font-mono mt-1 max-w-xs">{metadata.description}</div>
+                    <div className="text-xs text-white/40 font-mono mt-1 max-w-xs">{metadata.description}</div>
                   )}
                 </div>
               </div>
               <div className="text-right">
-                <div className="text-xs text-lime-700 font-mono tracking-widest">PRICE</div>
-                <div className="text-2xl font-bold text-lime-200 font-mono">
+                <div className="text-[10px] text-white/30 font-mono tracking-widest mb-1">PRICE</div>
+                <div className="text-2xl font-bold text-white font-mono">
                   {(Number(priceMist) / 1e9).toFixed(9)}
                 </div>
-                <div className="text-xs text-lime-600 font-mono">SUI per token</div>
+                <div className="text-xs text-white/40 font-mono">SUI per token</div>
               </div>
             </div>
 
-            <div className="border-t border-lime-950 pt-4">
+            {/* Bonding curve progress */}
+            <div className="border-t border-white/5 pt-4">
               <div className="flex justify-between items-center mb-2">
                 <div className="flex items-center gap-2 text-xs font-mono tracking-widest text-lime-400">
-                  <Rocket size={12} /> BONDING CURVE {graduated ? '· GRADUATED' : ''}
+                  <Rocket size={12} /> BONDING CURVE {graduated ? '· GRADUATED ✓' : ''}
                 </div>
-                <div className="text-xs font-mono text-lime-300">
+                <div className="text-xs font-mono text-white/50">
                   {fmt(reserveSui)} / ~{fmt(DRAIN_SUI_APPROX)} SUI
                 </div>
               </div>
-              <div className="h-3 bg-lime-950 relative overflow-hidden">
+              <div className="h-2.5 bg-white/5 rounded-full overflow-hidden">
                 <div
-                  className="h-full bg-gradient-to-r from-lime-600 via-lime-400 to-lime-200"
-                  style={{ width: `${progress}%` }}
+                  className="h-full bg-gradient-to-r from-lime-600 via-lime-400 to-lime-300 rounded-full transition-all duration-500"
+                  style={{ width: `${Math.max(progress, 0.5)}%` }}
                 />
               </div>
             </div>
 
             {/* Price chart */}
-            <div className="border-t border-lime-950 pt-3 mt-3">
+            <div className="border-t border-white/5 pt-4 mt-4">
               <PriceChart curveId={curveId} refreshKey={chartRefresh} />
             </div>
           </div>
 
-          {/* Creator */}
-          <div className="border border-amber-900/50 bg-gradient-to-br from-amber-950/20 to-black p-5">
+          {/* Creator revenue */}
+          <div className="rounded-2xl border border-amber-500/20 bg-amber-950/10 p-5">
             <div className="flex items-center justify-between">
               <div>
-                <div className="flex items-center gap-2 text-xs font-mono tracking-widest text-amber-400 mb-2">
+                <div className="flex items-center gap-2 text-xs font-mono tracking-widest text-amber-400 mb-3">
                   <Crown size={12} /> CREATOR REVENUE · 40% OF 1% FEES
                 </div>
-                <div className="text-xs font-mono text-amber-700 mb-1">CREATOR</div>
-                <div className="text-sm font-mono text-amber-200 break-all">{fields.creator}</div>
+                <div className="text-[10px] font-mono text-white/30 mb-1">CREATOR</div>
+                <div className="text-xs font-mono text-white/60 break-all">{fields.creator}</div>
               </div>
-              <div className="text-right">
-                <div className="text-xs font-mono text-amber-700">ACCRUED</div>
-                <div className="text-3xl font-bold text-amber-200 font-mono tabular-nums">
+              <div className="text-right ml-4 shrink-0">
+                <div className="text-[10px] font-mono text-white/30 mb-1">ACCRUED</div>
+                <div className="text-3xl font-bold text-amber-300 font-mono tabular-nums">
                   {fmtSui(creatorFees)}
                 </div>
-                <div className="text-xs text-amber-600 font-mono mb-2">SUI</div>
+                <div className="text-xs text-amber-600 font-mono mb-3">SUI</div>
                 {creatorCapId && creatorFees > 0n && (
                   <button
                     onClick={claimFees}
                     disabled={claiming}
-                    className="px-4 py-1.5 bg-amber-400 text-black text-xs font-mono tracking-widest hover:bg-amber-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="px-4 py-1.5 bg-amber-400 text-black text-xs font-mono tracking-widest hover:bg-amber-300 disabled:opacity-50 rounded-xl transition-colors"
                   >
                     {claiming ? 'CLAIMING…' : 'CLAIM FEES'}
                   </button>
                 )}
                 {creatorCapId && creatorFees === 0n && (
-                  <div className="text-[10px] font-mono text-amber-800">NO FEES TO CLAIM</div>
+                  <div className="text-[10px] font-mono text-amber-900">NO FEES TO CLAIM</div>
                 )}
               </div>
             </div>
@@ -296,17 +295,17 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
           <HolderList curveId={curveId} refreshKey={chartRefresh} />
 
           {/* Balance */}
-          <div className="border border-lime-900/50 bg-black p-4 flex items-center justify-between text-xs font-mono">
-            <span className="text-lime-700 tracking-widest">YOUR ${fields.symbol} BALANCE</span>
-            <span className="text-lime-200">{fmt(tokenBalanceWhole)} {fields.symbol}</span>
+          <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 flex items-center justify-between text-xs font-mono">
+            <span className="text-white/30 tracking-widest">YOUR ${fields.symbol} BALANCE</span>
+            <span className="text-white font-bold">{fmt(tokenBalanceWhole)} {fields.symbol}</span>
           </div>
 
           {/* Status */}
           {status && (
-            <div className={`border p-3 text-xs font-mono ${
+            <div className={`rounded-2xl border p-3 text-xs font-mono ${
               status.kind === 'success'
-                ? 'border-lime-500 bg-lime-950/30 text-lime-300'
-                : 'border-red-500 bg-red-950/30 text-red-300'
+                ? 'border-lime-500/30 bg-lime-950/20 text-lime-300'
+                : 'border-red-500/30 bg-red-950/20 text-red-300'
             }`}>
               {status.msg}
               {status.digest && (
@@ -323,37 +322,39 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
         </div>
 
         {/* Right: trade panel */}
-        <div className="border border-lime-500/60 bg-black p-5 h-fit sticky top-20">
+        <div className="rounded-2xl border border-lime-400/20 bg-white/[0.03] p-5 h-fit sticky top-20">
           <div className="flex gap-2 mb-4">
             <button onClick={() => setSide('buy')}
-              className={`flex-1 py-2 text-xs font-mono tracking-widest border ${
-                side === 'buy' ? 'bg-lime-400 text-black border-lime-400'
-                : 'bg-black text-lime-600 border-lime-900 hover:border-lime-600'
+              className={`flex-1 py-2.5 text-xs font-mono tracking-widest rounded-xl transition-all ${
+                side === 'buy'
+                  ? 'bg-lime-400 text-black font-bold'
+                  : 'bg-white/5 text-white/50 hover:bg-white/10'
               }`}
             >BUY</button>
             <button onClick={() => setSide('sell')}
-              className={`flex-1 py-2 text-xs font-mono tracking-widest border ${
-                side === 'sell' ? 'bg-red-400 text-black border-red-400'
-                : 'bg-black text-lime-600 border-lime-900 hover:border-red-600'
+              className={`flex-1 py-2.5 text-xs font-mono tracking-widest rounded-xl transition-all ${
+                side === 'sell'
+                  ? 'bg-red-400 text-black font-bold'
+                  : 'bg-white/5 text-white/50 hover:bg-white/10'
               }`}
             >SELL</button>
           </div>
 
-          <div className="mb-1 text-[10px] font-mono text-lime-700 tracking-widest">
+          <div className="mb-1 text-[10px] font-mono text-white/30 tracking-widest">
             {side === 'buy' ? 'YOU PAY (SUI)' : `YOU SELL (${fields.symbol})`}
           </div>
           <input
             value={amount}
             onChange={(e) => setAmount(e.target.value)}
             placeholder="0.0"
-            className="w-full bg-lime-950/30 border border-lime-900 px-3 py-3 text-lime-100 font-mono text-xl focus:outline-none focus:border-lime-400"
+            className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-3 text-white font-mono text-xl focus:outline-none focus:border-lime-400/50 transition-colors"
           />
 
           {side === 'buy' && (
             <div className="flex gap-1 mt-2">
               {[0.1, 0.5, 1, 5].map((v) => (
                 <button key={v} onClick={() => setAmount(String(v))}
-                  className="flex-1 text-[10px] font-mono py-1 border border-lime-900 text-lime-600 hover:border-lime-400"
+                  className="flex-1 text-[10px] font-mono py-1.5 rounded-lg bg-white/5 border border-white/10 text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all"
                 >{v}</button>
               ))}
             </div>
@@ -363,17 +364,17 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
               {[25, 50, 100].map((pct) => (
                 <button key={pct}
                   onClick={() => setAmount(String((tokenBalanceWhole * pct / 100).toFixed(TOKEN_DECIMALS)))}
-                  className="flex-1 text-[10px] font-mono py-1 border border-lime-900 text-lime-600 hover:border-lime-400"
+                  className="flex-1 text-[10px] font-mono py-1.5 rounded-lg bg-white/5 border border-white/10 text-white/50 hover:border-red-400/40 hover:text-red-400 transition-all"
                 >{pct}%</button>
               ))}
             </div>
           )}
 
           {quote && (
-            <div className="mt-4 p-3 border border-lime-900 bg-lime-950/20 space-y-1 text-xs font-mono">
+            <div className="mt-4 p-3 rounded-xl border border-white/10 bg-white/5 space-y-1 text-xs font-mono">
               <div className="flex justify-between">
-                <span className="text-lime-700">YOU RECEIVE</span>
-                <span className="text-lime-100">
+                <span className="text-white/40">YOU RECEIVE</span>
+                <span className="text-white font-bold">
                   {side === 'buy'
                     ? `${fmt(tokenUnitsToWhole(quote.tokensOut))} ${fields.symbol}`
                     : `${fmtSui(quote.suiOut)} SUI`}
@@ -381,25 +382,25 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
               </div>
               {side === 'buy' && quote.clipped && (
                 <div className="flex justify-between">
-                  <span className="text-amber-700">REFUND (TAIL CLIP)</span>
+                  <span className="text-amber-500/70">REFUND (TAIL CLIP)</span>
                   <span className="text-amber-400">{fmtSui(quote.refund)} SUI</span>
                 </div>
               )}
-              <div className="flex justify-between pt-1 border-t border-lime-950">
-                <span className="text-lime-700">TOTAL FEE (1%)</span>
-                <span className="text-lime-500">{fmtSui(quote.fee)} SUI</span>
+              <div className="flex justify-between pt-1 border-t border-white/5">
+                <span className="text-white/30">TOTAL FEE (1%)</span>
+                <span className="text-white/50">{fmtSui(quote.fee)} SUI</span>
               </div>
               <div className="flex justify-between pl-3">
-                <span className="text-amber-700">├ CREATOR (0.40%)</span>
-                <span className="text-amber-400">{fmtSui(quote.fees.creator)}</span>
+                <span className="text-amber-500/60">├ CREATOR (0.40%)</span>
+                <span className="text-amber-400/70">{fmtSui(quote.fees.creator)}</span>
               </div>
               <div className="flex justify-between pl-3">
-                <span className="text-lime-700">├ PROTOCOL (0.50%)</span>
-                <span className="text-lime-500">{fmtSui(quote.fees.protocol)}</span>
+                <span className="text-white/30">├ PROTOCOL (0.50%)</span>
+                <span className="text-white/40">{fmtSui(quote.fees.protocol)}</span>
               </div>
               <div className="flex justify-between pl-3">
-                <span className="text-cyan-700">└ LIQUIDITY (0.10%)</span>
-                <span className="text-cyan-400">{fmtSui(quote.fees.lp)}</span>
+                <span className="text-cyan-500/60">└ LIQUIDITY (0.10%)</span>
+                <span className="text-cyan-400/70">{fmtSui(quote.fees.lp)}</span>
               </div>
             </div>
           )}
@@ -407,14 +408,14 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
           <button
             onClick={execute}
             disabled={!quote || isPending || graduated || !account}
-            className={`w-full mt-4 py-3 font-mono tracking-widest text-sm ${
-              graduated ? 'bg-lime-950 text-lime-800 cursor-not-allowed'
-              : !account ? 'bg-lime-950 text-lime-800 cursor-not-allowed'
+            className={`w-full mt-4 py-3 font-mono tracking-widest text-sm rounded-xl transition-all ${
+              graduated ? 'bg-white/5 text-white/20 cursor-not-allowed'
+              : !account ? 'bg-white/5 text-white/20 cursor-not-allowed'
               : quote && !isPending
                 ? side === 'buy'
-                  ? 'bg-lime-400 text-black hover:bg-lime-300'
-                  : 'bg-red-400 text-black hover:bg-red-300'
-                : 'bg-lime-950 text-lime-800 cursor-not-allowed'
+                  ? 'bg-lime-400 text-black hover:bg-lime-300 font-bold shadow-lg shadow-lime-400/20'
+                  : 'bg-red-400 text-black hover:bg-red-300 font-bold'
+                : 'bg-white/5 text-white/20 cursor-not-allowed'
             }`}
           >
             {graduated ? 'GRADUATED — TRADE ON DEX'
@@ -424,7 +425,7 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
               : `EXECUTE ${side.toUpperCase()}`}
           </button>
 
-          <div className="mt-4 text-[10px] font-mono text-lime-800 leading-relaxed">
+          <div className="mt-4 text-[10px] font-mono text-white/20 leading-relaxed text-center">
             TESTNET · SLIPPAGE 1% · FAIR LAUNCH · NO TEAM ALLOCATION
           </div>
         </div>
