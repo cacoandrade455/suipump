@@ -61,8 +61,18 @@ export function useTokenList() {
         // Sort newest first
         merged.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
 
+        // For tokens with the same name+symbol, keep only the newest one.
+        // This removes duplicate Example Tokens from multiple redeploys.
+        const seenNameSymbol = new Set();
+        const deduped = merged.filter(t => {
+          const key = `${t.name?.toLowerCase()}:${t.symbol?.toLowerCase()}`;
+          if (seenNameSymbol.has(key)) return false;
+          seenNameSymbol.add(key);
+          return true;
+        });
+
         // Enrich with token type from curve object
-        const enriched = await Promise.all(merged.map(async (token) => {
+        const enriched = await Promise.all(deduped.map(async (token) => {
           try {
             const obj = await client.getObject({ id: token.curveId, options: { showType: true } });
             const typeStr = obj.data?.type ?? '';
