@@ -7,7 +7,7 @@ import {
   useSuiClientQuery,
 } from '@mysten/dapp-kit';
 import { Transaction } from '@mysten/sui/transactions';
-import { Crown, Rocket, ExternalLink, ArrowLeft } from 'lucide-react';
+import { Crown, Rocket, ExternalLink, ArrowLeft, Trophy, Droplets } from 'lucide-react';
 
 import { PACKAGE_ID, DRAIN_SUI_APPROX, TOKEN_DECIMALS, MIST_PER_SUI } from './constants.js';
 import { quoteBuy, quoteSell, priceMistPerToken, mistToSui, tokenUnitsToWhole } from './curve.js';
@@ -37,6 +37,7 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
   const [chartRefresh, setChartRefresh] = useState(0);
   const [creatorCapId, setCreatorCapId] = useState(null);
   const [claiming, setClaiming] = useState(false);
+  const [graduationData, setGraduationData] = useState(null);
 
   useEffect(() => {
     if (!account?.address) return;
@@ -90,6 +91,31 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
     }).catch(() => {});
     return () => { cancelled = true; };
   }, [tokenType, client]);
+
+  // Fetch graduation event for this curve
+  useEffect(() => {
+    let cancelled = false;
+    async function loadGrad() {
+      try {
+        const events = await client.queryEvents({
+          query: { MoveEventType: `${PACKAGE_ID}::bonding_curve::Graduated` },
+          limit: 50,
+          order: 'descending',
+        });
+        const match = events.data.find(e => e.parsedJson?.curve_id === curveId);
+        if (!cancelled && match) {
+          setGraduationData({
+            finalReserve: Number(match.parsedJson.final_sui_reserve) / 1e9,
+            creatorBonus: Number(match.parsedJson.creator_bonus) / 1e9,
+            ts: Number(match.timestampMs),
+            digest: match.id.txDigest,
+          });
+        }
+      } catch { }
+    }
+    loadGrad();
+    return () => { cancelled = true; };
+  }, [curveId, client]);
 
   const curveQuery = useSuiClientQuery(
     'getObject',
@@ -325,7 +351,68 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
           )}
         </div>
 
-        {/* Right: trade panel */}
+        {/* Right: trade panel or graduation banner */}
+        {graduated ? (
+          <div className="space-y-4 h-fit sticky top-20">
+            {/* Graduation banner */}
+            <div className="rounded-2xl border border-emerald-400/20 bg-gradient-to-br from-emerald-950/30 to-black p-5 relative overflow-hidden">
+              <div className="absolute top-0 left-1/2 -translate-x-1/2 w-48 h-16 bg-emerald-400/10 blur-3xl rounded-full pointer-events-none" />
+              <div className="relative">
+                <div className="flex items-center gap-2 mb-3">
+                  <Trophy className="text-emerald-400" size={16} />
+                  <span className="text-xs font-mono font-bold text-emerald-400 tracking-widest">GRADUATED</span>
+                </div>
+                <p className="text-xs font-mono text-white/50 mb-4 leading-relaxed">
+                  This token has graduated. All 800M curve tokens were sold. Permanent liquidity has been seeded on Cetus.
+                </p>
+
+                {graduationData && (
+                  <div className="rounded-xl border border-white/10 bg-white/5 p-3 space-y-2 text-xs font-mono mb-4">
+                    <div className="flex justify-between">
+                      <span className="text-white/30">FINAL RESERVE</span>
+                      <span className="text-white font-bold">{graduationData.finalReserve.toFixed(2)} SUI</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-white/30">CREATOR BONUS</span>
+                      <span className="text-emerald-400">{graduationData.creatorBonus.toFixed(4)} SUI</span>
+                    </div>
+                    {graduationData.digest && (
+                      <div className="flex justify-between items-center pt-1 border-t border-white/5">
+                        <span className="text-white/20">TX</span>
+                        <a
+                          href={`https://testnet.suivision.xyz/txblock/${graduationData.digest}`}
+                          target="_blank" rel="noreferrer"
+                          className="flex items-center gap-1 text-white/30 hover:text-emerald-400 transition-colors"
+                        >
+                          view <ExternalLink size={9} />
+                        </a>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Cetus link */}
+                <a
+                  href={`https://app.cetus.zone/swap?from=0x2::sui::SUI&to=${tokenType}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center justify-center gap-2 w-full py-3 bg-emerald-400 text-black text-xs font-mono tracking-widest hover:bg-emerald-300 rounded-xl font-bold transition-colors"
+                >
+                  <Droplets size={13} /> TRADE ON CETUS
+                </a>
+                <div className="mt-2 text-[9px] font-mono text-white/20 text-center">
+                  Opens Cetus CLMM swap with this token pre-selected
+                </div>
+              </div>
+            </div>
+
+            {/* Balance still shown */}
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 flex items-center justify-between text-xs font-mono">
+              <span className="text-white/30 tracking-widest">YOUR ${fields.symbol}</span>
+              <span className="text-white font-bold">{fmt(tokenBalanceWhole)} {fields.symbol}</span>
+            </div>
+          </div>
+        ) : (
         <div className="rounded-2xl border border-lime-400/20 bg-white/[0.03] p-5 h-fit sticky top-20">
           <div className="flex gap-2 mb-4">
             <button onClick={() => setSide('buy')}
@@ -433,6 +520,7 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
             TESTNET · SLIPPAGE 1% · FAIR LAUNCH · NO TEAM ALLOCATION
           </div>
         </div>
+        )} {/* end graduated ternary */}
       </div>
     </div>
   );
