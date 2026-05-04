@@ -445,8 +445,6 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
         </div>
       )}
     </div>
-  </div>
-</div>
   );
 }
 
