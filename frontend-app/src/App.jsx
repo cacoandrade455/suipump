@@ -2,13 +2,14 @@
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, useNavigate, useParams, Link, useLocation } from 'react-router-dom';
 import { ConnectButton, useCurrentAccount, useSuiClient } from '@mysten/dapp-kit';
-import { Flame, Rocket, Plus, Gift, TrendingUp, Coins, Users } from 'lucide-react';
+import { Flame, Rocket, Plus, Gift, TrendingUp, Coins, Users, Trophy } from 'lucide-react';
 
 import { useTokenList } from './useTokenList.js';
 import TokenPage from './TokenPage.jsx';
 import LaunchModal from './LaunchModal.jsx';
 import AirdropPage from './AirdropPage.jsx';
 import WhitepaperPage from './WhitepaperPage.jsx';
+import LeaderboardPage from './LeaderboardPage.jsx';
 import { PACKAGE_ID, DRAIN_SUI_APPROX, TOKEN_DECIMALS } from './constants.js';
 import { mistToSui, priceMistPerToken } from './curve.js';
 
@@ -209,6 +210,11 @@ function Header({ onLaunch }) {
             {poolSui !== null ? <span>S1 {poolSui.toFixed(4)} SUI</span> : <span>S1 AIRDROP</span>}
             {tradeCount !== null && <span className="text-white/20 ml-1">· {tradeCount} trades</span>}
           </Link>
+          <Link to="/leaderboard"
+            className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all hidden sm:flex items-center gap-1.5"
+          >
+            <Trophy size={10} /> LEADERBOARD
+          </Link>
           <Link to="/whitepaper"
             className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all hidden sm:block"
           >
@@ -405,6 +411,7 @@ export default function App() {
           <Route path="/token/:curveId" element={<TokenPageWrapper />} />
           <Route path="/airdrop" element={<AirdropPage onBack={() => navigate('/')} />} />
           <Route path="/whitepaper" element={<WhitepaperPage onBack={() => navigate('/')} />} />
+          <Route path="/leaderboard" element={<LeaderboardPage onBack={() => navigate('/')} />} />
         </Routes>
       </main>
 
