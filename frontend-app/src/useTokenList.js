@@ -1,13 +1,17 @@
 // useTokenList.js
-// Queries CurveCreated events from the suipump package to build a live
-// list of all launched tokens. Returns curve IDs, names, symbols, and
-// creator addresses. Token trading state (reserve, price) is fetched
-// per-token on the individual token page to avoid N simultaneous queries
-// on the homepage.
+// Queries CurveCreated events from ALL suipump package deployments
+// so tokens launched on previous versions still appear.
 
 import { useState, useEffect } from 'react';
 import { useSuiClient } from '@mysten/dapp-kit';
 import { PACKAGE_ID } from './constants.js';
+
+// All historical package IDs — add new ones here after each redeploy.
+const ALL_PACKAGE_IDS = [
+  '0x22839b3e46129a42ebc2518013105bbf91f435e6664640cb922815659985d349', // v2
+  '0x87d24b0242c1fe503c5b7d72489eeed0361b19be485de0bd49b749be6d3b2c4c', // v3 comments attempt 1
+  PACKAGE_ID, // current — always included
+].filter((v, i, a) => a.indexOf(v) === i); // deduplicate
 
 export function useTokenList() {
   const client = useSuiClient();
@@ -18,37 +22,47 @@ export function useTokenList() {
   useEffect(() => {
     let cancelled = false;
 
-    async function fetch() {
+    async function load() {
       try {
         setLoading(true);
         setError(null);
 
-        // Query all CurveCreated events emitted by the suipump package.
-        // Each event has: curve_id, creator, name, symbol.
-        const result = await client.queryEvents({
-          query: {
-            MoveEventType: `${PACKAGE_ID}::bonding_curve::CurveCreated`,
-          },
-          limit: 50,
-          order: 'descending', // newest first
-        });
+        // Query CurveCreated events from all package versions in parallel
+        const allResults = await Promise.all(
+          ALL_PACKAGE_IDS.map(pkgId =>
+            client.queryEvents({
+              query: { MoveEventType: `${pkgId}::bonding_curve::CurveCreated` },
+              limit: 50,
+              order: 'descending',
+            }).catch(() => ({ data: [] }))
+          )
+        );
 
         if (cancelled) return;
 
-        const list = result.data.map((evt) => {
-          const j = evt.parsedJson;
-          return {
-            curveId: j.curve_id,
-            creator: j.creator,
-            name: j.name,
-            symbol: j.symbol,
-            timestamp: evt.timestampMs ? Number(evt.timestampMs) : null,
-          };
-        });
+        // Merge and deduplicate by curveId
+        const seen = new Set();
+        const merged = [];
+        for (const result of allResults) {
+          for (const evt of result.data) {
+            const j = evt.parsedJson;
+            if (!j?.curve_id || seen.has(j.curve_id)) continue;
+            seen.add(j.curve_id);
+            merged.push({
+              curveId: j.curve_id,
+              creator: j.creator,
+              name: j.name,
+              symbol: j.symbol,
+              timestamp: evt.timestampMs ? Number(evt.timestampMs) : null,
+            });
+          }
+        }
 
-        // Fetch each curve object to extract the real token type from its
-        // type string: Curve<PACKAGE::module::TYPE> → PACKAGE::module::TYPE
-        const enriched = await Promise.all(list.map(async (token) => {
+        // Sort newest first
+        merged.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
+        // Enrich with token type from curve object
+        const enriched = await Promise.all(merged.map(async (token) => {
           try {
             const obj = await client.getObject({ id: token.curveId, options: { showType: true } });
             const typeStr = obj.data?.type ?? '';
@@ -68,25 +82,15 @@ export function useTokenList() {
       }
     }
 
-    fetch();
-
-    // Refresh every 15s to pick up new launches
-    const interval = setInterval(fetch, 15_000);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
+    load();
+    const interval = setInterval(load, 15_000);
+    return () => { cancelled = true; clearInterval(interval); };
   }, [client]);
 
   return { tokens, loading, error };
 }
 
-// Fetch live state for a single curve (reserve, price, graduated).
-// Used on the token page and optionally on token cards.
 export async function fetchCurveState(client, curveId) {
-  const obj = await client.getObject({
-    id: curveId,
-    options: { showContent: true },
-  });
+  const obj = await client.getObject({ id: curveId, options: { showContent: true } });
   return obj.data?.content?.fields ?? null;
 }
