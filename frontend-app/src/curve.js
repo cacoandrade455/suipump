@@ -18,8 +18,6 @@ export function splitFee(fee) {
   return { creator, protocol, lp };
 }
 
-// All inputs/outputs in smallest units (MIST for SUI, 10^-6 for tokens).
-// Returns BigInt to match Move's u64 semantics.
 export function quoteBuy(suiInMist, realSuiReserve, tokensSold) {
   const suiIn = BigInt(suiInMist);
   const fee = (suiIn * BigInt(TRADE_FEE_BPS)) / 10_000n;
@@ -36,7 +34,6 @@ export function quoteBuy(suiInMist, realSuiReserve, tokensSold) {
 
   const remaining = curveCap - BigInt(tokensSold);
   if (naive > remaining) {
-    // Tail clip: buy exactly `remaining`, compute exact swap needed, refund the rest.
     const actualSwap = (x * remaining) / (y - remaining);
     return {
       tokensOut: remaining,
@@ -81,6 +78,6 @@ export function priceMistPerToken(realSuiReserve, tokensSold) {
   return (x * 1_000_000n) / y;
 }
 
-// Convenience formatters for display.
-export const mistToSui = (m) => m == null ? 0 : Number(BigInt(m)) / 1e9;
-export const tokenUnitsToWhole = (u) => u == null ? 0 : Number(BigInt(u)) / 10 ** TOKEN_DECIMALS;
+// Guards against null/undefined — BigInt(undefined) throws hard
+export const mistToSui = (m) => (m == null ? 0 : Number(BigInt(m)) / 1e9);
+export const tokenUnitsToWhole = (u) => (u == null ? 0 : Number(BigInt(u)) / 10 ** TOKEN_DECIMALS);
