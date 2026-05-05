@@ -17,6 +17,7 @@ import TradeHistory from './TradeHistory.jsx';
 import Comments from './Comments.jsx';
 
 function fmt(n, d = 2) {
+  if (n === undefined || n === null) return '—';
   if (!Number.isFinite(n)) return '—';
   if (n >= 1e9) return (n / 1e9).toFixed(d) + 'B';
   if (n >= 1e6) return (n / 1e6).toFixed(d) + 'M';
@@ -271,7 +272,7 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
               <div className="text-right shrink-0">
                 <div className="text-[9px] text-white/30 font-mono tracking-widest">PRICE</div>
                 <div className="text-base font-bold text-white font-mono">
-                  {(Number(priceMist) / 1e9).toFixed(9)}
+                  {Number.isFinite(Number(priceMist)) ? (Number(priceMist) / 1e9).toFixed(9) : '0.000000000'}
                 </div>
                 <div className="text-[10px] text-white/40 font-mono">SUI</div>
               </div>
@@ -384,11 +385,11 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
                     <div className="rounded-xl border border-white/10 bg-white/5 p-3 space-y-2 text-xs font-mono mb-4">
                       <div className="flex justify-between">
                         <span className="text-white/30">FINAL RESERVE</span>
-                        <span className="text-white font-bold">{graduationData.finalReserve.toFixed(2)} SUI</span>
+                        <span className="text-white font-bold">{graduationData?.finalReserve?.toFixed(2) ?? '—'} SUI</span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-white/30">CREATOR BONUS</span>
-                        <span className="text-emerald-400">{graduationData.creatorBonus.toFixed(4)} SUI</span>
+                        <span className="text-emerald-400">{graduationData?.creatorBonus?.toFixed(4) ?? '—'} SUI</span>
                       </div>
                     </div>
                   )}
