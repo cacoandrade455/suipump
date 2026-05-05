@@ -71,8 +71,23 @@ function useStats() {
   return stats;
 }
 
+// % change badge
+function PctBadge({ pct }) {
+  if (pct === null || pct === undefined || !Number.isFinite(pct)) return null;
+  const positive = pct >= 0;
+  return (
+    <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded-lg ${
+      positive
+        ? 'text-lime-400 bg-lime-400/10'
+        : 'text-red-400 bg-red-400/10'
+    }`}>
+      {positive ? '+' : ''}{pct.toFixed(1)}%
+    </span>
+  );
+}
+
 // Token card
-function TokenCard({ token }) {
+function TokenCard({ token, tokenStat }) {
   const client = useSuiClient();
   const navigate = useNavigate();
   const [curveState, setCurveState] = useState(null);
@@ -115,6 +130,8 @@ function TokenCard({ token }) {
     return `${Math.floor(diff / 86_400_000)}d ago`;
   })() : '';
 
+  const pctChange = tokenStat?.pctChange ?? null;
+
   return (
     <button
       onClick={() => token.tokenType && navigate(`/token/${token.curveId}`)}
@@ -134,11 +151,14 @@ function TokenCard({ token }) {
             <div className="text-[11px] text-lime-400/70 font-mono">${token.symbol}</div>
           </div>
         </div>
-        {graduated && (
-          <div className="text-[10px] font-mono text-emerald-400 bg-emerald-400/10 border border-emerald-400/20 px-2 py-0.5 rounded-full">
-            GRAD
-          </div>
-        )}
+        <div className="flex flex-col items-end gap-1">
+          {graduated && (
+            <div className="text-[10px] font-mono text-emerald-400 bg-emerald-400/10 border border-emerald-400/20 px-2 py-0.5 rounded-full">
+              GRAD
+            </div>
+          )}
+          <PctBadge pct={pctChange} />
+        </div>
       </div>
 
       <div className="mb-3">
@@ -298,10 +318,9 @@ function StatsBar({ tokenCount, stats }) {
 
 const SORT_OPTIONS = [
   { id: 'newest',   label: 'NEWEST' },
-  { id: 'oldest',   label: 'OLDEST' },
+  { id: 'trending', label: '🔥 TRENDING' },
   { id: 'volume',   label: 'VOLUME' },
   { id: 'trades',   label: 'TRADES' },
-  { id: 'reserve',  label: 'RESERVE' },
   { id: 'progress', label: 'PROGRESS' },
 ];
 
@@ -325,10 +344,9 @@ function HomePage({ onLaunch }) {
     const sb = tokenStats[b.curveId];
     switch (sort) {
       case 'newest':   return (b.timestamp || 0) - (a.timestamp || 0);
-      case 'oldest':   return (a.timestamp || 0) - (b.timestamp || 0);
+      case 'trending': return (sb?.recentTrades || 0) - (sa?.recentTrades || 0);
       case 'volume':   return (sb?.volume || 0) - (sa?.volume || 0);
       case 'trades':   return (sb?.trades || 0) - (sa?.trades || 0);
-      case 'reserve':  return (sb?.reserveSui || 0) - (sa?.reserveSui || 0);
       case 'progress': return (sb?.reserveSui || 0) - (sa?.reserveSui || 0);
       default: return 0;
     }
@@ -430,7 +448,9 @@ function HomePage({ onLaunch }) {
 
       {!loading && sorted.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          {sorted.map((token) => <TokenCard key={token.curveId} token={token} />)}
+          {sorted.map((token) => (
+            <TokenCard key={token.curveId} token={token} tokenStat={tokenStats[token.curveId]} />
+          ))}
         </div>
       )}
     </div>
