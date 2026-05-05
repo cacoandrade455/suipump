@@ -82,5 +82,5 @@ export function priceMistPerToken(realSuiReserve, tokensSold) {
 }
 
 // Convenience formatters for display.
-export const mistToSui = (m) => Number(BigInt(m)) / 1e9;
-export const tokenUnitsToWhole = (u) => Number(BigInt(u)) / 10 ** TOKEN_DECIMALS;
+export const mistToSui = (m) => m == null ? 0 : Number(BigInt(m)) / 1e9;
+export const tokenUnitsToWhole = (u) => u == null ? 0 : Number(BigInt(u)) / 10 ** TOKEN_DECIMALS;
