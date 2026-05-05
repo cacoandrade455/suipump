@@ -26,14 +26,12 @@ function fmt(n, d = 2) {
   return n.toFixed(d);
 }
 
-// Scroll to top on route change
 function ScrollToTop() {
   const { pathname } = useLocation();
   useEffect(() => { window.scrollTo(0, 0); }, [pathname]);
   return null;
 }
 
-// Live stats hook
 function useStats() {
   const client = useSuiClient();
   const [stats, setStats] = useState({ poolSui: null, tradeCount: null, volume: null });
@@ -46,8 +44,7 @@ function useStats() {
           client.queryEvents({ query: { MoveEventType: `${PACKAGE_ID}::bonding_curve::TokensPurchased` }, limit: 100, order: 'descending' }),
           client.queryEvents({ query: { MoveEventType: `${PACKAGE_ID}::bonding_curve::TokensSold` }, limit: 100, order: 'descending' }),
         ]);
-        let protocolMist = 0;
-        let volumeMist = 0;
+        let protocolMist = 0, volumeMist = 0;
         for (const e of buys.data) {
           protocolMist += Number(e.parsedJson?.protocol_fee ?? 0);
           volumeMist += Number(e.parsedJson?.sui_in ?? 0);
@@ -71,22 +68,18 @@ function useStats() {
   return stats;
 }
 
-// % change badge
 function PctBadge({ pct }) {
   if (pct === null || pct === undefined || !Number.isFinite(pct)) return null;
   const positive = pct >= 0;
   return (
     <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded-lg ${
-      positive
-        ? 'text-lime-400 bg-lime-400/10'
-        : 'text-red-400 bg-red-400/10'
+      positive ? 'text-lime-400 bg-lime-400/10' : 'text-red-400 bg-red-400/10'
     }`}>
       {positive ? '+' : ''}{pct.toFixed(1)}%
     </span>
   );
 }
 
-// Token card
 function TokenCard({ token, tokenStat }) {
   const client = useSuiClient();
   const navigate = useNavigate();
@@ -130,8 +123,6 @@ function TokenCard({ token, tokenStat }) {
     return `${Math.floor(diff / 86_400_000)}d ago`;
   })() : '';
 
-  const pctChange = tokenStat?.pctChange ?? null;
-
   return (
     <button
       onClick={() => token.tokenType && navigate(`/token/${token.curveId}`)}
@@ -157,7 +148,7 @@ function TokenCard({ token, tokenStat }) {
               GRAD
             </div>
           )}
-          <PctBadge pct={pctChange} />
+          <PctBadge pct={tokenStat?.pctChange ?? null} />
         </div>
       </div>
 
@@ -184,7 +175,6 @@ function TokenCard({ token, tokenStat }) {
   );
 }
 
-// Skeleton card
 function SkeletonCard() {
   return (
     <div className="rounded-2xl border border-white/5 bg-white/[0.02] p-4 w-full animate-pulse">
@@ -204,7 +194,6 @@ function SkeletonCard() {
   );
 }
 
-// Header
 function Header({ onLaunch }) {
   const account = useCurrentAccount();
   const { poolSui, tradeCount } = useStats();
@@ -226,7 +215,6 @@ function Header({ onLaunch }) {
           </div>
         </Link>
 
-        {/* Desktop nav */}
         <div className="hidden sm:flex items-center gap-2">
           <Link to="/airdrop" className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all">
             <Gift size={10} />
@@ -253,7 +241,6 @@ function Header({ onLaunch }) {
           <ConnectButton />
         </div>
 
-        {/* Mobile nav */}
         <div className="flex sm:hidden items-center gap-2">
           {account && (
             <button onClick={onLaunch} className="flex items-center gap-1 px-3 py-1.5 bg-lime-400 text-black text-[10px] font-mono font-bold rounded-xl hover:bg-lime-300 transition-colors">
@@ -267,7 +254,6 @@ function Header({ onLaunch }) {
         </div>
       </div>
 
-      {/* Mobile dropdown menu */}
       {menuOpen && (
         <div className="sm:hidden border-t border-white/5 bg-black/95 px-4 py-3 space-y-2">
           <Link to="/airdrop" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/60 hover:text-lime-400 transition-colors border-b border-white/5">
@@ -292,7 +278,6 @@ function Header({ onLaunch }) {
   );
 }
 
-// Stats bar
 function StatsBar({ tokenCount, stats }) {
   const items = [
     { icon: <Coins size={13} />, label: 'TOKENS', value: tokenCount ?? '—' },
@@ -300,7 +285,6 @@ function StatsBar({ tokenCount, stats }) {
     { icon: <Flame size={13} />, label: 'VOLUME', value: stats.volume != null ? `${fmt(stats.volume)} SUI` : '—' },
     { icon: <Gift size={13} />, label: 'S1 POOL', value: stats.poolSui != null ? `${stats.poolSui.toFixed(2)} SUI` : '—' },
   ];
-
   return (
     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-8">
       {items.map(({ icon, label, value }) => (
@@ -324,7 +308,6 @@ const SORT_OPTIONS = [
   { id: 'progress', label: 'PROGRESS' },
 ];
 
-// Homepage
 function HomePage({ onLaunch }) {
   const account = useCurrentAccount();
   const { tokens, loading, error } = useTokenList();
@@ -335,8 +318,13 @@ function HomePage({ onLaunch }) {
 
   const filtered = tokens.filter(t => {
     if (!search.trim()) return true;
-    const q = search.toLowerCase();
-    return t.name?.toLowerCase().includes(q) || t.symbol?.toLowerCase().includes(q);
+    const q = search.toLowerCase().trim();
+    // Match name, symbol, OR contract address (curveId)
+    return (
+      t.name?.toLowerCase().includes(q) ||
+      t.symbol?.toLowerCase().includes(q) ||
+      t.curveId?.toLowerCase().includes(q)
+    );
   });
 
   const sorted = [...filtered].sort((a, b) => {
@@ -387,7 +375,6 @@ function HomePage({ onLaunch }) {
         </div>
       </div>
 
-      {/* Stats */}
       <StatsBar tokenCount={tokens.length} stats={stats} />
 
       {/* Search + Sort */}
@@ -397,7 +384,7 @@ function HomePage({ onLaunch }) {
           <input
             value={search}
             onChange={e => setSearch(e.target.value)}
-            placeholder="Search tokens…"
+            placeholder="Search by name, symbol or contract address…"
             className="w-full bg-white/5 border border-white/10 rounded-xl pl-9 pr-4 py-2.5 text-white text-xs font-mono focus:outline-none focus:border-lime-400/40 transition-colors placeholder-white/20"
           />
         </div>
@@ -457,7 +444,6 @@ function HomePage({ onLaunch }) {
   );
 }
 
-// Token page wrapper
 function TokenPageWrapper() {
   const { curveId } = useParams();
   const navigate = useNavigate();
@@ -495,7 +481,6 @@ function TokenPageWrapper() {
   return <TokenPage curveId={curveId} tokenType={tokenType} onBack={() => navigate('/')} />;
 }
 
-// Root app
 export default function App() {
   const navigate = useNavigate();
   const [showLaunch, setShowLaunch] = useState(false);
@@ -508,16 +493,12 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#080808] text-white" style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@700&display=swap');`}</style>
-
-      {/* Subtle grid */}
       <div className="fixed inset-0 pointer-events-none opacity-[0.03]" style={{
         backgroundImage: 'linear-gradient(rgba(132,204,22,1) 1px, transparent 1px), linear-gradient(90deg, rgba(132,204,22,1) 1px, transparent 1px)',
         backgroundSize: '60px 60px',
       }} />
-
       <ScrollToTop />
       <Header onLaunch={() => setShowLaunch(true)} />
-
       <main className="max-w-6xl mx-auto px-4 py-6">
         <Routes>
           <Route path="/" element={<HomePage onLaunch={() => setShowLaunch(true)} />} />
@@ -529,11 +510,9 @@ export default function App() {
           <Route path="/roadmap" element={<RoadmapPage onBack={() => navigate('/')} />} />
         </Routes>
       </main>
-
       <footer className="max-w-6xl mx-auto px-4 py-8 text-[10px] font-mono text-white/20 text-center tracking-widest border-t border-white/5 mt-8">
         SUIPUMP · TESTNET DEMO · CONTRACTS UNAUDITED · DYOR
       </footer>
-
       {showLaunch && (
         <LaunchModal onClose={() => setShowLaunch(false)} onLaunched={handleLaunched} />
       )}
