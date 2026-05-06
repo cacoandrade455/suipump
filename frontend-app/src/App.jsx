@@ -19,7 +19,6 @@ import { mistToSui, priceMistPerToken } from './curve.js';
 const MIST_PER_SUI = 1e9;
 
 function fmt(n, d = 2) {
-  if (n == null) return "-";
   if (!Number.isFinite(n)) return '—';
   if (n >= 1e9) return (n / 1e9).toFixed(d) + 'B';
   if (n >= 1e6) return (n / 1e6).toFixed(d) + 'M';
@@ -72,23 +71,8 @@ function useStats() {
   return stats;
 }
 
-// % change badge
-function PctBadge({ pct }) {
-  if (pct === null || pct === undefined || !Number.isFinite(pct)) return null;
-  const positive = pct >= 0;
-  return (
-    <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded-lg ${
-      positive
-        ? 'text-lime-400 bg-lime-400/10'
-        : 'text-red-400 bg-red-400/10'
-    }`}>
-      {positive ? '+' : ''}{pct.toFixed(1)}%
-    </span>
-  );
-}
-
 // Token card
-function TokenCard({ token, tokenStat }) {
+function TokenCard({ token }) {
   const client = useSuiClient();
   const navigate = useNavigate();
   const [curveState, setCurveState] = useState(null);
@@ -131,8 +115,6 @@ function TokenCard({ token, tokenStat }) {
     return `${Math.floor(diff / 86_400_000)}d ago`;
   })() : '';
 
-  const pctChange = tokenStat?.pctChange ?? null;
-
   return (
     <button
       onClick={() => token.tokenType && navigate(`/token/${token.curveId}`)}
@@ -152,14 +134,11 @@ function TokenCard({ token, tokenStat }) {
             <div className="text-[11px] text-lime-400/70 font-mono">${token.symbol}</div>
           </div>
         </div>
-        <div className="flex flex-col items-end gap-1">
-          {graduated && (
-            <div className="text-[10px] font-mono text-emerald-400 bg-emerald-400/10 border border-emerald-400/20 px-2 py-0.5 rounded-full">
-              GRAD
-            </div>
-          )}
-          <PctBadge pct={pctChange} />
-        </div>
+        {graduated && (
+          <div className="text-[10px] font-mono text-emerald-400 bg-emerald-400/10 border border-emerald-400/20 px-2 py-0.5 rounded-full">
+            GRAD
+          </div>
+        )}
       </div>
 
       <div className="mb-3">
@@ -201,6 +180,64 @@ function SkeletonCard() {
         <div className="h-2.5 bg-white/5 rounded w-16" />
         <div className="h-2.5 bg-white/5 rounded w-24" />
       </div>
+    </div>
+  );
+}
+
+
+// MobileWalletButtons — shown inside connect flow on mobile to add Phantom + Slush deep links
+function MobileWalletButtons() {
+  const [show, setShow] = React.useState(false);
+  const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+  if (!isMobile) return null;
+
+  const dappUrl = encodeURIComponent('https://suipump.vercel.app');
+
+  const wallets = [
+    {
+      name: 'Phantom',
+      icon: 'https://www.phantom.app/img/phantom-logo.png',
+      // Phantom deep link: opens dapp inside Phantom browser
+      url: `https://phantom.app/ul/browse/${dappUrl}?ref=${dappUrl}`,
+    },
+    {
+      name: 'Slush',
+      icon: 'https://slush.app/favicon.ico',
+      // Slush (Sui Wallet) deep link
+      url: `https://slush.app/open?url=${dappUrl}`,
+    },
+  ];
+
+  return (
+    <div className="mt-3">
+      {!show ? (
+        <button
+          onClick={() => setShow(true)}
+          className="w-full py-2.5 text-xs font-mono text-white/40 hover:text-white/70 transition-colors border border-white/10 rounded-xl"
+        >
+          Open in mobile wallet app
+        </button>
+      ) : (
+        <div className="space-y-2">
+          <div className="text-[10px] font-mono text-white/30 text-center mb-2">OPEN IN WALLET APP</div>
+          {wallets.map((w) => (
+            <a
+              key={w.name}
+              href={w.url}
+              target="_blank"
+              rel="noreferrer"
+              className="flex items-center gap-3 w-full px-4 py-3 rounded-xl bg-white/[0.04] border border-white/10 hover:border-lime-400/40 hover:bg-white/[0.07] transition-all"
+            >
+              <img src={w.icon} alt={w.name} className="w-7 h-7 rounded-lg" onError={(e) => { e.target.style.display = 'none'; }} />
+              <span className="text-sm font-mono text-white">{w.name}</span>
+              <span className="ml-auto text-[10px] text-white/30">OPEN →</span>
+            </a>
+          ))}
+          <p className="text-[9px] font-mono text-white/20 text-center pt-1">
+            App will open in your wallet&apos;s built-in browser
+          </p>
+        </div>
+      )}
     </div>
   );
 }
@@ -287,6 +324,9 @@ function Header({ onLaunch }) {
           <Link to="/roadmap" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/60 hover:text-lime-400 transition-colors">
             <Map size={14} /> ROADMAP
           </Link>
+          <div className="pt-1">
+            <MobileWalletButtons />
+          </div>
         </div>
       )}
     </header>
@@ -319,9 +359,10 @@ function StatsBar({ tokenCount, stats }) {
 
 const SORT_OPTIONS = [
   { id: 'newest',   label: 'NEWEST' },
-  { id: 'trending', label: '🔥 TRENDING' },
+  { id: 'oldest',   label: 'OLDEST' },
   { id: 'volume',   label: 'VOLUME' },
   { id: 'trades',   label: 'TRADES' },
+  { id: 'reserve',  label: 'RESERVE' },
   { id: 'progress', label: 'PROGRESS' },
 ];
 
@@ -345,9 +386,10 @@ function HomePage({ onLaunch }) {
     const sb = tokenStats[b.curveId];
     switch (sort) {
       case 'newest':   return (b.timestamp || 0) - (a.timestamp || 0);
-      case 'trending': return (sb?.recentTrades || 0) - (sa?.recentTrades || 0);
+      case 'oldest':   return (a.timestamp || 0) - (b.timestamp || 0);
       case 'volume':   return (sb?.volume || 0) - (sa?.volume || 0);
       case 'trades':   return (sb?.trades || 0) - (sa?.trades || 0);
+      case 'reserve':  return (sb?.reserveSui || 0) - (sa?.reserveSui || 0);
       case 'progress': return (sb?.reserveSui || 0) - (sa?.reserveSui || 0);
       default: return 0;
     }
@@ -449,9 +491,7 @@ function HomePage({ onLaunch }) {
 
       {!loading && sorted.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          {sorted.map((token) => (
-            <TokenCard key={token.curveId} token={token} tokenStat={tokenStats[token.curveId]} />
-          ))}
+          {sorted.map((token) => <TokenCard key={token.curveId} token={token} />)}
         </div>
       )}
     </div>
