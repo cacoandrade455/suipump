@@ -1,6 +1,7 @@
 // Comments.jsx
 // On-chain comment feed for a SuiPump token.
 // post_comment takes (curve_id: ID, text: String) — no generic, no sharedObjectRef.
+// Uses cursor-based pagination to fetch ALL comment events.
 
 import React, { useState, useEffect } from 'react';
 import {
@@ -11,6 +12,7 @@ import {
 import { Transaction } from '@mysten/sui/transactions';
 import { MessageSquare, Send } from 'lucide-react';
 import { PACKAGE_ID } from './constants.js';
+import { paginateEvents } from './paginateEvents.js';
 
 function timeAgo(ts) {
   if (!ts) return '';
@@ -33,13 +35,14 @@ export default function Comments({ curveId }) {
 
   async function loadComments(cancelled) {
     try {
-      const result = await client.queryEvents({
-        query: { MoveEventType: `${PACKAGE_ID}::bonding_curve::Comment` },
-        limit: 100,
-        order: 'descending',
-      });
+      const allEvents = await paginateEvents(
+        client,
+        `${PACKAGE_ID}::bonding_curve::Comment`,
+        { order: 'descending', maxPages: 10 }
+      );
+
       if (cancelled?.value) return;
-      const filtered = result.data
+      const filtered = allEvents
         .filter(e => e.parsedJson?.curve_id === curveId)
         .map(e => ({
           author: e.parsedJson.author,

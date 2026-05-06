@@ -1,18 +1,17 @@
 // S1AirdropCounter.jsx
-// Computes the running S1 airdrop pool estimate by scanning all
+// Computes the running S1 airdrop pool estimate by scanning ALL
 // TokensPurchased and TokensSold events across all SuiPump curves,
 // summing 50% of the protocol fee (0.50% of each trade's volume).
+// Uses cursor-based pagination — no more 100-event cap.
 //
 // TESTNET PREVIEW: This counter is for demonstration only.
-// The real S1 airdrop counter starts at zero on mainnet deployment.
-// Testnet trades do not count toward the actual airdrop.
 
 import React, { useState, useEffect } from 'react';
 import { useSuiClient } from '@mysten/dapp-kit';
 import { PACKAGE_ID } from './constants.js';
+import { paginateMultipleEvents } from './paginateEvents.js';
 
-const PROTOCOL_SHARE_BPS = 50;   // 0.50% of trade volume
-const AIRDROP_SHARE = 0.5;        // 50% of protocol fees → S1 pool
+const AIRDROP_SHARE = 0.5;
 const MIST_PER_SUI = 1e9;
 
 async function fetchSuiUsd() {
@@ -36,24 +35,6 @@ function fmtUsd(usd) {
   return `$${usd.toFixed(2)}`;
 }
 
-// Animated number counter
-function AnimatedNumber({ value, formatter }) {
-  const [displayed, setDisplayed] = useState(value);
-  useEffect(() => {
-    if (value === displayed) return;
-    const diff = value - displayed;
-    const steps = 30;
-    let step = 0;
-    const interval = setInterval(() => {
-      step++;
-      setDisplayed(displayed + diff * (step / steps));
-      if (step >= steps) { setDisplayed(value); clearInterval(interval); }
-    }, 16);
-    return () => clearInterval(interval);
-  }, [value]);
-  return <span>{formatter(displayed)}</span>;
-}
-
 export default function S1AirdropCounter() {
   const client = useSuiClient();
   const [poolSui, setPoolSui] = useState(0);
@@ -72,41 +53,34 @@ export default function S1AirdropCounter() {
     let cancelled = false;
     async function load() {
       try {
-        const [buys, sells] = await Promise.all([
-          client.queryEvents({
-            query: { MoveEventType: `${PACKAGE_ID}::bonding_curve::TokensPurchased` },
-            limit: 100, order: 'descending',
-          }),
-          client.queryEvents({
-            query: { MoveEventType: `${PACKAGE_ID}::bonding_curve::TokensSold` },
-            limit: 100, order: 'descending',
-          }),
-        ]);
+        const buyType = `${PACKAGE_ID}::bonding_curve::TokensPurchased`;
+        const sellType = `${PACKAGE_ID}::bonding_curve::TokensSold`;
+
+        const eventMap = await paginateMultipleEvents(
+          client,
+          [buyType, sellType],
+          { order: 'descending', maxPages: 20 }
+        );
 
         let totalVolumeMist = 0;
         let totalProtocolMist = 0;
 
-        for (const e of buys.data) {
+        for (const e of eventMap[buyType]) {
           const p = e.parsedJson;
-          const suiIn = Number(p.sui_in ?? 0);
-          const protocolFee = Number(p.protocol_fee ?? 0);
-          totalVolumeMist += suiIn;
-          totalProtocolMist += protocolFee;
+          totalVolumeMist += Number(p.sui_in ?? 0);
+          totalProtocolMist += Number(p.protocol_fee ?? 0);
         }
 
-        for (const e of sells.data) {
+        for (const e of eventMap[sellType]) {
           const p = e.parsedJson;
-          const suiOut = Number(p.sui_out ?? 0);
-          const protocolFee = Number(p.protocol_fee ?? 0);
-          // For sells, volume = gross out before fee
-          const grossOut = suiOut + Number(p.protocol_fee ?? 0) + Number(p.creator_fee ?? 0);
+          const grossOut = Number(p.sui_out ?? 0) + Number(p.protocol_fee ?? 0) + Number(p.creator_fee ?? 0);
           totalVolumeMist += grossOut;
-          totalProtocolMist += protocolFee;
+          totalProtocolMist += Number(p.protocol_fee ?? 0);
         }
 
         const airdropPoolSui = (totalProtocolMist * AIRDROP_SHARE) / MIST_PER_SUI;
         const volumeTotalSui = totalVolumeMist / MIST_PER_SUI;
-        const trades = buys.data.length + sells.data.length;
+        const trades = eventMap[buyType].length + eventMap[sellType].length;
 
         if (!cancelled) {
           setPoolSui(airdropPoolSui);
@@ -126,7 +100,6 @@ export default function S1AirdropCounter() {
 
   return (
     <div className="border border-lime-500/30 bg-gradient-to-br from-lime-950/20 to-black p-5">
-      {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <div>
           <div className="flex items-center gap-2 text-xs font-mono tracking-widest text-lime-400 mb-1">
@@ -141,7 +114,6 @@ export default function S1AirdropCounter() {
         </div>
       </div>
 
-      {/* Main pool stat */}
       <div className="mb-4">
         {loading ? (
           <div className="text-2xl font-bold font-mono text-lime-400">…</div>
@@ -159,7 +131,6 @@ export default function S1AirdropCounter() {
         )}
       </div>
 
-      {/* Supporting stats */}
       <div className="grid grid-cols-3 gap-3 border-t border-lime-950 pt-4">
         <div>
           <div className="text-[9px] font-mono text-lime-900 tracking-widest mb-1">TOTAL VOLUME</div>
@@ -176,7 +147,6 @@ export default function S1AirdropCounter() {
         </div>
       </div>
 
-      {/* How to earn */}
       <div className="mt-4 border-t border-lime-950 pt-3 grid grid-cols-2 gap-2 text-[10px] font-mono">
         {[
           ['BUY / SELL', '1 pt per 0.01 SUI'],

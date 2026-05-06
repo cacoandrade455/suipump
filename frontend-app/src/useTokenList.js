@@ -1,9 +1,11 @@
 // useTokenList.js
 // Queries CurveCreated events from the current suipump package.
+// Uses cursor-based pagination to fetch ALL events (not capped at 50).
 
 import { useState, useEffect } from 'react';
 import { useSuiClient } from '@mysten/dapp-kit';
 import { PACKAGE_ID } from './constants.js';
+import { paginateEvents } from './paginateEvents.js';
 
 export function useTokenList() {
   const client = useSuiClient();
@@ -19,15 +21,15 @@ export function useTokenList() {
         setLoading(true);
         setError(null);
 
-        const result = await client.queryEvents({
-          query: { MoveEventType: `${PACKAGE_ID}::bonding_curve::CurveCreated` },
-          limit: 50,
-          order: 'descending',
-        });
+        const events = await paginateEvents(
+          client,
+          `${PACKAGE_ID}::bonding_curve::CurveCreated`,
+          { order: 'descending', maxPages: 20 }
+        );
 
         if (cancelled) return;
 
-        const list = result.data.map((evt) => {
+        const list = events.map((evt) => {
           const j = evt.parsedJson;
           return {
             curveId: j.curve_id,

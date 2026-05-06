@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { useSuiClient } from '@mysten/dapp-kit';
 import { ArrowUpRight, ArrowDownRight } from 'lucide-react';
 import { PACKAGE_ID } from './constants.js';
+import { paginateMultipleEvents } from './paginateEvents.js';
 
 const MIST_PER_SUI = 1e9;
 
@@ -25,21 +26,20 @@ export default function TradeHistory({ curveId, symbol, refreshKey }) {
     async function load() {
       try {
         setLoading(true);
-        const [buys, sells] = await Promise.all([
-          client.queryEvents({
-            query: { MoveEventType: `${PACKAGE_ID}::bonding_curve::TokensPurchased` },
-            limit: 50, order: 'descending',
-          }),
-          client.queryEvents({
-            query: { MoveEventType: `${PACKAGE_ID}::bonding_curve::TokensSold` },
-            limit: 50, order: 'descending',
-          }),
-        ]);
+
+        const buyType = `${PACKAGE_ID}::bonding_curve::TokensPurchased`;
+        const sellType = `${PACKAGE_ID}::bonding_curve::TokensSold`;
+
+        const eventMap = await paginateMultipleEvents(
+          client,
+          [buyType, sellType],
+          { order: 'descending', maxPages: 20 }
+        );
 
         if (cancelled) return;
 
         const all = [
-          ...buys.data
+          ...eventMap[buyType]
             .filter(e => e.parsedJson?.curve_id === curveId)
             .map(e => ({
               kind: 'buy',
@@ -49,7 +49,7 @@ export default function TradeHistory({ curveId, symbol, refreshKey }) {
               ts: e.timestampMs ? Number(e.timestampMs) : null,
               digest: e.id?.txDigest,
             })),
-          ...sells.data
+          ...eventMap[sellType]
             .filter(e => e.parsedJson?.curve_id === curveId)
             .map(e => ({
               kind: 'sell',
@@ -59,7 +59,7 @@ export default function TradeHistory({ curveId, symbol, refreshKey }) {
               ts: e.timestampMs ? Number(e.timestampMs) : null,
               digest: e.id?.txDigest,
             })),
-        ].sort((a, b) => (b.ts || 0) - (a.ts || 0)).slice(0, 30);
+        ].sort((a, b) => (b.ts || 0) - (a.ts || 0)).slice(0, 50);
 
         if (!cancelled) { setTrades(all); setLoading(false); }
       } catch { if (!cancelled) setLoading(false); }
@@ -79,7 +79,9 @@ export default function TradeHistory({ curveId, symbol, refreshKey }) {
 
   return (
     <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-      <div className="text-[10px] font-mono text-white/30 tracking-widest mb-3">TRADE HISTORY</div>
+      <div className="text-[10px] font-mono text-white/30 tracking-widest mb-3">
+        TRADE HISTORY · {trades.length} TRADE{trades.length !== 1 ? 'S' : ''}
+      </div>
       <div className="space-y-1 max-h-64 overflow-y-auto">
         {trades.map((t, i) => (
           <div key={i} className="flex items-center justify-between text-xs font-mono py-1.5 border-b border-white/5 last:border-0">

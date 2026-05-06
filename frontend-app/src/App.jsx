@@ -15,10 +15,12 @@ import PortfolioPage from './PortfolioPage.jsx';
 import RoadmapPage from './RoadmapPage.jsx';
 import { PACKAGE_ID, DRAIN_SUI_APPROX, TOKEN_DECIMALS } from './constants.js';
 import { mistToSui, priceMistPerToken } from './curve.js';
+import { paginateMultipleEvents } from './paginateEvents.js';
 
 const MIST_PER_SUI = 1e9;
 
 function fmt(n, d = 2) {
+  if (n == null) return '—';
   if (!Number.isFinite(n)) return '—';
   if (n >= 1e9) return (n / 1e9).toFixed(d) + 'B';
   if (n >= 1e6) return (n / 1e6).toFixed(d) + 'M';
@@ -33,7 +35,7 @@ function ScrollToTop() {
   return null;
 }
 
-// Live stats hook
+// Live stats hook — uses paginated events to get accurate totals
 function useStats() {
   const client = useSuiClient();
   const [stats, setStats] = useState({ poolSui: null, tradeCount: null, volume: null });
@@ -42,23 +44,28 @@ function useStats() {
     let cancelled = false;
     async function load() {
       try {
-        const [buys, sells] = await Promise.all([
-          client.queryEvents({ query: { MoveEventType: `${PACKAGE_ID}::bonding_curve::TokensPurchased` }, limit: 100, order: 'descending' }),
-          client.queryEvents({ query: { MoveEventType: `${PACKAGE_ID}::bonding_curve::TokensSold` }, limit: 100, order: 'descending' }),
-        ]);
+        const buyType = `${PACKAGE_ID}::bonding_curve::TokensPurchased`;
+        const sellType = `${PACKAGE_ID}::bonding_curve::TokensSold`;
+
+        const eventMap = await paginateMultipleEvents(
+          client,
+          [buyType, sellType],
+          { order: 'descending', maxPages: 20 }
+        );
+
         let protocolMist = 0;
         let volumeMist = 0;
-        for (const e of buys.data) {
+        for (const e of eventMap[buyType]) {
           protocolMist += Number(e.parsedJson?.protocol_fee ?? 0);
           volumeMist += Number(e.parsedJson?.sui_in ?? 0);
         }
-        for (const e of sells.data) {
+        for (const e of eventMap[sellType]) {
           protocolMist += Number(e.parsedJson?.protocol_fee ?? 0);
           volumeMist += Number(e.parsedJson?.sui_out ?? 0);
         }
         if (!cancelled) setStats({
           poolSui: (protocolMist * 0.5) / MIST_PER_SUI,
-          tradeCount: buys.data.length + sells.data.length,
+          tradeCount: eventMap[buyType].length + eventMap[sellType].length,
           volume: volumeMist / MIST_PER_SUI,
         });
       } catch { }
@@ -197,13 +204,11 @@ function MobileWalletButtons() {
     {
       name: 'Phantom',
       icon: 'https://www.phantom.app/img/phantom-logo.png',
-      // Phantom deep link: opens dapp inside Phantom browser
       url: `https://phantom.app/ul/browse/${dappUrl}?ref=${dappUrl}`,
     },
     {
       name: 'Slush',
       icon: 'https://slush.app/favicon.ico',
-      // Slush (Sui Wallet) deep link
       url: `https://slush.app/open?url=${dappUrl}`,
     },
   ];

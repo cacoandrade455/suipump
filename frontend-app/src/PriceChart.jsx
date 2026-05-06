@@ -6,13 +6,14 @@
 //   - Hover crosshair with price tooltip (SUI + USD)
 //   - SUI/USD price from Binance public API (CORS-friendly, no key needed)
 //   - Candlestick-style OHLC grouping per interval
-//   - Fetches TokensPurchased + TokensSold events and reconstructs price history
+//   - Fetches ALL TokensPurchased + TokensSold events via cursor pagination
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useSuiClient } from '@mysten/dapp-kit';
 import { PACKAGE_ID } from './constants.js';
+import { paginateMultipleEvents } from './paginateEvents.js';
 
-const TOTAL_SUPPLY_WHOLE = 1_000_000_000; // 1B for market cap calc
+const TOTAL_SUPPLY_WHOLE = 1_000_000_000;
 const INTERVALS = [
   { label: '1M',  ms: 60_000 },
   { label: '5M',  ms: 300_000 },
@@ -22,7 +23,6 @@ const INTERVALS = [
 ];
 const VIEWS = ['PRICE', 'MCAP'];
 
-// Fetch SUI/USD from Binance public ticker — CORS allowed, no API key
 async function fetchSuiUsd() {
   try {
     const res = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=SUIUSDT');
@@ -30,7 +30,6 @@ async function fetchSuiUsd() {
     return parseFloat(j.price) || 0;
   } catch {
     try {
-      // Fallback: CoinGecko simple price (sometimes works without key)
       const res = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=sui&vs_currencies=usd');
       const j = await res.json();
       return j?.sui?.usd || 0;
@@ -40,7 +39,6 @@ async function fetchSuiUsd() {
   }
 }
 
-// Group raw trade points into OHLC candles per interval bucket
 function toCandles(points, intervalMs) {
   if (!intervalMs || intervalMs === 0) return points.map(p => ({ ...p, o: p.price, h: p.price, l: p.price, c: p.price }));
   if (points.length === 0) return [];
@@ -54,7 +52,7 @@ function toCandles(points, intervalMs) {
     .sort((a, b) => a.time - b.time)
     .map(b => ({
       time: b.time,
-      price: b.prices[b.prices.length - 1], // close
+      price: b.prices[b.prices.length - 1],
       o: b.prices[0],
       h: Math.max(...b.prices),
       l: Math.min(...b.prices),
@@ -62,14 +60,8 @@ function toCandles(points, intervalMs) {
     }));
 }
 
-// Filter points to only those within the last N buckets of the interval
-// For ALL (intervalMs=0), return everything
-// For time intervals, show last 100 data points regardless of time
-// (testnet trades from days ago should still show on 1M chart)
 function filterByInterval(points, intervalMs) {
   if (!intervalMs) return points;
-  // Instead of filtering by wall-clock time (which breaks on testnet with old trades),
-  // bucket the existing points and show the last 100 candles worth
   return points.slice(-100);
 }
 
@@ -79,38 +71,34 @@ export default function PriceChart({ curveId, refreshKey }) {
 
   const [rawTrades, setRawTrades] = useState([]);
   const [suiUsd, setSuiUsd] = useState(0);
-  const [intervalIdx, setIntervalIdx] = useState(4); // default ALL
+  const [intervalIdx, setIntervalIdx] = useState(4);
   const [view, setView] = useState('PRICE');
-  const [hover, setHover] = useState(null); // { x, y, point }
+  const [hover, setHover] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  // Fetch SUI price
   useEffect(() => {
     fetchSuiUsd().then(setSuiUsd);
     const t = setInterval(() => fetchSuiUsd().then(setSuiUsd), 30_000);
     return () => clearInterval(t);
   }, []);
 
-  // Fetch trade events
   useEffect(() => {
     let cancelled = false;
     async function load() {
       setLoading(true);
       try {
-        const [buys, sells] = await Promise.all([
-          client.queryEvents({
-            query: { MoveEventType: `${PACKAGE_ID}::bonding_curve::TokensPurchased` },
-            limit: 100, order: 'ascending',
-          }),
-          client.queryEvents({
-            query: { MoveEventType: `${PACKAGE_ID}::bonding_curve::TokensSold` },
-            limit: 100, order: 'ascending',
-          }),
-        ]);
+        const buyType = `${PACKAGE_ID}::bonding_curve::TokensPurchased`;
+        const sellType = `${PACKAGE_ID}::bonding_curve::TokensSold`;
+
+        const eventMap = await paginateMultipleEvents(
+          client,
+          [buyType, sellType],
+          { order: 'ascending', maxPages: 20 }
+        );
 
         const all = [
-          ...buys.data.map(e => ({ ...e, kind: 'buy' })),
-          ...sells.data.map(e => ({ ...e, kind: 'sell' })),
+          ...eventMap[buyType].map(e => ({ ...e, kind: 'buy' })),
+          ...eventMap[sellType].map(e => ({ ...e, kind: 'sell' })),
         ]
           .filter(e => e.parsedJson?.curve_id === curveId)
           .sort((a, b) => Number(a.timestampMs) - Number(b.timestampMs));
@@ -120,13 +108,10 @@ export default function PriceChart({ curveId, refreshKey }) {
           let pricePerWhole;
 
           if (e.kind === 'buy') {
-            // Marginal buy price: SUI paid (after fee) / tokens received
-            // sui_in includes the fee, effective swap = sui_in * 0.99
-            const suiIn = Number(p.sui_in ?? 0) / 1e9;       // SUI
-            const tokOut = Number(p.tokens_out ?? 1) / 1e6;  // whole tokens
+            const suiIn = Number(p.sui_in ?? 0) / 1e9;
+            const tokOut = Number(p.tokens_out ?? 1) / 1e6;
             pricePerWhole = tokOut > 0 ? suiIn / tokOut : 0;
           } else {
-            // Marginal sell price: SUI received / tokens sold
             const suiOut = Number(p.sui_out ?? 0) / 1e9;
             const tokIn = Number(p.tokens_in ?? 1) / 1e6;
             pricePerWhole = tokIn > 0 ? suiOut / tokIn : 0;
@@ -147,7 +132,6 @@ export default function PriceChart({ curveId, refreshKey }) {
     return () => { cancelled = true; clearInterval(t); };
   }, [curveId, client, refreshKey]);
 
-  // Derived chart data
   const intervalMs = INTERVALS[intervalIdx].ms;
   const filtered = useMemo(() => filterByInterval(rawTrades, intervalMs), [rawTrades, intervalMs]);
   const candles = useMemo(() => toCandles(filtered, intervalMs), [filtered, intervalMs]);
@@ -166,7 +150,6 @@ export default function PriceChart({ curveId, refreshKey }) {
     return candles.map(c => ({ ...c, value: c.price }));
   }, [candles, view]);
 
-  // SVG dimensions
   const W = 600, H = 160, PL = 56, PR = 8, PT = 12, PB = 28;
   const cW = W - PL - PR, cH = H - PT - PB;
 
@@ -189,13 +172,11 @@ export default function PriceChart({ curveId, refreshKey }) {
   const lineColor = isUp ? '#84CC16' : '#EF4444';
   const fillColor = isUp ? '#84CC1618' : '#EF444418';
 
-  // Y-axis labels
   const yTicks = [0, 0.25, 0.5, 0.75, 1].map(t => ({
     y: PT + (1 - t) * cH,
     value: minV + t * rangeV,
   }));
 
-  // X-axis labels (time)
   const xTicks = chartData.length >= 2
     ? [0, Math.floor(chartData.length / 2), chartData.length - 1].map(i => ({
         x: toX(i),
@@ -203,9 +184,8 @@ export default function PriceChart({ curveId, refreshKey }) {
       }))
     : [];
 
-  // Format value for display
   const fmtVal = (v) => {
-    if (v == null) return "-";
+    if (v == null) return '-';
     if (view === 'MCAP') {
       if (v >= 1e6) return `${(v / 1e6).toFixed(2)}M`;
       if (v >= 1e3) return `${(v / 1e3).toFixed(1)}k`;
@@ -222,14 +202,11 @@ export default function PriceChart({ curveId, refreshKey }) {
     if (usd >= 1e6) return `$${(usd / 1e6).toFixed(2)}M`;
     if (usd >= 1e3) return `$${(usd / 1e3).toFixed(2)}k`;
     if (usd >= 0.01) return `$${usd.toFixed(4)}`;
-    // For very small numbers, show enough significant digits without exponential
     if (usd === 0) return '$0';
     const sig = usd.toPrecision(4);
-    // Format as $0.0000144 style — count leading zeros after decimal
     return `$${parseFloat(sig).toFixed(Math.max(4, -Math.floor(Math.log10(usd)) + 3))}`;
   };
 
-  // Mouse hover handler
   const handleMouseMove = useCallback((e) => {
     if (!svgRef.current || chartData.length === 0) return;
     const rect = svgRef.current.getBoundingClientRect();
@@ -246,7 +223,6 @@ export default function PriceChart({ curveId, refreshKey }) {
 
   return (
     <div className="border border-lime-900/30 bg-black p-3">
-      {/* Controls row */}
       <div className="flex items-center justify-between mb-3">
         <div className="flex gap-1">
           {VIEWS.map(v => (
@@ -268,7 +244,6 @@ export default function PriceChart({ curveId, refreshKey }) {
         </div>
       </div>
 
-      {/* Current value display */}
       {currentPoint && (
         <div className="flex items-baseline gap-3 mb-2">
           {suiUsd > 0 ? (
@@ -293,7 +268,6 @@ export default function PriceChart({ curveId, refreshKey }) {
         </div>
       )}
 
-      {/* Chart */}
       {loading ? (
         <div className="h-40 flex items-center justify-center text-[10px] font-mono text-lime-900">
           LOADING TRADES…
@@ -312,45 +286,32 @@ export default function PriceChart({ curveId, refreshKey }) {
           onMouseLeave={() => setHover(null)}
           preserveAspectRatio="none"
         >
-          {/* Grid lines */}
           {yTicks.map((t, i) => (
             <line key={i} x1={PL} x2={W - PR} y1={t.y} y2={t.y}
               stroke="#1a1a1a" strokeWidth="1" />
           ))}
-
-          {/* Y-axis labels */}
           {yTicks.map((t, i) => (
             <text key={i} x={PL - 4} y={t.y + 3} textAnchor="end"
               fontSize="7" fill="#4B5563" fontFamily="monospace">
               {fmtVal(t.value)}
             </text>
           ))}
-
-          {/* X-axis labels */}
           {xTicks.map((t, i) => (
             <text key={i} x={t.x} y={H - 4} textAnchor="middle"
               fontSize="7" fill="#374151" fontFamily="monospace">
               {t.label}
             </text>
           ))}
-
-          {/* Area fill */}
           {areaD && <path d={areaD} fill={fillColor} />}
-
-          {/* Price line */}
           {pathD && (
             <path d={pathD} fill="none" stroke={lineColor} strokeWidth="1.5"
               strokeLinejoin="round" strokeLinecap="round" />
           )}
-
-          {/* Data point dots */}
           {chartData.map((d, i) => (
             <circle key={i} cx={toX(i)} cy={toY(d.value)} r="2"
               fill={d.kind === 'sell' ? '#EF4444' : '#84CC16'}
               opacity="0.6" />
           ))}
-
-          {/* Hover crosshair */}
           {hover && (
             <>
               <line x1={hover.x} x2={hover.x} y1={PT} y2={H - PB}
@@ -359,7 +320,6 @@ export default function PriceChart({ curveId, refreshKey }) {
                 stroke="#84CC16" strokeWidth="0.5" strokeDasharray="3,3" opacity="0.5" />
               <circle cx={hover.x} cy={hover.y} r="3.5"
                 fill={lineColor} stroke="#000" strokeWidth="1" />
-              {/* Tooltip */}
               {(() => {
                 const ttW = 130, ttH = 46;
                 const ttX = hover.x + 8 + ttW > W - PR ? hover.x - ttW - 8 : hover.x + 8;

@@ -2,10 +2,13 @@
 // For each token in the list, fetches TokensPurchased + TokensSold events
 // and computes: volume, trades, reserveSui, pctChange, recentTrades (last 60m)
 // Returns a map: { [curveId]: { volume, trades, reserveSui, pctChange, recentTrades } }
+//
+// Uses cursor-based pagination to fetch ALL events — no more 100-event cap.
 
 import { useState, useEffect, useRef } from 'react';
 import { useSuiClient } from '@mysten/dapp-kit';
 import { PACKAGE_ID } from './constants.js';
+import { paginateMultipleEvents } from './paginateEvents.js';
 
 const MIST_PER_SUI = 1e9;
 const ONE_HOUR_MS = 60 * 60 * 1000;
@@ -19,32 +22,28 @@ export function useTokenStats(tokens) {
     if (!tokens || tokens.length === 0) return;
 
     const ids = tokens.map(t => t.curveId).join(',');
-    if (ids === prevTokenIds.current) return; // no new tokens, skip re-fetch
+    if (ids === prevTokenIds.current) return;
     prevTokenIds.current = ids;
 
     let cancelled = false;
 
     async function load() {
       try {
-        // Fetch all buy + sell events globally (covers all curves)
-        const [buysResult, sellsResult] = await Promise.all([
-          client.queryEvents({
-            query: { MoveEventType: `${PACKAGE_ID}::bonding_curve::TokensPurchased` },
-            limit: 500,
-            order: 'descending',
-          }),
-          client.queryEvents({
-            query: { MoveEventType: `${PACKAGE_ID}::bonding_curve::TokensSold` },
-            limit: 500,
-            order: 'descending',
-          }),
-        ]);
+        const buyType = `${PACKAGE_ID}::bonding_curve::TokensPurchased`;
+        const sellType = `${PACKAGE_ID}::bonding_curve::TokensSold`;
+
+        const eventMap = await paginateMultipleEvents(
+          client,
+          [buyType, sellType],
+          { order: 'descending', maxPages: 20 }
+        );
 
         if (cancelled) return;
 
-        const now = Date.now();
+        const buysData = eventMap[buyType];
+        const sellsData = eventMap[sellType];
 
-        // Group by curveId
+        const now = Date.now();
         const map = {};
 
         const ensure = (curveId) => {
@@ -53,8 +52,8 @@ export function useTokenStats(tokens) {
               volume: 0,
               trades: 0,
               recentTrades: 0,
-              firstPrice: null,  // oldest price we have (approximate)
-              lastPrice: null,   // most recent price
+              firstPrice: null,
+              lastPrice: null,
               reserveSui: 0,
             };
           }
@@ -62,7 +61,7 @@ export function useTokenStats(tokens) {
         };
 
         // Process buys (descending order = newest first)
-        for (const evt of buysResult.data) {
+        for (const evt of buysData) {
           const j = evt.parsedJson;
           if (!j?.curve_id) continue;
           const s = ensure(j.curve_id);
@@ -71,17 +70,16 @@ export function useTokenStats(tokens) {
           s.volume += suiIn;
           s.trades += 1;
           if (ts && now - ts < ONE_HOUR_MS) s.recentTrades += 1;
-          // price approximation: sui_in / tokens_out (in whole tokens)
           const tokensOut = Number(j.tokens_out ?? 0) / 1e6;
           if (tokensOut > 0) {
             const price = suiIn / tokensOut;
-            if (s.lastPrice === null) s.lastPrice = price; // first seen = most recent
-            s.firstPrice = price; // keep overwriting = oldest we've seen
+            if (s.lastPrice === null) s.lastPrice = price;
+            s.firstPrice = price;
           }
         }
 
         // Process sells
-        for (const evt of sellsResult.data) {
+        for (const evt of sellsData) {
           const j = evt.parsedJson;
           if (!j?.curve_id) continue;
           const s = ensure(j.curve_id);
@@ -98,7 +96,7 @@ export function useTokenStats(tokens) {
           }
         }
 
-        // Compute % change: (lastPrice - firstPrice) / firstPrice * 100
+        // Compute % change
         for (const s of Object.values(map)) {
           if (s.firstPrice && s.lastPrice && s.firstPrice > 0) {
             s.pctChange = ((s.lastPrice - s.firstPrice) / s.firstPrice) * 100;

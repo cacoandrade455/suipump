@@ -2,6 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { useSuiClient } from '@mysten/dapp-kit';
 import { PACKAGE_ID, TOKEN_DECIMALS } from './constants.js';
+import { paginateMultipleEvents } from './paginateEvents.js';
 
 const CURVE_SUPPLY_WHOLE = 800_000_000;
 
@@ -11,7 +12,7 @@ function shortAddr(addr) {
 }
 
 function fmt(n) {
-  if (n === undefined || n === null || !Number.isFinite(n)) return '0';
+  if (n == null || !Number.isFinite(n)) return '0';
   if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
   if (n >= 1e3) return `${(n / 1e3).toFixed(1)}k`;
   return n.toFixed(2);
@@ -31,25 +32,23 @@ export default function HolderList({ curveId, refreshKey }) {
       setLoading(true);
       setError(null);
       try {
-        const [buys, sells] = await Promise.all([
-          client.queryEvents({
-            query: { MoveEventType: `${PACKAGE_ID}::bonding_curve::TokensPurchased` },
-            limit: 100, order: 'ascending',
-          }),
-          client.queryEvents({
-            query: { MoveEventType: `${PACKAGE_ID}::bonding_curve::TokensSold` },
-            limit: 100, order: 'ascending',
-          }),
-        ]);
+        const buyType = `${PACKAGE_ID}::bonding_curve::TokensPurchased`;
+        const sellType = `${PACKAGE_ID}::bonding_curve::TokensSold`;
 
-        const buyEvents = buys.data
+        const eventMap = await paginateMultipleEvents(
+          client,
+          [buyType, sellType],
+          { order: 'ascending', maxPages: 20 }
+        );
+
+        const buyEvents = eventMap[buyType]
           .filter(e => e.parsedJson?.curve_id === curveId)
           .map(e => ({
             wallet: e.parsedJson?.buyer,
             delta: Number(e.parsedJson?.tokens_out ?? 0) / 10 ** TOKEN_DECIMALS,
           }));
 
-        const sellEvents = sells.data
+        const sellEvents = eventMap[sellType]
           .filter(e => e.parsedJson?.curve_id === curveId)
           .map(e => ({
             wallet: e.parsedJson?.seller,
