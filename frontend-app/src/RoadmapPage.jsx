@@ -14,13 +14,17 @@ const phases = [
       { done: true,  text: 'Move contracts deployed — 18/18 unit tests passing' },
       { done: true,  text: 'Constant-product bonding curve with virtual reserves' },
       { done: true,  text: 'Creator-first fee model (40% creator / 50% protocol / 10% LP)' },
+      { done: true,  text: 'Graduation fee: 1% (0.5% creator bonus + 0.5% protocol bonus)' },
+      { done: true,  text: 'Front-run-safe graduation — internal transfers, no return values' },
       { done: true,  text: 'Transferable CreatorCap with up to 10 payout splits' },
-      { done: true,  text: 'Browser-based two-tx token launch flow' },
-      { done: true,  text: 'Live trading UI with price chart' },
-      { done: true,  text: 'On-chain social comments per token' },
-      { done: true,  text: 'Leaderboard, portfolio view, token search and sort' },
+      { done: true,  text: 'Browser-based two-tx token launch flow with social links' },
+      { done: true,  text: 'Live trading UI with price chart (OHLC candles, PRICE/MCAP, all intervals)' },
+      { done: true,  text: 'On-chain social comments with wallet avatar colors' },
+      { done: true,  text: 'Leaderboard, portfolio, token search (partial CA), trending sort' },
       { done: true,  text: 'Season 1 airdrop counter' },
-      { done: true,  text: 'Graduation state with Cetus DEX link' },
+      { done: true,  text: 'Cursor-based event pagination — no data loss on busy curves' },
+      { done: true,  text: 'Pre-audit security review completed' },
+      { done: true,  text: 'Mobile layout with WalletConnect + Phantom/Slush deep links' },
     ],
   },
   {
@@ -132,7 +136,6 @@ export default function RoadmapPage({ onBack }) {
         {/* Phases */}
         {phases.map((phase) => (
           <div key={phase.id} className={`rounded-2xl border p-5 ${statusColors[phase.status]}`}>
-            {/* Phase header */}
             <div className="flex items-center gap-3 mb-4">
               <div className={`w-2 h-2 rounded-full shrink-0 ${dotColors[phase.status]}`} />
               <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full border ${labelColors[phase.status]}`}>
@@ -147,7 +150,6 @@ export default function RoadmapPage({ onBack }) {
               )}
             </div>
 
-            {/* Items */}
             <div className="space-y-2.5">
               {phase.items.map((item, i) => (
                 <div key={i} className="flex items-start gap-3">

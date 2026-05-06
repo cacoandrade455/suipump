@@ -85,7 +85,7 @@ export default function WhitepaperPage({ onBack }) {
               SUIPUMP<span className="text-lime-400">.</span>
             </div>
             <div className="text-sm font-mono text-white/50 mb-1">Permissionless Token Launchpad on Sui</div>
-            <div className="text-xs font-mono text-white/25">White Paper · Season 1 · Version 1.0 · 2026</div>
+            <div className="text-xs font-mono text-white/25">White Paper · Season 1 · Version 2.0 · 2026</div>
             <div className="mt-4 border-t border-white/5 pt-4 text-[10px] font-mono text-white/15">
               TESTNET PREVIEW · CONTRACTS UNAUDITED · NOT FINANCIAL ADVICE
             </div>
@@ -111,16 +111,19 @@ export default function WhitepaperPage({ onBack }) {
 
         <Section number="03" title="Solution">
           <H>CREATOR-FIRST FEE STRUCTURE</H>
-          <P>SuiPump charges 1.00% total — lower than the incumbent. Creators receive 0.40% (40%), the protocol receives 0.50% (50%), and 0.10% is retained inside the bonding curve as an LP contribution.</P>
+          <P>SuiPump charges 1.00% total per trade — lower than the incumbent. Creators receive 0.40% (40%), the protocol receives 0.50% (50%), and 0.10% is retained inside the bonding curve as an LP contribution.</P>
           <H>LP FEES RETAINED IN THE CURVE</H>
           <P>The 0.10% LP share accumulates inside the curve's SUI reserve. Every trade deepens liquidity for all participants. At graduation, this migrates into the DEX pool alongside the 200M tokens reserved for liquidity.</P>
           <H>TRANSFERABLE CREATORCAP</H>
           <P>Each launched token is associated with a CreatorCap — a Move object that confers the right to claim creator fees and update payout configuration. The cap is transferable and supports up to 10 payout recipients with custom percentage splits.</P>
+          <H>FRONT-RUN-SAFE GRADUATION</H>
+          <P>At graduation, all fund routing is automatic and internal. The creator bonus is transferred directly to the creator's address, the protocol bonus is deposited into the protocol fee pool, and the LP tokens are minted and routed — all within the contract. No return values means no front-running opportunity. Anyone can trigger graduation, but the caller just pays gas — all value goes to predefined recipients.</P>
           <H>S1 AIRDROP</H>
           <P>At the end of Season 1, 50% of accumulated protocol fees are distributed to users in proportion to their points. Points are earned by trading, launching, referring, and holding graduated tokens.</P>
         </Section>
 
         <Section number="04" title="Fee Structure">
+          <H>TRADING FEES (1.00% PER TRADE)</H>
           <Table
             cols={['', 'SuiPump', 'Leading Sol Launchpad']}
             rows={[
@@ -129,10 +132,19 @@ export default function WhitepaperPage({ onBack }) {
               ['Protocol share', '0.50%', '0.95%'],
               ['LP / liquidity share', '0.10% in curve', '0%'],
               ['Launch fee', '2 SUI (anti-spam)', 'None'],
-              ['Creator revenue model', 'TransferableCreatorCap · up to 10 payouts', 'Single address'],
+              ['Creator revenue model', 'Transferable CreatorCap · up to 10 payouts', 'Single address'],
             ]}
           />
-          <P>Fees are paid and claimed in SUI. Creator fees are held in each curve's creator_fees balance, claimable only by the CreatorCap holder. Protocol fees are held separately, claimable via AdminCap.</P>
+          <H>GRADUATION FEES (1.00% OF FINAL RESERVE)</H>
+          <Table
+            cols={['Recipient', 'Share', 'On ~88k SUI reserve']}
+            rows={[
+              ['Creator bonus', '0.50%', '~440 SUI'],
+              ['Protocol bonus', '0.50%', '~440 SUI'],
+              ['Total graduation fee', '1.00%', '~880 SUI'],
+            ]}
+          />
+          <P>Trading fees are paid and claimed in SUI. Creator fees are held in each curve's creator_fees balance, claimable only by the CreatorCap holder. Protocol fees are held separately, claimable via AdminCap. Graduation bonuses are transferred automatically — creator bonus goes directly to the creator's address, protocol bonus is deposited into the protocol fee pool.</P>
         </Section>
 
         <Section number="05" title="Token Model">
@@ -151,11 +163,13 @@ export default function WhitepaperPage({ onBack }) {
           <H>BONDING CURVE MECHANICS</H>
           <P>SuiPump uses a constant-product pricing model with virtual reserves: Vs = 30,000 SUI and Vt = 1,073,000,000 tokens. The curve drains at approximately 87,900 SUI of real reserves.</P>
           <H>LAUNCH FLOW</H>
-          <P>Launching a token requires two wallet signatures. Tx 1: a fresh Move module is published with the creator's chosen name, symbol, description, and icon. Tx 2: the creator configures the curve — pays the 2 SUI launch fee, sets payout splits, and optionally executes a dev-buy in the same atomic transaction.</P>
+          <P>Launching a token requires two wallet signatures. Tx 1: a fresh Move module is published with the creator's chosen name, symbol, description, icon, and social links (Telegram, X, website). Tx 2: the creator configures the curve — pays the 2 SUI launch fee, sets payout splits, and optionally executes a dev-buy in the same atomic transaction.</P>
+          <H>SOCIAL LINKS</H>
+          <P>Creators can add Telegram, X (Twitter), and website links during launch. These are permanently encoded in the token's on-chain metadata and displayed on the token page. Links are immutable after launch — ensuring transparency.</P>
           <H>TAIL-CLIP PROTECTION</H>
           <P>When a buy order would purchase more tokens than remain, SuiPump clips the order to exactly the remaining supply, re-prices the SUI cost, and refunds the excess. This prevents the curve from stalling with dust and ensures clean graduation.</P>
           <H>GRADUATION</H>
-          <P>Triggers when token_reserve == 0. The contract mints 200M LP tokens, returns the accumulated SUI reserve (minus a 0.5% creator bonus), and deposits both into a Cetus pool via programmable transaction block. LP tokens are burned. Trading moves to the open market.</P>
+          <P>Triggers when token_reserve == 0. The contract automatically: (1) mints 200M LP tokens, (2) transfers 0.5% of the reserve to the creator as a graduation bonus, (3) deposits 0.5% into the protocol fee pool, (4) routes the remaining reserve and LP tokens for Cetus pool composition. All transfers are internal — no return values, no front-running opportunity. Anyone can trigger graduation by calling the function, but they only pay gas.</P>
         </Section>
 
         <Section number="07" title="Season 1 Airdrop">
@@ -183,31 +197,41 @@ export default function WhitepaperPage({ onBack }) {
         <Section number="08" title="Architecture">
           <H>SMART CONTRACTS</H>
           <P>Implemented in Move, deployed as a single package on Sui. Core module: suipump::bonding_curve — handles curve creation, trading, fee accounting, graduation, and the CreatorCap ownership model. Each token launch publishes a new independent Move package derived from a coin template, patched client-side via @mysten/move-bytecode-template.</P>
+          <H>SECURITY MODEL</H>
+          <P>Graduation is front-run safe: the graduate() function performs all transfers internally with no return values. The TreasuryCap is permanently locked inside the Curve object — no additional tokens can ever be minted. Creator authority lives in a transferable CreatorCap. Protocol authority lives in an AdminCap (multisig before mainnet). A comprehensive pre-audit security review has been conducted, with all medium+ findings addressed.</P>
+          <H>EVENT PAGINATION</H>
+          <P>All frontend components use cursor-based pagination to fetch complete event histories from the Sui RPC, eliminating the 100-event cap that affects naive implementations. This ensures accurate charts, holder lists, leaderboards, and trade histories regardless of trading volume.</P>
           <H>OBJECT MODEL</H>
           <P>Each launched token has its own isolated Curve&lt;T&gt; shared object. A failure or exploit in one token's curve cannot affect any other. Creator authority lives in a transferable CreatorCap owned object. Protocol authority lives in an AdminCap held by the deployer (multisig before mainnet).</P>
           <H>FRONTEND</H>
-          <P>React + Vite + @mysten/dapp-kit. Connects to any Sui-compatible wallet. Reads curve state directly from the Sui RPC — no backend or intermediary. The launch flow operates entirely client-side: bytecode is patched in the browser using WebAssembly and published directly from the user's wallet.</P>
+          <P>React + Vite + @mysten/dapp-kit. Connects to any Sui-compatible wallet including WalletConnect. Reads curve state directly from the Sui RPC — no backend or intermediary. The launch flow operates entirely client-side: bytecode is patched in the browser using WebAssembly and published directly from the user's wallet.</P>
         </Section>
 
         <Section number="09" title="Roadmap">
           <H>PHASE 1 — TESTNET (COMPLETE)</H>
-          <Bullet>Move contracts deployed and verified (18/18 Move unit tests passing)</Bullet>
-          <Bullet>Frontend trading UI live on testnet</Bullet>
-          <Bullet>Browser-based token launch flow operational</Bullet>
-          <Bullet>First tokens successfully launched end-to-end</Bullet>
+          <Bullet>Move contracts deployed and verified (18/18 Move unit tests)</Bullet>
+          <Bullet>Frontend trading UI live on testnet with full feature set</Bullet>
+          <Bullet>Browser-based token launch flow with social links</Bullet>
+          <Bullet>Front-run-safe graduation with 1% fee split</Bullet>
+          <Bullet>Cursor-based event pagination across all components</Bullet>
+          <Bullet>Pre-audit security review completed</Bullet>
           <H>PHASE 2 — PRE-MAINNET</H>
-          <Bullet>Independent security audit of Move contracts</Bullet>
+          <Bullet>Independent security audit of Move contracts (OtterSec / Movebit)</Bullet>
           <Bullet>AdminCap transferred to multisig</Bullet>
-          <Bullet>Cetus graduation PTB</Bullet>
+          <Bullet>Cetus CLMM auto-graduation PTB</Bullet>
+          <Bullet>Dedicated RPC node + monitoring infrastructure</Bullet>
+          <Bullet>Mobile app (iOS + Android)</Bullet>
           <H>PHASE 3 — MAINNET</H>
           <Bullet>Mainnet deployment post-audit</Bullet>
           <Bullet>S1 airdrop tracking activated from block 0</Bullet>
-          <Bullet>Community growth and token launches</Bullet>
+          <Bullet>First wave of real token launches and communities</Bullet>
+          <Bullet>On-chain referral system</Bullet>
+          <Bullet>Off-chain indexer for real-time trade history and charts</Bullet>
           <H>PHASE 4 — SCALE</H>
-          <Bullet>Off-chain indexer for trade history and charts</Bullet>
           <Bullet>$SUMP token — buyback-and-burn from protocol fees, governance</Bullet>
-          <Bullet>Season 1 close and airdrop distribution</Bullet>
+          <Bullet>Season 2 airdrop with enhanced point mechanics</Bullet>
           <Bullet>SuiPump Perps — derivatives market for graduated tokens</Bullet>
+          <Bullet>Multi-chain expansion</Bullet>
         </Section>
 
         <Section number="10" title="Disclaimers">
