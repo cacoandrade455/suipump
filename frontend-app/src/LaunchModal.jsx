@@ -35,6 +35,21 @@ function bcsVectorU64(nums) {
   return new Uint8Array(buf.buffer);
 }
 
+/**
+ * Encode social links into the description string.
+ * Format: "Human description||{json}"
+ * If no links provided, returns plain description.
+ */
+function encodeDescription(desc, links) {
+  const hasLinks = links.telegram || links.twitter || links.website;
+  if (!hasLinks) return desc;
+  const linksObj = {};
+  if (links.telegram) linksObj.telegram = links.telegram.trim();
+  if (links.twitter) linksObj.twitter = links.twitter.trim();
+  if (links.website) linksObj.website = links.website.trim();
+  return `${desc}||${JSON.stringify(linksObj)}`;
+}
+
 const STEPS = [
   { id: 'details', label: 'Details' },
   { id: 'payouts', label: 'Payouts' },
@@ -76,7 +91,12 @@ export default function LaunchModal({ onClose, onLaunched }) {
   const { mutateAsync: signAndExecute } = useSignAndExecuteTransaction();
 
   const [step, setStep] = useState(0);
-  const [form, setForm] = useState({ name: '', symbol: '', description: '', iconUrl: '', uploading: false, uploadError: null });
+  const [form, setForm] = useState({
+    name: '', symbol: '', description: '', iconUrl: '',
+    uploading: false, uploadError: null,
+    // Social links
+    telegram: '', twitter: '', website: '',
+  });
   const [payouts, setPayouts] = useState([{ address: account?.address ?? '', bps: 10000 }]);
   const [devBuy, setDevBuy] = useState('');
   const [launching, setLaunching] = useState(false);
@@ -112,7 +132,12 @@ export default function LaunchModal({ onClose, onLaunched }) {
       const tokenSymbol = form.symbol.toUpperCase();
       const moduleName = tokenSymbol.toLowerCase();
       const tokenName = form.name.trim();
-      const tokenDesc = form.description.trim() || `${tokenName} — launched on SuiPump`;
+      const rawDesc = form.description.trim() || `${tokenName} — launched on SuiPump`;
+      const tokenDesc = encodeDescription(rawDesc, {
+        telegram: form.telegram,
+        twitter: form.twitter,
+        website: form.website,
+      });
       const tokenIcon = form.iconUrl.trim() || 'https://suipump.test/icon-placeholder.png';
 
       setTxStep('tx1');
@@ -195,7 +220,7 @@ export default function LaunchModal({ onClose, onLaunched }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm px-4">
-      <div className="w-full max-w-lg rounded-3xl border border-white/10 bg-[#0a0a0a] font-mono shadow-2xl shadow-black/50 overflow-hidden">
+      <div className="w-full max-w-lg rounded-3xl border border-white/10 bg-[#0a0a0a] font-mono shadow-2xl shadow-black/50 overflow-hidden max-h-[90vh] overflow-y-auto">
 
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-white/5">
@@ -226,10 +251,9 @@ export default function LaunchModal({ onClose, onLaunched }) {
 
         <div className="px-6 py-5 space-y-4 min-h-[320px]">
 
-          {/* Step 0: Token details */}
+          {/* Step 0: Token details + social links */}
           {step === 0 && (
             <div className="space-y-4">
-              {/* Live preview */}
               <TokenPreview name={form.name} symbol={form.symbol} iconUrl={form.iconUrl} />
 
               <div className="grid grid-cols-2 gap-3">
@@ -311,6 +335,40 @@ export default function LaunchModal({ onClose, onLaunched }) {
                   />
                 </div>
                 {form.uploadError && <div className="text-[10px] text-red-400 mt-1">{form.uploadError}</div>}
+              </div>
+
+              {/* Social links */}
+              <div>
+                <label className="block text-[9px] tracking-widest text-white/30 mb-1.5">SOCIAL LINKS <span className="text-white/15">(OPTIONAL)</span></label>
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-mono text-white/20 w-20 shrink-0">TELEGRAM</span>
+                    <input
+                      value={form.telegram}
+                      onChange={e => setForm({ ...form, telegram: e.target.value })}
+                      placeholder="https://t.me/yourgroup"
+                      className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white/60 text-xs focus:outline-none focus:border-lime-400/50 transition-colors"
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-mono text-white/20 w-20 shrink-0">X / TWITTER</span>
+                    <input
+                      value={form.twitter}
+                      onChange={e => setForm({ ...form, twitter: e.target.value })}
+                      placeholder="https://x.com/yourtoken"
+                      className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white/60 text-xs focus:outline-none focus:border-lime-400/50 transition-colors"
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-mono text-white/20 w-20 shrink-0">WEBSITE</span>
+                    <input
+                      value={form.website}
+                      onChange={e => setForm({ ...form, website: e.target.value })}
+                      placeholder="https://yourtoken.com"
+                      className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white/60 text-xs focus:outline-none focus:border-lime-400/50 transition-colors"
+                    />
+                  </div>
+                </div>
               </div>
             </div>
           )}
@@ -401,7 +459,6 @@ export default function LaunchModal({ onClose, onLaunched }) {
             <div className="space-y-4">
               {!txStep && !error && (
                 <>
-                  {/* Token preview */}
                   <TokenPreview name={form.name} symbol={form.symbol} iconUrl={form.iconUrl} />
 
                   <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-2.5 text-xs font-mono">
@@ -410,10 +467,13 @@ export default function LaunchModal({ onClose, onLaunched }) {
                       { label: 'SYMBOL', value: `$${form.symbol}` },
                       { label: 'PAYOUTS', value: `${payouts.length} recipient${payouts.length > 1 ? 's' : ''}` },
                       { label: 'DEV BUY', value: parseFloat(devBuy) > 0 ? `${devBuy} SUI` : 'None' },
+                      ...(form.telegram ? [{ label: 'TELEGRAM', value: form.telegram }] : []),
+                      ...(form.twitter ? [{ label: 'X / TWITTER', value: form.twitter }] : []),
+                      ...(form.website ? [{ label: 'WEBSITE', value: form.website }] : []),
                     ].map(({ label, value }) => (
                       <div key={label} className="flex justify-between">
                         <span className="text-white/30">{label}</span>
-                        <span className="text-white">{value}</span>
+                        <span className="text-white truncate ml-4 max-w-[200px]">{value}</span>
                       </div>
                     ))}
                     <div className="flex justify-between border-t border-white/5 pt-2.5">

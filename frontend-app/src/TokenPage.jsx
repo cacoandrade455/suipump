@@ -7,7 +7,7 @@ import {
   useSuiClientQuery,
 } from '@mysten/dapp-kit';
 import { Transaction } from '@mysten/sui/transactions';
-import { Crown, Rocket, ExternalLink, ArrowLeft, Trophy, Droplets } from 'lucide-react';
+import { Crown, Rocket, ExternalLink, ArrowLeft, Trophy, Droplets, Globe, MessageCircle } from 'lucide-react';
 
 import { PACKAGE_ID, DRAIN_SUI_APPROX, TOKEN_DECIMALS, MIST_PER_SUI } from './constants.js';
 import { quoteBuy, quoteSell, priceMistPerToken, mistToSui, tokenUnitsToWhole } from './curve.js';
@@ -17,7 +17,7 @@ import TradeHistory from './TradeHistory.jsx';
 import Comments from './Comments.jsx';
 
 function fmt(n, d = 2) {
-  if (n === undefined || n === null) return '—';
+  if (n == null) return '—';
   if (!Number.isFinite(n)) return '—';
   if (n >= 1e9) return (n / 1e9).toFixed(d) + 'B';
   if (n >= 1e6) return (n / 1e6).toFixed(d) + 'M';
@@ -26,6 +26,58 @@ function fmt(n, d = 2) {
   return n.toFixed(d);
 }
 const fmtSui = (mist) => fmt(mistToSui(mist ?? 0), 4);
+
+/**
+ * Parse social links from metadata description.
+ * Format: "Human description||{json}"
+ * Returns { description, links: { telegram?, twitter?, website? } }
+ */
+function parseDescriptionLinks(raw) {
+  if (!raw) return { description: '', links: {} };
+  const idx = raw.indexOf('||');
+  if (idx === -1) return { description: raw, links: {} };
+  const desc = raw.slice(0, idx);
+  try {
+    const links = JSON.parse(raw.slice(idx + 2));
+    return { description: desc, links: links || {} };
+  } catch {
+    return { description: raw, links: {} };
+  }
+}
+
+// X/Twitter icon as inline SVG (lucide doesn't have the X logo)
+function XIcon({ size = 14 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
+      <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
+    </svg>
+  );
+}
+
+function SocialLinks({ links }) {
+  if (!links) return null;
+  const items = [];
+  if (links.telegram) items.push({ label: 'Telegram', url: links.telegram, icon: <MessageCircle size={12} /> });
+  if (links.twitter) items.push({ label: 'X', url: links.twitter, icon: <XIcon size={12} /> });
+  if (links.website) items.push({ label: 'Website', url: links.website, icon: <Globe size={12} /> });
+  if (items.length === 0) return null;
+
+  return (
+    <div className="flex gap-2 mt-2">
+      {items.map(({ label, url, icon }) => (
+        <a
+          key={label}
+          href={url}
+          target="_blank"
+          rel="noreferrer"
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-white/10 text-[10px] font-mono text-white/40 hover:border-lime-400/40 hover:text-lime-400 transition-all"
+        >
+          {icon} {label}
+        </a>
+      ))}
+    </div>
+  );
+}
 
 export default function TokenPage({ curveId, tokenType, onBack }) {
   const account = useCurrentAccount();
@@ -99,7 +151,6 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
     return () => { cancelled = true; };
   }, [tokenType, client]);
 
-  // Fetch graduation event for this curve
   useEffect(() => {
     let cancelled = false;
     async function loadGrad() {
@@ -152,6 +203,12 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
     ? tokenUnitsToWhole(balanceQuery.data.totalBalance)
     : 0;
 
+  // Parse social links from metadata description
+  const { description: cleanDescription, links: socialLinks } = useMemo(
+    () => parseDescriptionLinks(metadata?.description),
+    [metadata?.description]
+  );
+
   const quote = useMemo(() => {
     const a = parseFloat(amount);
     if (!a || a <= 0 || !fields) return null;
@@ -171,7 +228,6 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
     setStatus(null);
     const tx = new Transaction();
 
-    // Fetch initial shared version for the curve object
     const curveObj = await client.getObject({ id: curveId, options: { showOwner: true } });
     const initialSharedVersion = curveObj.data?.owner?.Shared?.initial_shared_version;
     const curveRef = tx.sharedObjectRef({
@@ -244,14 +300,11 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
         <ArrowLeft size={12} /> BACK TO ALL TOKENS
       </button>
 
-      {/* Mobile: single column. Desktop: 3-col grid */}
       <div className="lg:grid lg:grid-cols-3 lg:gap-4">
-        {/* Left: curve state */}
         <div className="lg:col-span-2 space-y-4 mb-4 lg:mb-0">
 
           {/* Token header card */}
           <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-            {/* Name + price row */}
             <div className="flex items-start gap-3 mb-4">
               <div className="w-12 h-12 rounded-full overflow-hidden border-2 border-white/10 flex items-center justify-center bg-lime-950/30 shrink-0">
                 {metadata?.iconUrl
@@ -265,9 +318,11 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
               <div className="flex-1 min-w-0">
                 <h2 className="text-lg font-bold text-white truncate">{fields.name}</h2>
                 <div className="text-xs text-lime-400/70 font-mono">${fields.symbol}</div>
-                {metadata?.description && (
-                  <div className="text-xs text-white/40 font-mono mt-0.5 line-clamp-2">{metadata.description}</div>
+                {cleanDescription && (
+                  <div className="text-xs text-white/40 font-mono mt-0.5 line-clamp-2">{cleanDescription}</div>
                 )}
+                {/* Social links */}
+                <SocialLinks links={socialLinks} />
               </div>
               <div className="text-right shrink-0">
                 <div className="text-[9px] text-white/30 font-mono tracking-widest">PRICE</div>
