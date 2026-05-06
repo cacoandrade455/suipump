@@ -1,6 +1,4 @@
 // Shared deployment info + helpers.
-// Your wallet's private key is loaded from ~/.sui/sui_config/sui.keystore by the CLI,
-// and we reuse the same keystore so you don't paste keys into code.
 
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -9,9 +7,9 @@ import { fromB64 } from '@mysten/sui/utils';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { SuiClient, getFullnodeUrl } from '@mysten/sui/client';
 
-export const PACKAGE_ID  = '0xf91acdd7456381110d6a15d380dfd99fc126e59ffbf7a818c118e53765fa54c5';
-export const ADMIN_CAP_ID = '0xc48452ed7e3c0a7bd0fb3e66ba37f15ccb6a9d090a87f7b53a451e3716ddeb6d';
-export const CURVE_ID    = '0xdd84ca597b0f6ecdddc3909465353c6786320b20a99416d92a6709f444e089fc';
+export const PACKAGE_ID  = '0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8';
+export const ADMIN_CAP_ID = '0xfc80d407147af9445d7042a6a538524b5a483cc995fdbf0c795ce7eab506b6f9';
+export const CURVE_ID    = '0xf7c137e90c5a5c9e716c91fdd3561d55e6ba3c11c37a9741b0bfde03dc9d812f';
 export const TOKEN_TYPE  = `${PACKAGE_ID}::token_template::TOKEN_TEMPLATE`;
 
 export const client = new SuiClient({ url: getFullnodeUrl('testnet') });

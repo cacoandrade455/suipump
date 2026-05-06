@@ -1,37 +1,15 @@
 /// suipump::bonding_curve
 ///
-/// Exponential bonding-curve token launcher for Sui, inspired by the design
-/// patterns of leading Solana launchpads. Every launch gets its own shared
-/// `Curve<T>` object.
-///
-/// Pricing: constant-product with *virtual* reserves (the standard on-chain
-/// implementation of an exponential bonding curve). See the comment above
-/// `quote_out` for why this is exact and cheap.
+/// Exponential bonding-curve token launcher for Sui.
 ///
 /// Fee model (1.00% total per trade, three-way split):
-///   - 0.40% creator    (40 bps of trade volume)
-///   - 0.50% protocol   (50 bps of trade volume)
-///   - 0.10% LP/curve   (10 bps of trade volume) -- retained in sui_reserve,
-///                                                  deepening liquidity for
-///                                                  every holder. Migrates
-///                                                  into the DEX pool on
-///                                                  graduation.
+///   - 0.40% creator
+///   - 0.50% protocol
+///   - 0.10% LP/curve
 ///
-/// Compared to the incumbent Solana launchpad (Creator 0.30% / Protocol
-/// 0.95% / LP 0% / Total 1.25%): our total is lower, our creator share is
-/// both higher in absolute terms (0.40% vs 0.30%) and much higher as a
-/// fraction of the total (40% vs 24%), and a slice goes back into liquidity.
-/// The protocol still retains the single largest share.
-///
-/// Graduation: triggers when the curve's token reserve is empty (all 800M
-/// curve-supply tokens sold). The threshold is a *consequence* of the
-/// virtual-reserve tuning, not a configured constant. With our reserves
-/// (Vs=30k SUI, Vt=1.073B tokens), the curve naturally drains at ~87.9k SUI
-/// of real reserves, giving roughly 2x the incumbent's $69k graduation cap
-/// at today's SUI price.
-///
-/// Graduation bonus: creator receives 0.5% of the final reserve as a
-/// one-time bonus when the curve migrates to a DEX.
+/// Graduation fee (1.00% total of final reserve):
+///   - 0.50% creator bonus
+///   - 0.50% protocol bonus
 module suipump::bonding_curve {
     use sui::balance::{Self, Balance};
     use sui::coin::{Self, Coin, TreasuryCap};
@@ -57,69 +35,47 @@ module suipump::bonding_curve {
     const ECommentTooLong: u64 = 16;
     const ECommentEmpty: u64 = 17;
 
-    /// Maximum comment length in bytes.
     const MAX_COMMENT_BYTES: u64 = 280;
 
-    // ---------- Fee tunables (basis points; 10_000 = 100%) ----------
-    /// Total trade fee: 1.00%.
+    // ---------- Fee tunables ----------
     const TRADE_FEE_BPS: u64 = 100;
-    /// Split of the trade fee, in bps of the *fee itself*.
-    /// Must sum to BPS_DENOMINATOR (10_000).
-    const CREATOR_SHARE_BPS: u64 = 4_000;  // 40% of fee  -> 0.40% of volume
-    const PROTOCOL_SHARE_BPS: u64 = 5_000; // 50% of fee  -> 0.50% of volume
-    const LP_SHARE_BPS: u64 = 1_000;       // 10% of fee  -> 0.10% of volume
-    /// Creator bonus on graduation, in bps of the final reserve. 0.50%.
+    const CREATOR_SHARE_BPS: u64 = 4_000;
+    const PROTOCOL_SHARE_BPS: u64 = 5_000;
+    const LP_SHARE_BPS: u64 = 1_000;
+    /// Creator bonus on graduation: 0.50% of final reserve.
     const CREATOR_GRAD_BONUS_BPS: u64 = 50;
-    /// Fee paid to the protocol on each new token launch. 2 SUI.
-    /// Intentionally non-trivial to deter spam launches that dilute curation.
+    /// Protocol bonus on graduation: 0.50% of final reserve.
+    const PROTOCOL_GRAD_BONUS_BPS: u64 = 50;
     const LAUNCH_FEE_MIST: u64 = 2 * 1_000_000_000;
-    /// Maximum number of payout recipients per creator. Matches incumbent.
     const MAX_PAYOUTS: u64 = 10;
 
-    /// Total token supply (1B with 6 decimals).
     const TOTAL_SUPPLY: u64 = 1_000_000_000 * 1_000_000;
-    /// Supply sold via the curve (80%). Remaining 20% is minted into the LP
-    /// at graduation.
     const CURVE_SUPPLY: u64 = 800_000_000 * 1_000_000;
-    /// Virtual reserves — tuned so that the curve naturally drains (all
-    /// 800M curve-supply tokens sold) when the real SUI reserve reaches
-    /// ~87,900 SUI. Graduation triggers on drain, so there's no separately-
-    /// configured threshold that could become unreachable.
     const VIRTUAL_SUI_RESERVE: u64 = 30_000 * 1_000_000_000;
     const VIRTUAL_TOKEN_RESERVE: u64 = 1_073_000_000 * 1_000_000;
 
     const BPS_DENOMINATOR: u64 = 10_000;
 
-    // ---------- One-time witness for module init ----------
+    // ---------- One-time witness ----------
     public struct BONDING_CURVE has drop {}
 
     // ---------- Admin capability ----------
-    /// Held by the protocol deployer. Grants the right to withdraw accumulated
-    /// protocol fees from any curve. Transferable — deployer can rotate it to
-    /// a multisig or burn it to fully decentralize.
     public struct AdminCap has key, store {
         id: UID,
     }
 
     // ---------- Creator capability ----------
-    /// Transferable ownership token for a specific curve. Whoever holds this
-    /// cap can update the payout split and claim creator fees. Matches the
-    /// incumbent's "transferable coin ownership" feature: creators can sell
-    /// or hand off a launched token's revenue stream without touching the
-    /// underlying Curve object.
     public struct CreatorCap has key, store {
         id: UID,
         curve_id: ID,
     }
 
-    /// Single payout recipient inside a curve's split configuration.
     public struct Payout has copy, drop, store {
         recipient: address,
-        bps: u64,  // share of *creator fees*, in bps (sums to 10_000 across all entries)
+        bps: u64,
     }
 
     fun init(_witness: BONDING_CURVE, ctx: &mut TxContext) {
-        // Compile-time guard on fee split.
         assert!(
             CREATOR_SHARE_BPS + PROTOCOL_SHARE_BPS + LP_SHARE_BPS == BPS_DENOMINATOR,
             EFeeSplitInvalid,
@@ -131,24 +87,12 @@ module suipump::bonding_curve {
     // ---------- Core object ----------
     public struct Curve<phantom T> has key {
         id: UID,
-        /// Real SUI held by the curve, including the LP-share of accrued fees
-        /// (we just leave that portion inside the reserve instead of splitting
-        /// it out — that's what makes "LP fees" work).
         sui_reserve: Balance<SUI>,
-        /// Tokens still available for purchase from the curve.
         token_reserve: Balance<T>,
-        /// TreasuryCap kept inside the curve — no one can mint extra supply.
         treasury: TreasuryCap<T>,
-        /// Founding creator address. Informational only — authority to update
-        /// payouts or claim fees lives on the CreatorCap.
         creator: address,
-        /// Current payout split for creator fees. Mutable via `update_payouts`
-        /// when holding the matching CreatorCap.
         payouts: vector<Payout>,
-        /// Creator's claimable fee balance. Earmarked — never touched by
-        /// protocol withdrawals.
         creator_fees: Balance<SUI>,
-        /// Protocol's claimable fee balance. Withdrawn via AdminCap.
         protocol_fees: Balance<SUI>,
         graduated: bool,
         name: String,
@@ -191,6 +135,7 @@ module suipump::bonding_curve {
         curve_id: ID,
         final_sui_reserve: u64,
         creator_bonus: u64,
+        protocol_bonus: u64,
     }
 
     public struct CreatorFeesClaimed has copy, drop {
@@ -221,9 +166,7 @@ module suipump::bonding_curve {
     }
 
     // ---------- Creation ----------
-    /// Legacy single-creator launch. No launch fee; single payout goes 100%
-    /// to `creator`. Kept for backward compatibility with already-deployed
-    /// curves. New launches should use `create_with_launch_fee`.
+    /// Legacy single-creator launch. No launch fee.
     public fun create<T>(
         mut treasury: TreasuryCap<T>,
         name: String,
@@ -259,12 +202,6 @@ module suipump::bonding_curve {
         transfer::share_object(curve);
     }
 
-    /// Internal creation — returns the new `Curve<T>` and `CreatorCap`
-    /// without sharing/transferring, so a PTB can chain additional calls
-    /// (e.g. dev-buy) on the Curve before it becomes public. The caller's
-    /// PTB is responsible for sharing the Curve and handing the cap off;
-    /// Move will abort the transaction if either is forgotten (non-drop
-    /// resources must be consumed).
     #[allow(lint(self_transfer))]
     public fun create_and_return<T>(
         mut treasury: TreasuryCap<T>,
@@ -315,17 +252,10 @@ module suipump::bonding_curve {
         (curve, cap)
     }
 
-    /// Finalize a returned Curve: share it so trading is possible. The PTB
-    /// calls this after any in-line dev-buy completes. Separate from
-    /// `create_and_return` so the PTB can do `buy` first with the non-shared
-    /// curve (more efficient — avoids an unnecessary shared-object sequence
-    /// point mid-transaction).
     public fun share_curve<T>(curve: Curve<T>) {
         transfer::share_object(curve);
     }
 
-    /// Convenience wrapper for launches with no dev-buy. Returns nothing;
-    /// shares the curve and transfers the cap to the sender in one call.
     #[allow(lint(self_transfer))]
     public fun create_with_launch_fee<T>(
         treasury: TreasuryCap<T>,
@@ -344,14 +274,6 @@ module suipump::bonding_curve {
         transfer::public_transfer(cap, tx_context::sender(ctx));
     }
 
-    /// Validate and construct a payouts vector. Parallel arrays keep the
-    /// public API simple for TypeScript callers; internally we zip them.
-    /// Rules:
-    ///   - Must have at least 1 entry
-    ///   - At most MAX_PAYOUTS (10) entries
-    ///   - Same length for both input vectors
-    ///   - bps values must sum to exactly BPS_DENOMINATOR (10_000)
-    ///   - No duplicate addresses (client-side merge first)
     fun build_payouts(
         addresses: vector<address>,
         bps_values: vector<u64>,
@@ -368,7 +290,6 @@ module suipump::bonding_curve {
             let addr = *vector::borrow(&addresses, i);
             let share = *vector::borrow(&bps_values, i);
 
-            // No duplicates — check against everything already added.
             let mut j: u64 = 0;
             let m = vector::length(&out);
             while (j < m) {
@@ -386,10 +307,6 @@ module suipump::bonding_curve {
     }
 
     // ---------- Pricing math ----------
-    /// Constant product: (x + dx)(y - dy) = xy  =>  dy = y*dx / (x + dx)
-    /// Combined with virtual reserves, this exactly reproduces the leading Solana launchpad's
-    /// bonding-curve pricing with pure integer math — no fixed-point, no
-    /// exponentiation, no rounding drift.
     fun quote_out(dx: u64, x_reserve: u64, y_reserve: u64): u64 {
         let dx_u128 = dx as u128;
         let x_u128 = x_reserve as u128;
@@ -406,9 +323,6 @@ module suipump::bonding_curve {
         VIRTUAL_TOKEN_RESERVE - sold
     }
 
-    /// Splits a gross fee into (creator, protocol, lp) components.
-    /// Rounding errors fall to LP (the "house"), so creator and protocol
-    /// are never short-changed.
     fun split_fee(fee: u64): (u64, u64, u64) {
         let creator = (fee * CREATOR_SHARE_BPS) / BPS_DENOMINATOR;
         let protocol = (fee * PROTOCOL_SHARE_BPS) / BPS_DENOMINATOR;
@@ -427,23 +341,16 @@ module suipump::bonding_curve {
         let sui_in = coin::value(&payment);
         assert!(sui_in > 0, EZeroAmount);
 
-        // Fee off the top, split three ways.
         let fee_amount = (sui_in * TRADE_FEE_BPS) / BPS_DENOMINATOR;
         let (creator_fee, protocol_fee, lp_fee) = split_fee(fee_amount);
         let swap_amount = sui_in - fee_amount;
 
-        // Price against effective (real + virtual) reserves.
         let x = effective_sui_reserve(curve);
         let y = effective_token_reserve(curve);
         let naive_tokens_out = quote_out(swap_amount, x, y);
 
-        // Tail-buy handling: if the naive quote wants more tokens than remain,
-        // buy exactly the remainder and compute the actual swap cost in reverse.
-        // Any unspent SUI is refunded. This is how a "final buyer" drains the
-        // curve — matches the leading Solana launchpad's behavior and prevents dust getting stuck.
         let remaining = balance::value(&curve.token_reserve);
         let (tokens_out, actual_swap) = if (naive_tokens_out > remaining) {
-            // dx needed to buy exactly `remaining`:  dx = x * remaining / (y - remaining)
             let needed = (((x as u128) * (remaining as u128))
                           / ((y as u128) - (remaining as u128))) as u64;
             (remaining, needed)
@@ -453,23 +360,14 @@ module suipump::bonding_curve {
 
         assert!(tokens_out >= min_tokens_out, ESlippageExceeded);
 
-        // Route funds:
-        //   creator_fee  -> curve.creator_fees (earmarked)
-        //   protocol_fee -> curve.protocol_fees (earmarked)
-        //   lp_fee       -> stays in curve.sui_reserve
-        //   actual_swap  -> curve.sui_reserve
-        //   anything left-over -> refunded to buyer
         let creator_coin = coin::split(&mut payment, creator_fee, ctx);
         let protocol_coin = coin::split(&mut payment, protocol_fee, ctx);
         balance::join(&mut curve.creator_fees, coin::into_balance(creator_coin));
         balance::join(&mut curve.protocol_fees, coin::into_balance(protocol_coin));
 
-        // Pay actual_swap + lp_fee into reserve; whatever's left in `payment`
-        // is the refund.
         let to_reserve = actual_swap + lp_fee;
         let reserve_coin = coin::split(&mut payment, to_reserve, ctx);
         balance::join(&mut curve.sui_reserve, coin::into_balance(reserve_coin));
-        // `payment` now holds only the refund (zero in the normal case).
 
         let out_balance = balance::split(&mut curve.token_reserve, tokens_out);
 
@@ -499,18 +397,15 @@ module suipump::bonding_curve {
         let amount_in = coin::value(&tokens_in);
         assert!(amount_in > 0, EZeroAmount);
 
-        // Gross SUI out before fees.
         let x = effective_token_reserve(curve);
         let y = effective_sui_reserve(curve);
         let gross_sui_out = quote_out(amount_in, x, y);
 
-        // Fee on gross output; split three ways.
         let fee_amount = (gross_sui_out * TRADE_FEE_BPS) / BPS_DENOMINATOR;
         let (creator_fee, protocol_fee, lp_fee) = split_fee(fee_amount);
         let net_sui_out = gross_sui_out - fee_amount;
         assert!(net_sui_out >= min_sui_out, ESlippageExceeded);
 
-        // We'll withdraw (gross - lp_fee) — LP portion stays in the reserve.
         let withdraw_amount = gross_sui_out - lp_fee;
         assert!(withdraw_amount <= balance::value(&curve.sui_reserve), EInsufficientTokens);
 
@@ -521,7 +416,6 @@ module suipump::bonding_curve {
         let protocol_bal = balance::split(&mut out_bal, protocol_fee);
         balance::join(&mut curve.creator_fees, creator_bal);
         balance::join(&mut curve.protocol_fees, protocol_bal);
-        // out_bal now contains net_sui_out — the seller's payout.
 
         event::emit(TokensSold {
             curve_id: object::id(curve),
@@ -539,14 +433,6 @@ module suipump::bonding_curve {
     }
 
     // ---------- Fee claims ----------
-    /// Distribute accrued creator fees to all payout recipients per their
-    /// configured split. Requires holding the matching CreatorCap. Pays each
-    /// recipient directly (transfer happens inside this call) rather than
-    /// returning coins — avoids making the caller juggle N coin objects.
-    ///
-    /// Rounding: the last recipient absorbs any rounding dust so the pool
-    /// empties exactly. With integer bps math the total shortfall is at most
-    /// `n - 1` MIST, where n = number of recipients.
     public fun claim_creator_fees<T>(
         cap: &CreatorCap,
         curve: &mut Curve<T>,
@@ -562,7 +448,6 @@ module suipump::bonding_curve {
         while (i < n) {
             let payout = vector::borrow(&curve.payouts, i);
             let amount = if (i == n - 1) {
-                // Last recipient gets whatever's left — absorbs rounding.
                 total - paid
             } else {
                 (total * payout.bps) / BPS_DENOMINATOR
@@ -585,8 +470,6 @@ module suipump::bonding_curve {
         });
     }
 
-    /// Replace the payout split. Requires the matching CreatorCap.
-    /// Applies the same validation as launch.
     public fun update_payouts<T>(
         cap: &CreatorCap,
         curve: &mut Curve<T>,
@@ -603,7 +486,6 @@ module suipump::bonding_curve {
         });
     }
 
-    /// Protocol withdraws its accumulated fees. Requires AdminCap.
     public fun claim_protocol_fees<T>(
         _cap: &AdminCap,
         curve: &mut Curve<T>,
@@ -621,20 +503,21 @@ module suipump::bonding_curve {
         coin::from_balance(bal, ctx)
     }
 
-    // ---------- Graduation ----------
-    /// Graduate the curve to a DEX pool. Triggers when the curve has sold
-    /// all CURVE_SUPPLY tokens — matches the leading Solana launchpad's actual behavior where
-    /// graduation is a consequence of the curve filling up, not a separate
-    /// threshold that could be mis-set.
+    // ---------- Graduation (v2 — front-run safe, 1% total) ----------
+    /// Permissionless — anyone can trigger when token_reserve == 0.
+    /// All fund routing is automatic and internal:
+    ///   - Creator bonus (0.50%) → transferred to curve.creator
+    ///   - Protocol bonus (0.50%) → deposited into curve.protocol_fees
+    ///   - LP tokens (200M) → transferred to curve.creator
+    ///   - Pool SUI → stays in curve.sui_reserve for admin to claim
     ///
-    /// Returns (SUI side, token side, creator bonus) so the PTB can compose
-    /// a Cetus/Turbos pool creation in the same transaction.
+    /// No return values. Caller just pays gas. Nothing to front-run.
+    #[allow(lint(self_transfer))]
     public fun graduate<T>(
         curve: &mut Curve<T>,
         ctx: &mut TxContext,
-    ): (Coin<SUI>, Coin<T>, Coin<SUI>) {
+    ) {
         assert!(!curve.graduated, EAlreadyGraduated);
-        // Curve is "full" when no tokens remain to sell.
         assert!(balance::value(&curve.token_reserve) == 0, ENotGraduated);
 
         curve.graduated = true;
@@ -644,25 +527,50 @@ module suipump::bonding_curve {
         let lp_tokens_bal = coin::mint_balance(&mut curve.treasury, lp_supply);
 
         let total_reserve = balance::value(&curve.sui_reserve);
+
+        // Creator bonus: 0.50% of final reserve → curve.creator
         let creator_bonus_amount =
             (total_reserve * CREATOR_GRAD_BONUS_BPS) / BPS_DENOMINATOR;
         let creator_bonus_bal =
             balance::split(&mut curve.sui_reserve, creator_bonus_amount);
+        transfer::public_transfer(
+            coin::from_balance(creator_bonus_bal, ctx),
+            curve.creator,
+        );
 
-        // Everything else (including accrued LP fees!) migrates into the pool.
-        let reserve_bal = balance::withdraw_all(&mut curve.sui_reserve);
+        // Protocol bonus: 0.50% of final reserve → protocol_fees
+        let protocol_bonus_amount =
+            (total_reserve * PROTOCOL_GRAD_BONUS_BPS) / BPS_DENOMINATOR;
+        let protocol_bonus_bal =
+            balance::split(&mut curve.sui_reserve, protocol_bonus_amount);
+        balance::join(&mut curve.protocol_fees, protocol_bonus_bal);
+
+        // Pool SUI stays in sui_reserve — admin claims via claim_graduation_funds()
+        // LP tokens → creator (passed to admin for Cetus pool composition)
+        transfer::public_transfer(
+            coin::from_balance(lp_tokens_bal, ctx),
+            curve.creator,
+        );
 
         event::emit(Graduated {
             curve_id: object::id(curve),
             final_sui_reserve: total_reserve,
             creator_bonus: creator_bonus_amount,
+            protocol_bonus: protocol_bonus_amount,
         });
+    }
 
-        (
-            coin::from_balance(reserve_bal, ctx),
-            coin::from_balance(lp_tokens_bal, ctx),
-            coin::from_balance(creator_bonus_bal, ctx),
-        )
+    /// Admin claims the pool SUI post-graduation for Cetus pool composition.
+    public fun claim_graduation_funds<T>(
+        _cap: &AdminCap,
+        curve: &mut Curve<T>,
+        ctx: &mut TxContext,
+    ): Coin<SUI> {
+        assert!(curve.graduated, ENotGraduated);
+        let amount = balance::value(&curve.sui_reserve);
+        assert!(amount > 0, ENoFees);
+        let bal = balance::withdraw_all(&mut curve.sui_reserve);
+        coin::from_balance(bal, ctx)
     }
 
     // ---------- Read-only ----------
@@ -680,12 +588,10 @@ module suipump::bonding_curve {
     public fun is_graduated<T>(c: &Curve<T>): bool { c.graduated }
 
     public fun progress_bps<T>(c: &Curve<T>): u64 {
-        // Progress is the fraction of curve tokens sold.
         let sold = CURVE_SUPPLY - balance::value(&c.token_reserve);
         (sold * BPS_DENOMINATOR) / CURVE_SUPPLY
     }
 
-    // Fee-split constants exposed for frontend display.
     public fun trade_fee_bps(): u64 { TRADE_FEE_BPS }
     public fun creator_share_bps(): u64 { CREATOR_SHARE_BPS }
     public fun protocol_share_bps(): u64 { PROTOCOL_SHARE_BPS }
@@ -694,8 +600,6 @@ module suipump::bonding_curve {
     public fun launch_fee_mist(): u64 { LAUNCH_FEE_MIST }
     public fun max_payouts(): u64 { MAX_PAYOUTS }
 
-    /// Introspect a curve's current payout split. Returns (addresses, bps)
-    /// as parallel vectors. Useful for frontend display.
     public fun payouts<T>(curve: &Curve<T>): (vector<address>, vector<u64>) {
         let n = vector::length(&curve.payouts);
         let mut addrs = vector::empty<address>();
@@ -713,10 +617,6 @@ module suipump::bonding_curve {
     public fun creator_cap_curve_id(cap: &CreatorCap): ID { cap.curve_id }
 
     // ---------- Comments ----------
-    /// Post a comment on any curve. Purely event-based — no storage, no objects.
-    /// Takes the curve_id as a pure ID argument to avoid generic type resolution issues.
-    /// Any wallet can comment on any curve.
-    /// Text is capped at 280 bytes (UTF-8). Empty comments are rejected.
     public fun post_comment(
         curve_id: ID,
         text:     String,

@@ -2,9 +2,9 @@
 // Update these after each redeploy.
 
 export const PACKAGE_ID =
-  '0xf91acdd7456381110d6a15d380dfd99fc126e59ffbf7a818c118e53765fa54c5';
+  '0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8';
 export const CURVE_ID =
-  '0xdd84ca597b0f6ecdddc3909465353c6786320b20a99416d92a6709f444e089fc';
+  '0xf7c137e90c5a5c9e716c91fdd3561d55e6ba3c11c37a9741b0bfde03dc9d812f';
 export const TOKEN_TYPE = `${PACKAGE_ID}::token_template::TOKEN_TEMPLATE`;
 
 // Curve constants — must match bonding_curve.move exactly.
