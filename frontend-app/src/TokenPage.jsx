@@ -176,6 +176,7 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
 
   const curveQuery = useSuiClientQuery('getObject', { id: curveId, options: { showContent: true } }, { refetchInterval: 5000 });
   const balanceQuery = useSuiClientQuery('getBalance', { owner: account?.address, coinType: tokenType }, { enabled: !!account?.address, refetchInterval: 5000 });
+  const suiBalanceQuery = useSuiClientQuery('getBalance', { owner: account?.address, coinType: '0x2::sui::SUI' }, { enabled: !!account?.address, refetchInterval: 5000 });
 
   const fields = curveQuery.data?.data?.content?.fields;
   const reserveMist = fields ? BigInt(fields.sui_reserve) : 0n;
@@ -187,6 +188,7 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
   const priceMist = fields ? priceMistPerToken(reserveMist, tokensSold) : 0n;
   const creatorFees = fields ? BigInt(fields.creator_fees) : 0n;
   const tokenBalanceWhole = balanceQuery.data ? tokenUnitsToWhole(balanceQuery.data.totalBalance) : 0;
+  const suiBalanceSui = suiBalanceQuery.data ? Number(suiBalanceQuery.data.totalBalance) / 1e9 : 0;
 
   const { description: cleanDescription, links: socialLinks } = useMemo(
     () => parseDescriptionLinks(metadata?.description), [metadata?.description]
@@ -394,7 +396,7 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
           ) : (
             <TradePanelContent side={side} setSide={setSide} amount={amount} setAmount={setAmount}
               fields={fields} quote={quote} account={account} isPending={isPending}
-              graduated={graduated} execute={execute} tokenBalanceWhole={tokenBalanceWhole} />
+              graduated={graduated} execute={execute} tokenBalanceWhole={tokenBalanceWhole} suiBalanceSui={suiBalanceSui} />
           )}
         </div>
       </div>
@@ -403,7 +405,7 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
         <div className="lg:hidden fixed bottom-0 left-0 right-0 z-50 bg-black/95 border-t border-white/10 backdrop-blur-sm">
           <TradePanelContent side={side} setSide={setSide} amount={amount} setAmount={setAmount}
             fields={fields} quote={quote} account={account} isPending={isPending}
-            graduated={graduated} execute={execute} tokenBalanceWhole={tokenBalanceWhole} mobile />
+            graduated={graduated} execute={execute} tokenBalanceWhole={tokenBalanceWhole} suiBalanceSui={suiBalanceSui} mobile />
         </div>
       )}
       {graduated && (
@@ -418,7 +420,7 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
   );
 }
 
-function TradePanelContent({ side, setSide, amount, setAmount, fields, quote, account, isPending, graduated, execute, tokenBalanceWhole, mobile }) {
+function TradePanelContent({ side, setSide, amount, setAmount, fields, quote, account, isPending, graduated, execute, tokenBalanceWhole, suiBalanceSui, mobile }) {
   return (
     <div className={`rounded-2xl border border-lime-400/20 bg-white/[0.03] ${mobile ? 'p-3' : 'p-5 h-fit sticky top-20'}`}>
       <div className="flex gap-2 mb-3">
@@ -431,25 +433,39 @@ function TradePanelContent({ side, setSide, amount, setAmount, fields, quote, ac
             side === 'sell' ? 'bg-red-400 text-black font-bold' : 'bg-white/5 text-white/50 hover:bg-white/10'
           }`}>SELL</button>
       </div>
-      <div className="mb-1 text-[10px] font-mono text-white/30 tracking-widest">
-        {side === 'buy' ? 'YOU PAY (SUI)' : `YOU SELL (${fields.symbol})`}
+      <div className="flex items-center justify-between mb-1">
+        <div className="text-[10px] font-mono text-white/30 tracking-widest">
+          {side === 'buy' ? 'YOU PAY (SUI)' : `YOU SELL (${fields.symbol})`}
+        </div>
+        {side === 'buy' && suiBalanceSui > 0 && (
+          <div className="text-[10px] font-mono text-white/20">BAL: {suiBalanceSui.toFixed(2)} SUI</div>
+        )}
+        {side === 'sell' && tokenBalanceWhole > 0 && (
+          <div className="text-[10px] font-mono text-white/20">BAL: {fmt(tokenBalanceWhole, 0)} {fields.symbol}</div>
+        )}
       </div>
       <input value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.0"
         className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-white font-mono text-lg focus:outline-none focus:border-lime-400/50 transition-colors" />
       {side === 'buy' && (
         <div className="flex gap-1 mt-2">
-          {[0.1, 0.5, 1, 5].map((v) => (
+          {[1, 5, 10, 50].map((v) => (
             <button key={v} onClick={() => setAmount(String(v))}
               className="flex-1 text-[10px] font-mono py-1.5 rounded-lg bg-white/5 border border-white/10 text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all">{v}</button>
           ))}
+          {suiBalanceSui > 0 && (
+            <button onClick={() => setAmount(String(Math.max(0, suiBalanceSui - 0.1).toFixed(4)))}
+              className="flex-1 text-[10px] font-mono py-1.5 rounded-lg bg-lime-400/10 border border-lime-400/30 text-lime-400 font-bold hover:bg-lime-400/20 transition-all">MAX</button>
+          )}
         </div>
       )}
       {side === 'sell' && tokenBalanceWhole > 0 && (
         <div className="flex gap-1 mt-2">
-          {[25, 50, 100].map((pct) => (
+          {[25, 50, 75].map((pct) => (
             <button key={pct} onClick={() => setAmount(String((tokenBalanceWhole * pct / 100).toFixed(TOKEN_DECIMALS)))}
               className="flex-1 text-[10px] font-mono py-1.5 rounded-lg bg-white/5 border border-white/10 text-white/50 hover:border-red-400/40 hover:text-red-400 transition-all">{pct}%</button>
           ))}
+          <button onClick={() => setAmount(String(tokenBalanceWhole.toFixed(TOKEN_DECIMALS)))}
+            className="flex-1 text-[10px] font-mono py-1.5 rounded-lg bg-red-400/10 border border-red-400/30 text-red-400 font-bold hover:bg-red-400/20 transition-all">MAX</button>
         </div>
       )}
       {!mobile && quote && (
