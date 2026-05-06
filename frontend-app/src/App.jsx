@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, useNavigate, useParams, Link, useLocation } from 'react-router-dom';
 import { ConnectButton, useCurrentAccount, useSuiClient } from '@mysten/dapp-kit';
-import { Flame, Rocket, Plus, Gift, TrendingUp, Coins, Users, Trophy, Wallet, Search, Menu, X, Map } from 'lucide-react';
+import { Flame, Rocket, Plus, Gift, TrendingUp, Coins, Users, Trophy, Wallet, Search, Menu, X, Map, Copy } from 'lucide-react';
 
 import { useTokenList } from './useTokenList.js';
 import { useTokenStats } from './useTokenStats.js';
@@ -28,14 +28,13 @@ function fmt(n, d = 2) {
   return n.toFixed(d);
 }
 
-// Scroll to top on route change
 function ScrollToTop() {
   const { pathname } = useLocation();
   useEffect(() => { window.scrollTo(0, 0); }, [pathname]);
   return null;
 }
 
-// Live stats hook — uses paginated events to get accurate totals
+// Live stats hook
 function useStats() {
   const client = useSuiClient();
   const [stats, setStats] = useState({ poolSui: null, tradeCount: null, volume: null });
@@ -46,15 +45,8 @@ function useStats() {
       try {
         const buyType = `${PACKAGE_ID}::bonding_curve::TokensPurchased`;
         const sellType = `${PACKAGE_ID}::bonding_curve::TokensSold`;
-
-        const eventMap = await paginateMultipleEvents(
-          client,
-          [buyType, sellType],
-          { order: 'descending', maxPages: 20 }
-        );
-
-        let protocolMist = 0;
-        let volumeMist = 0;
+        const eventMap = await paginateMultipleEvents(client, [buyType, sellType], { order: 'descending', maxPages: 20 });
+        let protocolMist = 0, volumeMist = 0;
         for (const e of eventMap[buyType]) {
           protocolMist += Number(e.parsedJson?.protocol_fee ?? 0);
           volumeMist += Number(e.parsedJson?.sui_in ?? 0);
@@ -78,8 +70,21 @@ function useStats() {
   return stats;
 }
 
-// Token card
-function TokenCard({ token }) {
+// (#1) % change badge
+function PctBadge({ pct }) {
+  if (pct == null || !Number.isFinite(pct)) return null;
+  const isUp = pct >= 0;
+  return (
+    <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded-md ${
+      isUp ? 'text-lime-400 bg-lime-400/10' : 'text-red-400 bg-red-400/10'
+    }`}>
+      {isUp ? '+' : ''}{pct.toFixed(1)}%
+    </span>
+  );
+}
+
+// Token card — receives stats for badges (#1, #3, #4)
+function TokenCard({ token, stats }) {
   const client = useSuiClient();
   const navigate = useNavigate();
   const [curveState, setCurveState] = useState(null);
@@ -98,6 +103,7 @@ function TokenCard({ token }) {
     return () => { cancelled = true; clearInterval(t); };
   }, [token.curveId, client]);
 
+  // (#3) Fetch token icon from CoinMetadata
   useEffect(() => {
     if (!token.tokenType) return;
     let cancelled = false;
@@ -113,6 +119,9 @@ function TokenCard({ token }) {
   const progress = Math.min(100, (mistToSui(reserveMist) / DRAIN_SUI_APPROX) * 100);
   const priceMist = curveState ? priceMistPerToken(reserveMist, tokensSold) : 0n;
   const graduated = curveState?.graduated ?? false;
+
+  // (#4) Trending indicator — 3+ trades in last hour
+  const isTrending = stats?.recentTrades >= 3;
 
   const timeAgo = token.timestamp ? (() => {
     const diff = Date.now() - token.timestamp;
@@ -141,11 +150,19 @@ function TokenCard({ token }) {
             <div className="text-[11px] text-lime-400/70 font-mono">${token.symbol}</div>
           </div>
         </div>
-        {graduated && (
-          <div className="text-[10px] font-mono text-emerald-400 bg-emerald-400/10 border border-emerald-400/20 px-2 py-0.5 rounded-full">
-            GRAD
-          </div>
-        )}
+        <div className="flex items-center gap-1.5">
+          {isTrending && (
+            <div className="text-[10px] font-mono text-lime-400 bg-lime-400/10 border border-lime-400/20 px-1.5 py-0.5 rounded-full flex items-center gap-1">
+              <Flame size={9} /> HOT
+            </div>
+          )}
+          {graduated && (
+            <div className="text-[10px] font-mono text-emerald-400 bg-emerald-400/10 border border-emerald-400/20 px-2 py-0.5 rounded-full">
+              GRAD
+            </div>
+          )}
+          <PctBadge pct={stats?.pctChange} />
+        </div>
       </div>
 
       <div className="mb-3">
@@ -163,15 +180,19 @@ function TokenCard({ token }) {
 
       <div className="flex items-center justify-between">
         <span className="text-[11px] font-mono text-white/30">{timeAgo}</span>
-        <span className="text-[11px] font-mono text-white/60">
-          {curveState ? `${(Number(priceMist) / 1e9).toFixed(7)} SUI` : '…'}
-        </span>
+        <div className="flex items-center gap-2">
+          {stats?.trades > 0 && (
+            <span className="text-[10px] font-mono text-white/20">{stats.trades} trade{stats.trades !== 1 ? 's' : ''}</span>
+          )}
+          <span className="text-[11px] font-mono text-white/60">
+            {curveState ? `${(Number(priceMist) / 1e9).toFixed(7)} SUI` : '…'}
+          </span>
+        </div>
       </div>
     </button>
   );
 }
 
-// Skeleton card
 function SkeletonCard() {
   return (
     <div className="rounded-2xl border border-white/5 bg-white/[0.02] p-4 w-full animate-pulse">
@@ -191,63 +212,39 @@ function SkeletonCard() {
   );
 }
 
-
-// MobileWalletButtons — shown inside connect flow on mobile to add Phantom + Slush deep links
 function MobileWalletButtons() {
   const [show, setShow] = React.useState(false);
   const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
   if (!isMobile) return null;
-
   const dappUrl = encodeURIComponent('https://suipump.vercel.app');
-
   const wallets = [
-    {
-      name: 'Phantom',
-      icon: 'https://www.phantom.app/img/phantom-logo.png',
-      url: `https://phantom.app/ul/browse/${dappUrl}?ref=${dappUrl}`,
-    },
-    {
-      name: 'Slush',
-      icon: 'https://slush.app/favicon.ico',
-      url: `https://slush.app/open?url=${dappUrl}`,
-    },
+    { name: 'Phantom', icon: 'https://www.phantom.app/img/phantom-logo.png', url: `https://phantom.app/ul/browse/${dappUrl}?ref=${dappUrl}` },
+    { name: 'Slush', icon: 'https://slush.app/favicon.ico', url: `https://slush.app/open?url=${dappUrl}` },
   ];
-
   return (
     <div className="mt-3">
       {!show ? (
-        <button
-          onClick={() => setShow(true)}
-          className="w-full py-2.5 text-xs font-mono text-white/40 hover:text-white/70 transition-colors border border-white/10 rounded-xl"
-        >
+        <button onClick={() => setShow(true)} className="w-full py-2.5 text-xs font-mono text-white/40 hover:text-white/70 transition-colors border border-white/10 rounded-xl">
           Open in mobile wallet app
         </button>
       ) : (
         <div className="space-y-2">
           <div className="text-[10px] font-mono text-white/30 text-center mb-2">OPEN IN WALLET APP</div>
           {wallets.map((w) => (
-            <a
-              key={w.name}
-              href={w.url}
-              target="_blank"
-              rel="noreferrer"
-              className="flex items-center gap-3 w-full px-4 py-3 rounded-xl bg-white/[0.04] border border-white/10 hover:border-lime-400/40 hover:bg-white/[0.07] transition-all"
-            >
+            <a key={w.name} href={w.url} target="_blank" rel="noreferrer"
+              className="flex items-center gap-3 w-full px-4 py-3 rounded-xl bg-white/[0.04] border border-white/10 hover:border-lime-400/40 hover:bg-white/[0.07] transition-all">
               <img src={w.icon} alt={w.name} className="w-7 h-7 rounded-lg" onError={(e) => { e.target.style.display = 'none'; }} />
               <span className="text-sm font-mono text-white">{w.name}</span>
               <span className="ml-auto text-[10px] text-white/30">OPEN →</span>
             </a>
           ))}
-          <p className="text-[9px] font-mono text-white/20 text-center pt-1">
-            App will open in your wallet&apos;s built-in browser
-          </p>
+          <p className="text-[9px] font-mono text-white/20 text-center pt-1">App will open in your wallet&apos;s built-in browser</p>
         </div>
       )}
     </div>
   );
 }
 
-// Header
 function Header({ onLaunch }) {
   const account = useCurrentAccount();
   const { poolSui, tradeCount } = useStats();
@@ -268,26 +265,16 @@ function Header({ onLaunch }) {
             <div className="text-[8px] font-mono text-white/30 tracking-[0.2em] -mt-0.5">TESTNET · LIVE</div>
           </div>
         </Link>
-
-        {/* Desktop nav */}
         <div className="hidden sm:flex items-center gap-2">
           <Link to="/airdrop" className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all">
             <Gift size={10} />
             {poolSui !== null ? <span>S1 {poolSui.toFixed(4)} SUI</span> : <span>S1 AIRDROP</span>}
             {tradeCount !== null && <span className="text-white/20 ml-1">· {tradeCount} trades</span>}
           </Link>
-          <Link to="/leaderboard" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5">
-            <Trophy size={10} /> LEADERBOARD
-          </Link>
-          <Link to="/portfolio" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5">
-            <Wallet size={10} /> PORTFOLIO
-          </Link>
-          <Link to="/whitepaper" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all">
-            WHITEPAPER
-          </Link>
-          <Link to="/roadmap" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5">
-            <Map size={10} /> ROADMAP
-          </Link>
+          <Link to="/leaderboard" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5"><Trophy size={10} /> LEADERBOARD</Link>
+          <Link to="/portfolio" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5"><Wallet size={10} /> PORTFOLIO</Link>
+          <Link to="/whitepaper" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all">WHITEPAPER</Link>
+          <Link to="/roadmap" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5"><Map size={10} /> ROADMAP</Link>
           {account && (
             <button onClick={onLaunch} className="flex items-center gap-2 px-4 py-2 bg-lime-400 text-black text-xs font-mono tracking-widest hover:bg-lime-300 transition-colors rounded-xl font-bold">
               <Plus size={12} /> LAUNCH TOKEN
@@ -295,8 +282,6 @@ function Header({ onLaunch }) {
           )}
           <ConnectButton />
         </div>
-
-        {/* Mobile nav */}
         <div className="flex sm:hidden items-center gap-2">
           {account && (
             <button onClick={onLaunch} className="flex items-center gap-1 px-3 py-1.5 bg-lime-400 text-black text-[10px] font-mono font-bold rounded-xl hover:bg-lime-300 transition-colors">
@@ -309,36 +294,23 @@ function Header({ onLaunch }) {
           </button>
         </div>
       </div>
-
-      {/* Mobile dropdown menu */}
       {menuOpen && (
         <div className="sm:hidden border-t border-white/5 bg-black/95 px-4 py-3 space-y-2">
           <Link to="/airdrop" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/60 hover:text-lime-400 transition-colors border-b border-white/5">
             <Gift size={14} /> S1 AIRDROP
             {poolSui !== null && <span className="ml-auto text-xs text-white/30">{poolSui.toFixed(4)} SUI</span>}
           </Link>
-          <Link to="/leaderboard" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/60 hover:text-lime-400 transition-colors border-b border-white/5">
-            <Trophy size={14} /> LEADERBOARD
-          </Link>
-          <Link to="/portfolio" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/60 hover:text-lime-400 transition-colors border-b border-white/5">
-            <Wallet size={14} /> PORTFOLIO
-          </Link>
-          <Link to="/whitepaper" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/60 hover:text-lime-400 transition-colors border-b border-white/5">
-            WHITEPAPER
-          </Link>
-          <Link to="/roadmap" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/60 hover:text-lime-400 transition-colors">
-            <Map size={14} /> ROADMAP
-          </Link>
-          <div className="pt-1">
-            <MobileWalletButtons />
-          </div>
+          <Link to="/leaderboard" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/60 hover:text-lime-400 transition-colors border-b border-white/5"><Trophy size={14} /> LEADERBOARD</Link>
+          <Link to="/portfolio" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/60 hover:text-lime-400 transition-colors border-b border-white/5"><Wallet size={14} /> PORTFOLIO</Link>
+          <Link to="/whitepaper" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/60 hover:text-lime-400 transition-colors border-b border-white/5">WHITEPAPER</Link>
+          <Link to="/roadmap" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/60 hover:text-lime-400 transition-colors"><Map size={14} /> ROADMAP</Link>
+          <div className="pt-1"><MobileWalletButtons /></div>
         </div>
       )}
     </header>
   );
 }
 
-// Stats bar
 function StatsBar({ tokenCount, stats }) {
   const items = [
     { icon: <Coins size={13} />, label: 'TOKENS', value: tokenCount ?? '—' },
@@ -346,7 +318,6 @@ function StatsBar({ tokenCount, stats }) {
     { icon: <Flame size={13} />, label: 'VOLUME', value: stats.volume != null ? `${fmt(stats.volume)} SUI` : '—' },
     { icon: <Gift size={13} />, label: 'S1 POOL', value: stats.poolSui != null ? `${stats.poolSui.toFixed(2)} SUI` : '—' },
   ];
-
   return (
     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-8">
       {items.map(({ icon, label, value }) => (
@@ -362,16 +333,17 @@ function StatsBar({ tokenCount, stats }) {
   );
 }
 
+// (#4) Added TRENDING sort option
 const SORT_OPTIONS = [
   { id: 'newest',   label: 'NEWEST' },
   { id: 'oldest',   label: 'OLDEST' },
+  { id: 'trending', label: '🔥 TRENDING' },
   { id: 'volume',   label: 'VOLUME' },
   { id: 'trades',   label: 'TRADES' },
   { id: 'reserve',  label: 'RESERVE' },
   { id: 'progress', label: 'PROGRESS' },
 ];
 
-// Homepage
 function HomePage({ onLaunch }) {
   const account = useCurrentAccount();
   const { tokens, loading, error } = useTokenList();
@@ -380,18 +352,24 @@ function HomePage({ onLaunch }) {
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState('newest');
 
+  // (#5) Search: name, symbol, OR partial/full 0x address
   const filtered = tokens.filter(t => {
     if (!search.trim()) return true;
-    const q = search.toLowerCase();
-    return t.name?.toLowerCase().includes(q) || t.symbol?.toLowerCase().includes(q);
+    const q = search.toLowerCase().trim();
+    if (t.name?.toLowerCase().includes(q)) return true;
+    if (t.symbol?.toLowerCase().includes(q)) return true;
+    if (q.startsWith('0x') && t.curveId?.toLowerCase().includes(q)) return true;
+    return false;
   });
 
+  // (#4) Added trending sort by recentTrades
   const sorted = [...filtered].sort((a, b) => {
     const sa = tokenStats[a.curveId];
     const sb = tokenStats[b.curveId];
     switch (sort) {
       case 'newest':   return (b.timestamp || 0) - (a.timestamp || 0);
       case 'oldest':   return (a.timestamp || 0) - (b.timestamp || 0);
+      case 'trending': return (sb?.recentTrades || 0) - (sa?.recentTrades || 0);
       case 'volume':   return (sb?.volume || 0) - (sa?.volume || 0);
       case 'trades':   return (sb?.trades || 0) - (sa?.trades || 0);
       case 'reserve':  return (sb?.reserveSui || 0) - (sa?.reserveSui || 0);
@@ -402,7 +380,6 @@ function HomePage({ onLaunch }) {
 
   return (
     <div>
-      {/* Hero */}
       <div className="relative rounded-3xl border border-white/10 bg-gradient-to-br from-lime-950/20 via-black to-black p-8 sm:p-12 mb-8 text-center overflow-hidden">
         <div className="absolute top-0 left-1/2 -translate-x-1/2 w-96 h-32 bg-lime-400/10 blur-3xl rounded-full pointer-events-none" />
         <div className="relative">
@@ -415,53 +392,35 @@ function HomePage({ onLaunch }) {
               SUIPUMP<span className="text-lime-400">.</span>
             </h1>
           </div>
-          <p className="text-sm sm:text-base text-white/50 font-mono mb-2 max-w-lg mx-auto leading-relaxed">
-            Permissionless token launchpad on Sui.
-          </p>
-          <p className="text-xs text-white/30 font-mono mb-8 max-w-lg mx-auto">
-            Fair launch · No pre-mine · 40% creator fees · Graduates to Cetus
-          </p>
+          <p className="text-sm sm:text-base text-white/50 font-mono mb-2 max-w-lg mx-auto leading-relaxed">Permissionless token launchpad on Sui.</p>
+          <p className="text-xs text-white/30 font-mono mb-8 max-w-lg mx-auto">Fair launch · No pre-mine · 40% creator fees · Graduates to Cetus</p>
           {account ? (
-            <button onClick={onLaunch}
-              className="inline-flex items-center gap-2 px-8 py-3.5 bg-lime-400 text-black font-mono text-sm tracking-widest hover:bg-lime-300 transition-colors rounded-2xl font-bold shadow-lg shadow-lime-400/20"
-            >
+            <button onClick={onLaunch} className="inline-flex items-center gap-2 px-8 py-3.5 bg-lime-400 text-black font-mono text-sm tracking-widest hover:bg-lime-300 transition-colors rounded-2xl font-bold shadow-lg shadow-lime-400/20">
               <Rocket size={14} /> LAUNCH A TOKEN
             </button>
           ) : (
-            <div className="inline-flex items-center gap-2 px-6 py-3 rounded-2xl border border-white/10 text-sm font-mono text-white/40">
-              CONNECT WALLET TO LAUNCH
-            </div>
+            <div className="inline-flex items-center gap-2 px-6 py-3 rounded-2xl border border-white/10 text-sm font-mono text-white/40">CONNECT WALLET TO LAUNCH</div>
           )}
         </div>
       </div>
 
-      {/* Stats */}
       <StatsBar tokenCount={tokens.length} stats={stats} />
 
-      {/* Search + Sort */}
       <div className="flex flex-col sm:flex-row gap-3 mb-4">
         <div className="relative flex-1">
           <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/20 pointer-events-none" />
           <input
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="Search tokens…"
+            value={search} onChange={e => setSearch(e.target.value)}
+            placeholder="Search name, symbol, or 0x address…"
             className="w-full bg-white/5 border border-white/10 rounded-xl pl-9 pr-4 py-2.5 text-white text-xs font-mono focus:outline-none focus:border-lime-400/40 transition-colors placeholder-white/20"
           />
         </div>
         <div className="flex gap-1.5 flex-wrap">
           {SORT_OPTIONS.map(opt => (
-            <button
-              key={opt.id}
-              onClick={() => setSort(opt.id)}
+            <button key={opt.id} onClick={() => setSort(opt.id)}
               className={`px-3 py-2 rounded-xl text-[10px] font-mono tracking-widest transition-all whitespace-nowrap ${
-                sort === opt.id
-                  ? 'bg-lime-400 text-black font-bold'
-                  : 'bg-white/5 text-white/30 hover:bg-white/10 hover:text-white/60'
-              }`}
-            >
-              {opt.label}
-            </button>
+                sort === opt.id ? 'bg-lime-400 text-black font-bold' : 'bg-white/5 text-white/30 hover:bg-white/10 hover:text-white/60'
+              }`}>{opt.label}</button>
           ))}
         </div>
       </div>
@@ -473,9 +432,7 @@ function HomePage({ onLaunch }) {
       </div>
 
       {error && (
-        <div className="rounded-2xl border border-red-500/20 bg-red-950/20 p-4 text-xs font-mono text-red-400 mb-4">
-          Failed to load tokens: {error}
-        </div>
+        <div className="rounded-2xl border border-red-500/20 bg-red-950/20 p-4 text-xs font-mono text-red-400 mb-4">Failed to load tokens: {error}</div>
       )}
 
       {loading && (
@@ -487,23 +444,22 @@ function HomePage({ onLaunch }) {
       {!loading && sorted.length === 0 && !error && (
         <div className="rounded-3xl border border-white/10 p-16 text-center">
           <div className="text-5xl mb-4">{search ? '🔍' : '🔥'}</div>
-          <div className="text-sm font-mono text-white/40 mb-2">
-            {search ? `No tokens matching "${search}"` : 'NO TOKENS YET'}
-          </div>
+          <div className="text-sm font-mono text-white/40 mb-2">{search ? `No tokens matching "${search}"` : 'NO TOKENS YET'}</div>
           {!search && <div className="text-xs font-mono text-white/20">Be the first to launch a token on SuiPump.</div>}
         </div>
       )}
 
       {!loading && sorted.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          {sorted.map((token) => <TokenCard key={token.curveId} token={token} />)}
+          {sorted.map((token) => (
+            <TokenCard key={token.curveId} token={token} stats={tokenStats[token.curveId]} />
+          ))}
         </div>
       )}
     </div>
   );
 }
 
-// Token page wrapper
 function TokenPageWrapper() {
   const { curveId } = useParams();
   const navigate = useNavigate();
@@ -537,33 +493,23 @@ function TokenPageWrapper() {
       <div className="h-3 bg-white/5 rounded w-32" />
     </div>
   );
-
   return <TokenPage curveId={curveId} tokenType={tokenType} onBack={() => navigate('/')} />;
 }
 
-// Root app
 export default function App() {
   const navigate = useNavigate();
   const [showLaunch, setShowLaunch] = useState(false);
-
-  const handleLaunched = ({ curveId }) => {
-    setShowLaunch(false);
-    navigate(`/token/${curveId}`);
-  };
+  const handleLaunched = ({ curveId }) => { setShowLaunch(false); navigate(`/token/${curveId}`); };
 
   return (
     <div className="min-h-screen bg-[#080808] text-white" style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@700&display=swap');`}</style>
-
-      {/* Subtle grid */}
       <div className="fixed inset-0 pointer-events-none opacity-[0.03]" style={{
         backgroundImage: 'linear-gradient(rgba(132,204,22,1) 1px, transparent 1px), linear-gradient(90deg, rgba(132,204,22,1) 1px, transparent 1px)',
         backgroundSize: '60px 60px',
       }} />
-
       <ScrollToTop />
       <Header onLaunch={() => setShowLaunch(true)} />
-
       <main className="max-w-6xl mx-auto px-4 py-6">
         <Routes>
           <Route path="/" element={<HomePage onLaunch={() => setShowLaunch(true)} />} />
@@ -575,14 +521,10 @@ export default function App() {
           <Route path="/roadmap" element={<RoadmapPage onBack={() => navigate('/')} />} />
         </Routes>
       </main>
-
       <footer className="max-w-6xl mx-auto px-4 py-8 text-[10px] font-mono text-white/20 text-center tracking-widest border-t border-white/5 mt-8">
         SUIPUMP · TESTNET DEMO · CONTRACTS UNAUDITED · DYOR
       </footer>
-
-      {showLaunch && (
-        <LaunchModal onClose={() => setShowLaunch(false)} onLaunched={handleLaunched} />
-      )}
+      {showLaunch && <LaunchModal onClose={() => setShowLaunch(false)} onLaunched={handleLaunched} />}
     </div>
   );
 }
