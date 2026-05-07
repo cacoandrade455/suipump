@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, useNavigate, useParams, Link, useLocation } from 'react-router-dom';
 import { ConnectButton, useCurrentAccount, useSuiClient } from '@mysten/dapp-kit';
-import { Flame, Rocket, Plus, Gift, TrendingUp, Coins, Users, Trophy, Wallet, Search, Menu, X, Map, Copy } from 'lucide-react';
+import { Flame, Rocket, Plus, Gift, TrendingUp, Coins, Users, Trophy, Wallet, Search, Menu, X, Map, Copy, Crown } from 'lucide-react';
 
 import { useTokenList } from './useTokenList.js';
 import { useTokenStats } from './useTokenStats.js';
@@ -18,6 +18,8 @@ import { mistToSui, priceMistPerToken } from './curve.js';
 import { paginateMultipleEvents } from './paginateEvents.js';
 
 const MIST_PER_SUI = 1e9;
+// Market cap = price × total supply (1B tokens)
+const TOTAL_SUPPLY_WHOLE = 1_000_000_000;
 
 function fmt(n, d = 2) {
   if (n == null) return '—';
@@ -26,6 +28,15 @@ function fmt(n, d = 2) {
   if (n >= 1e6) return (n / 1e6).toFixed(d) + 'M';
   if (n >= 1e3) return (n / 1e3).toFixed(d) + 'k';
   return n.toFixed(d);
+}
+
+function timeAgoShort(ts) {
+  if (!ts) return '—';
+  const diff = Date.now() - ts;
+  if (diff < 60_000) return 'just now';
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+  return `${Math.floor(diff / 86_400_000)}d ago`;
 }
 
 function ScrollToTop() {
@@ -70,7 +81,7 @@ function useStats() {
   return stats;
 }
 
-// (#1) % change badge
+// % change badge
 function PctBadge({ pct }) {
   if (pct == null || !Number.isFinite(pct)) return null;
   const isUp = pct >= 0;
@@ -83,8 +94,8 @@ function PctBadge({ pct }) {
   );
 }
 
-// Token card — receives stats for badges (#1, #3, #4)
-function TokenCard({ token, stats }) {
+// Token card
+function TokenCard({ token, stats, isCrown }) {
   const client = useSuiClient();
   const navigate = useNavigate();
   const [curveState, setCurveState] = useState(null);
@@ -103,7 +114,6 @@ function TokenCard({ token, stats }) {
     return () => { cancelled = true; clearInterval(t); };
   }, [token.curveId, client]);
 
-  // (#3) Fetch token icon from CoinMetadata
   useEffect(() => {
     if (!token.tokenType) return;
     let cancelled = false;
@@ -120,7 +130,10 @@ function TokenCard({ token, stats }) {
   const priceMist = curveState ? priceMistPerToken(reserveMist, tokensSold) : 0n;
   const graduated = curveState?.graduated ?? false;
 
-  // (#4) Trending indicator — 3+ trades in last hour
+  // Market cap in SUI = price per whole token × total supply
+  const pricePerWhole = Number(priceMist) / 1e9;  // SUI per whole token
+  const marketCapSui = pricePerWhole * TOTAL_SUPPLY_WHOLE;
+
   const isTrending = stats?.recentTrades >= 3;
 
   const timeAgo = token.timestamp ? (() => {
@@ -134,11 +147,25 @@ function TokenCard({ token, stats }) {
   return (
     <button
       onClick={() => token.tokenType && navigate(`/token/${token.curveId}`)}
-      className="text-left rounded-2xl border border-white/10 bg-white/[0.03] hover:bg-white/[0.06] hover:border-lime-400/30 transition-all duration-200 p-4 w-full group"
+      className={`text-left rounded-2xl border bg-white/[0.03] hover:bg-white/[0.06] transition-all duration-200 p-4 w-full group relative ${
+        isCrown
+          ? 'border-lime-400/50 shadow-lg shadow-lime-400/10'
+          : 'border-white/10 hover:border-lime-400/30'
+      }`}
     >
-      <div className="flex items-start justify-between mb-3">
+      {/* Community Crown badge */}
+      {isCrown && (
+        <div className="absolute -top-3 left-1/2 -translate-x-1/2 flex items-center gap-1 bg-[#080808] border border-lime-400/40 rounded-full px-2.5 py-0.5">
+          <Crown size={10} className="text-lime-400" />
+          <span className="text-[9px] font-mono font-bold text-lime-400 tracking-widest">COMMUNITY CROWN</span>
+        </div>
+      )}
+
+      <div className={`flex items-start justify-between mb-3 ${isCrown ? 'mt-1' : ''}`}>
         <div className="flex items-center gap-3">
-          <div className="w-11 h-11 rounded-full overflow-hidden border-2 border-white/10 group-hover:border-lime-400/30 flex items-center justify-center bg-lime-950/30 shrink-0 transition-all">
+          <div className={`w-11 h-11 rounded-full overflow-hidden border-2 flex items-center justify-center bg-lime-950/30 shrink-0 transition-all ${
+            isCrown ? 'border-lime-400/40' : 'border-white/10 group-hover:border-lime-400/30'
+          }`}>
             {iconUrl
               ? <img src={iconUrl} alt={token.symbol} className="w-full h-full object-cover"
                   onError={e => { e.target.style.display='none'; e.target.nextSibling.style.display='block'; }} />
@@ -150,7 +177,7 @@ function TokenCard({ token, stats }) {
             <div className="text-[11px] text-lime-400/70 font-mono">${token.symbol}</div>
           </div>
         </div>
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5 flex-wrap justify-end">
           {isTrending && (
             <div className="text-[10px] font-mono text-lime-400 bg-lime-400/10 border border-lime-400/20 px-1.5 py-0.5 rounded-full flex items-center gap-1">
               <Flame size={9} /> HOT
@@ -172,7 +199,11 @@ function TokenCard({ token, stats }) {
         </div>
         <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
           <div
-            className="h-full bg-gradient-to-r from-lime-600 to-lime-400 rounded-full transition-all duration-500"
+            className={`h-full rounded-full transition-all duration-500 ${
+              isCrown
+                ? 'bg-gradient-to-r from-lime-500 to-lime-300'
+                : 'bg-gradient-to-r from-lime-600 to-lime-400'
+            }`}
             style={{ width: `${Math.max(progress, 1)}%` }}
           />
         </div>
@@ -183,6 +214,11 @@ function TokenCard({ token, stats }) {
         <div className="flex items-center gap-2">
           {stats?.trades > 0 && (
             <span className="text-[10px] font-mono text-white/20">{stats.trades} trade{stats.trades !== 1 ? 's' : ''}</span>
+          )}
+          {marketCapSui > 0 && (
+            <span className="text-[10px] font-mono text-white/30">
+              MC {fmt(marketCapSui, 0)} SUI
+            </span>
           )}
           <span className="text-[11px] font-mono text-white/60">
             {curveState ? `${(Number(priceMist) / 1e9).toFixed(7)} SUI` : '…'}
@@ -333,15 +369,16 @@ function StatsBar({ tokenCount, stats }) {
   );
 }
 
-// (#4) Added TRENDING sort option
 const SORT_OPTIONS = [
-  { id: 'newest',   label: 'NEWEST' },
-  { id: 'oldest',   label: 'OLDEST' },
-  { id: 'trending', label: '🔥 TRENDING' },
-  { id: 'volume',   label: 'VOLUME' },
-  { id: 'trades',   label: 'TRADES' },
-  { id: 'reserve',  label: 'RESERVE' },
-  { id: 'progress', label: 'PROGRESS' },
+  { id: 'newest',     label: 'NEWEST' },
+  { id: 'oldest',     label: 'OLDEST' },
+  { id: 'trending',   label: '🔥 TRENDING' },
+  { id: 'last_trade', label: 'LAST TRADE' },
+  { id: 'market_cap', label: 'MARKET CAP' },
+  { id: 'volume',     label: 'VOLUME' },
+  { id: 'trades',     label: 'TRADES' },
+  { id: 'reserve',    label: 'RESERVE' },
+  { id: 'progress',   label: 'PROGRESS' },
 ];
 
 function HomePage({ onLaunch }) {
@@ -352,7 +389,6 @@ function HomePage({ onLaunch }) {
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState('newest');
 
-  // (#5) Search: name, symbol, OR partial/full 0x address
   const filtered = tokens.filter(t => {
     if (!search.trim()) return true;
     const q = search.toLowerCase().trim();
@@ -362,21 +398,37 @@ function HomePage({ onLaunch }) {
     return false;
   });
 
-  // (#4) Added trending sort by recentTrades
+  // Find Community Crown holder = #1 by volume (only when not searching/filtering)
+  const crownCurveId = React.useMemo(() => {
+    if (search.trim()) return null;
+    let best = null;
+    let bestVol = 0;
+    for (const t of tokens) {
+      const vol = tokenStats[t.curveId]?.volume ?? 0;
+      if (vol > bestVol) { bestVol = vol; best = t.curveId; }
+    }
+    return bestVol > 0 ? best : null;
+  }, [tokens, tokenStats, search]);
+
   const sorted = [...filtered].sort((a, b) => {
     const sa = tokenStats[a.curveId];
     const sb = tokenStats[b.curveId];
     switch (sort) {
-      case 'newest':   return (b.timestamp || 0) - (a.timestamp || 0);
-      case 'oldest':   return (a.timestamp || 0) - (b.timestamp || 0);
-      case 'trending': return (sb?.recentTrades || 0) - (sa?.recentTrades || 0);
-      case 'volume':   return (sb?.volume || 0) - (sa?.volume || 0);
-      case 'trades':   return (sb?.trades || 0) - (sa?.trades || 0);
-      case 'reserve':  return (sb?.reserveSui || 0) - (sa?.reserveSui || 0);
-      case 'progress': return (sb?.reserveSui || 0) - (sa?.reserveSui || 0);
+      case 'newest':     return (b.timestamp || 0) - (a.timestamp || 0);
+      case 'oldest':     return (a.timestamp || 0) - (b.timestamp || 0);
+      case 'trending':   return (sb?.recentTrades || 0) - (sa?.recentTrades || 0);
+      case 'last_trade': return (sb?.lastTradeTime || 0) - (sa?.lastTradeTime || 0);
+      case 'market_cap': return (sb?.lastPrice || 0) - (sa?.lastPrice || 0);  // lastPrice = latest price per token
+      case 'volume':     return (sb?.volume || 0) - (sa?.volume || 0);
+      case 'trades':     return (sb?.trades || 0) - (sa?.trades || 0);
+      case 'reserve':    return (sb?.reserveSui || 0) - (sa?.reserveSui || 0);
+      case 'progress':   return (sb?.reserveSui || 0) - (sa?.reserveSui || 0);
       default: return 0;
     }
   });
+
+  // When sort = last_trade, show the last trade time as a subtitle under the sort tabs
+  const showLastTradeHint = sort === 'last_trade';
 
   return (
     <div>
@@ -425,10 +477,16 @@ function HomePage({ onLaunch }) {
         </div>
       </div>
 
-      <div className="mb-3">
+      <div className="mb-3 flex items-center justify-between">
         <div className="text-xs font-mono text-white/30 tracking-widest">
           {loading ? 'LOADING TOKENS…' : `${sorted.length} TOKEN${sorted.length !== 1 ? 'S' : ''}${search ? ' FOUND' : ' LAUNCHED'}`}
         </div>
+        {showLastTradeHint && (
+          <div className="text-[10px] font-mono text-white/20">sorted by most recent trade activity</div>
+        )}
+        {sort === 'market_cap' && (
+          <div className="text-[10px] font-mono text-white/20">market cap = latest price × 1B supply</div>
+        )}
       </div>
 
       {error && (
@@ -450,9 +508,14 @@ function HomePage({ onLaunch }) {
       )}
 
       {!loading && sorted.length > 0 && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-y-6 gap-x-3">
           {sorted.map((token) => (
-            <TokenCard key={token.curveId} token={token} stats={tokenStats[token.curveId]} />
+            <TokenCard
+              key={token.curveId}
+              token={token}
+              stats={tokenStats[token.curveId]}
+              isCrown={token.curveId === crownCurveId}
+            />
           ))}
         </div>
       )}

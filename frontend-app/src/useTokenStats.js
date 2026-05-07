@@ -1,7 +1,8 @@
 // useTokenStats.js
 // For each token in the list, fetches TokensPurchased + TokensSold events
-// and computes: volume, trades, reserveSui, pctChange, recentTrades (last 60m)
-// Returns a map: { [curveId]: { volume, trades, reserveSui, pctChange, recentTrades } }
+// and computes: volume, trades, reserveSui, pctChange, recentTrades (last 60m),
+// lastTradeTime (timestamp ms of most recent trade)
+// Returns a map: { [curveId]: { volume, trades, reserveSui, pctChange, recentTrades, lastTradeTime } }
 //
 // Uses cursor-based pagination to fetch ALL events — no more 100-event cap.
 
@@ -55,12 +56,13 @@ export function useTokenStats(tokens) {
               firstPrice: null,
               lastPrice: null,
               reserveSui: 0,
+              lastTradeTime: null,  // timestamp ms of most recent trade
             };
           }
           return map[curveId];
         };
 
-        // Process buys (descending order = newest first)
+        // Events arrive descending (newest first) — first seen = most recent
         for (const evt of buysData) {
           const j = evt.parsedJson;
           if (!j?.curve_id) continue;
@@ -70,6 +72,8 @@ export function useTokenStats(tokens) {
           s.volume += suiIn;
           s.trades += 1;
           if (ts && now - ts < ONE_HOUR_MS) s.recentTrades += 1;
+          // First event seen in descending order = latest trade
+          if (ts && s.lastTradeTime === null) s.lastTradeTime = ts;
           const tokensOut = Number(j.tokens_out ?? 0) / 1e6;
           if (tokensOut > 0) {
             const price = suiIn / tokensOut;
@@ -78,7 +82,6 @@ export function useTokenStats(tokens) {
           }
         }
 
-        // Process sells
         for (const evt of sellsData) {
           const j = evt.parsedJson;
           if (!j?.curve_id) continue;
@@ -88,12 +91,36 @@ export function useTokenStats(tokens) {
           s.volume += suiOut;
           s.trades += 1;
           if (ts && now - ts < ONE_HOUR_MS) s.recentTrades += 1;
+          if (ts && s.lastTradeTime === null) s.lastTradeTime = ts;
           const tokensIn = Number(j.tokens_in ?? 0) / 1e6;
           if (tokensIn > 0) {
             const price = suiOut / tokensIn;
             if (s.lastPrice === null) s.lastPrice = price;
             s.firstPrice = price;
           }
+        }
+
+        // After merging both streams, lastTradeTime may be wrong for tokens
+        // where buys and sells interleave. Re-derive by taking the max.
+        // (The above loop already handles this correctly because we only
+        // set lastTradeTime on the FIRST event seen per curve, which is the
+        // most recent one in descending order — but sells and buys are
+        // fetched separately. Fix: take the max across both.)
+        for (const curveId of Object.keys(map)) {
+          const s = map[curveId];
+          // Gather all timestamps for this curve from both streams
+          let latestTs = s.lastTradeTime ?? 0;
+          for (const evt of sellsData) {
+            if (evt.parsedJson?.curve_id !== curveId) continue;
+            const ts = evt.timestampMs ? Number(evt.timestampMs) : 0;
+            if (ts > latestTs) latestTs = ts;
+          }
+          for (const evt of buysData) {
+            if (evt.parsedJson?.curve_id !== curveId) continue;
+            const ts = evt.timestampMs ? Number(evt.timestampMs) : 0;
+            if (ts > latestTs) latestTs = ts;
+          }
+          s.lastTradeTime = latestTs || null;
         }
 
         // Compute % change
