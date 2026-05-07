@@ -342,7 +342,7 @@ function Header({ onLaunch }) {
               className="p-1.5 rounded-lg text-white/30 hover:text-white transition-colors" title="X / Twitter">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
             </a>
-            <a href="https://discord.gg/suipump" target="_blank" rel="noreferrer"
+            <a href="https://discord.gg/TwpXG7q4Ee" target="_blank" rel="noreferrer"
               className="p-1.5 rounded-lg text-white/30 hover:text-white transition-colors" title="Discord">
               <MessageCircle size={13} />
             </a>
@@ -385,7 +385,7 @@ function Header({ onLaunch }) {
             <a href="https://x.com/SuiPump_SUMP" target="_blank" rel="noreferrer" className="flex items-center gap-2 text-sm font-mono text-white/40 hover:text-white transition-colors">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg> X
             </a>
-            <a href="https://discord.gg/suipump" target="_blank" rel="noreferrer" className="flex items-center gap-2 text-sm font-mono text-white/40 hover:text-white transition-colors">
+            <a href="https://discord.gg/TwpXG7q4Ee" target="_blank" rel="noreferrer" className="flex items-center gap-2 text-sm font-mono text-white/40 hover:text-white transition-colors">
               <MessageCircle size={14} /> Discord
             </a>
             <a href="https://github.com/cacoandrade455/suipump" target="_blank" rel="noreferrer" className="flex items-center gap-2 text-sm font-mono text-white/40 hover:text-white transition-colors">
