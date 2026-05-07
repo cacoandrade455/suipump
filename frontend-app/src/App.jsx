@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, useNavigate, useParams, Link, useLocation } from 'react-router-dom';
 import { ConnectButton, useCurrentAccount, useSuiClient } from '@mysten/dapp-kit';
-import { Flame, Rocket, Plus, Gift, TrendingUp, Coins, Users, Trophy, Wallet, Search, Menu, X, Map, Copy, Crown, BarChart3 } from 'lucide-react';
+import { Flame, Rocket, Plus, Gift, TrendingUp, Coins, Users, Trophy, Wallet, Search, Menu, X, Map, Copy, Crown, BarChart3, Github, MessageCircle } from 'lucide-react';
 
 import { useTokenList } from './useTokenList.js';
 import { useTokenStats } from './useTokenStats.js';
@@ -337,6 +337,20 @@ function Header({ onLaunch }) {
           <Link to="/portfolio" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5"><Wallet size={10} /> PORTFOLIO</Link>
           <Link to="/whitepaper" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all">WHITEPAPER</Link>
           <Link to="/roadmap" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5"><Map size={10} /> ROADMAP</Link>
+          <div className="flex items-center gap-1 ml-1">
+            <a href="https://x.com/SuiPump_SUMP" target="_blank" rel="noreferrer"
+              className="p-1.5 rounded-lg text-white/30 hover:text-white transition-colors" title="X / Twitter">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+            </a>
+            <a href="https://discord.gg/suipump" target="_blank" rel="noreferrer"
+              className="p-1.5 rounded-lg text-white/30 hover:text-white transition-colors" title="Discord">
+              <MessageCircle size={13} />
+            </a>
+            <a href="https://github.com/cacoandrade455/suipump" target="_blank" rel="noreferrer"
+              className="p-1.5 rounded-lg text-white/30 hover:text-white transition-colors" title="GitHub">
+              <Github size={13} />
+            </a>
+          </div>
           {account && (
             <button onClick={onLaunch} className="flex items-center gap-2 px-4 py-2 bg-lime-400 text-black text-xs font-mono tracking-widest hover:bg-lime-300 transition-colors rounded-xl font-bold">
               <Plus size={12} /> LAUNCH TOKEN
@@ -367,6 +381,17 @@ function Header({ onLaunch }) {
           <Link to="/portfolio" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/60 hover:text-lime-400 transition-colors border-b border-white/5"><Wallet size={14} /> PORTFOLIO</Link>
           <Link to="/whitepaper" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/60 hover:text-lime-400 transition-colors border-b border-white/5">WHITEPAPER</Link>
           <Link to="/roadmap" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/60 hover:text-lime-400 transition-colors"><Map size={14} /> ROADMAP</Link>
+          <div className="flex items-center gap-4 pt-2 border-t border-white/5">
+            <a href="https://x.com/SuiPump_SUMP" target="_blank" rel="noreferrer" className="flex items-center gap-2 text-sm font-mono text-white/40 hover:text-white transition-colors">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg> X
+            </a>
+            <a href="https://discord.gg/suipump" target="_blank" rel="noreferrer" className="flex items-center gap-2 text-sm font-mono text-white/40 hover:text-white transition-colors">
+              <MessageCircle size={14} /> Discord
+            </a>
+            <a href="https://github.com/cacoandrade455/suipump" target="_blank" rel="noreferrer" className="flex items-center gap-2 text-sm font-mono text-white/40 hover:text-white transition-colors">
+              <Github size={14} /> GitHub
+            </a>
+          </div>
           <div className="pt-1"><MobileWalletButtons /></div>
         </div>
       )}
