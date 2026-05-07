@@ -21,6 +21,23 @@ const MIST_PER_SUI = 1e9;
 // Market cap = price × total supply (1B tokens)
 const TOTAL_SUPPLY_WHOLE = 1_000_000_000;
 
+// Module-level SUI/USD cache (refreshed by App, shared across TokenCards)
+let _suiUsdCache = 0;
+async function refreshSuiUsd() {
+  try {
+    const r = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=SUIUSDT');
+    const j = await r.json();
+    _suiUsdCache = parseFloat(j.price) || 0;
+  } catch {
+    try {
+      const r = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=sui&vs_currencies=usd');
+      const j = await r.json();
+      _suiUsdCache = j?.sui?.usd || 0;
+    } catch { _suiUsdCache = 0; }
+  }
+  return _suiUsdCache;
+}
+
 function fmt(n, d = 2) {
   if (n == null) return '—';
   if (!Number.isFinite(n)) return '—';
@@ -95,7 +112,7 @@ function PctBadge({ pct }) {
 }
 
 // Token card
-function TokenCard({ token, stats, isCrown }) {
+function TokenCard({ token, stats, isCrown, suiUsd = 0 }) {
   const client = useSuiClient();
   const navigate = useNavigate();
   const [curveState, setCurveState] = useState(null);
@@ -215,13 +232,20 @@ function TokenCard({ token, stats, isCrown }) {
           {stats?.trades > 0 && (
             <span className="text-[10px] font-mono text-white/20">{stats.trades} trade{stats.trades !== 1 ? 's' : ''}</span>
           )}
-          {marketCapSui > 0 && (
-            <span className="text-[10px] font-mono text-white/30">
-              MC {fmt(marketCapSui, 0)} SUI
-            </span>
-          )}
+          {marketCapSui > 0 && (() => {
+            const mcUsd = suiUsd > 0 ? marketCapSui * suiUsd : null;
+            return (
+              <span className="text-[10px] font-mono text-white/30">
+                MC {mcUsd != null ? (mcUsd >= 1e6 ? `$${(mcUsd/1e6).toFixed(2)}M` : mcUsd >= 1e3 ? `$${(mcUsd/1e3).toFixed(1)}k` : `$${mcUsd.toFixed(0)}`) : `${fmt(marketCapSui, 0)} SUI`}
+              </span>
+            );
+          })()}
           <span className="text-[11px] font-mono text-white/60">
-            {curveState ? `${(Number(priceMist) / 1e9).toFixed(7)} SUI` : '…'}
+            {curveState
+              ? suiUsd > 0
+                ? (() => { const p = (Number(priceMist)/1e9)*suiUsd; return p >= 0.01 ? `$${p.toFixed(4)}` : p >= 1e-6 ? `$${p.toFixed(8)}` : `$${p.toPrecision(4)}`; })()
+                : `${(Number(priceMist) / 1e9).toFixed(7)} SUI`
+              : '…'}
           </span>
         </div>
       </div>
@@ -388,6 +412,13 @@ function HomePage({ onLaunch }) {
   const tokenStats = useTokenStats(tokens);
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState('newest');
+  const [suiUsd, setSuiUsd] = useState(_suiUsdCache);
+
+  useEffect(() => {
+    refreshSuiUsd().then(p => setSuiUsd(p));
+    const t = setInterval(() => refreshSuiUsd().then(p => setSuiUsd(p)), 30_000);
+    return () => clearInterval(t);
+  }, []);
 
   const filtered = tokens.filter(t => {
     if (!search.trim()) return true;
@@ -515,6 +546,7 @@ function HomePage({ onLaunch }) {
               token={token}
               stats={tokenStats[token.curveId]}
               isCrown={token.curveId === crownCurveId}
+              suiUsd={suiUsd}
             />
           ))}
         </div>

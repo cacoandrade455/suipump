@@ -100,6 +100,27 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
   const [creatorCapId, setCreatorCapId] = useState(null);
   const [claiming, setClaiming] = useState(false);
   const [graduationData, setGraduationData] = useState(null);
+  const [suiUsd, setSuiUsd] = useState(0);
+
+  // Fetch SUI/USD price for USD display
+  useEffect(() => {
+    async function loadPrice() {
+      try {
+        const r = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=SUIUSDT');
+        const j = await r.json();
+        setSuiUsd(parseFloat(j.price) || 0);
+      } catch {
+        try {
+          const r = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=sui&vs_currencies=usd');
+          const j = await r.json();
+          setSuiUsd(j?.sui?.usd || 0);
+        } catch { setSuiUsd(0); }
+      }
+    }
+    loadPrice();
+    const t = setInterval(loadPrice, 30_000);
+    return () => clearInterval(t);
+  }, []);
 
   useEffect(() => {
     if (!account?.address) return;
@@ -186,6 +207,8 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
   const reserveSui = mistToSui(reserveMist);
   const progress = Math.min(100, (reserveSui / DRAIN_SUI_APPROX) * 100);
   const priceMist = fields ? priceMistPerToken(reserveMist, tokensSold) : 0n;
+  const priceUsd   = suiUsd > 0 ? (Number(priceMist) / 1e9) * suiUsd : null;
+  const mcapUsd    = suiUsd > 0 ? (Number(priceMist) / 1e9) * suiUsd * 1_000_000_000 : null;
   const creatorFees = fields ? BigInt(fields.creator_fees) : 0n;
   const tokenBalanceWhole = balanceQuery.data ? tokenUnitsToWhole(balanceQuery.data.totalBalance) : 0;
   const suiBalanceSui = suiBalanceQuery.data ? Number(suiBalanceQuery.data.totalBalance) / 1e9 : 0;
@@ -289,10 +312,27 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
               </div>
               <div className="text-right shrink-0">
                 <div className="text-[9px] text-white/30 font-mono tracking-widest">PRICE</div>
-                <div className="text-base font-bold text-white font-mono">
-                  {Number.isFinite(Number(priceMist)) ? (Number(priceMist) / 1e9).toFixed(9) : '0.000000000'}
-                </div>
-                <div className="text-[10px] text-white/40 font-mono">SUI</div>
+                {priceUsd != null ? (
+                  <>
+                    <div className="text-base font-bold text-lime-400 font-mono">
+                      {priceUsd >= 0.01
+                        ? `$${priceUsd.toFixed(4)}`
+                        : priceUsd >= 1e-6
+                          ? `$${priceUsd.toFixed(8)}`
+                          : `$${priceUsd.toPrecision(4)}`}
+                    </div>
+                    <div className="text-[10px] text-white/30 font-mono">
+                      {Number.isFinite(Number(priceMist)) ? (Number(priceMist)/1e9).toFixed(9) : '0'} SUI
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="text-base font-bold text-white font-mono">
+                      {Number.isFinite(Number(priceMist)) ? (Number(priceMist) / 1e9).toFixed(9) : '0.000000000'}
+                    </div>
+                    <div className="text-[10px] text-white/40 font-mono">SUI</div>
+                  </>
+                )}
               </div>
             </div>
 
