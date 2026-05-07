@@ -8,18 +8,36 @@ import { PACKAGE_ID, MIST_PER_SUI } from './constants.js';
 
 const LAUNCH_FEE_MIST = 2_000_000_000n;
 const TEMPLATE_URL = '/template.mv';
+const MAX_DESCRIPTION_CHARS = 500;
 
 let wasmReady = false;
 async function ensureWasm() {
   if (!wasmReady) { await wasmInit(); wasmReady = true; }
 }
 
+// ULEB128-encode a length prefix, supporting values > 127
+function uleb128(n) {
+  const bytes = [];
+  do {
+    let byte = n & 0x7f;
+    n >>>= 7;
+    if (n !== 0) byte |= 0x80;
+    bytes.push(byte);
+  } while (n !== 0);
+  return bytes;
+}
+
+// BCS-encode a UTF-8 string: ULEB128(byteLength) ++ utf8bytes
+// Supports strings up to ~500 bytes safely
 function bcsBytes(str) {
   const buf = new TextEncoder().encode(str);
-  if (buf.length > 127) throw new Error(`String too long for BCS: ${str}`);
-  const out = new Uint8Array(buf.length + 1);
-  out[0] = buf.length; out.set(buf, 1); return out;
+  const lenBytes = uleb128(buf.length);
+  const out = new Uint8Array(lenBytes.length + buf.length);
+  out.set(lenBytes, 0);
+  out.set(buf, lenBytes.length);
+  return out;
 }
+
 function bcsVectorAddress(addrs) {
   const out = [addrs.length];
   for (const a of addrs) {
@@ -28,6 +46,7 @@ function bcsVectorAddress(addrs) {
   }
   return new Uint8Array(out);
 }
+
 function bcsVectorU64(nums) {
   const buf = new DataView(new ArrayBuffer(1 + nums.length * 8));
   buf.setUint8(0, nums.length);
@@ -38,7 +57,6 @@ function bcsVectorU64(nums) {
 /**
  * Encode social links into the description string.
  * Format: "Human description||{json}"
- * If no links provided, returns plain description.
  */
 function encodeDescription(desc, links) {
   const hasLinks = links.telegram || links.twitter || links.website;
@@ -94,7 +112,6 @@ export default function LaunchModal({ onClose, onLaunched }) {
   const [form, setForm] = useState({
     name: '', symbol: '', description: '', iconUrl: '',
     uploading: false, uploadError: null,
-    // Social links
     telegram: '', twitter: '', website: '',
   });
   const [payouts, setPayouts] = useState([{ address: account?.address ?? '', bps: 10000 }]);
@@ -108,6 +125,7 @@ export default function LaunchModal({ onClose, onLaunched }) {
 
   const symbolValid = /^[A-Z][A-Z0-9]{0,4}$/.test(form.symbol);
   const nameValid = form.name.trim().length >= 2 && form.name.trim().length <= 64;
+  const descBytes = new TextEncoder().encode(form.description).length;
   const payoutSum = payouts.reduce((s, p) => s + (parseInt(p.bps) || 0), 0);
   const payoutsValid = payouts.length >= 1 && payouts.length <= 10 && payoutSum === 10000
     && payouts.every(p => p.address.startsWith('0x') && p.address.length === 66);
@@ -280,12 +298,21 @@ export default function LaunchModal({ onClose, onLaunched }) {
               </div>
 
               <div>
-                <label className="block text-[9px] tracking-widest text-white/30 mb-1.5">DESCRIPTION</label>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-[9px] tracking-widest text-white/30">DESCRIPTION</label>
+                  <span className={`text-[9px] font-mono ${
+                    form.description.length > MAX_DESCRIPTION_CHARS * 0.9
+                      ? form.description.length >= MAX_DESCRIPTION_CHARS ? 'text-red-400' : 'text-lime-400'
+                      : 'text-white/20'
+                  }`}>
+                    {form.description.length}/{MAX_DESCRIPTION_CHARS}
+                  </span>
+                </div>
                 <textarea
                   value={form.description}
-                  onChange={e => setForm({ ...form, description: e.target.value })}
+                  onChange={e => setForm({ ...form, description: e.target.value.slice(0, MAX_DESCRIPTION_CHARS) })}
                   placeholder="What is this token about?"
-                  rows={2}
+                  rows={3}
                   className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-lime-400/50 resize-none transition-colors"
                 />
               </div>
@@ -330,7 +357,7 @@ export default function LaunchModal({ onClose, onLaunched }) {
                   <input
                     value={form.iconUrl}
                     onChange={e => setForm({ ...form, iconUrl: e.target.value })}
-                    placeholder="or paste URL"
+                    placeholder="or paste URL (.gif ok)"
                     className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-white/60 text-xs focus:outline-none focus:border-lime-400/50 transition-colors"
                   />
                 </div>
@@ -423,7 +450,7 @@ export default function LaunchModal({ onClose, onLaunched }) {
               <div className="text-[10px] text-white/30 leading-relaxed">
                 Optional: buy tokens at launch in the same transaction. Leave blank to skip.
               </div>
-              <div className="rounded-2xl border border-amber-500/20 bg-amber-950/10 p-3 text-[10px] text-amber-400/70 leading-relaxed">
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-3 text-[10px] text-white/30 leading-relaxed">
                 ⚠ Large dev buys are permanently visible on-chain and may reduce community trust.
               </div>
               <div>
@@ -465,6 +492,7 @@ export default function LaunchModal({ onClose, onLaunched }) {
                     {[
                       { label: 'NAME', value: form.name },
                       { label: 'SYMBOL', value: `$${form.symbol}` },
+                      { label: 'DESCRIPTION', value: form.description ? `${form.description.slice(0, 60)}${form.description.length > 60 ? '…' : ''}` : 'None' },
                       { label: 'PAYOUTS', value: `${payouts.length} recipient${payouts.length > 1 ? 's' : ''}` },
                       { label: 'DEV BUY', value: parseFloat(devBuy) > 0 ? `${devBuy} SUI` : 'None' },
                       ...(form.telegram ? [{ label: 'TELEGRAM', value: form.telegram }] : []),
