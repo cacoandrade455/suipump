@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, useNavigate, useParams, Link, useLocation } from 'react-router-dom';
 import { ConnectButton, useCurrentAccount, useSuiClient } from '@mysten/dapp-kit';
-import { Flame, Rocket, Plus, Gift, TrendingUp, Coins, Users, Trophy, Wallet, Search, Menu, X, Map, Copy, Crown } from 'lucide-react';
+import { Flame, Rocket, Plus, Gift, TrendingUp, Coins, Users, Trophy, Wallet, Search, Menu, X, Map, Copy, Crown, BarChart3 } from 'lucide-react';
 
 import { useTokenList } from './useTokenList.js';
 import { useTokenStats } from './useTokenStats.js';
@@ -13,6 +13,7 @@ import WhitepaperPage from './WhitepaperPage.jsx';
 import LeaderboardPage from './LeaderboardPage.jsx';
 import PortfolioPage from './PortfolioPage.jsx';
 import RoadmapPage from './RoadmapPage.jsx';
+import StatsPage from './StatsPage.jsx';
 import { PACKAGE_ID, DRAIN_SUI_APPROX, TOKEN_DECIMALS } from './constants.js';
 import { mistToSui, priceMistPerToken } from './curve.js';
 import { paginateMultipleEvents } from './paginateEvents.js';
@@ -331,6 +332,7 @@ function Header({ onLaunch }) {
             {poolSui !== null ? <span>S1 {poolSui.toFixed(4)} SUI</span> : <span>S1 AIRDROP</span>}
             {tradeCount !== null && <span className="text-white/20 ml-1">· {tradeCount} trades</span>}
           </Link>
+          <Link to="/stats" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5"><BarChart3 size={10} /> STATS</Link>
           <Link to="/leaderboard" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5"><Trophy size={10} /> LEADERBOARD</Link>
           <Link to="/portfolio" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5"><Wallet size={10} /> PORTFOLIO</Link>
           <Link to="/whitepaper" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all">WHITEPAPER</Link>
@@ -360,6 +362,7 @@ function Header({ onLaunch }) {
             <Gift size={14} /> S1 AIRDROP
             {poolSui !== null && <span className="ml-auto text-xs text-white/30">{poolSui.toFixed(4)} SUI</span>}
           </Link>
+          <Link to="/stats" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/60 hover:text-lime-400 transition-colors border-b border-white/5"><BarChart3 size={14} /> STATS</Link>
           <Link to="/leaderboard" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/60 hover:text-lime-400 transition-colors border-b border-white/5"><Trophy size={14} /> LEADERBOARD</Link>
           <Link to="/portfolio" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/60 hover:text-lime-400 transition-colors border-b border-white/5"><Wallet size={14} /> PORTFOLIO</Link>
           <Link to="/whitepaper" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/60 hover:text-lime-400 transition-colors border-b border-white/5">WHITEPAPER</Link>
@@ -449,7 +452,7 @@ function HomePage({ onLaunch }) {
       case 'oldest':     return (a.timestamp || 0) - (b.timestamp || 0);
       case 'trending':   return (sb?.recentTrades || 0) - (sa?.recentTrades || 0);
       case 'last_trade': return (sb?.lastTradeTime || 0) - (sa?.lastTradeTime || 0);
-      case 'market_cap': return (sb?.lastPrice || 0) - (sa?.lastPrice || 0);  // lastPrice = latest price per token
+      case 'market_cap': return (sb?.lastPrice || 0) - (sa?.lastPrice || 0);
       case 'volume':     return (sb?.volume || 0) - (sa?.volume || 0);
       case 'trades':     return (sb?.trades || 0) - (sa?.trades || 0);
       case 'reserve':    return (sb?.reserveSui || 0) - (sa?.reserveSui || 0);
@@ -458,7 +461,6 @@ function HomePage({ onLaunch }) {
     }
   });
 
-  // When sort = last_trade, show the last trade time as a subtitle under the sort tabs
   const showLastTradeHint = sort === 'last_trade';
 
   return (
@@ -610,6 +612,7 @@ export default function App() {
           <Route path="/" element={<HomePage onLaunch={() => setShowLaunch(true)} />} />
           <Route path="/token/:curveId" element={<TokenPageWrapper />} />
           <Route path="/airdrop" element={<AirdropPage onBack={() => navigate('/')} />} />
+          <Route path="/stats" element={<StatsPage onBack={() => navigate('/')} />} />
           <Route path="/whitepaper" element={<WhitepaperPage onBack={() => navigate('/')} />} />
           <Route path="/leaderboard" element={<LeaderboardPage onBack={() => navigate('/')} />} />
           <Route path="/portfolio" element={<PortfolioPage onBack={() => navigate('/')} />} />
