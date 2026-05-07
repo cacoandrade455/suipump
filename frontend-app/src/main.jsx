@@ -4,9 +4,13 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SuiClientProvider, WalletProvider, createNetworkConfig } from '@mysten/dapp-kit';
 import { getFullnodeUrl } from '@mysten/sui/client';
 import { BrowserRouter } from 'react-router-dom';
+import { inject } from '@vercel/analytics';
 
 import App from './App.jsx';
 import './index.css';
+
+// Vercel Analytics — tracks pageviews, unique visitors, referrers, countries
+inject();
 
 const { networkConfig } = createNetworkConfig({
   testnet: { url: getFullnodeUrl('testnet') },
