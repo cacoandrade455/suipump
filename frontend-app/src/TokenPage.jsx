@@ -219,8 +219,8 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
 
     try {
       // Fetch current shared version
-      const obj = await client.getObject({ id: curveId, options: { showContent: true } });
-      const initialSharedVersion = obj.data?.version;
+      const obj = await client.getObject({ id: curveId, options: { showContent: true, showOwner: true } });
+      const initialSharedVersion = obj.data?.owner?.Shared?.initial_shared_version;
 
       const tx = new Transaction();
       const curveRef = tx.sharedObjectRef({
