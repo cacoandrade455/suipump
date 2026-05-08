@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, useNavigate, useParams, Link, useLocation } from 'react-router-dom';
 import { ConnectButton, useCurrentAccount, useSuiClient } from '@mysten/dapp-kit';
-import { Flame, Rocket, Plus, Gift, TrendingUp, Coins, Users, Trophy, Wallet, Search, Menu, X, Map, Copy, Crown, BarChart3, Github, MessageCircle } from 'lucide-react';
+import { Flame, Rocket, Plus, Gift, TrendingUp, Coins, Users, Trophy, Wallet, Search, Menu, X, Map, Copy, Crown, BarChart3, Github, MessageCircle, Bell } from 'lucide-react';
 
 import { useTokenList } from './useTokenList.js';
 import { useTokenStats } from './useTokenStats.js';
@@ -16,7 +16,7 @@ import RoadmapPage from './RoadmapPage.jsx';
 import StatsPage from './StatsPage.jsx';
 import { PACKAGE_ID, DRAIN_SUI_APPROX, TOKEN_DECIMALS } from './constants.js';
 import { mistToSui, priceMistPerToken } from './curve.js';
-import { paginateMultipleEvents } from './paginateEvents.js';
+import { paginateEvents, paginateMultipleEvents } from './paginateEvents.js';
 
 const MIST_PER_SUI = 1e9;
 // Market cap = price × total supply (1B tokens)
@@ -306,6 +306,194 @@ function MobileWalletButtons() {
   );
 }
 
+// ── Notifications ──────────────────────────────────────────────────────────
+
+function useNotifications(walletAddress) {
+  const client = useSuiClient();
+  const [notifications, setNotifications] = useState([]);
+  const [unread, setUnread] = useState(0);
+
+  const storageKey = walletAddress ? `suipump_notif_seen_${walletAddress}` : null;
+
+  useEffect(() => {
+    if (!walletAddress || !client) return;
+    let cancelled = false;
+
+    async function load() {
+      try {
+        // 1. Get all curves created by this wallet
+        const curveCreatedType = `${PACKAGE_ID}::bonding_curve::CurveCreated`;
+        const createdEvents = await paginateEvents(client, { MoveEventType: curveCreatedType }, { order: 'descending' });
+        const myCurveIds = new Set(
+          createdEvents
+            .filter(e => e.sender === walletAddress)
+            .map(e => e.parsedJson?.curve_id)
+            .filter(Boolean)
+        );
+
+        if (myCurveIds.size === 0) {
+          if (!cancelled) { setNotifications([]); setUnread(0); }
+          return;
+        }
+
+        // 2. Get comments + graduation events for those curves in parallel
+        const commentType = `${PACKAGE_ID}::bonding_curve::CommentPosted`;
+        const gradType = `${PACKAGE_ID}::bonding_curve::Graduated`;
+        const [commentEvents, gradEvents] = await Promise.all([
+          paginateEvents(client, { MoveEventType: commentType }, { order: 'descending', maxPages: 10 }),
+          paginateEvents(client, { MoveEventType: gradType }, { order: 'descending', maxPages: 5 }),
+        ]);
+
+        const comments = commentEvents
+          .filter(e => myCurveIds.has(e.parsedJson?.curve_id))
+          .map(e => ({
+            id: e.id?.txDigest + '_' + e.id?.eventSeq,
+            type: 'comment',
+            curveId: e.parsedJson?.curve_id,
+            author: e.parsedJson?.author,
+            text: e.parsedJson?.text,
+            timestamp: e.timestampMs ? Number(e.timestampMs) : 0,
+          }));
+
+        const graduations = gradEvents
+          .filter(e => myCurveIds.has(e.parsedJson?.curve_id))
+          .map(e => ({
+            id: e.id?.txDigest + '_' + e.id?.eventSeq,
+            type: 'graduated',
+            curveId: e.parsedJson?.curve_id,
+            author: null,
+            text: null,
+            timestamp: e.timestampMs ? Number(e.timestampMs) : 0,
+          }));
+
+        const relevant = [...comments, ...graduations]
+          .sort((a, b) => b.timestamp - a.timestamp)
+          .slice(0, 20);
+
+        if (!cancelled) {
+          setNotifications(relevant);
+          const lastSeen = parseInt(localStorage.getItem(storageKey) || '0', 10);
+          setUnread(relevant.filter(n => n.timestamp > lastSeen).length);
+        }
+      } catch {}
+    }
+
+    load();
+    const t = setInterval(load, 30_000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [walletAddress, client, storageKey]);
+
+  const markAllRead = () => {
+    if (!storageKey) return;
+    localStorage.setItem(storageKey, String(Date.now()));
+    setUnread(0);
+  };
+
+  return { notifications, unread, markAllRead };
+}
+
+function NotificationBell({ walletAddress }) {
+  const navigate = useNavigate();
+  const { notifications, unread, markAllRead } = useNotifications(walletAddress);
+  const [open, setOpen] = useState(false);
+  const bellRef = React.useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function handle(e) {
+      if (bellRef.current && !bellRef.current.contains(e.target)) setOpen(false);
+    }
+    document.addEventListener('mousedown', handle);
+    return () => document.removeEventListener('mousedown', handle);
+  }, [open]);
+
+  const toggle = () => {
+    if (!open) markAllRead();
+    setOpen(o => !o);
+  };
+
+  function timeAgo(ts) {
+    if (!ts) return '';
+    const diff = Date.now() - ts;
+    if (diff < 60_000) return 'just now';
+    if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+    if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+    return `${Math.floor(diff / 86_400_000)}d ago`;
+  }
+
+  function shortAddr(addr) {
+    if (!addr) return '—';
+    return addr.slice(0, 6) + '…' + addr.slice(-4);
+  }
+
+  if (!walletAddress) return null;
+
+  return (
+    <div className="relative" ref={bellRef}>
+      <button
+        onClick={toggle}
+        className={`relative p-1.5 rounded-lg transition-colors ${
+          open ? 'text-lime-400 bg-lime-400/10' : 'text-white/30 hover:text-white'
+        }`}
+        title="Notifications"
+      >
+        <Bell size={13} />
+        {unread > 0 && (
+          <span className="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 bg-red-500 rounded-full text-[8px] font-bold text-white flex items-center justify-center leading-none">
+            {unread > 9 ? '9+' : unread}
+          </span>
+        )}
+      </button>
+
+      {open && (
+        <div className="absolute right-0 top-full mt-2 w-80 bg-[#0e0e0e] border border-white/10 rounded-xl shadow-2xl z-50 overflow-hidden">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
+            <span className="text-[10px] font-mono text-white/50 tracking-widest">NOTIFICATIONS</span>
+            <span className="text-[10px] font-mono text-white/25">{notifications.length} total</span>
+          </div>
+          {notifications.length === 0 ? (
+            <div className="px-4 py-8 text-center text-white/25 text-xs font-mono">
+              No comments on your tokens yet
+            </div>
+          ) : (
+            <div className="max-h-80 overflow-y-auto divide-y divide-white/5">
+              {notifications.map(n => (
+                <button
+                  key={n.id}
+                  onClick={() => { navigate(`/token/${n.curveId}`); setOpen(false); }}
+                  className="w-full px-4 py-3 text-left hover:bg-white/[0.03] transition-colors"
+                >
+                  {n.type === 'graduated' ? (
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-base">🎓</span>
+                        <div>
+                          <p className="text-xs font-mono font-bold text-lime-400">Token Graduated!</p>
+                          <p className="text-[10px] font-mono text-white/40">{n.curveId?.slice(0, 12)}…</p>
+                        </div>
+                      </div>
+                      <span className="text-[10px] font-mono text-white/25 flex-shrink-0">{timeAgo(n.timestamp)}</span>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex items-start justify-between gap-2 mb-1">
+                        <span className="text-[10px] font-mono text-lime-400/80">{shortAddr(n.author)}</span>
+                        <span className="text-[10px] font-mono text-white/25 flex-shrink-0">{timeAgo(n.timestamp)}</span>
+                      </div>
+                      <p className="text-xs text-white/60 leading-relaxed line-clamp-2">{n.text}</p>
+                      <p className="text-[9px] font-mono text-white/20 mt-1">{n.curveId?.slice(0, 12)}…</p>
+                    </>
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Header({ onLaunch }) {
   const account = useCurrentAccount();
   const { poolSui, tradeCount } = useStats();
@@ -350,6 +538,7 @@ function Header({ onLaunch }) {
               className="p-1.5 rounded-lg text-white/30 hover:text-white transition-colors" title="GitHub">
               <Github size={13} />
             </a>
+            <NotificationBell walletAddress={account?.address} />
           </div>
           {account && (
             <button onClick={onLaunch} className="flex items-center gap-2 px-4 py-2 bg-lime-400 text-black text-xs font-mono tracking-widest hover:bg-lime-300 transition-colors rounded-xl font-bold">
@@ -365,6 +554,7 @@ function Header({ onLaunch }) {
             </button>
           )}
           <ConnectButton />
+          <NotificationBell walletAddress={account?.address} />
           <button onClick={() => setMenuOpen(o => !o)} className="p-1.5 rounded-lg border border-white/10 text-white/50 hover:text-white transition-colors">
             {menuOpen ? <X size={16} /> : <Menu size={16} />}
           </button>
