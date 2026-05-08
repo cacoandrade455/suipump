@@ -218,16 +218,13 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
     setTxMsg('');
 
     try {
-      // Fetch current shared version
-      const obj = await client.getObject({ id: curveId, options: { showContent: true, showOwner: true } });
-      const initialSharedVersion = obj.data?.owner?.Shared?.initial_shared_version;
-
       const tx = new Transaction();
-      const curveRef = tx.sharedObjectRef({
-        objectId: curveId,
-        initialSharedVersion,
-        mutable: true,
-      });
+      // Fetch initialSharedVersion — required for sharedObjectRef with dapp-kit
+      const objForRef = await client.getObject({ id: curveId, options: { showOwner: true } });
+      const initialSharedVersion = objForRef.data?.owner?.Shared?.initial_shared_version;
+      const curveRef = initialSharedVersion
+        ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion, mutable: true })
+        : tx.object(curveId); // fallback
 
       if (side === 'buy') {
         const suiMist = Math.floor(a * 1e9);
@@ -235,7 +232,7 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
         const [tokens, refund] = tx.moveCall({
           target: `${PACKAGE_ID}::bonding_curve::buy`,
           typeArguments: [tokenType],
-          arguments: [curveRef, coin, tx.pure.u64(0)],
+          arguments: [curveRef, coin, tx.pure.u64(0n)],
         });
         tx.transferObjects([tokens, refund], account.address);
       } else {
