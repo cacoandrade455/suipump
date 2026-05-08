@@ -232,18 +232,28 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
       if (side === 'buy') {
         const suiMist = Math.floor(a * 1e9);
         const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(suiMist)]);
-        tx.moveCall({
+        const [tokens, refund] = tx.moveCall({
           target: `${PACKAGE_ID}::bonding_curve::buy`,
           typeArguments: [tokenType],
-          arguments: [curveRef, coin, tx.pure.address(account.address)],
+          arguments: [curveRef, coin, tx.pure.u64(0)],
         });
+        tx.transferObjects([tokens, refund], account.address);
       } else {
         const tokensIn = Math.floor(a * (10 ** TOKEN_DECIMALS));
-        tx.moveCall({
+        // Fetch token coins, merge if needed, split exact amount
+        const coins = await client.getCoins({ owner: account.address, coinType: tokenType });
+        if (!coins.data.length) throw new Error('No tokens to sell');
+        const primary = tx.object(coins.data[0].coinObjectId);
+        if (coins.data.length > 1) {
+          tx.mergeCoins(primary, coins.data.slice(1).map(c => tx.object(c.coinObjectId)));
+        }
+        const [toSell] = tx.splitCoins(primary, [tx.pure.u64(tokensIn)]);
+        const suiOut = tx.moveCall({
           target: `${PACKAGE_ID}::bonding_curve::sell`,
           typeArguments: [tokenType],
-          arguments: [curveRef, tx.pure.u64(tokensIn), tx.pure.address(account.address)],
+          arguments: [curveRef, toSell, tx.pure.u64(0)],
         });
+        tx.transferObjects([suiOut], account.address);
       }
 
       signAndExecute(
