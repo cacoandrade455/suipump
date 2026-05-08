@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { useSuiClient } from '@mysten/dapp-kit';
 import { Users, TrendingUp, TrendingDown, BarChart2 } from 'lucide-react';
 import { PACKAGE_ID } from './constants.js';
-import { paginateEvents } from './paginateEvents.js';
+import { paginateMultipleEvents } from './paginateEvents.js';
 
 const MIST_PER_SUI = 1_000_000_000n;
 const TOKEN_DECIMALS = 6;
@@ -55,25 +55,28 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0 }) {
         const buyType = `${PACKAGE_ID}::bonding_curve::TokensPurchased`;
         const sellType = `${PACKAGE_ID}::bonding_curve::TokensSold`;
 
-        // Fetch all buy/sell events for this curve
-        const [buyEvents, sellEvents] = await Promise.all([
-          paginateEvents(client, { MoveEventType: buyType }, { order: 'descending' }),
-          paginateEvents(client, { MoveEventType: sellType }, { order: 'descending' }),
-        ]);
+        // Fetch all buy/sell events and filter to this curve
+        const eventMap = await paginateMultipleEvents(
+          client,
+          [buyType, sellType],
+          { order: 'descending', maxPages: 20 }
+        );
 
-        const buys = buyEvents.filter(e => e.parsedJson?.curve_id === curveId);
-        const sells = sellEvents.filter(e => e.parsedJson?.curve_id === curveId);
+        const buys = (eventMap[buyType] || []).filter(e => e.parsedJson?.curve_id === curveId);
+        const sells = (eventMap[sellType] || []).filter(e => e.parsedJson?.curve_id === curveId);
 
         // ── TOP HOLDERS ──────────────────────────────────────────
         const balanceMap = new Map(); // addr → token balance (raw)
         for (const e of buys) {
-          const addr = e.parsedJson?.buyer;
-          const tokens = BigInt(e.parsedJson?.tokens_out ?? 0);
+          const j = e.parsedJson;
+          const addr = j?.buyer;
+          const tokens = BigInt(j?.tokens_out ?? 0);
           if (addr) balanceMap.set(addr, (balanceMap.get(addr) ?? 0n) + tokens);
         }
         for (const e of sells) {
-          const addr = e.parsedJson?.seller;
-          const tokens = BigInt(e.parsedJson?.tokens_in ?? 0);
+          const j = e.parsedJson;
+          const addr = j?.seller;
+          const tokens = BigInt(j?.tokens_in ?? 0);
           if (addr) balanceMap.set(addr, (balanceMap.get(addr) ?? 0n) - tokens);
         }
 
@@ -93,10 +96,11 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0 }) {
         const traderMap = new Map(); // addr → { suiSpent, suiReceived, buyCount, sellCount, tokensIn, tokensOut }
 
         for (const e of buys) {
-          const addr = e.parsedJson?.buyer;
+          const j = e.parsedJson;
+          const addr = j?.buyer;
           if (!addr) continue;
-          const suiIn = Number(BigInt(e.parsedJson?.sui_in ?? 0)) / 1e9;
-          const tokensOut = Number(BigInt(e.parsedJson?.tokens_out ?? 0)) / TOKEN_SCALE;
+          const suiIn = Number(BigInt(j?.sui_in ?? 0)) / 1e9;
+          const tokensOut = Number(BigInt(j?.tokens_out ?? 0)) / TOKEN_SCALE;
           const t = traderMap.get(addr) ?? { suiSpent: 0, suiReceived: 0, buyCount: 0, sellCount: 0, tokensIn: 0, tokensOut: 0 };
           t.suiSpent += suiIn;
           t.tokensOut += tokensOut;
@@ -104,10 +108,11 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0 }) {
           traderMap.set(addr, t);
         }
         for (const e of sells) {
-          const addr = e.parsedJson?.seller;
+          const j = e.parsedJson;
+          const addr = j?.seller;
           if (!addr) continue;
-          const suiOut = Number(BigInt(e.parsedJson?.sui_out ?? 0)) / 1e9;
-          const tokensIn = Number(BigInt(e.parsedJson?.tokens_in ?? 0)) / TOKEN_SCALE;
+          const suiOut = Number(BigInt(j?.sui_out ?? 0)) / 1e9;
+          const tokensIn = Number(BigInt(j?.tokens_in ?? 0)) / TOKEN_SCALE;
           const t = traderMap.get(addr) ?? { suiSpent: 0, suiReceived: 0, buyCount: 0, sellCount: 0, tokensIn: 0, tokensOut: 0 };
           t.suiReceived += suiOut;
           t.tokensIn += tokensIn;
