@@ -156,6 +156,9 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
   const tokenReserve = curveState ? BigInt(curveState.token_reserve ?? 0) : 0n;
   const tokensSold = BigInt(800_000_000) * BigInt(10 ** TOKEN_DECIMALS) - tokenReserve;
   const graduated = curveState?.graduated ?? false;
+  const creatorAddr = curveState?.creator ?? null;
+  const creatorFeesMist = curveState ? BigInt(curveState.creator_fees ?? 0) : 0n;
+  const isCreator = account && creatorAddr && account.address === creatorAddr;
   const progress = Math.min(100, (mistToSui(reserveMist) / DRAIN_SUI_APPROX) * 100);
   const priceMist = priceMistPerToken(reserveMist, tokensSold);
   const priceSui = Number(priceMist) / 1e9;
@@ -448,6 +451,10 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
             graduated={graduated}
             suiBalance={suiBalance}
             tokenBalance={tokenBalance}
+            isCreator={isCreator}
+            creatorFeesMist={creatorFeesMist}
+            curveId={curveId}
+            tokenType={tokenType}
           />
 
           {/* Mobile stats */}
@@ -477,8 +484,43 @@ function TradePanelContent({
   side, setSide, amount, setAmount, quote, txStatus, txMsg,
   account, onExecute, priceSui, priceUsd, suiUsd, symbol, graduated,
   suiBalance, tokenBalance,
+  isCreator, creatorFeesMist, curveId: panelCurveId, tokenType: panelTokenType,
 }) {
+  const { mutate: signAndExecutePanel } = useSignAndExecuteTransaction();
+  const client2 = useSuiClient();
+  const [claiming, setClaiming] = useState(false);
+  const [claimMsg, setClaimMsg] = useState('');
   const isPending = txStatus === 'pending';
+
+  const handleClaim = async () => {
+    if (!account || !panelCurveId || !panelTokenType || claiming) return;
+    setClaiming(true);
+    setClaimMsg('');
+    try {
+      const objForRef = await client2.getObject({ id: panelCurveId, options: { showOwner: true } });
+      const initialSharedVersion = objForRef.data?.owner?.Shared?.initial_shared_version;
+      const tx = new Transaction();
+      const curveRef = initialSharedVersion
+        ? tx.sharedObjectRef({ objectId: panelCurveId, initialSharedVersion, mutable: true })
+        : tx.object(panelCurveId);
+      const feeCoin = tx.moveCall({
+        target: `${PACKAGE_ID}::bonding_curve::claim_creator_fees`,
+        typeArguments: [panelTokenType],
+        arguments: [curveRef],
+      });
+      tx.transferObjects([feeCoin], account.address);
+      signAndExecutePanel(
+        { transaction: tx },
+        {
+          onSuccess: () => { setClaimMsg('Fees claimed! 🎉'); setClaiming(false); setTimeout(() => setClaimMsg(''), 3000); },
+          onError: (err) => { setClaimMsg(err.message || 'Claim failed'); setClaiming(false); setTimeout(() => setClaimMsg(''), 4000); },
+        }
+      );
+    } catch (err) {
+      setClaimMsg(err.message || 'Claim failed');
+      setClaiming(false);
+    }
+  };
 
   return (
     <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 space-y-4">
@@ -608,6 +650,36 @@ function TradePanelContent({
             : 'text-red-400 bg-red-400/10 border border-red-400/20'
         }`}>
           {txMsg}
+        </div>
+      )}
+
+      {/* Claim creator fees */}
+      {isCreator && (
+        <div className="pt-3 border-t border-white/5 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-mono text-white/35 tracking-widest">CREATOR FEES</span>
+            <span className="text-xs font-mono text-lime-400">
+              {creatorFeesMist > 0n ? `${(Number(creatorFeesMist) / 1e9).toFixed(4)} SUI` : '0 SUI'}
+            </span>
+          </div>
+          <button
+            onClick={handleClaim}
+            disabled={claiming || creatorFeesMist === 0n}
+            className={`w-full py-2.5 rounded-xl text-xs font-mono font-bold transition-all ${
+              creatorFeesMist === 0n
+                ? 'bg-white/5 text-white/25 cursor-not-allowed'
+                : claiming
+                  ? 'bg-white/10 text-white/50 cursor-wait'
+                  : 'bg-lime-400/15 hover:bg-lime-400/25 text-lime-400 border border-lime-400/30'
+            }`}
+          >
+            {claiming ? 'CLAIMING…' : 'CLAIM FEES'}
+          </button>
+          {claimMsg && (
+            <div className={`text-[10px] font-mono text-center ${claimMsg.includes('🎉') ? 'text-lime-400' : 'text-red-400'}`}>
+              {claimMsg}
+            </div>
+          )}
         </div>
       )}
 
