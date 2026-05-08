@@ -9,7 +9,7 @@ import PriceChart from './PriceChart.jsx';
 import TradeHistory from './TradeHistory.jsx';
 import HolderList from './HolderList.jsx';
 import Comments from './Comments.jsx';
-import { PACKAGE_ID, DRAIN_SUI_APPROX, TOKEN_DECIMALS, MIST_PER_SUI as MIST_PER_SUI_CONST } from './constants.js';
+import { PACKAGE_ID, DRAIN_SUI_APPROX, TOKEN_DECIMALS } from './constants.js';
 import { mistToSui, priceMistPerToken, quoteBuy, quoteSell } from './curve.js';
 import { paginateEvents } from './paginateEvents.js';
 
@@ -126,7 +126,7 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
 
   const reserveMist = curveState ? BigInt(curveState.sui_reserve ?? 0) : 0n;
   const tokenReserve = curveState ? BigInt(curveState.token_reserve ?? 0) : 0n;
-  const tokensSold = BigInt(800_000_000) * BigInt(TOKEN_SCALE) - tokenReserve;
+  const tokensSold = BigInt(800_000_000) * BigInt(10 ** TOKEN_DECIMALS) - tokenReserve;
   const graduated = curveState?.graduated ?? false;
   const progress = Math.min(100, (mistToSui(reserveMist) / DRAIN_SUI_APPROX) * 100);
   const priceMist = priceMistPerToken(reserveMist, tokensSold);
