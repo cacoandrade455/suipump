@@ -83,8 +83,6 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
   const [copied, setCopied] = useState(false);
   const [shared, setShared] = useState(false);
 
-  // tabs
-  const [activeTab, setActiveTab] = useState('chart'); // 'chart' | 'trades' | 'holders' | 'comments'
 
   // ── data loading ────────────────────────────────────────────────────────
 
@@ -384,38 +382,14 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
             </div>
           </div>
 
-          {/* Tabs */}
-          <div className="flex border-b border-white/10 gap-0">
-            {['chart', 'trades', 'holders', 'comments'].map(tab => (
-              <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                className={`px-4 py-2.5 text-[11px] font-mono tracking-wider transition-colors ${
-                  activeTab === tab
-                    ? 'text-lime-400 border-b-2 border-lime-400'
-                    : 'text-white/35 hover:text-white/60'
-                }`}
-              >
-                {tab.toUpperCase()}
-              </button>
-            ))}
-          </div>
+          {/* Block 1 — Chart */}
+          <PriceChart curveId={curveId} tokenType={tokenType} suiUsd={suiUsd} />
 
-          {/* Tab content */}
-          <div>
-            {activeTab === 'chart' && (
-              <PriceChart curveId={curveId} tokenType={tokenType} suiUsd={suiUsd} />
-            )}
-            {activeTab === 'trades' && (
-              <TradeHistory curveId={curveId} suiUsd={suiUsd} />
-            )}
-            {activeTab === 'holders' && (
-              <HolderList curveId={curveId} tokenType={tokenType} suiUsd={suiUsd} />
-            )}
-            {activeTab === 'comments' && (
-              <Comments curveId={curveId} />
-            )}
-          </div>
+          {/* Block 2 — Trades / Holders toggle */}
+          <TradesHoldersBlock curveId={curveId} tokenType={tokenType} suiUsd={suiUsd} />
+
+          {/* Block 3 — Comments */}
+          <Comments curveId={curveId} />
         </div>
 
         {/* Right column — trade panel */}
@@ -601,6 +575,47 @@ function TradePanelContent({
           <div className="text-[10px] font-mono text-white/35 mb-0.5">IN SUI</div>
           <div className="text-white/50 text-xs font-mono">{fmt(priceSui, 6)} SUI</div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Trades / Holders toggle block ────────────────────────────────────────────
+
+function TradesHoldersBlock({ curveId, tokenType, suiUsd }) {
+  const [tab, setTab] = useState('trades');
+
+  return (
+    <div className="space-y-0">
+      {/* Toggle header */}
+      <div className="flex bg-white/[0.03] border border-white/10 rounded-t-xl overflow-hidden">
+        <button
+          onClick={() => setTab('trades')}
+          className={`flex-1 py-3 text-xs font-mono font-bold tracking-wider transition-colors ${
+            tab === 'trades'
+              ? 'text-lime-400 bg-lime-400/5 border-b-2 border-lime-400'
+              : 'text-white/40 hover:text-white/70'
+          }`}
+        >
+          TRADES
+        </button>
+        <button
+          onClick={() => setTab('holders')}
+          className={`flex-1 py-3 text-xs font-mono font-bold tracking-wider transition-colors ${
+            tab === 'holders'
+              ? 'text-lime-400 bg-lime-400/5 border-b-2 border-lime-400'
+              : 'text-white/40 hover:text-white/70'
+          }`}
+        >
+          HOLDERS
+        </button>
+      </div>
+      {/* Content — each component has its own card styling */}
+      <div className="[&>div]:rounded-t-none [&>div]:border-t-0">
+        {tab === 'trades'
+          ? <TradeHistory curveId={curveId} suiUsd={suiUsd} />
+          : <HolderList curveId={curveId} tokenType={tokenType} suiUsd={suiUsd} />
+        }
       </div>
     </div>
   );
