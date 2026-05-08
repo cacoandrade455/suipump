@@ -73,6 +73,10 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
   const [metadata, setMetadata] = useState(null);
   const [iconUrl, setIconUrl] = useState(null);
 
+  // balances
+  const [suiBalance, setSuiBalance] = useState(0); // SUI whole units
+  const [tokenBalance, setTokenBalance] = useState(0); // token whole units
+
   // trade panel
   const [side, setSide] = useState('buy');
   const [amount, setAmount] = useState('');
@@ -105,6 +109,32 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
     const t = setInterval(load, 8_000);
     return () => { cancelled = true; clearInterval(t); };
   }, [curveId, client]);
+
+  // Fetch wallet balances
+  useEffect(() => {
+    if (!account || !client) return;
+    let cancelled = false;
+    async function loadBalances() {
+      try {
+        // SUI balance
+        const suiBal = await client.getBalance({ owner: account.address, coinType: '0x2::sui::SUI' });
+        if (!cancelled) {
+          const whole = Number(BigInt(suiBal.totalBalance)) / 1e9;
+          setSuiBalance(whole);
+        }
+        // Token balance
+        if (tokenType) {
+          const tokBal = await client.getBalance({ owner: account.address, coinType: tokenType });
+          if (!cancelled) {
+            setTokenBalance(Number(BigInt(tokBal.totalBalance)) / (10 ** TOKEN_DECIMALS));
+          }
+        }
+      } catch {}
+    }
+    loadBalances();
+    const t = setInterval(loadBalances, 10_000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [account, client, tokenType]);
 
   useEffect(() => {
     if (!tokenType || !client) return;
@@ -409,6 +439,8 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
             suiUsd={suiUsd}
             symbol={symbol}
             graduated={graduated}
+            suiBalance={suiBalance}
+            tokenBalance={tokenBalance}
           />
 
           {/* Mobile stats */}
@@ -437,6 +469,7 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
 function TradePanelContent({
   side, setSide, amount, setAmount, quote, txStatus, txMsg,
   account, onExecute, priceSui, priceUsd, suiUsd, symbol, graduated,
+  suiBalance, tokenBalance,
 }) {
   const isPending = txStatus === 'pending';
 
@@ -486,7 +519,15 @@ function TradePanelContent({
             className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-sm font-mono text-white placeholder-white/20 focus:outline-none focus:border-lime-400/50 focus:bg-lime-400/5 transition-colors"
           />
           <button
-            onClick={() => setAmount(side === 'buy' ? '100' : '1000000')}
+            onClick={() => {
+              if (side === 'buy') {
+                // Leave 0.1 SUI for gas
+                const max = Math.max(0, suiBalance - 0.1);
+                setAmount(max > 0 ? max.toFixed(4) : '0');
+              } else {
+                setAmount(tokenBalance > 0 ? Math.floor(tokenBalance).toString() : '0');
+              }
+            }}
             className="px-2.5 py-2.5 text-[10px] font-mono text-white/35 hover:text-lime-400 border border-white/10 hover:border-lime-400/40 rounded-lg transition-colors"
           >
             MAX
