@@ -497,6 +497,16 @@ function TradePanelContent({
     setClaiming(true);
     setClaimMsg('');
     try {
+      // Find CreatorCap in wallet
+      const ownedObjs = await client2.getOwnedObjects({
+        owner: account.address,
+        filter: { StructType: `${PACKAGE_ID}::bonding_curve::CreatorCap` },
+        options: { showContent: true },
+      });
+      const capObj = ownedObjs.data?.[0];
+      if (!capObj) throw new Error('CreatorCap not found in wallet');
+      const capId = capObj.data?.objectId;
+
       const objForRef = await client2.getObject({ id: panelCurveId, options: { showOwner: true } });
       const initialSharedVersion = objForRef.data?.owner?.Shared?.initial_shared_version;
       const tx = new Transaction();
@@ -506,7 +516,7 @@ function TradePanelContent({
       const feeCoin = tx.moveCall({
         target: `${PACKAGE_ID}::bonding_curve::claim_creator_fees`,
         typeArguments: [panelTokenType],
-        arguments: [curveRef],
+        arguments: [tx.object(capId), curveRef],
       });
       tx.transferObjects([feeCoin], account.address);
       signAndExecutePanel(
