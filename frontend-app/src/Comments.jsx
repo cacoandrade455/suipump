@@ -1,27 +1,20 @@
-// Comments.jsx
-// On-chain comment feed — improved UX with wallet avatar colors and better timestamps.
-
-import React, { useState, useEffect } from 'react';
-import {
-  useCurrentAccount,
-  useSignAndExecuteTransaction,
-  useSuiClient,
-} from '@mysten/dapp-kit';
+// Comments.jsx — on-chain comments via post_comment
+import React, { useState, useEffect, useRef } from 'react';
+import { useCurrentAccount, useSuiClient, useSignAndExecuteTransaction } from '@mysten/dapp-kit';
 import { Transaction } from '@mysten/sui/transactions';
-import { MessageSquare, Send } from 'lucide-react';
+import { Send } from 'lucide-react';
 import { PACKAGE_ID } from './constants.js';
 import { paginateEvents } from './paginateEvents.js';
 
-// Deterministic color from wallet address for avatar dot
-const AVATAR_COLORS = [
-  '#84CC16', '#22D3EE', '#A78BFA', '#FB923C', '#F472B6',
-  '#34D399', '#60A5FA', '#FBBF24', '#E879F9', '#2DD4BF',
-];
-function avatarColor(addr) {
-  if (!addr) return AVATAR_COLORS[0];
-  let hash = 0;
-  for (let i = 0; i < addr.length; i++) hash = ((hash << 5) - hash + addr.charCodeAt(i)) | 0;
-  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
+function walletColor(addr) {
+  if (!addr) return '#84cc16';
+  const hue = parseInt(addr.slice(2, 6), 16) % 360;
+  return `hsl(${hue}, 65%, 55%)`;
+}
+
+function shortAddr(addr) {
+  if (!addr) return '—';
+  return addr.slice(0, 6) + '…' + addr.slice(-4);
 }
 
 function timeAgo(ts) {
@@ -30,144 +23,197 @@ function timeAgo(ts) {
   if (diff < 60_000) return 'just now';
   if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
   if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
-  if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)}d ago`;
-  return new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  return `${Math.floor(diff / 86_400_000)}d ago`;
 }
 
 export default function Comments({ curveId }) {
   const account = useCurrentAccount();
   const client = useSuiClient();
-  const { mutateAsync: signAndExecute, isPending } = useSignAndExecuteTransaction();
+  const { mutate: signAndExecute } = useSignAndExecuteTransaction();
 
   const [comments, setComments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [text, setText] = useState('');
-  const [status, setStatus] = useState(null);
-
-  async function loadComments(cancelled) {
-    try {
-      const allEvents = await paginateEvents(
-        client, `${PACKAGE_ID}::bonding_curve::Comment`,
-        { order: 'descending', maxPages: 10 }
-      );
-      if (cancelled?.value) return;
-      const filtered = allEvents
-        .filter(e => e.parsedJson?.curve_id === curveId)
-        .map(e => ({
-          author: e.parsedJson.author,
-          text: e.parsedJson.text,
-          ts: e.timestampMs ? Number(e.timestampMs) : null,
-          digest: e.id?.txDigest,
-        }));
-      setComments(filtered);
-    } catch { }
-    finally { setLoading(false); }
-  }
+  const [posting, setPosting] = useState(false);
+  const [postErr, setPostErr] = useState('');
+  const bottomRef = useRef(null);
 
   useEffect(() => {
-    const cancelled = { value: false };
-    loadComments(cancelled);
-    const interval = setInterval(() => loadComments(cancelled), 15_000);
-    return () => { cancelled.value = true; clearInterval(interval); };
+    if (!curveId || !client) return;
+    let cancelled = false;
+
+    async function load() {
+      try {
+        const eventType = `${PACKAGE_ID}::bonding_curve::CommentPosted`;
+        const events = await paginateEvents(client, { MoveEventType: eventType }, { order: 'ascending' });
+        const filtered = events
+          .filter(e => e.parsedJson?.curve_id === curveId)
+          .map(e => ({
+            id: e.id?.txDigest + '_' + e.id?.eventSeq,
+            author: e.parsedJson?.author,
+            text: e.parsedJson?.text,
+            timestamp: e.timestampMs ? Number(e.timestampMs) : null,
+          }));
+        if (!cancelled) {
+          setComments(filtered);
+          setLoading(false);
+        }
+      } catch (err) {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    load();
+    const t = setInterval(load, 15_000);
+    return () => { cancelled = true; clearInterval(t); };
   }, [curveId, client]);
 
-  const post = async () => {
-    if (!account || !text.trim() || isPending) return;
-    setStatus(null);
+  const handlePost = async () => {
+    const trimmed = text.trim();
+    if (!trimmed || !account || posting) return;
+    if (trimmed.length > 200) {
+      setPostErr('Max 200 characters');
+      return;
+    }
+
+    setPosting(true);
+    setPostErr('');
+
     try {
       const tx = new Transaction();
       tx.moveCall({
         target: `${PACKAGE_ID}::bonding_curve::post_comment`,
-        arguments: [tx.pure.address(curveId), tx.pure.string(text.trim())],
+        arguments: [
+          tx.pure.address(curveId),
+          tx.pure.string(trimmed),
+        ],
       });
-      await signAndExecute({ transaction: tx });
-      setText('');
-      setStatus({ kind: 'success', msg: 'Comment posted!' });
-      setTimeout(() => { const c = { value: false }; loadComments(c); }, 2000);
+
+      signAndExecute(
+        { transaction: tx },
+        {
+          onSuccess: () => {
+            setText('');
+            setPosting(false);
+            // Optimistically add
+            setComments(prev => [...prev, {
+              id: 'pending_' + Date.now(),
+              author: account.address,
+              text: trimmed,
+              timestamp: Date.now(),
+            }]);
+          },
+          onError: (err) => {
+            setPostErr(err.message || 'Failed to post');
+            setPosting(false);
+          },
+        }
+      );
     } catch (err) {
-      setStatus({ kind: 'error', msg: err.message?.slice(0, 80) || 'Failed to post' });
+      setPostErr(err.message || 'Failed to post');
+      setPosting(false);
+    }
+  };
+
+  const handleKey = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handlePost();
     }
   };
 
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-      <div className="flex items-center gap-2 text-[10px] font-mono text-white/30 tracking-widest mb-4">
-        <MessageSquare size={12} />
-        COMMENTS {comments.length > 0 && `· ${comments.length}`}
+    <div className="bg-white/[0.03] border border-white/10 rounded-xl overflow-hidden">
+      {/* Header */}
+      <div className="px-4 py-3 border-b border-white/10 flex items-center justify-between">
+        <span className="text-[10px] font-mono text-white/35 tracking-widest">COMMENTS</span>
+        <span className="text-[10px] font-mono text-white/25">{comments.length}</span>
       </div>
 
-      {account ? (
-        <div className="mb-4">
-          <div className="flex gap-2">
-            <div className="w-7 h-7 rounded-full shrink-0 mt-0.5 flex items-center justify-center"
-              style={{ backgroundColor: avatarColor(account.address) + '20', border: `1px solid ${avatarColor(account.address)}40` }}>
-              <div className="w-2 h-2 rounded-full" style={{ backgroundColor: avatarColor(account.address) }} />
+      {/* Comment list */}
+      <div className="max-h-[400px] overflow-y-auto">
+        {loading ? (
+          <div className="py-8 text-center text-white/35 text-xs font-mono">Loading…</div>
+        ) : comments.length === 0 ? (
+          <div className="py-8 text-center text-white/35 text-xs font-mono">
+            No comments yet. Be the first!
+          </div>
+        ) : (
+          <div className="divide-y divide-white/5">
+            {comments.map(c => (
+              <div key={c.id} className="px-4 py-3 hover:bg-white/[0.02] transition-colors">
+                <div className="flex items-start gap-2.5">
+                  {/* Avatar */}
+                  <div
+                    className="w-6 h-6 rounded-full flex-shrink-0 mt-0.5 flex items-center justify-center text-[9px] font-bold text-black"
+                    style={{ backgroundColor: walletColor(c.author) }}
+                  >
+                    {c.author?.slice(2, 4).toUpperCase()}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-[10px] font-mono text-white/50">
+                        {shortAddr(c.author)}
+                      </span>
+                      <span className="text-[10px] font-mono text-white/25">
+                        {timeAgo(c.timestamp)}
+                      </span>
+                    </div>
+                    <p className="text-sm text-white/70 leading-relaxed break-words">{c.text}</p>
+                  </div>
+                </div>
+              </div>
+            ))}
+            <div ref={bottomRef} />
+          </div>
+        )}
+      </div>
+
+      {/* Post input */}
+      <div className="border-t border-white/10 p-3">
+        {!account ? (
+          <div className="text-center text-white/35 text-xs font-mono py-2">
+            Connect wallet to comment
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <div className="flex gap-2">
+              <div
+                className="w-6 h-6 rounded-full flex-shrink-0 mt-1.5 flex items-center justify-center text-[9px] font-bold text-black"
+                style={{ backgroundColor: walletColor(account.address) }}
+              >
+                {account.address.slice(2, 4).toUpperCase()}
+              </div>
+              <textarea
+                value={text}
+                onChange={e => { setText(e.target.value); setPostErr(''); }}
+                onKeyDown={handleKey}
+                placeholder="Write a comment… (Enter to post)"
+                maxLength={200}
+                rows={2}
+                className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm font-mono text-white placeholder-white/20 resize-none focus:outline-none focus:border-lime-400/50 focus:bg-lime-400/5 transition-colors"
+              />
+              <button
+                onClick={handlePost}
+                disabled={!text.trim() || posting}
+                className={`self-end px-3 py-2 rounded-lg transition-colors ${
+                  !text.trim() || posting
+                    ? 'bg-white/5 text-white/25 cursor-not-allowed'
+                    : 'bg-lime-400 hover:bg-lime-300 text-black'
+                }`}
+              >
+                <Send size={14} />
+              </button>
             </div>
-            <div className="flex-1">
-              <div className="flex gap-2">
-                <input
-                  value={text}
-                  onChange={e => setText(e.target.value.slice(0, 280))}
-                  onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); post(); } }}
-                  placeholder="Say something…"
-                  className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs font-mono focus:outline-none focus:border-lime-400/40 transition-colors placeholder-white/20"
-                />
-                <button onClick={post} disabled={!text.trim() || isPending}
-                  className="px-3 py-2 bg-lime-400 text-black rounded-xl hover:bg-lime-300 disabled:opacity-30 disabled:cursor-not-allowed transition-all">
-                  {isPending ? '…' : <Send size={13} />}
-                </button>
-              </div>
-              <div className="flex justify-between mt-1 px-1">
-                <div className={`text-[9px] font-mono ${
-                  status?.kind === 'success' ? 'text-lime-400' : status?.kind === 'error' ? 'text-red-400' : 'text-transparent'
-                }`}>{status?.msg || '.'}</div>
-                <div className="text-[9px] font-mono text-white/20">{text.length}/280</div>
-              </div>
+            <div className="flex items-center justify-between px-8">
+              {postErr ? (
+                <span className="text-[10px] font-mono text-red-400">{postErr}</span>
+              ) : <span />}
+              <span className="text-[10px] font-mono text-white/25">{text.length}/200</span>
             </div>
           </div>
-        </div>
-      ) : (
-        <div className="mb-4 text-[10px] font-mono text-white/20 text-center py-3 border border-white/5 rounded-xl">
-          CONNECT WALLET TO COMMENT
-        </div>
-      )}
-
-      {loading ? (
-        <div className="space-y-2">
-          {[...Array(3)].map((_, i) => <div key={i} className="h-12 bg-white/5 rounded-xl animate-pulse" />)}
-        </div>
-      ) : comments.length === 0 ? (
-        <div className="text-center py-6 text-[10px] font-mono text-white/20">NO COMMENTS YET · BE THE FIRST</div>
-      ) : (
-        <div className="space-y-2 max-h-80 overflow-y-auto">
-          {comments.map((c, i) => {
-            const color = avatarColor(c.author);
-            return (
-              <div key={i} className="flex gap-2.5 py-2.5 border-b border-white/5 last:border-0">
-                {/* Avatar dot */}
-                <div className="w-6 h-6 rounded-full shrink-0 mt-0.5 flex items-center justify-center"
-                  style={{ backgroundColor: color + '15', border: `1px solid ${color}30` }}>
-                  <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: color }} />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-0.5">
-                    <span className="text-[10px] font-mono font-bold" style={{ color: color + 'CC' }}>
-                      {c.author ? `${c.author.slice(0, 6)}…${c.author.slice(-4)}` : '?'}
-                    </span>
-                    <span className="text-[9px] font-mono text-white/20">{timeAgo(c.ts)}</span>
-                    {c.digest && (
-                      <a href={`https://testnet.suivision.xyz/txblock/${c.digest}`}
-                        target="_blank" rel="noreferrer"
-                        className="text-[9px] font-mono text-white/15 hover:text-lime-400 transition-colors ml-auto">↗</a>
-                    )}
-                  </div>
-                  <p className="text-xs font-mono text-white/70 break-words leading-relaxed">{c.text}</p>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }

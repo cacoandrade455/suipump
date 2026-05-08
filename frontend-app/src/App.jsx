@@ -231,7 +231,7 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0 }) {
         <span className="text-[11px] font-mono text-white/30">{timeAgo}</span>
         <div className="flex items-center gap-2">
           {stats?.trades > 0 && (
-            <span className="text-[10px] font-mono text-white/20">{stats.trades} trade{stats.trades !== 1 ? 's' : ''}</span>
+            <span className="text-[10px] font-mono text-white/35">{stats.trades} trade{stats.trades !== 1 ? 's' : ''}</span>
           )}
           {marketCapSui > 0 && (() => {
             const mcUsd = suiUsd > 0 ? marketCapSui * suiUsd : null;
@@ -299,7 +299,7 @@ function MobileWalletButtons() {
               <span className="ml-auto text-[10px] text-white/30">OPEN →</span>
             </a>
           ))}
-          <p className="text-[9px] font-mono text-white/20 text-center pt-1">App will open in your wallet&apos;s built-in browser</p>
+          <p className="text-[9px] font-mono text-white/35 text-center pt-1">App will open in your wallet&apos;s built-in browser</p>
         </div>
       )}
     </div>
@@ -330,7 +330,7 @@ function Header({ onLaunch }) {
           <Link to="/airdrop" className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all">
             <Gift size={10} />
             {poolSui !== null ? <span>S1 {poolSui.toFixed(4)} SUI</span> : <span>S1 AIRDROP</span>}
-            {tradeCount !== null && <span className="text-white/20 ml-1">· {tradeCount} trades</span>}
+            {tradeCount !== null && <span className="text-white/35 ml-1">· {tradeCount} trades</span>}
           </Link>
           <Link to="/stats" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5"><BarChart3 size={10} /> STATS</Link>
           <Link to="/leaderboard" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5"><Trophy size={10} /> LEADERBOARD</Link>
@@ -518,7 +518,7 @@ function HomePage({ onLaunch }) {
 
       <div className="flex flex-col sm:flex-row gap-3 mb-4">
         <div className="relative flex-1">
-          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/20 pointer-events-none" />
+          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/35 pointer-events-none" />
           <input
             value={search} onChange={e => setSearch(e.target.value)}
             placeholder="Search name, symbol, or 0x address…"
@@ -540,10 +540,10 @@ function HomePage({ onLaunch }) {
           {loading ? 'LOADING TOKENS…' : `${sorted.length} TOKEN${sorted.length !== 1 ? 'S' : ''}${search ? ' FOUND' : ' LAUNCHED'}`}
         </div>
         {showLastTradeHint && (
-          <div className="text-[10px] font-mono text-white/20">sorted by most recent trade activity</div>
+          <div className="text-[10px] font-mono text-white/35">sorted by most recent trade activity</div>
         )}
         {sort === 'market_cap' && (
-          <div className="text-[10px] font-mono text-white/20">market cap = latest price × 1B supply</div>
+          <div className="text-[10px] font-mono text-white/35">market cap = latest price × 1B supply</div>
         )}
       </div>
 
@@ -561,7 +561,7 @@ function HomePage({ onLaunch }) {
         <div className="rounded-3xl border border-white/10 p-16 text-center">
           <div className="text-5xl mb-4">{search ? '🔍' : '🔥'}</div>
           <div className="text-sm font-mono text-white/40 mb-2">{search ? `No tokens matching "${search}"` : 'NO TOKENS YET'}</div>
-          {!search && <div className="text-xs font-mono text-white/20">Be the first to launch a token on SuiPump.</div>}
+          {!search && <div className="text-xs font-mono text-white/35">Be the first to launch a token on SuiPump.</div>}
         </div>
       )}
 
@@ -644,7 +644,7 @@ export default function App() {
           <Route path="/roadmap" element={<RoadmapPage onBack={() => navigate('/')} />} />
         </Routes>
       </main>
-      <footer className="max-w-6xl mx-auto px-4 py-8 text-[10px] font-mono text-white/20 text-center tracking-widest border-t border-white/5 mt-8">
+      <footer className="max-w-6xl mx-auto px-4 py-8 text-[10px] font-mono text-white/35 text-center tracking-widest border-t border-white/5 mt-8">
         SUIPUMP · TESTNET DEMO · CONTRACTS UNAUDITED · DYOR
       </footer>
       {showLaunch && <LaunchModal onClose={() => setShowLaunch(false)} onLaunched={handleLaunched} />}

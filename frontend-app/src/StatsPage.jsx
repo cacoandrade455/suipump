@@ -69,7 +69,7 @@ function StatCard({ icon, label, valueSui, valueUsd, accent = false, sub }) {
           {valueSui}
         </div>
       )}
-      {sub && <div className="text-[10px] font-mono text-white/20 mt-0.5">{sub}</div>}
+      {sub && <div className="text-[10px] font-mono text-white/35 mt-0.5">{sub}</div>}
     </div>
   );
 }
@@ -238,7 +238,7 @@ export default function StatsPage({ onBack }) {
               </p>
             </div>
             <div className="text-right shrink-0">
-              <div className="text-[9px] font-mono text-white/20 tracking-widest">SUI/USD</div>
+              <div className="text-[9px] font-mono text-white/35 tracking-widest">SUI/USD</div>
               <div className="text-sm font-bold font-mono text-white/60">
                 {suiUsd > 0 ? `$${suiUsd.toFixed(4)}` : '—'}
               </div>
@@ -351,7 +351,7 @@ export default function StatsPage({ onBack }) {
                       className="w-full bg-lime-400/40 hover:bg-lime-400/70 rounded-t transition-colors"
                       style={{ height: `${pct}%` }}
                     />
-                    <div className="text-[8px] font-mono text-white/20 text-center leading-tight">{day}</div>
+                    <div className="text-[8px] font-mono text-white/35 text-center leading-tight">{day}</div>
                   </div>
                 );
               })}
@@ -363,7 +363,7 @@ export default function StatsPage({ onBack }) {
         <div className="rounded-2xl border border-white/10 bg-white/[0.03] overflow-hidden">
           <div className="px-5 py-4 border-b border-white/5 flex items-center justify-between">
             <div className="text-[10px] font-mono text-white/30 tracking-widest">TOP TOKENS BY VOLUME</div>
-            <div className="text-[10px] font-mono text-white/20">{enrichedTop.length} tokens with trades</div>
+            <div className="text-[10px] font-mono text-white/35">{enrichedTop.length} tokens with trades</div>
           </div>
 
           {loading ? (
@@ -373,7 +373,7 @@ export default function StatsPage({ onBack }) {
               ))}
             </div>
           ) : enrichedTop.length === 0 ? (
-            <div className="text-xs font-mono text-white/20 text-center py-10">No trades yet.</div>
+            <div className="text-xs font-mono text-white/35 text-center py-10">No trades yet.</div>
           ) : (
             <div>
               {enrichedTop.map((token, i) => (
@@ -382,7 +382,7 @@ export default function StatsPage({ onBack }) {
                   onClick={() => token.tokenType && navigate(`/token/${token.curveId}`)}
                   className="w-full flex items-center gap-4 px-5 py-3.5 border-b border-white/[0.03] last:border-0 hover:bg-white/5 transition-colors group text-left"
                 >
-                  <div className="text-[10px] font-mono text-white/20 w-5 shrink-0 text-right">{i + 1}</div>
+                  <div className="text-[10px] font-mono text-white/35 w-5 shrink-0 text-right">{i + 1}</div>
                   <div className="w-24 shrink-0">
                     <div className="text-xs font-mono font-bold text-white group-hover:text-lime-400 transition-colors truncate">{token.name}</div>
                     <div className="text-[10px] font-mono text-white/30">${token.symbol}</div>
@@ -409,13 +409,13 @@ export default function StatsPage({ onBack }) {
             </div>
           </div>
           <div className="text-right shrink-0">
-            <div className="text-[9px] font-mono text-white/20 mb-0.5">TARGET VOLUME</div>
+            <div className="text-[9px] font-mono text-white/35 mb-0.5">TARGET VOLUME</div>
             <div className="text-2xl font-bold font-mono text-lime-400">$50M</div>
-            <div className="text-[9px] font-mono text-white/20">per month</div>
+            <div className="text-[9px] font-mono text-white/35">per month</div>
           </div>
         </div>
 
-        <div className="text-center text-[9px] font-mono text-white/15 py-2">
+        <div className="text-center text-[9px] font-mono text-white/30 py-2">
           TESTNET DATA ONLY · RESETS AT MAINNET LAUNCH · REFRESHES EVERY 30S
         </div>
       </div>
