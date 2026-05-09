@@ -4,3 +4,27 @@
 @tailwind utilities;
 
 body { background: #000; margin: 0; }
+
+/* ── ConnectButton size override ──────────────────────────────────────────────
+   dapp-kit uses vanilla-extract for styling — Tailwind [&>button] can't
+   beat its specificity. Override here with !important so the wallet button
+   matches the LAUNCH TOKEN button height/padding exactly.
+   Target: the root button element dapp-kit renders inside ConnectButton.
+──────────────────────────────────────────────────────────────────────────── */
+.wkit-connect-button,
+button[class*="connectButton"],
+button[class*="connect-button"],
+div[class*="connectButtonContainer"] > button,
+div[class*="connect-button-container"] > button {
+  padding-top: 0.5rem !important;      /* py-2 = 8px */
+  padding-bottom: 0.5rem !important;
+  padding-left: 1rem !important;       /* px-4 = 16px */
+  padding-right: 1rem !important;
+  font-size: 0.75rem !important;       /* text-xs = 12px */
+  font-family: 'JetBrains Mono', ui-monospace, monospace !important;
+  border-radius: 0.75rem !important;   /* rounded-xl */
+  font-weight: 700 !important;
+  line-height: 1.25rem !important;
+  min-height: unset !important;
+  height: auto !important;
+}
