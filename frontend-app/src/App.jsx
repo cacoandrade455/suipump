@@ -845,6 +845,17 @@ function CrownBanner({ token, stats, suiUsd }) {
   );
 }
 
+// ── Home page ─────────────────────────────────────────────────────────────────
+
+function HomePage({ onLaunch, lang = 'en' }) {
+  const account = useCurrentAccount();
+  const { tokens, loading, error } = useTokenList();
+  const stats = useStats();
+  const tokenStats = useTokenStats(tokens);
+  const [search, setSearch] = useState('');
+  const [sort, setSort] = useState('newest');
+  const [suiUsd, setSuiUsd] = useState(_suiUsdCache);
+
   const SORT_OPTIONS = [
     { id: 'newest',     label: t(lang,'newest') },
     { id: 'oldest',     label: t(lang,'oldest') },
@@ -856,17 +867,6 @@ function CrownBanner({ token, stats, suiUsd }) {
     { id: 'reserve',    label: t(lang,'reserve') },
     { id: 'progress',   label: t(lang,'progress') },
   ];
-
-// ── Home page ─────────────────────────────────────────────────────────────────
-
-function HomePage({ onLaunch, lang = 'en' }) {
-  const account = useCurrentAccount();
-  const { tokens, loading, error } = useTokenList();
-  const stats = useStats();
-  const tokenStats = useTokenStats(tokens);
-  const [search, setSearch] = useState('');
-  const [sort, setSort] = useState('newest');
-  const [suiUsd, setSuiUsd] = useState(_suiUsdCache);
 
   useEffect(() => {
     refreshSuiUsd().then(p => setSuiUsd(p));
