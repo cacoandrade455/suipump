@@ -2,11 +2,43 @@
   "rewrites": [
     {
       "source": "/token/:curveId",
-      "destination": "/api/token-og?curveId=:curveId"
+      "destination": "/api/token-og?page=token&curveId=:curveId"
+    },
+    {
+      "source": "/stats",
+      "destination": "/api/token-og?page=stats"
+    },
+    {
+      "source": "/leaderboard",
+      "destination": "/api/token-og?page=leaderboard"
     },
     {
       "source": "/(.*)",
       "destination": "/index.html"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/assets/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }
+      ]
+    },
+    {
+      "source": "/(.*)\\.html",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" },
+        { "key": "Pragma",        "value": "no-cache" },
+        { "key": "Expires",       "value": "0" }
+      ]
+    },
+    {
+      "source": "/",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" },
+        { "key": "Pragma",        "value": "no-cache" },
+        { "key": "Expires",       "value": "0" }
+      ]
     }
   ]
 }
