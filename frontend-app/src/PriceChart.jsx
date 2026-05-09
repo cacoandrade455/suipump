@@ -18,11 +18,11 @@ const CANDLE_THRESHOLD   = 10;
 
 // Interval definitions: ms = candle bucket size, defaultWindow = initial viewport width
 const INTERVALS = [
-  { label: '1M',  ms: 60_000,    defaultWindow: 60_000 * 60 },        // show 1h of 1m candles
-  { label: '5M',  ms: 300_000,   defaultWindow: 300_000 * 48 },       // show 4h of 5m candles
-  { label: '30M', ms: 1_800_000, defaultWindow: 1_800_000 * 48 },     // show 24h of 30m candles
-  { label: '1H',  ms: 3_600_000, defaultWindow: 3_600_000 * 72 },     // show 3d of 1h candles
-  { label: 'ALL', ms: 0,         defaultWindow: 0 },                   // show everything
+  { label: '1M',  ms: 60_000,    defaultWindow: 60_000    * 80 },  // 80 x 1m candles
+  { label: '5M',  ms: 300_000,   defaultWindow: 300_000   * 80 },  // 80 x 5m candles
+  { label: '30M', ms: 1_800_000, defaultWindow: 1_800_000 * 80 },  // 80 x 30m candles
+  { label: '1H',  ms: 3_600_000, defaultWindow: 3_600_000 * 80 },  // 80 x 1h candles
+  { label: 'ALL', ms: 0,         defaultWindow: 0 },                // show everything
 ];
 const VIEWS = ['PRICE', 'MCAP'];
 
@@ -181,9 +181,11 @@ export default function PriceChart({ curveId, refreshKey }) {
       setViewStart(firstTrade - span * 0.05);
       setViewEnd(now + span * 0.05);
     } else {
-      // Fixed window ending at now
+      // Show 80 candles of the selected interval, ending slightly past now
+      const { ms } = INTERVALS[intervalIdx];
+      const rightPad = ms * 3; // 3 empty candles on the right for breathing room
       setViewStart(now - defaultWindow);
-      setViewEnd(now + defaultWindow * 0.03); // small right padding
+      setViewEnd(now + rightPad);
     }
   }, [intervalIdx, rawTrades.length]);
 
@@ -198,7 +200,8 @@ export default function PriceChart({ curveId, refreshKey }) {
     return rawTrades.filter(p => p.time >= viewStart && p.time <= viewEnd);
   }, [rawTrades, viewStart, viewEnd]);
 
-  const useCandles = tradesInView.length >= CANDLE_THRESHOLD;
+  // Use candles whenever a specific interval is selected (not ALL with very sparse data)
+  const useCandles = intervalIdx < 4 || tradesInView.length >= CANDLE_THRESHOLD;
 
   // Build candle data
   const candleData = useMemo(() => {
@@ -569,12 +572,19 @@ export default function PriceChart({ curveId, refreshKey }) {
             <g clipPath="url(#chartClip)">
               {candleData.map((d, i) => {
                 if (d.empty) {
-                  // Flat doji — thin horizontal tick at prevClose, very dim
+                  // Doji — price held, no trades. Render as visible flat candle:
+                  // a vertical wick of zero height + a horizontal body tick.
                   const cx = toX(d.time);
                   const py = toY(d.c);
                   return (
-                    <line key={i} x1={cx - candlePixelW/2} x2={cx + candlePixelW/2}
-                      y1={py} y2={py} stroke="#2a4a1a" strokeWidth="1" opacity="0.6" />
+                    <g key={i} opacity="0.45">
+                      {/* Thin vertical center line (zero-height wick) */}
+                      <line x1={cx} x2={cx} y1={py - 3} y2={py + 3}
+                        stroke="#4a7a2a" strokeWidth="0.75" />
+                      {/* Horizontal body tick — same width as real candles */}
+                      <line x1={cx - candlePixelW/2} x2={cx + candlePixelW/2}
+                        y1={py} y2={py} stroke="#4a7a2a" strokeWidth="1.5" />
+                    </g>
                   );
                 }
                 const isGreen    = d.c >= d.o;
