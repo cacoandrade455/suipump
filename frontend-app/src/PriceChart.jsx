@@ -1,8 +1,12 @@
 // PriceChart.jsx
-// Smart chart: line/area when < 10 real trades in view (looks clean for sparse data),
-// OHLC candlesticks with forward-fill when >= 10 trades (looks like a real trading chart).
-// Intervals: 1M, 5M, 30M, 1H, ALL | Toggle: PRICE / MCAP
-// Hover crosshair, USD primary, SUI secondary.
+// TradingView-style chart apparatus:
+//   - X-axis = real timestamps (not array indices)
+//   - Mouse wheel zoom — anchored at mouse X position
+//   - Click+drag pan
+//   - Pixel-perfect crosshair that flows smoothly through every point
+//   - Line chart for sparse data (< 10 trades), candlesticks for dense
+//   - Forward-fill: always shows current price even with no recent trades
+//   - Interval buttons set default viewport width
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useSuiClient } from '@mysten/dapp-kit';
@@ -10,19 +14,19 @@ import { PACKAGE_ID } from './constants.js';
 import { paginateMultipleEvents } from './paginateEvents.js';
 
 const TOTAL_SUPPLY_WHOLE = 1_000_000_000;
-const CANDLE_THRESHOLD   = 10; // switch to candles above this many real trades in view
+const CANDLE_THRESHOLD   = 10;
 
+// Interval definitions: ms = candle bucket size, defaultWindow = initial viewport width
 const INTERVALS = [
-  { label: '1M',  ms: 60_000,    window: 60_000 },
-  { label: '5M',  ms: 300_000,   window: 300_000 },
-  { label: '30M', ms: 1_800_000, window: 1_800_000 },
-  { label: '1H',  ms: 3_600_000, window: 3_600_000 },
-  { label: 'ALL', ms: 0,         window: 0 },
+  { label: '1M',  ms: 60_000,    defaultWindow: 60_000 * 60 },        // show 1h of 1m candles
+  { label: '5M',  ms: 300_000,   defaultWindow: 300_000 * 48 },       // show 4h of 5m candles
+  { label: '30M', ms: 1_800_000, defaultWindow: 1_800_000 * 48 },     // show 24h of 30m candles
+  { label: '1H',  ms: 3_600_000, defaultWindow: 3_600_000 * 72 },     // show 3d of 1h candles
+  { label: 'ALL', ms: 0,         defaultWindow: 0 },                   // show everything
 ];
 const VIEWS = ['PRICE', 'MCAP'];
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
+// ── Fetch SUI/USD ─────────────────────────────────────────────────────────────
 async function fetchSuiUsd() {
   try {
     const r = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=SUIUSDT');
@@ -35,52 +39,36 @@ async function fetchSuiUsd() {
   }
 }
 
-function filterByWindow(points, windowMs) {
-  if (!windowMs) return points;
-  const cutoff = Date.now() - windowMs;
-  const out = points.filter(p => p.time >= cutoff);
-  // Always prepend the last known price before the window as a synthetic anchor.
-  // This ensures the chart is never blank — it shows the current price even if
-  // no trades happened in the selected interval (same logic as TradingView).
-  const lastBefore = [...points].reverse().find(p => p.time < cutoff);
-  if (lastBefore) {
-    // Clone it with time = window start so it anchors correctly on the left edge
-    const anchor = { ...lastBefore, time: cutoff, synthetic: true };
-    return [anchor, ...out];
-  }
-  return out.length === 0 && points.length > 0 ? [{ ...points[points.length - 1], time: cutoff, synthetic: true }] : out;
-}
-
-// Forward-fill candles: empty buckets carry previous close as a flat doji.
-function toCandles(points, intervalMs, windowMs) {
+// ── Candle builder with forward-fill ─────────────────────────────────────────
+// Always fills from viewStart to now so chart is never blank.
+function buildCandles(points, bucketMs, viewStart, viewEnd) {
   if (points.length === 0) return [];
 
-  let ms = intervalMs;
+  let ms = bucketMs;
   if (!ms) {
-    if (points.length <= 1) return [{ time: points[0].time, o: points[0].price, h: points[0].price, l: points[0].price, c: points[0].price, empty: false }];
-    const span = points[points.length - 1].time - points[0].time;
+    // AUTO bucket: ~60 candles across the visible window
+    const span = viewEnd - viewStart;
+    const raw  = span / 60;
     const snaps = [60_000, 300_000, 900_000, 1_800_000, 3_600_000, 14_400_000, 86_400_000];
-    ms = snaps.find(s => s >= span / 60) ?? snaps[snaps.length - 1];
+    ms = snaps.find(s => s >= raw) ?? snaps[snaps.length - 1];
   }
 
-  const now        = Date.now();
-  const winStart   = windowMs ? now - windowMs : points[0].time;
-  const firstBucket = Math.floor(winStart / ms) * ms;
-  const lastBucket  = Math.floor(now / ms) * ms;
+  const firstBucket = Math.floor(viewStart / ms) * ms;
+  const lastBucket  = Math.floor(viewEnd   / ms) * ms;
 
-  // Group trades into buckets
+  // Group all trades into buckets
   const tradeMap = {};
   for (const p of points) {
-    if (p.time < winStart) continue;
     const b = Math.floor(p.time / ms) * ms;
     if (!tradeMap[b]) tradeMap[b] = [];
     tradeMap[b].push(p.price);
   }
 
-  // prevClose = last known price before window (or synthetic anchor injected by filterByWindow)
-  const synthetic = points.find(p => p.synthetic);
-  const pre = points.filter(p => p.time < winStart && !p.synthetic);
-  let prevClose = synthetic?.price ?? (pre.length > 0 ? pre[pre.length - 1].price : points[0].price);
+  // prevClose = last trade price before the viewport
+  const preTrades = points.filter(p => p.time < viewStart);
+  let prevClose   = preTrades.length > 0
+    ? preTrades[preTrades.length - 1].price
+    : points[0].price;
 
   const result = [];
   for (let b = firstBucket; b <= lastBucket; b += ms) {
@@ -97,12 +85,12 @@ function toCandles(points, intervalMs, windowMs) {
   return result;
 }
 
-// Smooth cubic bezier path for line chart
+// ── Smooth bezier path ────────────────────────────────────────────────────────
 function smoothPath(pts) {
   if (pts.length < 2) return '';
   let d = `M ${pts[0][0].toFixed(1)},${pts[0][1].toFixed(1)}`;
   for (let i = 1; i < pts.length; i++) {
-    const p = pts[i - 1], c = pts[i];
+    const p = pts[i-1], c = pts[i];
     const cpx = ((p[0] + c[0]) / 2).toFixed(1);
     d += ` C ${cpx},${p[1].toFixed(1)} ${cpx},${c[1].toFixed(1)} ${c[0].toFixed(1)},${c[1].toFixed(1)}`;
   }
@@ -110,19 +98,28 @@ function smoothPath(pts) {
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
-
 export default function PriceChart({ curveId, refreshKey }) {
   const client = useSuiClient();
   const svgRef = useRef(null);
+  const containerRef = useRef(null);
 
-  const [rawTrades, setRawTrades]   = useState([]);
-  const [suiUsd,    setSuiUsd]      = useState(0);
+  const [rawTrades, setRawTrades]     = useState([]);
+  const [suiUsd,    setSuiUsd]        = useState(0);
   const [intervalIdx, setIntervalIdx] = useState(4);
-  const [view,      setView]        = useState('PRICE');
-  const [hover,     setHover]       = useState(null);
-  const [loading,   setLoading]     = useState(true);
-  const [animKey,   setAnimKey]     = useState(0);
+  const [view,      setView]          = useState('PRICE');
+  const [loading,   setLoading]       = useState(true);
 
+  // Viewport: start/end timestamps
+  const [viewStart, setViewStart] = useState(null);
+  const [viewEnd,   setViewEnd]   = useState(null);
+
+  // Crosshair
+  const [crosshair, setCrosshair] = useState(null); // { x, y, time, price }
+
+  // Pan state
+  const panRef = useRef({ active: false, startX: 0, startViewStart: 0, startViewEnd: 0 });
+
+  // ── Fetch trades ─────────────────────────────────────────────────────────────
   useEffect(() => {
     fetchSuiUsd().then(setSuiUsd);
     const t = setInterval(() => fetchSuiUsd().then(setSuiUsd), 30_000);
@@ -147,12 +144,15 @@ export default function PriceChart({ curveId, refreshKey }) {
         const points = all.map(e => {
           const p = e.parsedJson;
           const price = e.kind === 'buy'
-            ? (Number(p.sui_in ?? 0) / 1e9) / (Number(p.tokens_out ?? 1) / 1e6)
-            : (Number(p.sui_out ?? 0) / 1e9) / (Number(p.tokens_in ?? 1) / 1e6);
+            ? (Number(p.sui_in   ?? 0) / 1e9) / (Number(p.tokens_out ?? 1) / 1e6)
+            : (Number(p.sui_out  ?? 0) / 1e9) / (Number(p.tokens_in  ?? 1) / 1e6);
           return { time: Number(e.timestampMs), price, kind: e.kind };
-        }).filter(t => t.price > 0);
+        }).filter(p => p.price > 0);
 
-        if (!cancelled) { setRawTrades(points); setLoading(false); setAnimKey(k => k + 1); }
+        if (!cancelled) {
+          setRawTrades(points);
+          setLoading(false);
+        }
       } catch { if (!cancelled) setLoading(false); }
     }
     load();
@@ -160,95 +160,135 @@ export default function PriceChart({ curveId, refreshKey }) {
     return () => { cancelled = true; clearInterval(t); };
   }, [curveId, client, refreshKey]);
 
-  const { ms: intervalMs, window: windowMs } = INTERVALS[intervalIdx];
+  // ── Set initial viewport when data loads or interval changes ─────────────────
+  useEffect(() => {
+    const now = Date.now();
+    const { defaultWindow } = INTERVALS[intervalIdx];
 
-  // Points visible in this window
-  const visiblePoints = useMemo(
-    () => filterByWindow(rawTrades, windowMs),
-    [rawTrades, windowMs, intervalIdx]
-  );
+    if (rawTrades.length === 0) {
+      // No data — show last hour
+      setViewStart(now - 3_600_000);
+      setViewEnd(now + 60_000);
+      return;
+    }
 
-  // Decide render mode
-  const useCandles = visiblePoints.length >= CANDLE_THRESHOLD;
+    const firstTrade = rawTrades[0].time;
+    const lastTrade  = rawTrades[rawTrades.length - 1].time;
 
-  // Build candle data (always computed, only rendered when useCandles)
-  const candles = useMemo(
-    () => toCandles(rawTrades, intervalMs, windowMs),
-    [rawTrades, intervalMs, windowMs]
-  );
+    if (defaultWindow === 0) {
+      // ALL: show everything with 5% padding
+      const span = Math.max(lastTrade - firstTrade, 60_000);
+      setViewStart(firstTrade - span * 0.05);
+      setViewEnd(now + span * 0.05);
+    } else {
+      // Fixed window ending at now
+      setViewStart(now - defaultWindow);
+      setViewEnd(now + defaultWindow * 0.03); // small right padding
+    }
+  }, [intervalIdx, rawTrades.length]);
 
+  // ── Chart data from viewport ──────────────────────────────────────────────────
   const mul = view === 'MCAP' ? TOTAL_SUPPLY_WHOLE : 1;
 
-  // Line chart data — one point per trade.
-  // If only the synthetic anchor exists, add a second point at "now" so the
-  // flat line stretches across the full chart width (TradingView style).
+  const { ms: intervalMs } = INTERVALS[intervalIdx];
+
+  // Count real trades in viewport
+  const tradesInView = useMemo(() => {
+    if (!viewStart || !viewEnd) return [];
+    return rawTrades.filter(p => p.time >= viewStart && p.time <= viewEnd);
+  }, [rawTrades, viewStart, viewEnd]);
+
+  const useCandles = tradesInView.length >= CANDLE_THRESHOLD;
+
+  // Build candle data
+  const candleData = useMemo(() => {
+    if (!viewStart || !viewEnd) return [];
+    return buildCandles(rawTrades, intervalMs, viewStart, viewEnd)
+      .map(c => ({ ...c, o: c.o*mul, h: c.h*mul, l: c.l*mul, c: c.c*mul }));
+  }, [rawTrades, intervalMs, viewStart, viewEnd, mul]);
+
+  // Line data — all trades in view + synthetic anchor if needed
   const lineData = useMemo(() => {
-    const pts = visiblePoints.map(p => ({ ...p, value: p.price * mul }));
-    if (pts.length === 1) {
-      // Extend flat line to now
-      pts.push({ ...pts[0], time: Date.now(), synthetic: true });
-    }
-    return pts;
-  }, [visiblePoints, mul]);
+    if (!viewStart || !viewEnd) return [];
+    // Include last trade before viewport for left edge anchor
+    const lastBefore = [...rawTrades].reverse().find(p => p.time < viewStart);
+    const inView     = rawTrades.filter(p => p.time >= viewStart && p.time <= viewEnd);
+    const pts = [];
+    if (lastBefore) pts.push({ ...lastBefore, time: viewStart, synthetic: true });
+    pts.push(...inView);
+    // Extend to now
+    if (pts.length > 0) pts.push({ ...pts[pts.length - 1], time: viewEnd, synthetic: true });
+    return pts.map(p => ({ ...p, value: p.price * mul }));
+  }, [rawTrades, viewStart, viewEnd, mul]);
 
-  // Candle chart data
-  const candleData = useMemo(
-    () => candles.map(c => ({ ...c, o: c.o*mul, h: c.h*mul, l: c.l*mul, c: c.c*mul, value: c.c*mul })),
-    [candles, mul]
-  );
-
-  // ── SVG layout ──────────────────────────────────────────────────────────────
+  // ── SVG layout ────────────────────────────────────────────────────────────────
   const W = 600, H = 200, PL = 68, PR = 8, PT = 12, PB = 28;
   const cW = W - PL - PR, cH = H - PT - PB;
 
   // Price range
-  const allVals = useCandles
-    ? candleData.flatMap(d => [d.h, d.l])
+  const priceVals = useCandles
+    ? candleData.filter(d => !d.empty).flatMap(d => [d.h, d.l])
     : lineData.map(d => d.value);
-  const rawMin  = allVals.length ? Math.min(...allVals) : 0;
-  const rawMax  = allVals.length ? Math.max(...allVals) : 1;
-  const pad     = (rawMax - rawMin) * 0.1 || rawMax * 0.05 || 1e-10;
-  const minV    = rawMin - pad;
-  const maxV    = rawMax + pad;
-  const rangeV  = maxV - minV || 1;
+  const rawMin = priceVals.length ? Math.min(...priceVals) : 0;
+  const rawMax = priceVals.length ? Math.max(...priceVals) : 1;
+  const pad    = (rawMax - rawMin) * 0.1 || rawMax * 0.05 || 1e-10;
+  const minV   = rawMin - pad;
+  const maxV   = rawMax + pad;
+  const rangeV = maxV - minV || 1;
 
-  const toY = v => PT + (1 - (v - minV) / rangeV) * cH;
+  // Time → X pixel (based on viewport)
+  const toX = useCallback(t => {
+    if (!viewStart || !viewEnd) return PL;
+    return PL + ((t - viewStart) / (viewEnd - viewStart)) * cW;
+  }, [viewStart, viewEnd]);
 
-  // ── Line chart coords ───────────────────────────────────────────────────────
-  const toXLine = i => PL + (i / Math.max(lineData.length - 1, 1)) * cW;
-  const linePts  = lineData.map((d, i) => [toXLine(i), toY(d.value)]);
-  const pathD    = linePts.length >= 2 ? smoothPath(linePts) : null;
-  const areaD    = pathD
-    ? `${pathD} L ${toXLine(lineData.length-1)},${H-PB} L ${PL},${H-PB} Z`
-    : null;
-  const isLineUp = lineData.length >= 2 && lineData[lineData.length-1].value >= lineData[0].value;
-  const lineColor = isLineUp ? '#84CC16' : '#EF4444';
-  const gradId    = `ag${animKey % 4}`;
+  const toY = useCallback(v => PT + (1 - (v - minV) / rangeV) * cH, [minV, rangeV]);
 
-  // ── Candle chart coords ─────────────────────────────────────────────────────
-  const n           = candleData.length;
-  const candleSlot  = n > 1 ? cW / n : cW;
-  const candleW     = Math.max(2, Math.min(12, candleSlot * 0.55));
-  const candleCX    = i => PL + (i + 0.5) * candleSlot;
+  // X pixel → time
+  const toTime = useCallback(x => {
+    if (!viewStart || !viewEnd) return Date.now();
+    return viewStart + ((x - PL) / cW) * (viewEnd - viewStart);
+  }, [viewStart, viewEnd]);
 
-  // ── Y-axis ticks ────────────────────────────────────────────────────────────
+  // ── Candle layout ─────────────────────────────────────────────────────────────
+  const candlePixelW = useMemo(() => {
+    if (candleData.length < 2 || !viewStart || !viewEnd) return 8;
+    const slot = (toX(candleData[1].time) - toX(candleData[0].time));
+    return Math.max(2, Math.min(16, slot * 0.6));
+  }, [candleData, toX]);
+
+  // ── Y ticks ───────────────────────────────────────────────────────────────────
   const yTicks = [0, 0.25, 0.5, 0.75, 1].map(t => ({
     y: PT + (1 - t) * cH,
     value: minV + t * rangeV,
   }));
 
-  // ── X-axis ticks ────────────────────────────────────────────────────────────
-  const xSource = useCandles ? candleData : lineData;
-  const xTicks  = xSource.length >= 2
-    ? [0, Math.floor(xSource.length / 2), xSource.length - 1].map(i => ({
-        x: useCandles ? candleCX(i) : toXLine(i),
-        label: xSource[i]
-          ? new Date(xSource[i].time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-          : '',
-      }))
-    : [];
+  // ── X ticks: evenly spaced time labels ───────────────────────────────────────
+  const xTicks = useMemo(() => {
+    if (!viewStart || !viewEnd) return [];
+    const ticks = [];
+    const span  = viewEnd - viewStart;
+    // Pick a nice label interval
+    const labelIntervals = [
+      60_000, 300_000, 900_000, 1_800_000, 3_600_000,
+      14_400_000, 86_400_000, 604_800_000,
+    ];
+    const labelMs = labelIntervals.find(ms => span / ms <= 8) ?? labelIntervals[labelIntervals.length - 1];
+    const start   = Math.ceil(viewStart / labelMs) * labelMs;
+    for (let t = start; t <= viewEnd; t += labelMs) {
+      const x = toX(t);
+      if (x >= PL && x <= W - PR) {
+        const d = new Date(t);
+        const label = span < 86_400_000
+          ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+        ticks.push({ x, label });
+      }
+    }
+    return ticks;
+  }, [viewStart, viewEnd, toX]);
 
-  // ── Formatters ──────────────────────────────────────────────────────────────
+  // ── Formatters ────────────────────────────────────────────────────────────────
   const fmtPrice = v => {
     if (v == null) return '-';
     if (view === 'MCAP') {
@@ -268,40 +308,146 @@ export default function PriceChart({ curveId, refreshKey }) {
     if (usd >= 1e3)  return `$${(usd/1e3).toFixed(2)}k`;
     if (usd >= 1)    return `$${usd.toFixed(4)}`;
     if (usd >= 1e-4) return `$${usd.toFixed(6)}`;
-    if (usd === 0)   return '$0.00';
     return `$${usd.toPrecision(4)}`;
   };
 
-  // ── Mouse interaction ────────────────────────────────────────────────────────
-  const handleMouseMove = useCallback(e => {
-    if (!svgRef.current) return;
+  // ── Mouse interaction ─────────────────────────────────────────────────────────
+
+  const getSvgX = useCallback(clientX => {
+    if (!svgRef.current) return 0;
     const rect = svgRef.current.getBoundingClientRect();
-    const svgX  = ((e.clientX - rect.left) / rect.width) * W;
-    if (svgX < PL || svgX > W - PR) { setHover(null); return; }
+    return ((clientX - rect.left) / rect.width) * W;
+  }, []);
 
+  // Find nearest data point to a timestamp
+  const nearestPoint = useCallback(time => {
     if (useCandles) {
-      const idx = Math.max(0, Math.min(n - 1, Math.floor(((svgX - PL) / cW) * n)));
-      const d   = candleData[idx];
-      if (d) setHover({ idx, x: candleCX(idx), y: toY(d.c), mode: 'candle' });
+      const real = candleData.filter(d => !d.empty);
+      if (!real.length) return null;
+      return real.reduce((best, d) => Math.abs(d.time - time) < Math.abs(best.time - time) ? d : best);
     } else {
-      const idx = Math.max(0, Math.min(lineData.length - 1, Math.round(((svgX - PL) / cW) * (lineData.length - 1))));
-      const d   = lineData[idx];
-      if (d) setHover({ idx, x: toXLine(idx), y: toY(d.value), mode: 'line' });
+      const real = lineData.filter(d => !d.synthetic);
+      if (!real.length) return null;
+      return real.reduce((best, d) => Math.abs(d.time - time) < Math.abs(best.time - time) ? d : best);
     }
-  }, [useCandles, candleData, lineData, n]);
+  }, [useCandles, candleData, lineData]);
 
-  const curCandle = hover?.mode === 'candle' ? candleData[hover.idx] : (candleData.length > 0 ? candleData[candleData.length - 1] : null);
-  const curLine   = hover?.mode === 'line'   ? lineData[hover.idx]   : (lineData.length > 0   ? lineData[lineData.length - 1]     : null);
-  const curValue  = useCandles ? curCandle?.c : curLine?.value;
-  const curTime   = useCandles ? curCandle?.time : curLine?.time;
-  const isUp      = useCandles
-    ? (candleData.length >= 2 && candleData[candleData.length-1].c >= candleData[0].o)
+  const handleMouseMove = useCallback(e => {
+    const svgX = getSvgX(e.clientX);
+    if (svgX < PL || svgX > W - PR) { setCrosshair(null); return; }
+    if (panRef.current.active) return;
+
+    const time = toTime(svgX);
+    const pt   = nearestPoint(time);
+    const val  = useCandles ? pt?.c : pt?.value;
+
+    setCrosshair(pt ? {
+      x: toX(pt.time),
+      y: toY(val),
+      mouseX: svgX, // vertical line follows mouse exactly
+      time: pt.time,
+      price: val,
+      candle: useCandles ? pt : null,
+    } : null);
+  }, [getSvgX, toTime, toX, toY, nearestPoint, useCandles]);
+
+  // ── Zoom (mouse wheel) ────────────────────────────────────────────────────────
+  const handleWheel = useCallback(e => {
+    e.preventDefault();
+    if (!viewStart || !viewEnd) return;
+
+    const svgX    = getSvgX(e.clientX);
+    const anchor  = toTime(svgX); // zoom anchored at mouse position
+    const span    = viewEnd - viewStart;
+    const factor  = e.deltaY > 0 ? 1.15 : 0.87; // scroll down = zoom out, up = zoom in
+    const newSpan = Math.max(60_000, Math.min(365 * 86_400_000, span * factor));
+
+    // Keep the time under the mouse fixed
+    const ratio = (anchor - viewStart) / span;
+    const newStart = anchor - ratio * newSpan;
+    const newEnd   = anchor + (1 - ratio) * newSpan;
+
+    setViewStart(newStart);
+    setViewEnd(newEnd);
+    setCrosshair(null);
+  }, [viewStart, viewEnd, getSvgX, toTime]);
+
+  // ── Pan (drag) ────────────────────────────────────────────────────────────────
+  const handleMouseDown = useCallback(e => {
+    if (!viewStart || !viewEnd) return;
+    panRef.current = {
+      active: true,
+      startX: e.clientX,
+      startViewStart: viewStart,
+      startViewEnd:   viewEnd,
+    };
+    setCrosshair(null);
+  }, [viewStart, viewEnd]);
+
+  const handleMouseMoveGlobal = useCallback(e => {
+    if (!panRef.current.active) return;
+    const { startX, startViewStart, startViewEnd } = panRef.current;
+    if (!svgRef.current) return;
+    const rect  = svgRef.current.getBoundingClientRect();
+    const dxPx  = e.clientX - startX;
+    const dxPct = dxPx / rect.width;
+    const span  = startViewEnd - startViewStart;
+    const shift = -dxPct * span; // drag right = go back in time
+    setViewStart(startViewStart + shift);
+    setViewEnd(startViewEnd + shift);
+  }, []);
+
+  const handleMouseUp = useCallback(() => {
+    panRef.current.active = false;
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener('mousemove', handleMouseMoveGlobal);
+    window.addEventListener('mouseup',   handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMoveGlobal);
+      window.removeEventListener('mouseup',   handleMouseUp);
+    };
+  }, [handleMouseMoveGlobal, handleMouseUp]);
+
+  // Attach wheel with non-passive listener
+  useEffect(() => {
+    const el = svgRef.current;
+    if (!el) return;
+    el.addEventListener('wheel', handleWheel, { passive: false });
+    return () => el.removeEventListener('wheel', handleWheel);
+  }, [handleWheel]);
+
+  // ── Line chart paths ──────────────────────────────────────────────────────────
+  const linePts = lineData.map(d => [toX(d.time), toY(d.value)]);
+  const pathD   = linePts.length >= 2 ? smoothPath(linePts) : null;
+  const areaD   = pathD
+    ? `${pathD} L ${toX(viewEnd)},${H-PB} L ${PL},${H-PB} Z`
+    : null;
+  const allSynthetic = lineData.length > 0 && lineData.every(d => d.synthetic);
+  const realLineData = lineData.filter(d => !d.synthetic);
+  const isLineUp     = realLineData.length >= 2
+    ? realLineData[realLineData.length-1].value >= realLineData[0].value
+    : true;
+  const lineColor    = isLineUp ? '#84CC16' : '#EF4444';
+  const gradId       = 'chartGrad';
+
+  // ── Display price ─────────────────────────────────────────────────────────────
+  const displayCandle = crosshair?.candle
+    ?? (candleData.filter(d => !d.empty)[candleData.filter(d => !d.empty).length - 1] ?? null);
+  const displayPrice  = crosshair
+    ? crosshair.price
+    : (useCandles ? displayCandle?.c : (realLineData[realLineData.length-1]?.value ?? null));
+  const isUp = useCandles
+    ? (candleData.filter(d=>!d.empty).length >= 2
+        ? candleData.filter(d=>!d.empty)[candleData.filter(d=>!d.empty).length-1].c >= candleData.filter(d=>!d.empty)[0].o
+        : true)
     : isLineUp;
   const accentColor = isUp ? '#84CC16' : '#EF4444';
 
-  // ── Render ───────────────────────────────────────────────────────────────────
+  // ── Render ────────────────────────────────────────────────────────────────────
   return (
-    <div className="border border-lime-900/30 bg-black p-3 rounded-xl">
+    <div className="border border-lime-900/30 bg-black p-3 rounded-xl" ref={containerRef}>
 
       {/* Controls */}
       <div className="flex items-center justify-between mb-3">
@@ -324,53 +470,63 @@ export default function PriceChart({ curveId, refreshKey }) {
       </div>
 
       {/* Price display */}
-      {curValue != null && (
+      {displayPrice != null && (
         <div className="flex items-baseline gap-3 mb-1.5">
-          {fmtUsd(curValue) ? (
+          {fmtUsd(displayPrice) ? (
             <>
-              <span className="text-lg font-bold font-mono" style={{ color: accentColor }}>{fmtUsd(curValue)}</span>
-              <span className="text-xs font-mono text-lime-700">{fmtPrice(curValue)} SUI</span>
+              <span className="text-lg font-bold font-mono" style={{ color: accentColor }}>{fmtUsd(displayPrice)}</span>
+              <span className="text-xs font-mono text-lime-700">{fmtPrice(displayPrice)} SUI</span>
             </>
           ) : (
-            <span className="text-lg font-bold font-mono" style={{ color: accentColor }}>{fmtPrice(curValue)} SUI</span>
+            <span className="text-lg font-bold font-mono" style={{ color: accentColor }}>{fmtPrice(displayPrice)} SUI</span>
           )}
-          {hover && curTime && (
+          {crosshair && (
             <span className="text-[10px] font-mono text-lime-800 ml-auto">
-              {new Date(curTime).toLocaleString()}
+              {new Date(crosshair.time).toLocaleString()}
             </span>
           )}
         </div>
       )}
 
-      {/* OHLC summary on candle hover */}
-      {useCandles && hover?.mode === 'candle' && curCandle && (
+      {/* OHLC on candle hover */}
+      {crosshair?.candle && (
         <div className="flex gap-3 mb-1.5 text-[9px] font-mono">
-          <span className="text-white/40">O <span className="text-white/60">{fmtPrice(curCandle.o)}</span></span>
-          <span className="text-white/40">H <span className="text-lime-500">{fmtPrice(curCandle.h)}</span></span>
-          <span className="text-white/40">L <span className="text-red-500">{fmtPrice(curCandle.l)}</span></span>
-          <span className="text-white/40">C <span className="text-white/60">{fmtPrice(curCandle.c)}</span></span>
+          <span className="text-white/40">O <span className="text-white/60">{fmtPrice(crosshair.candle.o)}</span></span>
+          <span className="text-white/40">H <span className="text-lime-500">{fmtPrice(crosshair.candle.h)}</span></span>
+          <span className="text-white/40">L <span className="text-red-500">{fmtPrice(crosshair.candle.l)}</span></span>
+          <span className="text-white/40">C <span className="text-white/60">{fmtPrice(crosshair.candle.c)}</span></span>
         </div>
       )}
 
       {loading ? (
         <div className="h-48 flex items-center justify-center text-[10px] font-mono text-lime-900">LOADING TRADES…</div>
-      ) : (lineData.length < 1 && candleData.length < 1) ? (
-        <div className="h-48 flex items-center justify-center text-[10px] font-mono text-lime-900">NO TRADES YET — BE THE FIRST TO BUY</div>
       ) : (
-        <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="w-full cursor-crosshair select-none"
-          style={{ height: '200px' }} onMouseMove={handleMouseMove} onMouseLeave={() => setHover(null)}
-          preserveAspectRatio="none">
-
+        <svg
+          ref={svgRef}
+          viewBox={`0 0 ${W} ${H}`}
+          className="w-full select-none"
+          style={{ height: '200px', cursor: panRef.current.active ? 'grabbing' : 'crosshair' }}
+          onMouseMove={handleMouseMove}
+          onMouseLeave={() => setCrosshair(null)}
+          onMouseDown={handleMouseDown}
+          preserveAspectRatio="none"
+        >
           <defs>
             <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%"   stopColor={lineColor} stopOpacity="0.20" />
               <stop offset="100%" stopColor={lineColor} stopOpacity="0.01" />
             </linearGradient>
+            <clipPath id="chartClip">
+              <rect x={PL} y={PT} width={cW} height={cH} />
+            </clipPath>
           </defs>
 
           {/* Grid */}
           {yTicks.map((t, i) => (
             <line key={i} x1={PL} x2={W-PR} y1={t.y} y2={t.y} stroke="#141414" strokeWidth="1" />
+          ))}
+          {xTicks.map((t, i) => (
+            <line key={i} x1={t.x} x2={t.x} y1={PT} y2={H-PB} stroke="#141414" strokeWidth="1" />
           ))}
 
           {/* Y labels */}
@@ -387,69 +543,88 @@ export default function PriceChart({ curveId, refreshKey }) {
             </text>
           ))}
 
-          {/* ── LINE CHART (sparse) ─────────────────────────────────────────── */}
-          {!useCandles && areaD && (
-            <path key={`a${animKey}`} d={areaD} fill={`url(#${gradId})`}
-              style={{ animation: 'chartFade 0.45s ease-out forwards', opacity: 0 }} />
+          {/* ── LINE CHART ──────────────────────────────────────────────────── */}
+          {!useCandles && (
+            <g clipPath="url(#chartClip)">
+              {areaD && !allSynthetic && (
+                <path d={areaD} fill={`url(#${gradId})`} opacity="0.8" />
+              )}
+              {pathD && (
+                <path d={pathD} fill="none"
+                  stroke={allSynthetic ? 'rgba(132,204,22,0.2)' : lineColor}
+                  strokeWidth={allSynthetic ? '1' : '1.5'}
+                  strokeDasharray={allSynthetic ? '4,4' : 'none'}
+                  strokeLinejoin="round" strokeLinecap="round" />
+              )}
+              {/* Trade dots — real trades only */}
+              {realLineData.map((d, i) => (
+                <circle key={i} cx={toX(d.time)} cy={toY(d.value)} r="2.5"
+                  fill={d.kind === 'sell' ? '#EF4444' : '#84CC16'} opacity="0.7" />
+              ))}
+            </g>
           )}
-          {!useCandles && pathD && (() => {
-            const allSynthetic = lineData.every(d => d.synthetic);
-            return (
-              <path key={`l${animKey}`} d={pathD} fill="none"
-                stroke={allSynthetic ? 'rgba(132,204,22,0.25)' : lineColor}
-                strokeWidth={allSynthetic ? '1' : '1.5'}
-                strokeDasharray={allSynthetic ? '4,4' : '3000'}
-                strokeDashoffset={allSynthetic ? '0' : '3000'}
-                strokeLinejoin="round" strokeLinecap="round"
-                style={allSynthetic ? {} : { strokeDasharray: 3000, strokeDashoffset: 3000, animation: 'chartDraw 0.55s ease-out forwards' }} />
-            );
-          })()}
-          {!useCandles && lineData.map((d, i) => (
-            !d.synthetic && (
-              <circle key={i} cx={toXLine(i)} cy={toY(d.value)} r="2.5"
-                fill={d.kind === 'sell' ? '#EF4444' : '#84CC16'} opacity="0.6" />
-            )
-          ))}
 
-          {/* ── CANDLE CHART (dense) ────────────────────────────────────────── */}
-          {useCandles && candleData.map((d, i) => {
-            if (d.empty) return null; // skip empty flat candles entirely
-            const isGreen    = d.c >= d.o;
-            const color      = isGreen ? '#84CC16' : '#EF4444';
-            const cx         = candleCX(i);
-            const bodyTop    = toY(Math.max(d.o, d.c));
-            const bodyBottom = toY(Math.min(d.o, d.c));
-            const bodyH      = Math.max(2, bodyBottom - bodyTop);
-            const wickTop    = toY(d.h);
-            const wickBottom = toY(d.l);
-            const isHovered  = hover?.idx === i;
-            return (
-              <g key={i} opacity={isHovered ? 1 : 0.88}>
-                <line x1={cx} x2={cx} y1={wickTop}    y2={bodyTop}    stroke={color} strokeWidth="1" />
-                <rect x={cx - candleW/2} y={bodyTop} width={candleW} height={bodyH}
-                  fill={color} fillOpacity={isGreen ? 0.9 : 0.85} rx="0.5" />
-                <line x1={cx} x2={cx} y1={bodyBottom} y2={wickBottom} stroke={color} strokeWidth="1" />
-              </g>
-            );
-          })}
+          {/* ── CANDLE CHART ─────────────────────────────────────────────────── */}
+          {useCandles && (
+            <g clipPath="url(#chartClip)">
+              {candleData.map((d, i) => {
+                if (d.empty) return null;
+                const isGreen    = d.c >= d.o;
+                const color      = isGreen ? '#84CC16' : '#EF4444';
+                const cx         = toX(d.time);
+                const bodyTop    = toY(Math.max(d.o, d.c));
+                const bodyBottom = toY(Math.min(d.o, d.c));
+                const bodyH      = Math.max(2, bodyBottom - bodyTop);
+                const isHovered  = crosshair?.candle?.time === d.time;
+                return (
+                  <g key={i} opacity={isHovered ? 1 : 0.88}>
+                    <line x1={cx} x2={cx} y1={toY(d.h)}   y2={bodyTop}    stroke={color} strokeWidth="1" />
+                    <rect x={cx - candlePixelW/2} y={bodyTop} width={candlePixelW} height={bodyH}
+                      fill={color} fillOpacity={isGreen ? 0.9 : 0.85} rx="0.5" />
+                    <line x1={cx} x2={cx} y1={bodyBottom} y2={toY(d.l)}   stroke={color} strokeWidth="1" />
+                  </g>
+                );
+              })}
+            </g>
+          )}
 
-          {/* Crosshair */}
-          {hover && (
+          {/* ── Crosshair ────────────────────────────────────────────────────── */}
+          {crosshair && (
             <>
-              <line x1={hover.x} x2={hover.x} y1={PT} y2={H-PB}
-                stroke="#84CC16" strokeWidth="0.5" strokeDasharray="3,3" opacity="0.5" />
-              <line x1={PL} x2={W-PR} y1={hover.y} y2={hover.y}
-                stroke="#84CC16" strokeWidth="0.5" strokeDasharray="3,3" opacity="0.5" />
-              <circle cx={hover.x} cy={hover.y} r="3" fill={accentColor} stroke="#000" strokeWidth="1.5" />
+              {/* Vertical line follows mouse X exactly */}
+              <line x1={crosshair.mouseX} x2={crosshair.mouseX} y1={PT} y2={H-PB}
+                stroke="#84CC16" strokeWidth="0.5" strokeDasharray="3,3" opacity="0.6" />
+              {/* Horizontal line snaps to nearest data point price */}
+              <line x1={PL} x2={W-PR} y1={crosshair.y} y2={crosshair.y}
+                stroke="#84CC16" strokeWidth="0.5" strokeDasharray="3,3" opacity="0.6" />
+              {/* Price label on Y axis */}
+              <rect x={0} y={crosshair.y - 8} width={PL - 2} height={14}
+                fill="#84CC16" rx="2" />
+              <text x={PL - 5} y={crosshair.y + 3.5}
+                textAnchor="end" fontSize="7.5" fill="#000" fontFamily="monospace" fontWeight="bold">
+                {fmtUsd(crosshair.price) ?? fmtPrice(crosshair.price)}
+              </text>
+              {/* Dot at snapped data point */}
+              <circle cx={crosshair.x} cy={crosshair.y} r="3.5"
+                fill={accentColor} stroke="#000" strokeWidth="1.5" />
             </>
           )}
+
+          {/* Current price line (always visible, no hover needed) */}
+          {displayPrice != null && !crosshair && (() => {
+            const py = toY(displayPrice);
+            return (
+              <>
+                <line x1={PL} x2={W-PR} y1={py} y2={py}
+                  stroke={accentColor} strokeWidth="0.5" strokeDasharray="2,4" opacity="0.35" />
+                <rect x={W-PR+1} y={py-7} width={PR+1} height={13} fill={accentColor} rx="1" opacity="0.9" />
+              </>
+            );
+          })()}
         </svg>
       )}
 
-      <style>{`
-        @keyframes chartDraw { to { stroke-dashoffset: 0; } }
-        @keyframes chartFade { to { opacity: 1; } }
-      `}</style>
+      <div className="text-[9px] font-mono text-lime-900/50 mt-1 text-right">scroll to zoom · drag to pan</div>
     </div>
   );
 }
