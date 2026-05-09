@@ -12,6 +12,7 @@ CREATOR_SHARE_BPS = 4_000
 PROTOCOL_SHARE_BPS = 5_000
 LP_SHARE_BPS = 1_000
 CREATOR_GRAD_BONUS_BPS = 50
+PROTOCOL_GRAD_BONUS_BPS = 50
 BPS_DENOMINATOR = 10_000
 
 TOTAL_SUPPLY = 1_000_000_000 * 1_000_000
@@ -164,7 +165,8 @@ def claim_protocol_fees(curve, has_admin_cap):
     return amt
 
 
-def graduate(curve):
+def graduate(curve, creator_wallet: dict, lp_wallet: dict):
+    """v4 — void. All transfers are internal. Mirrors Move graduate()."""
     if curve.graduated:
         raise MoveAbort(E_ALREADY_GRADUATED)
     if curve.token_reserve != 0:
@@ -173,11 +175,21 @@ def graduate(curve):
     curve.graduated = True
     lp_supply = TOTAL_SUPPLY - CURVE_SUPPLY
     total_reserve = curve.sui_reserve
+
+    # Creator bonus 0.50% → transferred to curve.creator
     creator_bonus = (total_reserve * CREATOR_GRAD_BONUS_BPS) // BPS_DENOMINATOR
     curve.sui_reserve -= creator_bonus
-    sui_to_pool = curve.sui_reserve
-    curve.sui_reserve = 0
-    return sui_to_pool, lp_supply, creator_bonus
+    creator_wallet['sui'] = creator_wallet.get('sui', 0) + creator_bonus
+
+    # Protocol bonus 0.50% → deposited into protocol_fees
+    protocol_bonus = (total_reserve * PROTOCOL_GRAD_BONUS_BPS) // BPS_DENOMINATOR
+    curve.sui_reserve -= protocol_bonus
+    curve.protocol_fees += protocol_bonus
+
+    # LP tokens → transferred to creator
+    lp_wallet['tokens'] = lp_wallet.get('tokens', 0) + lp_supply
+
+    # Pool SUI stays in sui_reserve for admin claim (no return)
 
 
 # ==========================================================================
@@ -401,26 +413,33 @@ def _():
     c = Curve(creator=CREATOR)
     buy(c, 1000 * MIST_PER_SUI, 0, BUYER)
     try:
-        graduate(c)
+        graduate(c, {}, {})
         assert False
     except MoveAbort as e:
         assert e.code == E_NOT_GRADUATED
 
-@test("graduation pays creator 0.5% bonus, remainder to pool")
+@test("graduation pays creator 0.5% bonus + protocol 0.5% bonus, pool SUI stays for admin")
 def _():
     c = Curve(creator=CREATOR)
     push_to_graduation(c)
     assert c.token_reserve == 0
 
-    reserve_before = c.sui_reserve
-    sui_to_pool, lp_tokens, bonus = graduate(c)
+    reserve_before  = c.sui_reserve
+    proto_before    = c.protocol_fees
+    creator_w       = {}
+    lp_w            = {}
+    graduate(c, creator_w, lp_w)
 
-    expected_bonus = (reserve_before * 50) // 10_000
-    assert bonus == expected_bonus, f"bonus {bonus} != {expected_bonus}"
-    assert sui_to_pool == reserve_before - expected_bonus
-    assert lp_tokens == 200_000_000 * 1_000_000  # 20% of 1B with 6 decimals
+    expected_creator_bonus  = (reserve_before * CREATOR_GRAD_BONUS_BPS)  // BPS_DENOMINATOR
+    expected_protocol_bonus = (reserve_before * PROTOCOL_GRAD_BONUS_BPS) // BPS_DENOMINATOR
+
+    assert creator_w.get('sui', 0) == expected_creator_bonus,         f"creator bonus {creator_w.get('sui',0)} != {expected_creator_bonus}"
+    assert c.protocol_fees == proto_before + expected_protocol_bonus,         f"protocol_fees didn't grow: {c.protocol_fees} vs {proto_before + expected_protocol_bonus}"
+    assert lp_w.get('tokens', 0) == 200_000_000 * 1_000_000, "LP tokens not transferred"
     assert c.graduated
-    assert c.sui_reserve == 0
+    # Pool SUI stays in reserve for admin claim (unlike old design where it was returned)
+    expected_pool = reserve_before - expected_creator_bonus - expected_protocol_bonus
+    assert c.sui_reserve == expected_pool,         f"pool SUI: {c.sui_reserve} != {expected_pool}"
 
 @test("graduation drain point lands near ~87.9k SUI (sanity check)")
 def _():
@@ -436,9 +455,9 @@ def _():
 def _():
     c = Curve(creator=CREATOR)
     push_to_graduation(c)
-    graduate(c)
+    graduate(c, {}, {})
     try:
-        graduate(c)
+        graduate(c, {}, {})
         assert False
     except MoveAbort as e:
         assert e.code == E_ALREADY_GRADUATED
@@ -447,7 +466,7 @@ def _():
 def _():
     c = Curve(creator=CREATOR)
     push_to_graduation(c)
-    graduate(c)
+    graduate(c, {}, {})
     try:
         buy(c, MIST_PER_SUI, 0, BUYER)
         assert False
@@ -459,7 +478,7 @@ def _():
     c = Curve(creator=CREATOR)
     tokens_held, _, _ = buy(c, 100 * MIST_PER_SUI, 0, BUYER)
     push_to_graduation(c)
-    graduate(c)
+    graduate(c, {}, {})
     try:
         sell(c, tokens_held, 0, BUYER)
         assert False
@@ -506,7 +525,7 @@ def _():
     push_to_graduation(c)
     assert c.token_reserve == 0
     # And graduation should now succeed.
-    graduate(c)
+    graduate(c, {}, {})
 
 @test("whale buy clips at CURVE_SUPPLY and refunds excess")
 def _():
@@ -561,14 +580,19 @@ def _():
     buy(c, 200_000 * MIST_PER_SUI, 0, BUYER)  # whale drains curve
     assert c.token_reserve == 0
     reserve_before_grad = c.sui_reserve
-    sui_to_pool, lp_tokens, bonus = graduate(c)
-    # Conservation at graduation: sui_to_pool + bonus == reserve_before_grad
-    assert sui_to_pool + bonus == reserve_before_grad, \
-        f"graduation conservation: {sui_to_pool}+{bonus} != {reserve_before_grad}"
-    assert bonus > 0
-    assert lp_tokens == 200_000_000 * 1_000_000
+    proto_before        = c.protocol_fees
+    creator_w = {}
+    lp_w      = {}
+    graduate(c, creator_w, lp_w)
+    # Conservation: creator_bonus + protocol_bonus + pool_sui == reserve_before_grad
+    creator_bonus  = creator_w.get('sui', 0)
+    protocol_bonus = c.protocol_fees - proto_before
+    pool_sui       = c.sui_reserve
+    assert creator_bonus + protocol_bonus + pool_sui == reserve_before_grad,         f"graduation conservation: {creator_bonus}+{protocol_bonus}+{pool_sui} != {reserve_before_grad}"
+    assert creator_bonus > 0
+    assert protocol_bonus > 0
+    assert lp_w.get('tokens', 0) == 200_000_000 * 1_000_000
     assert c.graduated
-    assert c.sui_reserve == 0
 
 print("\n" + "=" * 70)
 print(f"  RESULTS: {passed} passed, {failed} failed")
