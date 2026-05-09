@@ -92,8 +92,8 @@ function useStats() {
       } catch { }
     }
     load();
-    const t = setInterval(load, 30_000);
-    return () => { cancelled = true; clearInterval(t); };
+    const timer = setInterval(load, 30_000);
+    return () => { cancelled = true; clearInterval(timer); };
   }, [client]);
 
   return stats;
@@ -130,8 +130,8 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0 }) {
       } catch { }
     }
     load();
-    const t = setInterval(load, 10_000);
-    return () => { cancelled = true; clearInterval(t); };
+    const timer = setInterval(load, 10_000);
+    return () => { cancelled = true; clearInterval(timer); };
   }, [token.curveId, client]);
 
   useEffect(() => {
@@ -284,21 +284,22 @@ function MobileWalletButtons() {
   return (
     <div className="mt-3">
       {!show ? (
-        <button onClick={() => setShow(true)} className="w-full py-2.5 text-xs font-mono text-white/40 hover:text-white/70 transition-colors border border-white/10 rounded-xl">
-          Open in mobile wallet app
+        <button
+          onClick={() => setShow(true)}
+          className="w-full py-2.5 rounded-xl border border-white/10 text-[10px] font-mono text-white/40 hover:text-white hover:border-white/20 transition-colors"
+        >
+          Open in wallet browser
         </button>
       ) : (
-        <div className="space-y-2">
-          <div className="text-[10px] font-mono text-white/30 text-center mb-2">OPEN IN WALLET APP</div>
-          {wallets.map((w) => (
-            <a key={w.name} href={w.url} target="_blank" rel="noreferrer"
-              className="flex items-center gap-3 w-full px-4 py-3 rounded-xl bg-white/[0.04] border border-white/10 hover:border-lime-400/40 hover:bg-white/[0.07] transition-all">
-              <img src={w.icon} alt={w.name} className="w-7 h-7 rounded-lg" onError={(e) => { e.target.style.display = 'none'; }} />
-              <span className="text-sm font-mono text-white">{w.name}</span>
-              <span className="ml-auto text-[10px] text-white/30">OPEN →</span>
+        <div className="flex gap-2">
+          {wallets.map(w => (
+            <a key={w.name} href={w.url}
+              className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl border border-white/10 text-[10px] font-mono text-white/50 hover:text-white hover:border-white/20 transition-colors"
+            >
+              <img src={w.icon} alt={w.name} className="w-4 h-4 rounded" onError={e => { e.target.style.display='none'; }} />
+              {w.name}
             </a>
           ))}
-          <p className="text-[9px] font-mono text-white/35 text-center pt-1">App will open in your wallet&apos;s built-in browser</p>
         </div>
       )}
     </div>
@@ -319,29 +320,21 @@ function useNotifications(walletAddress) {
 
     async function load() {
       try {
-        const curveCreatedType = `${PACKAGE_ID}::bonding_curve::CurveCreated`;
-        const createdEvents = await paginateEvents(client, { MoveEventType: curveCreatedType }, { order: 'descending' });
+        const createdType = `${PACKAGE_ID}::bonding_curve::CurveCreated`;
+        const commentType = `${PACKAGE_ID}::bonding_curve::CommentPosted`;
+        const gradType = `${PACKAGE_ID}::bonding_curve::CurveGraduated`;
+
+        const eventMap = await paginateMultipleEvents(client, [createdType, commentType, gradType], { order: 'descending', maxPages: 5 });
+
         const myCurveIds = new Set(
-          createdEvents
-            .filter(e => e.sender === walletAddress)
+          eventMap[createdType]
+            .filter(e => e.parsedJson?.creator === walletAddress)
             .map(e => e.parsedJson?.curve_id)
             .filter(Boolean)
         );
 
-        if (myCurveIds.size === 0) {
-          if (!cancelled) { setNotifications([]); setUnread(0); }
-          return;
-        }
-
-        const commentType = `${PACKAGE_ID}::bonding_curve::CommentPosted`;
-        const gradType = `${PACKAGE_ID}::bonding_curve::Graduated`;
-        const [commentEvents, gradEvents] = await Promise.all([
-          paginateEvents(client, { MoveEventType: commentType }, { order: 'descending', maxPages: 10 }),
-          paginateEvents(client, { MoveEventType: gradType }, { order: 'descending', maxPages: 5 }),
-        ]);
-
-        const comments = commentEvents
-          .filter(e => myCurveIds.has(e.parsedJson?.curve_id))
+        const comments = eventMap[commentType]
+          .filter(e => myCurveIds.has(e.parsedJson?.curve_id) && e.parsedJson?.author !== walletAddress)
           .map(e => ({
             id: e.id?.txDigest + '_' + e.id?.eventSeq,
             type: 'comment',
@@ -351,7 +344,7 @@ function useNotifications(walletAddress) {
             timestamp: e.timestampMs ? Number(e.timestampMs) : 0,
           }));
 
-        const graduations = gradEvents
+        const graduations = eventMap[gradType]
           .filter(e => myCurveIds.has(e.parsedJson?.curve_id))
           .map(e => ({
             id: e.id?.txDigest + '_' + e.id?.eventSeq,
@@ -375,8 +368,8 @@ function useNotifications(walletAddress) {
     }
 
     load();
-    const t = setInterval(load, 30_000);
-    return () => { cancelled = true; clearInterval(t); };
+    const timer = setInterval(load, 30_000);
+    return () => { cancelled = true; clearInterval(timer); };
   }, [walletAddress, client, storageKey]);
 
   const markAllRead = () => {
@@ -491,7 +484,6 @@ function NotificationBell({ walletAddress }) {
 }
 
 // ── Custom wallet button ──────────────────────────────────────────────────────
-// Replaces dapp-kit's ConnectButton to avoid its white-box styling.
 
 function WalletButton({ size = 'md', lang = 'en' }) {
   const account = useCurrentAccount();
@@ -520,7 +512,7 @@ function WalletButton({ size = 'md', lang = 'en' }) {
           onClick={() => setOpen(true)}
           className={`${btnCls} bg-white/5 border-white/15 text-white/70 hover:border-lime-400/40 hover:text-white`}
         >
-          {t(lang,'connect')}
+          {t(lang, 'connect')}
         </button>
         <ConnectModal trigger={<span />} open={open} onOpenChange={setOpen} />
       </>
@@ -544,14 +536,14 @@ function WalletButton({ size = 'md', lang = 'en' }) {
       {showMenu && (
         <div className="absolute right-0 top-full mt-1.5 w-44 bg-[#111] border border-white/10 rounded-xl shadow-xl z-50 overflow-hidden">
           <div className="px-3 py-2 border-b border-white/5">
-            <div className="text-[9px] font-mono text-white/30 tracking-widest mb-0.5">{t(lang,'wallet')}</div>
+            <div className="text-[9px] font-mono text-white/30 tracking-widest mb-0.5">{t(lang, 'wallet')}</div>
             <div className="text-[10px] font-mono text-white/60 truncate">{short}</div>
           </div>
           <button
             onClick={() => { disconnect(); setShowMenu(false); }}
             className="w-full px-3 py-2.5 text-left text-[10px] font-mono text-red-400/80 hover:bg-white/5 hover:text-red-400 transition-colors"
           >
-            {t(lang,'disconnect')}
+            {t(lang, 'disconnect')}
           </button>
         </div>
       )}
@@ -569,7 +561,7 @@ function ConnectWalletHero({ lang = 'en' }) {
         onClick={() => setOpen(true)}
         className="inline-flex items-center gap-2 px-6 py-3 rounded-2xl border border-white/10 text-sm font-mono text-white/50 hover:border-lime-400/40 hover:text-white/80 transition-all"
       >
-        {t(lang,'connectWalletToLaunch')}
+        {t(lang, 'connectWalletToLaunch')}
       </button>
       <ConnectModal trigger={<span />} open={open} onOpenChange={setOpen} />
     </>
@@ -616,14 +608,16 @@ function Header({ onLaunch, lang, setLang }) {
         <div className="hidden sm:flex items-center gap-2">
           <Link to="/airdrop" className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all">
             <Gift size={10} />
-            {poolSui !== null ? <span>{t(lang,'s1Airdrop')} {poolSui.toFixed(4)} SUI</span> : <span>{t(lang,'s1Airdrop')}</span>}
-            {tradeCount !== null && <span className="text-white/35 ml-1">· {tradeCount} {t(lang,'trades').toLowerCase()}</span>}
+            {poolSui !== null
+              ? <span>{t(lang, 's1Airdrop')} {poolSui.toFixed(4)} SUI</span>
+              : <span>{t(lang, 's1Airdrop')}</span>}
+            {tradeCount !== null && <span className="text-white/35 ml-1">· {tradeCount} {t(lang, 'trades').toLowerCase()}</span>}
           </Link>
-          <Link to="/stats" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5"><BarChart3 size={10} /> {t(lang,'stats')}</Link>
-          <Link to="/leaderboard" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5"><Trophy size={10} /> {t(lang,'leaderboard')}</Link>
-          <Link to="/portfolio" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5"><Wallet size={10} /> {t(lang,'portfolio')}</Link>
-          <Link to="/whitepaper" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all">{t(lang,'whitepaper')}</Link>
-          <Link to="/roadmap" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5"><Map size={10} /> {t(lang,'roadmap')}</Link>
+          <Link to="/stats" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5"><BarChart3 size={10} /> {t(lang, 'stats')}</Link>
+          <Link to="/leaderboard" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5"><Trophy size={10} /> {t(lang, 'leaderboard')}</Link>
+          <Link to="/portfolio" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5"><Wallet size={10} /> {t(lang, 'portfolio')}</Link>
+          <Link to="/whitepaper" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all">{t(lang, 'whitepaper')}</Link>
+          <Link to="/roadmap" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5"><Map size={10} /> {t(lang, 'roadmap')}</Link>
           <div className="flex items-center gap-1 ml-1">
             {/* Language picker */}
             <div className="relative" ref={langRef}>
@@ -642,7 +636,9 @@ function Header({ onLaunch, lang, setLang }) {
                       key={l.code}
                       onClick={() => { setLang(l.code); setLangOpen(false); }}
                       className={`w-full flex items-center gap-2 px-3 py-2 text-[10px] font-mono transition-colors ${
-                        lang === l.code ? 'text-lime-400 bg-lime-400/10' : 'text-white/50 hover:bg-white/5 hover:text-white'
+                        lang === l.code
+                          ? 'text-lime-400 bg-lime-400/10'
+                          : 'text-white/50 hover:bg-white/5 hover:text-white'
                       }`}
                     >
                       <span>{l.flag}</span>
@@ -668,7 +664,7 @@ function Header({ onLaunch, lang, setLang }) {
           </div>
           {account && (
             <button onClick={onLaunch} className="flex items-center gap-2 px-4 py-2 bg-lime-400 text-black text-xs font-mono tracking-widest hover:bg-lime-300 transition-colors rounded-xl font-bold">
-              <Plus size={12} /> {t(lang,'launchToken')}
+              <Plus size={12} /> {t(lang, 'launchToken')}
             </button>
           )}
           <WalletButton size="md" lang={lang} />
@@ -678,7 +674,7 @@ function Header({ onLaunch, lang, setLang }) {
         <div className="flex sm:hidden items-center gap-2">
           {account && (
             <button onClick={onLaunch} className="flex items-center gap-1 px-3 py-1.5 bg-lime-400 text-black text-[10px] font-mono font-bold rounded-xl hover:bg-lime-300 transition-colors">
-              <Plus size={11} /> {t(lang,'launch')}
+              <Plus size={11} /> {t(lang, 'launch')}
             </button>
           )}
           <WalletButton size="sm" lang={lang} />
@@ -689,18 +685,48 @@ function Header({ onLaunch, lang, setLang }) {
         </div>
       </div>
 
+      {/* Mobile dropdown menu */}
       {menuOpen && (
-        <div className="sm:hidden border-t border-white/5 bg-black/95 px-4 py-3 space-y-2">
-          <Link to="/airdrop" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/60 hover:text-lime-400 transition-colors border-b border-white/5">
-            <Gift size={14} /> S1 AIRDROP
-            {poolSui !== null && <span className="ml-auto text-xs text-white/30">{poolSui.toFixed(4)} SUI</span>}
+        <div className="sm:hidden border-t border-white/5 bg-black/95 px-4 py-4 space-y-2">
+          <Link to="/airdrop" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/50 hover:text-white transition-colors">
+            <Gift size={14} /> {t(lang, 's1Airdrop')}
           </Link>
-          <Link to="/stats" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/60 hover:text-lime-400 transition-colors border-b border-white/5"><BarChart3 size={14} /> STATS</Link>
-          <Link to="/leaderboard" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/60 hover:text-lime-400 transition-colors border-b border-white/5"><Trophy size={14} /> LEADERBOARD</Link>
-          <Link to="/portfolio" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/60 hover:text-lime-400 transition-colors border-b border-white/5"><Wallet size={14} /> PORTFOLIO</Link>
-          <Link to="/whitepaper" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/60 hover:text-lime-400 transition-colors border-b border-white/5">WHITEPAPER</Link>
-          <Link to="/roadmap" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/60 hover:text-lime-400 transition-colors"><Map size={14} /> ROADMAP</Link>
-          <div className="flex items-center gap-4 pt-2 border-t border-white/5">
+          <Link to="/stats" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/50 hover:text-white transition-colors">
+            <BarChart3 size={14} /> {t(lang, 'stats')}
+          </Link>
+          <Link to="/leaderboard" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/50 hover:text-white transition-colors">
+            <Trophy size={14} /> {t(lang, 'leaderboard')}
+          </Link>
+          <Link to="/portfolio" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/50 hover:text-white transition-colors">
+            <Wallet size={14} /> {t(lang, 'portfolio')}
+          </Link>
+          <Link to="/whitepaper" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/50 hover:text-white transition-colors">
+            {t(lang, 'whitepaper')}
+          </Link>
+          <Link to="/roadmap" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/50 hover:text-white transition-colors">
+            <Map size={14} /> {t(lang, 'roadmap')}
+          </Link>
+          {/* Mobile language picker */}
+          <div className="pt-2 border-t border-white/5">
+            <div className="text-[9px] font-mono text-white/20 tracking-widest mb-2">LANGUAGE</div>
+            <div className="flex flex-wrap gap-1.5">
+              {LANGUAGES.map(l => (
+                <button
+                  key={l.code}
+                  onClick={() => { setLang(l.code); setMenuOpen(false); }}
+                  className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] font-mono transition-colors border ${
+                    lang === l.code
+                      ? 'bg-lime-400/10 border-lime-400/30 text-lime-400'
+                      : 'border-white/10 text-white/40 hover:text-white'
+                  }`}
+                >
+                  <span>{l.flag}</span>
+                  <span>{l.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="flex items-center gap-3 pt-2 border-t border-white/5">
             <a href="https://x.com/SuiPump_SUMP" target="_blank" rel="noreferrer" className="flex items-center gap-2 text-sm font-mono text-white/40 hover:text-white transition-colors">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg> X
             </a>
@@ -722,10 +748,10 @@ function Header({ onLaunch, lang, setLang }) {
 
 function StatsBar({ tokenCount, stats, lang = 'en' }) {
   const items = [
-    { icon: <Coins size={13} />, label: t(lang,'tokens'), value: tokenCount ?? '—' },
-    { icon: <TrendingUp size={13} />, label: t(lang,'trades'), value: stats.tradeCount ?? '—' },
-    { icon: <Flame size={13} />, label: t(lang,'volume'), value: stats.volume != null ? `${fmt(stats.volume)} SUI` : '—' },
-    { icon: <Gift size={13} />, label: t(lang,'s1Pool'), value: stats.poolSui != null ? `${stats.poolSui.toFixed(2)} SUI` : '—' },
+    { icon: <Coins size={13} />, label: t(lang, 'tokens'), value: tokenCount ?? '—' },
+    { icon: <TrendingUp size={13} />, label: t(lang, 'trades'), value: stats.tradeCount ?? '—' },
+    { icon: <Flame size={13} />, label: t(lang, 'volume'), value: stats.volume != null ? `${fmt(stats.volume)} SUI` : '—' },
+    { icon: <Gift size={13} />, label: t(lang, 's1Pool'), value: stats.poolSui != null ? `${stats.poolSui.toFixed(2)} SUI` : '—' },
   ];
   return (
     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-8">
@@ -773,53 +799,40 @@ function CrownBanner({ token, stats, suiUsd }) {
   const reserveMist = curveState ? BigInt(curveState.sui_reserve) : 0n;
   const tokensRemaining = curveState ? BigInt(curveState.token_reserve) : 0n;
   const tokensSold = BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS) - tokensRemaining;
-  const priceMist = curveState ? priceMistPerToken(reserveMist, tokensSold) : 0n;
-  const priceSui = Number(priceMist) / 1e9;
-  const mcapSui = priceSui * TOTAL_SUPPLY_WHOLE;
   const progress = Math.min(100, (mistToSui(reserveMist) / DRAIN_SUI_APPROX) * 100);
+  const priceMist = curveState ? priceMistPerToken(reserveMist, tokensSold) : 0n;
+  const mcapSui = (Number(priceMist) / 1e9) * TOTAL_SUPPLY_WHOLE;
 
   return (
     <button
-      onClick={() => token.tokenType && navigate(`/token/${token.curveId}`)}
-      className="w-full text-left rounded-2xl border border-lime-400/40 bg-gradient-to-r from-lime-950/30 via-black to-black p-4 mb-4 relative overflow-hidden hover:border-lime-400/60 transition-all group"
+      onClick={() => navigate(`/token/${token.curveId}`)}
+      className="w-full mb-6 rounded-2xl border border-lime-400/30 bg-gradient-to-r from-lime-950/30 to-black p-4 text-left hover:border-lime-400/50 transition-all group relative overflow-hidden"
     >
-      {/* Glow */}
-      <div className="absolute top-0 left-0 w-64 h-full bg-lime-400/5 blur-3xl pointer-events-none" />
-
+      <div className="absolute top-0 right-0 w-48 h-full bg-lime-400/5 blur-2xl pointer-events-none" />
       <div className="relative flex items-center gap-4">
-        {/* Crown badge */}
-        <div className="flex items-center gap-1.5 shrink-0">
-          <Crown size={14} className="text-lime-400" />
-          <span className="text-[9px] font-mono font-bold text-lime-400 tracking-widest">COMMUNITY CROWN</span>
-        </div>
-
-        <div className="w-px h-6 bg-white/10 shrink-0" />
-
-        {/* Icon */}
-        <div className="w-10 h-10 rounded-full border-2 border-lime-400/40 overflow-hidden flex items-center justify-center bg-lime-950/30 shrink-0">
+        <div className="w-12 h-12 rounded-full overflow-hidden border-2 border-lime-400/40 flex items-center justify-center bg-lime-950/30 shrink-0">
           {iconUrl
             ? <img src={iconUrl} alt={token.symbol} className="w-full h-full object-cover" onError={e => { e.target.style.display='none'; e.target.nextSibling.style.display='block'; }} />
             : null}
-          <span className="text-lg" style={{ display: iconUrl ? 'none' : 'block' }}>🔥</span>
+          <span className="text-xl" style={{ display: iconUrl ? 'none' : 'block' }}>🔥</span>
         </div>
-
-        {/* Name + symbol */}
-        <div className="min-w-0">
-          <div className="text-sm font-bold text-white font-mono group-hover:text-lime-400 transition-colors">{token.name}</div>
-          <div className="text-[11px] text-lime-400/60 font-mono">${token.symbol}</div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-0.5">
+            <Crown size={11} className="text-lime-400" />
+            <span className="text-[9px] font-mono font-bold text-lime-400 tracking-widest">COMMUNITY CROWN</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-white font-bold font-mono">{token.name}</span>
+            <span className="text-lime-400/70 font-mono text-sm">${token.symbol}</span>
+          </div>
+          <div className="mt-1.5 h-1 bg-white/5 rounded-full overflow-hidden w-48">
+            <div className="h-full bg-gradient-to-r from-lime-500 to-lime-300 rounded-full" style={{ width: `${Math.max(progress, 1)}%` }} />
+          </div>
         </div>
-
-        {/* Stats */}
-        <div className="hidden sm:flex items-center gap-6 ml-auto shrink-0">
-          {stats?.volume > 0 && (
-            <div className="text-right">
-              <div className="text-xs font-mono font-bold text-white">{fmt(stats.volume, 2)} SUI</div>
-              <div className="text-[9px] font-mono text-white/30">VOLUME</div>
-            </div>
-          )}
+        <div className="text-right hidden sm:block shrink-0">
           {mcapSui > 0 && (
-            <div className="text-right">
-              <div className="text-xs font-mono font-bold text-white">
+            <div>
+              <div className="text-xs font-mono text-white/60">
                 {suiUsd > 0
                   ? `$${mcapSui * suiUsd >= 1000 ? ((mcapSui * suiUsd) / 1000).toFixed(1) + 'k' : (mcapSui * suiUsd).toFixed(0)}`
                   : `${fmt(mcapSui)} SUI`}
@@ -827,7 +840,7 @@ function CrownBanner({ token, stats, suiUsd }) {
               <div className="text-[9px] font-mono text-white/30">MCAP</div>
             </div>
           )}
-          <div className="text-right">
+          <div className="text-right mt-1">
             <div className="text-xs font-mono font-bold text-lime-400">{progress.toFixed(1)}%</div>
             <div className="text-[9px] font-mono text-white/30">CURVE</div>
           </div>
@@ -857,38 +870,38 @@ function HomePage({ onLaunch, lang = 'en' }) {
   const [suiUsd, setSuiUsd] = useState(_suiUsdCache);
 
   const SORT_OPTIONS = [
-    { id: 'newest',     label: t(lang,'newest') },
-    { id: 'oldest',     label: t(lang,'oldest') },
-    { id: 'trending',   label: t(lang,'trending') },
-    { id: 'last_trade', label: t(lang,'lastTrade') },
-    { id: 'market_cap', label: t(lang,'marketCap') },
-    { id: 'volume',     label: t(lang,'volumeSort') },
-    { id: 'trades',     label: t(lang,'tradesSort') },
-    { id: 'reserve',    label: t(lang,'reserve') },
-    { id: 'progress',   label: t(lang,'progress') },
+    { id: 'newest',     label: t(lang, 'newest') },
+    { id: 'oldest',     label: t(lang, 'oldest') },
+    { id: 'trending',   label: t(lang, 'trending') },
+    { id: 'last_trade', label: t(lang, 'lastTrade') },
+    { id: 'market_cap', label: t(lang, 'marketCap') },
+    { id: 'volume',     label: t(lang, 'volumeSort') },
+    { id: 'trades',     label: t(lang, 'tradesSort') },
+    { id: 'reserve',    label: t(lang, 'reserve') },
+    { id: 'progress',   label: t(lang, 'progress') },
   ];
 
   useEffect(() => {
     refreshSuiUsd().then(p => setSuiUsd(p));
-    const t = setInterval(() => refreshSuiUsd().then(p => setSuiUsd(p)), 30_000);
-    return () => clearInterval(t);
+    const timer = setInterval(() => refreshSuiUsd().then(p => setSuiUsd(p)), 30_000);
+    return () => clearInterval(timer);
   }, []);
 
-  const filtered = tokens.filter(t => {
+  const filtered = tokens.filter(tok => {
     if (!search.trim()) return true;
     const q = search.toLowerCase().trim();
-    if (t.name?.toLowerCase().includes(q)) return true;
-    if (t.symbol?.toLowerCase().includes(q)) return true;
-    if (q.startsWith('0x') && t.curveId?.toLowerCase().includes(q)) return true;
+    if (tok.name?.toLowerCase().includes(q)) return true;
+    if (tok.symbol?.toLowerCase().includes(q)) return true;
+    if (q.startsWith('0x') && tok.curveId?.toLowerCase().includes(q)) return true;
     return false;
   });
 
   const crownCurveId = React.useMemo(() => {
     if (search.trim()) return null;
     let best = null, bestVol = 0;
-    for (const t of tokens) {
-      const vol = tokenStats[t.curveId]?.volume ?? 0;
-      if (vol > bestVol) { bestVol = vol; best = t.curveId; }
+    for (const tok of tokens) {
+      const vol = tokenStats[tok.curveId]?.volume ?? 0;
+      if (vol > bestVol) { bestVol = vol; best = tok.curveId; }
     }
     return bestVol > 0 ? best : null;
   }, [tokens, tokenStats, search]);
@@ -926,11 +939,11 @@ function HomePage({ onLaunch, lang = 'en' }) {
               SUIPUMP<span className="text-lime-400">.</span>
             </h1>
           </div>
-          <p className="text-sm sm:text-base text-white/50 font-mono mb-2 max-w-lg mx-auto leading-relaxed">{t(lang,'heroTagline')}</p>
-          <p className="text-xs text-white/30 font-mono mb-8 max-w-lg mx-auto">{t(lang,'heroSub')}</p>
+          <p className="text-sm sm:text-base text-white/50 font-mono mb-2 max-w-lg mx-auto leading-relaxed">{t(lang, 'heroTagline')}</p>
+          <p className="text-xs text-white/30 font-mono mb-8 max-w-lg mx-auto">{t(lang, 'heroSub')}</p>
           {account ? (
             <button onClick={onLaunch} className="inline-flex items-center gap-2 px-8 py-3.5 bg-lime-400 text-black font-mono text-sm tracking-widest hover:bg-lime-300 transition-colors rounded-2xl font-bold shadow-lg shadow-lime-400/20">
-              <Rocket size={14} /> {t(lang,'launchAToken')}
+              <Rocket size={14} /> {t(lang, 'launchAToken')}
             </button>
           ) : (
             <ConnectWalletHero lang={lang} />
@@ -945,7 +958,7 @@ function HomePage({ onLaunch, lang = 'en' }) {
           <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/35 pointer-events-none" />
           <input
             value={search} onChange={e => setSearch(e.target.value)}
-            placeholder={t(lang,'searchPlaceholder')}
+            placeholder={t(lang, 'searchPlaceholder')}
             className="w-full bg-white/5 border border-white/10 rounded-xl pl-9 pr-4 py-2.5 text-white text-xs font-mono focus:outline-none focus:border-lime-400/40 transition-colors placeholder-white/20"
           />
         </div>
@@ -961,27 +974,27 @@ function HomePage({ onLaunch, lang = 'en' }) {
 
       <div className="mb-3 flex items-center justify-between">
         <div className="text-xs font-mono text-white/30 tracking-widest">
-          {loading ? t(lang,'loadingTokens') : `${sorted.length} ${t(lang, sorted.length !== 1 ? 'tokensLaunched' : 'tokensLaunched')}${search ? ` ${t(lang,'tokensFound')}` : ''}`}
+          {loading ? t(lang, 'loadingTokens') : `${sorted.length} ${t(lang, 'tokensLaunched')}${search ? ` ${t(lang, 'tokensFound')}` : ''}`}
         </div>
         {showLastTradeHint && (
-          <div className="text-[10px] font-mono text-white/35">{t(lang,'sortedByLastTrade')}</div>
+          <div className="text-[10px] font-mono text-white/35">{t(lang, 'sortedByLastTrade')}</div>
         )}
         {sort === 'market_cap' && (
-          <div className="text-[10px] font-mono text-white/35">{t(lang,'marketCapFormula')}</div>
+          <div className="text-[10px] font-mono text-white/35">{t(lang, 'marketCapFormula')}</div>
         )}
       </div>
 
       {/* Community Crown featured banner */}
       {!search.trim() && crownCurveId && (
         <CrownBanner
-          token={tokens.find(t => t.curveId === crownCurveId)}
+          token={tokens.find(tok => tok.curveId === crownCurveId)}
           stats={tokenStats[crownCurveId]}
           suiUsd={suiUsd}
         />
       )}
 
       {error && (
-        <div className="rounded-2xl border border-red-500/20 bg-red-950/20 p-4 text-xs font-mono text-red-400 mb-4">Failed to load tokens: {error}</div>
+        <div className="rounded-2xl border border-red-500/20 bg-red-950/20 p-4 text-xs font-mono text-red-400 mb-4">{t(lang, 'failedToLoad')} {error}</div>
       )}
 
       {loading && (
@@ -993,8 +1006,8 @@ function HomePage({ onLaunch, lang = 'en' }) {
       {!loading && sorted.length === 0 && !error && (
         <div className="rounded-3xl border border-white/10 p-16 text-center">
           <div className="text-5xl mb-4">{search ? '🔍' : '🔥'}</div>
-          <div className="text-sm font-mono text-white/40 mb-2">{search ? `No tokens matching "${search}"` : t(lang,'noTokensYet')}</div>
-          {!search && <div className="text-xs font-mono text-white/35">{t(lang,'beFirstToLaunch')}</div>}
+          <div className="text-sm font-mono text-white/40 mb-2">{search ? `No tokens matching "${search}"` : t(lang, 'noTokensYet')}</div>
+          {!search && <div className="text-xs font-mono text-white/35">{t(lang, 'beFirstToLaunch')}</div>}
         </div>
       )}
 
@@ -1017,7 +1030,7 @@ function HomePage({ onLaunch, lang = 'en' }) {
 
 // ── Token page wrapper ────────────────────────────────────────────────────────
 
-function TokenPageWrapper() {
+function TokenPageWrapper({ lang }) {
   const { curveId } = useParams();
   const navigate = useNavigate();
   const client = useSuiClient();
@@ -1050,7 +1063,7 @@ function TokenPageWrapper() {
       <div className="h-3 bg-white/5 rounded w-32" />
     </div>
   );
-  return <TokenPage curveId={curveId} tokenType={tokenType} onBack={() => navigate('/')} />;
+  return <TokenPage curveId={curveId} tokenType={tokenType} onBack={() => navigate('/')} lang={lang} />;
 }
 
 // ── App root ──────────────────────────────────────────────────────────────────
@@ -1079,8 +1092,8 @@ export default function App() {
       <main className="max-w-6xl mx-auto px-4 py-6">
         <Routes>
           <Route path="/" element={<HomePage onLaunch={() => setShowLaunch(true)} lang={lang} />} />
-          <Route path="/token/:curveId" element={<TokenPageWrapper />} />
-          <Route path="/airdrop" element={<AirdropPage onBack={() => navigate('/')} />} />
+          <Route path="/token/:curveId" element={<TokenPageWrapper lang={lang} />} />
+          <Route path="/airdrop" element={<AirdropPage onBack={() => navigate('/')} lang={lang} />} />
           <Route path="/stats" element={<StatsPage onBack={() => navigate('/')} />} />
           <Route path="/whitepaper" element={<WhitepaperPage onBack={() => navigate('/')} />} />
           <Route path="/leaderboard" element={<LeaderboardPage onBack={() => navigate('/')} />} />
@@ -1089,9 +1102,15 @@ export default function App() {
         </Routes>
       </main>
       <footer className="max-w-6xl mx-auto px-4 py-8 text-[10px] font-mono text-white/35 text-center tracking-widest border-t border-white/5 mt-8">
-        {t(lang,'footerText')}
+        {t(lang, 'footerText')}
       </footer>
-      {showLaunch && <LaunchModal onClose={() => setShowLaunch(false)} onLaunched={handleLaunched} />}
+      {showLaunch && (
+        <LaunchModal
+          onClose={() => setShowLaunch(false)}
+          onLaunched={handleLaunched}
+          lang={lang}
+        />
+      )}
     </div>
   );
 }

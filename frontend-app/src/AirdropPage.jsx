@@ -1,22 +1,32 @@
 // AirdropPage.jsx
 import React from 'react';
-import { ArrowLeft, Gift } from 'lucide-react';
+import { ArrowLeft } from 'lucide-react';
 import S1AirdropCounter from './S1AirdropCounter.jsx';
+import { t } from './i18n.js';
 
-export default function AirdropPage({ onBack }) {
+export default function AirdropPage({ onBack, lang = 'en' }) {
   return (
     <div>
       <button
         onClick={onBack}
         className="flex items-center gap-2 text-xs font-mono text-white/40 hover:text-white mb-6 transition-colors"
       >
-        <ArrowLeft size={12} /> BACK TO HOME
+        <ArrowLeft size={12} /> {t(lang, 'backToHome')}
       </button>
 
       <div className="max-w-2xl mx-auto space-y-4">
 
+        {/* Title + subtitle */}
+        <div className="text-center space-y-2 pb-2">
+          <div className="text-2xl font-bold font-mono text-white tracking-widest">{t(lang, 's1AirdropTitle')}</div>
+          <div className="text-sm font-mono text-white/40">{t(lang, 'airdropSubtitle')}</div>
+        </div>
+
         {/* Live counter */}
         <S1AirdropCounter />
+
+        {/* Current pool label */}
+        <div className="text-[10px] font-mono tracking-widest text-lime-400 text-center">{t(lang, 'currentPool')}</div>
 
         {/* How it works */}
         <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-6 space-y-4">
@@ -31,6 +41,24 @@ export default function AirdropPage({ onBack }) {
             Distribution happens in SUI. No vesting. No governance token. No strings.
             You traded, you helped build this, you get paid back.
           </p>
+        </div>
+
+        {/* How to earn */}
+        <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-6">
+          <div className="text-[10px] font-mono tracking-widest text-lime-400 mb-4">{t(lang, 'eligibilityTitle')}</div>
+          <div className="space-y-1">
+            {[
+              { action: t(lang, 'eligibility1'), pts: '1 pt per 0.01 SUI' },
+              { action: t(lang, 'eligibility2'), pts: '0.5 pts per 0.01 SUI' },
+              { action: t(lang, 'eligibility3'), pts: '500 pts flat' },
+              { action: t(lang, 'eligibility4'), pts: '2× multiplier' },
+            ].map(({ action, pts }) => (
+              <div key={action} className="flex items-center justify-between py-2.5 border-b border-white/5 last:border-0">
+                <span className="text-xs font-mono text-white/60">{action}</span>
+                <span className="text-xs font-mono text-lime-400/70 ml-4 text-right shrink-0">{pts}</span>
+              </div>
+            ))}
+          </div>
         </div>
 
         {/* Points table */}

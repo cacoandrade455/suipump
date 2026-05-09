@@ -1,38 +1,56 @@
-// TokenPage.jsx — individual token trading page
+// TokenPage.jsx
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useCurrentAccount, useSuiClient, useSignAndExecuteTransaction } from '@mysten/dapp-kit';
+import { useCurrentAccount, useSignAndExecuteTransaction, useSuiClient } from '@mysten/dapp-kit';
 import { Transaction } from '@mysten/sui/transactions';
-import { ArrowLeft, Copy, Check, Share2, ExternalLink, TrendingUp, TrendingDown, Settings } from 'lucide-react';
-
+import { ArrowLeft, Copy, Check, Share2, ExternalLink, Settings } from 'lucide-react';
 import PriceChart from './PriceChart.jsx';
 import TradeHistory from './TradeHistory.jsx';
 import HolderList from './HolderList.jsx';
 import Comments from './Comments.jsx';
-import { PACKAGE_ID, DRAIN_SUI_APPROX, TOKEN_DECIMALS } from './constants.js';
-import { mistToSui, priceMistPerToken, quoteBuy, quoteSell } from './curve.js';
-import { paginateEvents } from './paginateEvents.js';
+import { PACKAGE_ID, MIST_PER_SUI } from './constants.js';
+import { buyQuote, sellQuote } from './curve.js';
+import { t } from './i18n.js';
 
+// ── constants ─────────────────────────────────────────────────────────────────
+const TOKEN_DECIMALS = 6;
 const TOTAL_SUPPLY_WHOLE = 1_000_000_000;
+const DRAIN_SUI_APPROX = 87_900;
+const VIRTUAL_SUI = 30_000;
+const VIRTUAL_TOKENS = 1_073_000_000;
 
-// ── helpers ──────────────────────────────────────────────────────────────────
-
-function fmt(n, d = 2) {
-  if (n == null) return '—';
-  if (!Number.isFinite(n)) return '—';
-  if (n >= 1e9) return (n / 1e9).toFixed(d) + 'B';
-  if (n >= 1e6) return (n / 1e6).toFixed(d) + 'M';
-  if (n >= 1e3) return (n / 1e3).toFixed(d) + 'k';
-  return n.toFixed(d);
+function mistToSui(mist) {
+  if (mist == null) return 0;
+  return Number(mist) / 1e9;
 }
 
-function fmtUsd(sui, suiUsd, d = 2) {
-  if (sui == null || suiUsd == null) return '—';
-  const usd = sui * suiUsd;
-  if (usd >= 1e6) return '$' + (usd / 1e6).toFixed(d) + 'M';
-  if (usd >= 1e3) return '$' + (usd / 1e3).toFixed(1) + 'k';
-  if (usd >= 1) return '$' + usd.toFixed(d);
-  return '$' + usd.toFixed(5);
+function priceMistPerToken(suiReserveMist, tokensSold) {
+  const vSui = BigInt(VIRTUAL_SUI) * BigInt(MIST_PER_SUI);
+  const vTok = BigInt(VIRTUAL_TOKENS) * 10n ** BigInt(TOKEN_DECIMALS);
+  const realSui = BigInt(suiReserveMist);
+  const realTok = BigInt(tokensSold);
+  const numSui = vSui + realSui;
+  const numTok = vTok - realTok;
+  if (numTok === 0n) return 0n;
+  return (numSui * 10n ** BigInt(TOKEN_DECIMALS)) / numTok;
+}
+
+function fmt(n, decimals = 4) {
+  if (n == null) return '-';
+  if (typeof n === 'bigint') n = Number(n);
+  if (isNaN(n)) return '-';
+  if (Math.abs(n) >= 1_000_000) return (n / 1_000_000).toFixed(2) + 'M';
+  if (Math.abs(n) >= 1_000) return (n / 1_000).toFixed(2) + 'k';
+  return n.toFixed(decimals);
+}
+
+function fmtUsd(suiAmt, suiUsd, decimals = 2) {
+  if (suiAmt == null) return '-';
+  const usd = Number(suiAmt) * suiUsd;
+  if (usd >= 1_000_000) return `$${(usd / 1_000_000).toFixed(2)}M`;
+  if (usd >= 1_000) return `$${(usd / 1_000).toFixed(1)}k`;
+  if (usd >= 1) return `$${usd.toFixed(2)}`;
+  return `$${usd.toFixed(decimals + 2)}`;
 }
 
 async function fetchSuiUsd() {
@@ -51,21 +69,33 @@ async function fetchSuiUsd() {
 
 function parseDescription(raw) {
   if (!raw) return { desc: '', twitter: '', telegram: '', website: '' };
-  const parts = raw.split('||');
-  return {
-    desc: parts[0]?.trim() || '',
-    twitter: parts[1]?.trim() || '',
-    telegram: parts[2]?.trim() || '',
-    website: parts[3]?.trim() || '',
-  };
+  const idx = raw.indexOf('||');
+  if (idx === -1) return { desc: raw, twitter: '', telegram: '', website: '' };
+  const descPart = raw.slice(0, idx);
+  try {
+    const links = JSON.parse(raw.slice(idx + 2));
+    return {
+      desc: descPart,
+      twitter: links.twitter || '',
+      telegram: links.telegram || '',
+      website: links.website || '',
+    };
+  } catch {
+    const parts = raw.split('||');
+    return {
+      desc: parts[0]?.trim() || '',
+      twitter: parts[1]?.trim() || '',
+      telegram: parts[2]?.trim() || '',
+      website: parts[3]?.trim() || '',
+    };
+  }
 }
 
-// Slippage presets
 const SLIPPAGE_PRESETS = ['0.5', '1', '2', '5'];
 
 // ── main component ───────────────────────────────────────────────────────────
 
-export default function TokenPage({ curveId, tokenType, onBack }) {
+export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
   const navigate = useNavigate();
   const account = useCurrentAccount();
   const client = useSuiClient();
@@ -83,8 +113,8 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
   // trade panel
   const [side, setSide] = useState('buy');
   const [amount, setAmount] = useState('');
-  const [slippage, setSlippage] = useState('1');       // % string, e.g. '1' = 1%
-  const [txStatus, setTxStatus] = useState(null);      // null | 'pending' | 'success' | 'error'
+  const [slippage, setSlippage] = useState('1');
+  const [txStatus, setTxStatus] = useState(null);
   const [txMsg, setTxMsg] = useState('');
 
   // copy CA / share
@@ -96,8 +126,8 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
 
   useEffect(() => {
     fetchSuiUsd().then(setSuiUsd);
-    const t = setInterval(() => fetchSuiUsd().then(setSuiUsd), 30_000);
-    return () => clearInterval(t);
+    const timer = setInterval(() => fetchSuiUsd().then(setSuiUsd), 30_000);
+    return () => clearInterval(timer);
   }, []);
 
   useEffect(() => {
@@ -107,185 +137,150 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
       try {
         const obj = await client.getObject({ id: curveId, options: { showContent: true } });
         if (!cancelled) setCurveState(obj.data?.content?.fields ?? null);
-      } catch {}
+      } catch { }
     }
     load();
-    const t = setInterval(load, 8_000);
-    return () => { cancelled = true; clearInterval(t); };
+    const timer = setInterval(load, 10_000);
+    return () => { cancelled = true; clearInterval(timer); };
   }, [curveId, client]);
+
+  useEffect(() => {
+    if (!tokenType) return;
+    let cancelled = false;
+    client.getCoinMetadata({ coinType: tokenType })
+      .then(m => { if (!cancelled) { setMetadata(m); if (m?.iconUrl) setIconUrl(m.iconUrl); } })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [tokenType, client]);
 
   useEffect(() => {
     if (!account || !client) return;
     let cancelled = false;
     async function loadBalances() {
       try {
-        const suiBal = await client.getBalance({ owner: account.address, coinType: '0x2::sui::SUI' });
-        if (!cancelled) setSuiBalance(Number(BigInt(suiBal.totalBalance)) / 1e9);
+        const sui = await client.getBalance({ owner: account.address, coinType: '0x2::sui::SUI' });
+        if (!cancelled) setSuiBalance(Number(sui.totalBalance) / 1e9);
         if (tokenType) {
-          const tokBal = await client.getBalance({ owner: account.address, coinType: tokenType });
-          if (!cancelled) setTokenBalance(Number(BigInt(tokBal.totalBalance)) / (10 ** TOKEN_DECIMALS));
+          const tok = await client.getBalance({ owner: account.address, coinType: tokenType });
+          if (!cancelled) setTokenBalance(Number(tok.totalBalance) / 10 ** TOKEN_DECIMALS);
         }
-      } catch {}
+      } catch { }
     }
     loadBalances();
-    const t = setInterval(loadBalances, 10_000);
-    return () => { cancelled = true; clearInterval(t); };
+    const timer = setInterval(loadBalances, 15_000);
+    return () => { cancelled = true; clearInterval(timer); };
   }, [account, client, tokenType]);
-
-  useEffect(() => {
-    if (!tokenType || !client) return;
-    let cancelled = false;
-    client.getCoinMetadata({ coinType: tokenType })
-      .then(m => {
-        if (!cancelled) {
-          setMetadata(m);
-          if (m?.iconUrl) setIconUrl(m.iconUrl);
-        }
-      })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, [tokenType, client]);
 
   // ── derived state ─────────────────────────────────────────────────────────
 
-  const reserveMist = curveState ? BigInt(curveState.sui_reserve ?? 0) : 0n;
-  const tokenReserve = curveState ? BigInt(curveState.token_reserve ?? 0) : 0n;
-  const tokensSold = BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS) - tokenReserve;
-  const priceMist = priceMistPerToken(reserveMist, tokensSold);
+  const reserveMist = curveState ? BigInt(curveState.sui_reserve) : 0n;
+  const tokensRemaining = curveState ? BigInt(curveState.token_reserve) : 0n;
+  const tokensSold = BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS) - tokensRemaining;
+  const progress = Math.min(100, (mistToSui(reserveMist) / DRAIN_SUI_APPROX) * 100);
+  const priceMist = curveState ? priceMistPerToken(reserveMist, tokensSold) : 0n;
   const priceSui = Number(priceMist) / 1e9;
   const priceUsd = priceSui * suiUsd;
   const marketCapSui = priceSui * TOTAL_SUPPLY_WHOLE;
-  const progress = Math.min(100, (mistToSui(reserveMist) / DRAIN_SUI_APPROX) * 100);
   const graduated = curveState?.graduated ?? false;
-  const isCreator = account && curveState && curveState.creator === account.address;
   const creatorFeesMist = curveState ? BigInt(curveState.creator_fees ?? 0) : 0n;
 
-  const rawDesc = curveState?.description ?? metadata?.description ?? '';
-  const { desc, twitter, telegram, website } = parseDescription(rawDesc);
-  const name = metadata?.name ?? curveState?.name ?? '';
-  const symbol = metadata?.symbol ?? curveState?.symbol ?? '';
+  const name = metadata?.name || curveState?.name || '';
+  const symbol = metadata?.symbol || curveState?.symbol || '';
+  const { desc, twitter, telegram, website } = parseDescription(
+    metadata?.description || curveState?.description || ''
+  );
 
-  // ── actions ───────────────────────────────────────────────────────────────
+  const isCreator = account && curveState?.creator_cap_exists !== false &&
+    (curveState?.payouts?.fields?.addresses?.fields?.contents?.some?.(a => a === account.address) ||
+     curveState?.payouts?.[0]?.address === account.address);
 
-  const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(curveId).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
-  }, [curveId]);
+  // ── actions ────────────────────────────────────────────────────────────
 
-  const handleShare = useCallback(() => {
+  const handleCopy = () => {
+    if (curveId) { navigator.clipboard.writeText(curveId); setCopied(true); setTimeout(() => setCopied(false), 1500); }
+  };
+
+  const handleShare = () => {
     const url = `${window.location.origin}/token/${curveId}`;
-    const priceStr = priceSui > 0
-      ? suiUsd > 0
-        ? `$${(priceSui * suiUsd).toFixed(6)}`
-        : `${priceSui.toFixed(8)} SUI`
-      : null;
-    const progressStr = progress > 0 ? `${progress.toFixed(1)}%` : null;
-
-    const lines = [
-      `🔥 $${symbol} is live on SuiPump!`,
-      [priceStr && `Price: ${priceStr}`, progressStr && `Curve: ${progressStr}`]
-        .filter(Boolean).join(' · '),
-      ``,
-      `Trade now 👇`,
-      url,
-    ].filter(l => l !== undefined);
-
-    const tweetText = encodeURIComponent(lines.join('\n'));
-    window.open(`https://twitter.com/intent/tweet?text=${tweetText}`, '_blank', 'noopener');
+    if (navigator.share) {
+      navigator.share({ title: `${name} ($${symbol}) on SuiPump`, url });
+    } else {
+      navigator.clipboard.writeText(url);
+    }
     setShared(true);
-    setTimeout(() => setShared(false), 2000);
-  }, [curveId, symbol, priceSui, suiUsd, progress]);
+    setTimeout(() => setShared(false), 1500);
+  };
 
-  const handleCopyLink = useCallback(() => {
-    const url = `${window.location.origin}/token/${curveId}`;
-    navigator.clipboard.writeText(url).then(() => {
-      setLinkCopied(true);
-      setTimeout(() => setLinkCopied(false), 2000);
-    });
-  }, [curveId]);
+  const handleCopyLink = () => {
+    navigator.clipboard.writeText(`${window.location.origin}/token/${curveId}`);
+    setLinkCopied(true);
+    setTimeout(() => setLinkCopied(false), 1500);
+  };
 
   const quoteTrade = useCallback(() => {
-    const a = parseFloat(amount);
-    if (!a || a <= 0 || !curveState) return null;
+    if (!amount || parseFloat(amount) <= 0 || !curveState) return null;
     try {
       if (side === 'buy') {
-        const suiInMist = BigInt(Math.floor(a * 1e9));
-        const result = quoteBuy(suiInMist, reserveMist, tokensSold);
-        return { tokensOut: Number(result.tokensOut) / (10 ** TOKEN_DECIMALS), clipped: result.clipped };
+        const suiIn = BigInt(Math.floor(parseFloat(amount) * Number(MIST_PER_SUI)));
+        return buyQuote(reserveMist, tokensRemaining, suiIn);
       } else {
-        const tokensInSmallest = BigInt(Math.floor(a * (10 ** TOKEN_DECIMALS)));
-        const result = quoteSell(tokensInSmallest, reserveMist, tokensSold);
-        return { suiOut: Number(result.suiOut) / 1e9 };
+        const tokIn = BigInt(Math.floor(parseFloat(amount) * 10 ** TOKEN_DECIMALS));
+        return sellQuote(reserveMist, tokensRemaining, tokIn);
       }
     } catch { return null; }
-  }, [amount, side, curveState, reserveMist, tokensSold]);
+  }, [amount, side, curveState, reserveMist, tokensRemaining]);
 
   const executeTrade = useCallback(async () => {
-    if (!account || !curveState) return;
-    const a = parseFloat(amount);
-    if (!a || a <= 0) return;
+    if (!account || !curveState || !curveId || !tokenType) return;
+    const amtFloat = parseFloat(amount);
+    if (!amtFloat || amtFloat <= 0) return;
 
     setTxStatus('pending');
     setTxMsg('');
 
     try {
-      const tx = new Transaction();
       const objForRef = await client.getObject({ id: curveId, options: { showOwner: true } });
       const initialSharedVersion = objForRef.data?.owner?.Shared?.initial_shared_version;
+      const tx = new Transaction();
       const curveRef = initialSharedVersion
         ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion, mutable: true })
         : tx.object(curveId);
 
-      // Compute slippage tolerance
-      const slippagePct = Math.max(0, parseFloat(slippage) || 0);
-      const slippageFactor = 1 - slippagePct / 100;
+      const slippageNum = parseFloat(slippage) || 0;
 
       if (side === 'buy') {
-        const suiMist = Math.floor(a * 1e9);
-
-        // Compute min_tokens_out from quote with slippage applied
-        let minTokensOut = 0n;
-        if (slippagePct > 0 && curveState) {
-          try {
-            const q = quoteBuy(BigInt(suiMist), reserveMist, tokensSold);
-            // Apply slippage: accept at least (quoted * slippageFactor) tokens
-            minTokensOut = BigInt(Math.floor(Number(q.tokensOut) * slippageFactor));
-          } catch {}
-        }
-
-        const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(suiMist)]);
+        const suiInMist = BigInt(Math.floor(amtFloat * Number(MIST_PER_SUI)));
+        const [payment] = tx.splitCoins(tx.gas, [tx.pure.u64(suiInMist)]);
+        const quote = buyQuote(reserveMist, tokensRemaining, suiInMist);
+        const minOut = quote?.tokensOut != null
+          ? BigInt(Math.floor(Number(quote.tokensOut) * (1 - slippageNum / 100)))
+          : 0n;
         const [tokens, refund] = tx.moveCall({
           target: `${PACKAGE_ID}::bonding_curve::buy`,
           typeArguments: [tokenType],
-          arguments: [curveRef, coin, tx.pure.u64(minTokensOut)],
+          arguments: [curveRef, payment, tx.pure.u64(minOut)],
         });
         tx.transferObjects([tokens, refund], account.address);
       } else {
-        const tokensIn = Math.floor(a * (10 ** TOKEN_DECIMALS));
-
-        // Compute min_sui_out from quote with slippage applied
-        let minSuiOut = 0n;
-        if (slippagePct > 0 && curveState) {
-          try {
-            const q = quoteSell(BigInt(tokensIn), reserveMist, tokensSold);
-            // Apply slippage: accept at least (quoted * slippageFactor) SUI
-            minSuiOut = BigInt(Math.floor(Number(q.suiOut) * slippageFactor));
-          } catch {}
-        }
-
+        const tokInAtomic = BigInt(Math.floor(amtFloat * 10 ** TOKEN_DECIMALS));
         const coins = await client.getCoins({ owner: account.address, coinType: tokenType });
-        if (!coins.data.length) throw new Error('No tokens to sell');
-        const primary = tx.object(coins.data[0].coinObjectId);
-        if (coins.data.length > 1) {
-          tx.mergeCoins(primary, coins.data.slice(1).map(c => tx.object(c.coinObjectId)));
+        const coinObjs = coins.data.map(c => tx.object(c.coinObjectId));
+        let tokenCoin;
+        if (coinObjs.length === 0) throw new Error('No token balance');
+        if (coinObjs.length === 1) {
+          [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(tokInAtomic)]);
+        } else {
+          tx.mergeCoins(coinObjs[0], coinObjs.slice(1));
+          [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(tokInAtomic)]);
         }
-        const [toSell] = tx.splitCoins(primary, [tx.pure.u64(tokensIn)]);
-        const suiOut = tx.moveCall({
+        const quote = sellQuote(reserveMist, tokensRemaining, tokInAtomic);
+        const minOut = quote?.suiOut != null
+          ? BigInt(Math.floor(Number(quote.suiOut) * (1 - slippageNum / 100)))
+          : 0n;
+        const [suiOut] = tx.moveCall({
           target: `${PACKAGE_ID}::bonding_curve::sell`,
           typeArguments: [tokenType],
-          arguments: [curveRef, toSell, tx.pure.u64(minSuiOut)],
+          arguments: [curveRef, tokenCoin, tx.pure.u64(minOut)],
         });
         tx.transferObjects([suiOut], account.address);
       }
@@ -325,13 +320,13 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
         className="flex items-center gap-2 text-white/50 hover:text-lime-400 transition-colors text-xs font-mono mb-4 group"
       >
         <ArrowLeft size={14} className="group-hover:-translate-x-0.5 transition-transform" />
-        BACK
+        {t(lang, 'backToHome')}
       </button>
 
       {/* Graduation banner */}
       {graduated && (
         <div className="mb-4 px-4 py-3 bg-lime-400/10 border border-lime-400/30 rounded-xl text-xs font-mono text-lime-400 flex items-center gap-2">
-          🎓 <span>This token has <strong>graduated</strong> to a Cetus CLMM pool. Liquidity is permanent and LP tokens are burned.</span>
+          🎓 <span>{t(lang, 'tokenGraduated')}</span>
         </div>
       )}
 
@@ -367,22 +362,21 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
                     className="text-white/35 hover:text-lime-400 transition-colors flex items-center gap-1 text-[10px] font-mono"
                   >
                     {copied ? <Check size={10} /> : <Copy size={10} />}
-                    {copied ? 'COPIED' : 'COPY CA'}
+                    {copied ? t(lang, 'copied') : t(lang, 'copyCa')}
                   </button>
                   <button
                     onClick={handleShare}
                     className="text-white/35 hover:text-lime-400 transition-colors flex items-center gap-1 text-[10px] font-mono"
                   >
-                    {/* X logo */}
                     <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
-                    {shared ? 'SHARED!' : 'SHARE'}
+                    {shared ? t(lang, 'share') + '!' : t(lang, 'share')}
                   </button>
                   <button
                     onClick={handleCopyLink}
                     className="text-white/35 hover:text-lime-400 transition-colors flex items-center gap-1 text-[10px] font-mono"
                   >
                     {linkCopied ? <Check size={10} /> : <Share2 size={10} />}
-                    {linkCopied ? 'COPIED!' : 'COPY LINK'}
+                    {linkCopied ? t(lang, 'linkCopied') : t(lang, 'share') + ' LINK'}
                   </button>
                 </div>
 
@@ -403,7 +397,8 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
                     </a>
                   )}
                   {website && (
-                    <a href={website} target="_blank" rel="noopener noreferrer"
+                    <a href={website.startsWith('http') ? website : `https://${website}`}
+                      target="_blank" rel="noopener noreferrer"
                       className="text-white/40 hover:text-white/80 text-[10px] font-mono transition-colors flex items-center gap-1">
                       <ExternalLink size={9} /> WEB
                     </a>
@@ -411,20 +406,16 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
                 </div>
               </div>
 
-              {/* Stats — desktop only */}
-              <div className="hidden sm:flex flex-col items-end gap-1 flex-shrink-0">
-                <div className="text-right">
-                  <div className="text-white text-sm font-mono font-bold">
-                    {suiUsd > 0 ? fmtUsd(priceUsd / suiUsd, suiUsd, 5) : `${fmt(priceSui, 6)} SUI`}
-                  </div>
-                  <div className="text-white/35 text-[10px] font-mono">PRICE</div>
+              {/* Price + mcap */}
+              <div className="text-right hidden sm:block">
+                <div className="text-white font-bold text-sm font-mono">
+                  {suiUsd > 0 ? `$${priceUsd.toFixed(6)}` : `${fmt(priceSui, 6)} SUI`}
                 </div>
-                <div className="text-right">
-                  <div className="text-white/70 text-xs font-mono">
-                    {suiUsd > 0 ? fmtUsd(marketCapSui, suiUsd) : `${fmt(marketCapSui)} SUI`}
-                  </div>
-                  <div className="text-white/35 text-[10px] font-mono">MCAP</div>
+                <div className="text-white/35 text-[10px] font-mono">{t(lang, 'price')}</div>
+                <div className="text-white/70 text-xs font-mono mt-1">
+                  {suiUsd > 0 ? fmtUsd(marketCapSui, suiUsd) : `${fmt(marketCapSui)} SUI`}
                 </div>
+                <div className="text-white/35 text-[10px] font-mono">{t(lang, 'mcap')}</div>
               </div>
             </div>
 
@@ -436,7 +427,7 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
             {/* Progress bar */}
             <div className="mt-4">
               <div className="flex justify-between text-[10px] font-mono text-white/35 mb-1.5">
-                <span>BONDING CURVE PROGRESS</span>
+                <span>{t(lang, 'bondingCurveProgress')}</span>
                 <span className="text-lime-400">{progress.toFixed(1)}%</span>
               </div>
               <div className="h-2 bg-white/5 rounded-full overflow-hidden">
@@ -446,8 +437,8 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
                 />
               </div>
               <div className="flex justify-between text-[10px] font-mono text-white/25 mt-1">
-                <span>{fmt(mistToSui(reserveMist))} SUI raised</span>
-                <span>{fmt(DRAIN_SUI_APPROX)} SUI target</span>
+                <span>{fmt(mistToSui(reserveMist))} {t(lang, 'suiRaised')}</span>
+                <span>{fmt(DRAIN_SUI_APPROX)} {t(lang, 'suiTarget')}</span>
               </div>
             </div>
           </div>
@@ -456,15 +447,16 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
           <PriceChart curveId={curveId} tokenType={tokenType} suiUsd={suiUsd} />
 
           {/* Block 2 — Trades / Holders toggle */}
-          <TradesHoldersBlock curveId={curveId} tokenType={tokenType} suiUsd={suiUsd} />
+          <TradesHoldersBlock curveId={curveId} tokenType={tokenType} suiUsd={suiUsd} lang={lang} />
 
           {/* Block 3 — Comments */}
-          <Comments curveId={curveId} />
+          <CommentsBlock curveId={curveId} lang={lang} />
         </div>
 
         {/* Right column — trade panel */}
         <div className="space-y-4">
           <TradePanelContent
+            lang={lang}
             side={side}
             setSide={setSide}
             amount={amount}
@@ -492,13 +484,17 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
           {/* Mobile stats */}
           <div className="sm:hidden bg-white/[0.03] border border-white/10 rounded-xl p-4 grid grid-cols-2 gap-3">
             <div>
-              <div className="text-white/35 text-[10px] font-mono mb-0.5">PRICE</div>
+              <div className="text-white/35 text-[10px] font-mono mb-0.5">{t(lang, 'price')}</div>
               <div className="text-white text-sm font-mono font-bold">
-                {suiUsd > 0 ? fmtUsd(priceSui, suiUsd, 5) : `${fmt(priceSui, 6)} SUI`}
+                {suiUsd > 0 ? `$${priceUsd.toFixed(6)}` : `${fmt(priceSui, 6)} SUI`}
               </div>
             </div>
             <div>
-              <div className="text-white/35 text-[10px] font-mono mb-0.5">MCAP</div>
+              <div className="text-white/35 text-[10px] font-mono mb-0.5">{t(lang, 'inSui')}</div>
+              <div className="text-white/50 text-sm font-mono">{fmt(priceSui, 6)} SUI</div>
+            </div>
+            <div>
+              <div className="text-white/35 text-[10px] font-mono mb-0.5">{t(lang, 'mcap')}</div>
               <div className="text-white/70 text-sm font-mono">
                 {suiUsd > 0 ? fmtUsd(marketCapSui, suiUsd) : `${fmt(marketCapSui)} SUI`}
               </div>
@@ -513,6 +509,7 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
 // ── Trade Panel ───────────────────────────────────────────────────────────────
 
 function TradePanelContent({
+  lang,
   side, setSide, amount, setAmount,
   slippage, setSlippage,
   quote, txStatus, txMsg,
@@ -537,7 +534,6 @@ function TradePanelContent({
   };
 
   const handleCustomSlippage = (v) => {
-    // Allow only numbers and one decimal point, max 50%
     const clean = v.replace(/[^0-9.]/g, '');
     setCustomSlippage(clean);
     const n = parseFloat(clean);
@@ -589,7 +585,7 @@ function TradePanelContent({
     <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 space-y-4">
       {/* Header row with slippage toggle */}
       <div className="flex items-center justify-between">
-        <div className="text-[10px] font-mono text-white/35 tracking-widest">TRADE</div>
+        <div className="text-[10px] font-mono text-white/35 tracking-widest">{t(lang, 'trade')}</div>
         <button
           onClick={() => setShowSlippage(s => !s)}
           className={`flex items-center gap-1.5 px-2 py-1 rounded-lg text-[10px] font-mono transition-colors ${
@@ -599,11 +595,11 @@ function TradePanelContent({
           }`}
         >
           <Settings size={10} />
-          {slippageNum === 0 ? 'NO SLIPPAGE' : `${slippage}% SLIP`}
+          {slippageNum === 0 ? 'NO SLIPPAGE' : `${slippage}% ${t(lang, 'slippage')}`}
         </button>
       </div>
 
-      {/* Slippage panel — collapsed by default */}
+      {/* Slippage panel */}
       {showSlippage && (
         <div className="bg-white/[0.02] border border-white/10 rounded-lg p-3 space-y-2">
           <div className="text-[9px] font-mono text-white/35 tracking-widest">SLIPPAGE TOLERANCE</div>
@@ -614,194 +610,173 @@ function TradePanelContent({
                 onClick={() => handleSlippagePreset(v)}
                 className={`flex-1 py-1.5 text-[10px] font-mono rounded-lg border transition-colors ${
                   slippage === v && !isCustom
-                    ? 'bg-lime-400 text-black border-lime-400 font-bold'
-                    : 'text-white/40 border-white/10 hover:border-white/25 hover:text-white/70'
+                    ? 'bg-lime-400/10 border-lime-400/30 text-lime-400'
+                    : 'border-white/10 text-white/40 hover:border-white/25 hover:text-white/60'
                 }`}
               >
                 {v}%
               </button>
             ))}
-            {/* Custom input */}
-            <div className={`flex-1 relative flex items-center rounded-lg border transition-colors ${
-              isCustom && slippage !== ''
-                ? 'border-lime-400/50 bg-lime-400/5'
-                : 'border-white/10'
-            }`}>
+            <input
+              type="number"
+              min="0"
+              max="50"
+              step="0.1"
+              value={customSlippage}
+              onChange={e => handleCustomSlippage(e.target.value)}
+              placeholder="—"
+              className={`w-14 py-1.5 text-[10px] font-mono rounded-lg border text-center bg-transparent transition-colors ${
+                isCustom
+                  ? 'border-lime-400/30 text-lime-400'
+                  : 'border-white/10 text-white/40'
+              } focus:outline-none focus:border-lime-400/50`}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Graduated state */}
+      {graduated ? (
+        <div className="text-center py-4 text-xs font-mono text-lime-400/70">
+          🎓 {t(lang, 'tokenGraduated')}
+        </div>
+      ) : (
+        <>
+          {/* Buy / Sell toggle */}
+          <div className="flex rounded-lg overflow-hidden border border-white/10">
+            <button
+              onClick={() => setSide('buy')}
+              className={`flex-1 py-2.5 text-xs font-mono font-bold transition-colors ${
+                side === 'buy' ? 'bg-lime-400 text-black' : 'text-white/50 hover:text-white/80'
+              }`}
+            >
+              {t(lang, 'buy')}
+            </button>
+            <button
+              onClick={() => setSide('sell')}
+              className={`flex-1 py-2.5 text-xs font-mono font-bold transition-colors ${
+                side === 'sell' ? 'bg-red-500 text-white' : 'text-white/50 hover:text-white/80'
+              }`}
+            >
+              {t(lang, 'sell')}
+            </button>
+          </div>
+
+          {/* Amount input */}
+          <div className="space-y-1.5">
+            <div className="text-[10px] font-mono text-white/35">
+              {side === 'buy' ? `${t(lang, 'amount')} (SUI)` : `${t(lang, 'amount')} ($${symbol})`}
+            </div>
+            <div className="flex gap-2">
               <input
-                type="text"
-                inputMode="decimal"
-                value={customSlippage}
-                onChange={e => handleCustomSlippage(e.target.value)}
-                placeholder="?"
-                className="w-full bg-transparent text-center text-[10px] font-mono text-white placeholder-white/20 focus:outline-none py-1.5 px-1"
+                type="number"
+                min="0"
+                step="any"
+                value={amount}
+                onChange={e => setAmount(e.target.value)}
+                placeholder={side === 'buy' ? '0.00' : '0'}
+                className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-sm font-mono text-white placeholder-white/20 focus:outline-none focus:border-lime-400/50 focus:bg-lime-400/5 transition-colors"
               />
-              {customSlippage && (
-                <span className="absolute right-1 text-[9px] font-mono text-white/35">%</span>
+              <button
+                onClick={() => {
+                  if (side === 'buy') {
+                    const max = Math.max(0, suiBalance - 0.1);
+                    setAmount(max > 0 ? max.toFixed(4) : '0');
+                  } else {
+                    setAmount(tokenBalance > 0 ? Math.floor(tokenBalance).toString() : '0');
+                  }
+                }}
+                className="px-2.5 py-2.5 text-[10px] font-mono text-white/35 hover:text-lime-400 border border-white/10 hover:border-lime-400/40 rounded-lg transition-colors"
+              >
+                {t(lang, 'max')}
+              </button>
+            </div>
+          </div>
+
+          {/* Quick amounts */}
+          <div className="flex gap-2">
+            {(side === 'buy' ? ['1', '10', '50', '100'] : ['100k', '500k', '1M']).map(v => (
+              <button
+                key={v}
+                onClick={() => setAmount(v.replace('k', '000').replace('M', '000000'))}
+                className="flex-1 py-1.5 text-[10px] font-mono text-white/35 hover:text-white/70 border border-white/10 hover:border-white/25 rounded-lg transition-colors"
+              >
+                {v}
+              </button>
+            ))}
+          </div>
+
+          {/* Quote preview */}
+          {quote && (
+            <div className="bg-white/[0.03] rounded-lg px-3 py-2.5 space-y-1.5 border border-white/5">
+              {side === 'buy' && quote.tokensOut != null && (
+                <div className="flex justify-between text-[11px] font-mono">
+                  <span className="text-white/35">{t(lang, 'youReceive')}</span>
+                  <span className="text-lime-400">{fmt(quote.tokensOut, 0)} ${symbol}</span>
+                </div>
+              )}
+              {side === 'sell' && quote.suiOut != null && (
+                <div className="flex justify-between text-[11px] font-mono">
+                  <span className="text-white/35">{t(lang, 'youReceive')}</span>
+                  <span className="text-lime-400">
+                    {suiUsd > 0
+                      ? `$${(quote.suiOut * suiUsd).toFixed(2)}`
+                      : `${fmt(quote.suiOut)} SUI`}
+                  </span>
+                </div>
+              )}
+              <div className="flex justify-between text-[10px] font-mono">
+                <span className="text-white/25">{t(lang, 'priceImpact')}</span>
+                <span className="text-white/40">~1% {t(lang, 'fee')}</span>
+              </div>
+              {!showSlippage && slippageNum > 0 && (
+                <div className="flex justify-between text-[10px] font-mono border-t border-white/5 pt-1.5">
+                  <span className="text-white/25">{t(lang, 'minReceived')} ({slippage}% {t(lang, 'slippage')})</span>
+                  <span className="text-white/40">
+                    {side === 'buy' && quote.tokensOut != null
+                      ? `${fmt(quote.tokensOut * (1 - slippageNum / 100), 0)} $${symbol}`
+                      : side === 'sell' && quote.suiOut != null
+                        ? `${fmt(quote.suiOut * (1 - slippageNum / 100))} SUI`
+                        : '—'}
+                  </span>
+                </div>
               )}
             </div>
-          </div>
-
-          {/* Warnings */}
-          {slippageNum === 0 && (
-            <div className="text-[10px] font-mono text-red-400/80 bg-red-400/5 border border-red-400/20 rounded-lg px-2.5 py-1.5">
-              ⚠ 0% slippage — trade will fail if price moves at all
-            </div>
           )}
-          {slippageNum > 5 && (
-            <div className="text-[10px] font-mono text-lime-400/70 bg-lime-400/5 border border-lime-400/20 rounded-lg px-2.5 py-1.5">
-              ⚠ High slippage — you may receive significantly less
-            </div>
-          )}
-          {slippageNum > 0 && slippageNum <= 5 && quote && (
-            <div className="text-[10px] font-mono text-white/30">
-              {side === 'buy' && quote.tokensOut != null
-                ? `Min received: ${fmt(quote.tokensOut * (1 - slippageNum / 100), 0)} $${symbol}`
-                : side === 'sell' && quote.suiOut != null
-                  ? `Min received: ${fmt(quote.suiOut * (1 - slippageNum / 100))} SUI`
-                  : null}
-            </div>
-          )}
-        </div>
-      )}
 
-      {graduated && (
-        <div className="text-[10px] font-mono text-lime-400/70 bg-lime-400/5 border border-lime-400/20 rounded-lg px-3 py-2">
-          Token graduated — trade on Cetus DEX
-        </div>
-      )}
-
-      {/* Buy / Sell toggle */}
-      <div className="flex rounded-lg overflow-hidden border border-white/10">
-        <button
-          onClick={() => setSide('buy')}
-          className={`flex-1 py-2.5 text-xs font-mono font-bold transition-colors ${
-            side === 'buy' ? 'bg-lime-400 text-black' : 'text-white/50 hover:text-white/80'
-          }`}
-        >
-          BUY
-        </button>
-        <button
-          onClick={() => setSide('sell')}
-          className={`flex-1 py-2.5 text-xs font-mono font-bold transition-colors ${
-            side === 'sell' ? 'bg-red-500 text-white' : 'text-white/50 hover:text-white/80'
-          }`}
-        >
-          SELL
-        </button>
-      </div>
-
-      {/* Amount input */}
-      <div className="space-y-1.5">
-        <div className="text-[10px] font-mono text-white/35">
-          {side === 'buy' ? 'AMOUNT (SUI)' : `AMOUNT ($${symbol})`}
-        </div>
-        <div className="flex gap-2">
-          <input
-            type="number"
-            min="0"
-            step="any"
-            value={amount}
-            onChange={e => setAmount(e.target.value)}
-            placeholder={side === 'buy' ? '0.00' : '0'}
-            className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-sm font-mono text-white placeholder-white/20 focus:outline-none focus:border-lime-400/50 focus:bg-lime-400/5 transition-colors"
-          />
+          {/* Execute button */}
           <button
-            onClick={() => {
-              if (side === 'buy') {
-                const max = Math.max(0, suiBalance - 0.1);
-                setAmount(max > 0 ? max.toFixed(4) : '0');
-              } else {
-                setAmount(tokenBalance > 0 ? Math.floor(tokenBalance).toString() : '0');
-              }
-            }}
-            className="px-2.5 py-2.5 text-[10px] font-mono text-white/35 hover:text-lime-400 border border-white/10 hover:border-lime-400/40 rounded-lg transition-colors"
+            onClick={onExecute}
+            disabled={!account || isPending || !amount || parseFloat(amount) <= 0}
+            className={`w-full py-3 rounded-xl text-sm font-mono font-bold transition-all ${
+              !account
+                ? 'bg-white/5 text-white/25 cursor-not-allowed'
+                : isPending
+                  ? 'bg-white/10 text-white/50 cursor-wait'
+                  : side === 'buy'
+                    ? 'bg-lime-400 text-black hover:bg-lime-300'
+                    : 'bg-red-500 text-white hover:bg-red-400'
+            }`}
           >
-            MAX
+            {isPending ? t(lang, 'confirming') : side === 'buy' ? t(lang, 'buy') : t(lang, 'sell')}
           </button>
-        </div>
-      </div>
 
-      {/* Quick amounts */}
-      <div className="flex gap-2">
-        {(side === 'buy' ? ['1', '10', '50', '100'] : ['100k', '500k', '1M']).map(v => (
-          <button
-            key={v}
-            onClick={() => setAmount(v.replace('k', '000').replace('M', '000000'))}
-            className="flex-1 py-1.5 text-[10px] font-mono text-white/35 hover:text-white/70 border border-white/10 hover:border-white/25 rounded-lg transition-colors"
-          >
-            {v}
-          </button>
-        ))}
-      </div>
-
-      {/* Quote preview */}
-      {quote && (
-        <div className="bg-white/[0.03] rounded-lg px-3 py-2.5 space-y-1.5 border border-white/5">
-          {side === 'buy' && quote.tokensOut != null && (
-            <div className="flex justify-between text-[11px] font-mono">
-              <span className="text-white/35">You receive</span>
-              <span className="text-lime-400">{fmt(quote.tokensOut, 0)} ${symbol}</span>
+          {/* Tx status */}
+          {txMsg && (
+            <div className={`text-[10px] font-mono text-center ${
+              txStatus === 'success' ? 'text-lime-400' : 'text-red-400'
+            }`}>
+              {txMsg}
             </div>
           )}
-          {side === 'sell' && quote.suiOut != null && (
-            <div className="flex justify-between text-[11px] font-mono">
-              <span className="text-white/35">You receive</span>
-              <span className="text-lime-400">
-                {suiUsd > 0 ? `$${(quote.suiOut * suiUsd).toFixed(2)}` : `${fmt(quote.suiOut)} SUI`}
-              </span>
-            </div>
-          )}
-          <div className="flex justify-between text-[10px] font-mono">
-            <span className="text-white/25">Price impact</span>
-            <span className="text-white/40">~1% fee</span>
-          </div>
-          {/* Min received line in quote box when slippage panel is closed */}
-          {!showSlippage && slippageNum > 0 && (
-            <div className="flex justify-between text-[10px] font-mono border-t border-white/5 pt-1.5">
-              <span className="text-white/25">Min received ({slippage}% slip)</span>
-              <span className="text-white/40">
-                {side === 'buy' && quote.tokensOut != null
-                  ? `${fmt(quote.tokensOut * (1 - slippageNum / 100), 0)} $${symbol}`
-                  : side === 'sell' && quote.suiOut != null
-                    ? `${fmt(quote.suiOut * (1 - slippageNum / 100))} SUI`
-                    : '—'}
-              </span>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Execute button */}
-      <button
-        onClick={onExecute}
-        disabled={!account || isPending || !amount || parseFloat(amount) <= 0}
-        className={`w-full py-3 rounded-xl text-sm font-mono font-bold transition-all ${
-          !account
-            ? 'bg-white/5 text-white/25 cursor-not-allowed'
-            : isPending
-              ? 'bg-white/10 text-white/50 cursor-wait'
-              : side === 'buy'
-                ? 'bg-lime-400 text-black hover:bg-lime-300'
-                : 'bg-red-500 text-white hover:bg-red-400'
-        }`}
-      >
-        {isPending ? 'CONFIRMING…' : side === 'buy' ? 'BUY' : 'SELL'}
-      </button>
-
-      {/* Tx status */}
-      {txMsg && (
-        <div className={`text-[10px] font-mono text-center ${
-          txStatus === 'success' ? 'text-lime-400' : 'text-red-400'
-        }`}>
-          {txMsg}
-        </div>
+        </>
       )}
 
       {/* Claim fees — creator only */}
       {isCreator && (
         <div className="pt-2 border-t border-white/5 space-y-2">
           <div className="flex justify-between text-[10px] font-mono text-white/35">
-            <span>CREATOR FEES</span>
+            <span>{t(lang, 'creatorFees')}</span>
             <span className="text-lime-400/70">
               {fmt(Number(creatorFeesMist) / 1e9)} SUI
             </span>
@@ -815,7 +790,7 @@ function TradePanelContent({
                 : 'bg-lime-400/10 border border-lime-400/30 text-lime-400 hover:bg-lime-400/20'
             }`}
           >
-            {claiming ? 'CLAIMING…' : 'CLAIM FEES'}
+            {claiming ? t(lang, 'claiming') : t(lang, 'claimFees')}
           </button>
           {claimMsg && (
             <div className={`text-[10px] font-mono text-center ${claimMsg.includes('🎉') ? 'text-lime-400' : 'text-red-400'}`}>
@@ -828,13 +803,13 @@ function TradePanelContent({
       {/* Price display */}
       <div className="grid grid-cols-2 gap-2 pt-1 border-t border-white/5">
         <div>
-          <div className="text-[10px] font-mono text-white/35 mb-0.5">PRICE</div>
+          <div className="text-[10px] font-mono text-white/35 mb-0.5">{t(lang, 'price')}</div>
           <div className="text-white/70 text-xs font-mono">
             {suiUsd > 0 ? `$${priceUsd.toFixed(6)}` : `${fmt(priceSui, 6)} SUI`}
           </div>
         </div>
         <div>
-          <div className="text-[10px] font-mono text-white/35 mb-0.5">IN SUI</div>
+          <div className="text-[10px] font-mono text-white/35 mb-0.5">{t(lang, 'inSui')}</div>
           <div className="text-white/50 text-xs font-mono">{fmt(priceSui, 6)} SUI</div>
         </div>
       </div>
@@ -844,7 +819,7 @@ function TradePanelContent({
 
 // ── Trades / Holders toggle block ─────────────────────────────────────────────
 
-function TradesHoldersBlock({ curveId, tokenType, suiUsd }) {
+function TradesHoldersBlock({ curveId, tokenType, suiUsd, lang }) {
   const [tab, setTab] = useState('trades');
 
   return (
@@ -858,7 +833,7 @@ function TradesHoldersBlock({ curveId, tokenType, suiUsd }) {
               : 'text-white/40 hover:text-white/70'
           }`}
         >
-          TRADES
+          {t(lang, 'tradesTab')}
         </button>
         <button
           onClick={() => setTab('holders')}
@@ -868,7 +843,7 @@ function TradesHoldersBlock({ curveId, tokenType, suiUsd }) {
               : 'text-white/40 hover:text-white/70'
           }`}
         >
-          HOLDERS
+          {t(lang, 'holders')}
         </button>
       </div>
       <div className="[&>div]:rounded-t-none [&>div]:border-t-0">
@@ -877,6 +852,17 @@ function TradesHoldersBlock({ curveId, tokenType, suiUsd }) {
           : <HolderList curveId={curveId} tokenType={tokenType} suiUsd={suiUsd} />
         }
       </div>
+    </div>
+  );
+}
+
+// ── Comments wrapper ──────────────────────────────────────────────────────────
+
+function CommentsBlock({ curveId, lang }) {
+  return (
+    <div>
+      <div className="text-[10px] font-mono text-white/35 tracking-widest mb-2">{t(lang, 'comments')}</div>
+      <Comments curveId={curveId} />
     </div>
   );
 }

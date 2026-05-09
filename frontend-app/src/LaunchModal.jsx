@@ -5,6 +5,7 @@ import { Transaction } from '@mysten/sui/transactions';
 import { X, Plus, Trash2, ExternalLink, Rocket, CheckCircle } from 'lucide-react';
 import wasmInit, * as bytecodeTemplate from '@mysten/move-bytecode-template';
 import { PACKAGE_ID, MIST_PER_SUI } from './constants.js';
+import { t } from './i18n.js';
 
 const LAUNCH_FEE_MIST = 2_000_000_000n;
 const TEMPLATE_URL = '/template.mv';
@@ -15,7 +16,6 @@ async function ensureWasm() {
   if (!wasmReady) { await wasmInit(); wasmReady = true; }
 }
 
-// ULEB128-encode a length prefix, supporting values > 127
 function uleb128(n) {
   const bytes = [];
   do {
@@ -27,8 +27,6 @@ function uleb128(n) {
   return bytes;
 }
 
-// BCS-encode a UTF-8 string: ULEB128(byteLength) ++ utf8bytes
-// Supports strings up to ~500 bytes safely
 function bcsBytes(str) {
   const buf = new TextEncoder().encode(str);
   const lenBytes = uleb128(buf.length);
@@ -54,10 +52,6 @@ function bcsVectorU64(nums) {
   return new Uint8Array(buf.buffer);
 }
 
-/**
- * Encode social links into the description string.
- * Format: "Human description||{json}"
- */
 function encodeDescription(desc, links) {
   const hasLinks = links.telegram || links.twitter || links.website;
   if (!hasLinks) return desc;
@@ -69,13 +63,12 @@ function encodeDescription(desc, links) {
 }
 
 const STEPS = [
-  { id: 'details', label: 'Details' },
-  { id: 'payouts', label: 'Payouts' },
-  { id: 'devbuy',  label: 'Dev Buy' },
-  { id: 'launch',  label: 'Launch' },
+  { id: 'details', labelKey: 'details' },
+  { id: 'payouts', labelKey: 'payouts' },
+  { id: 'devbuy',  labelKey: 'devBuy' },
+  { id: 'launch',  labelKey: 'review' },
 ];
 
-// Token card preview
 function TokenPreview({ name, symbol, iconUrl }) {
   return (
     <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
@@ -103,7 +96,7 @@ function TokenPreview({ name, symbol, iconUrl }) {
   );
 }
 
-export default function LaunchModal({ onClose, onLaunched }) {
+export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
   const account = useCurrentAccount();
   const client = useSuiClient();
   const { mutateAsync: signAndExecute } = useSignAndExecuteTransaction();
@@ -140,67 +133,96 @@ export default function LaunchModal({ onClose, onLaunched }) {
   const removePayout = (i) => { if (payouts.length > 1) setPayouts(payouts.filter((_, idx) => idx !== i)); };
   const updatePayout = (i, field, value) => {
     const next = [...payouts];
-    next[i] = { ...next[i], [field]: field === 'bps' ? parseInt(value) || 0 : value };
+    next[i] = { ...next[i], [field]: field === 'bps' ? (parseInt(value) || 0) : value };
     setPayouts(next);
   };
 
-  const launch = useCallback(async () => {
-    setError(null); setLaunching(true);
+  const handleImageUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setForm(f => ({ ...f, uploading: true, uploadError: null }));
     try {
-      const tokenSymbol = form.symbol.toUpperCase();
-      const moduleName = tokenSymbol.toLowerCase();
-      const tokenName = form.name.trim();
-      const rawDesc = form.description.trim() || `${tokenName} — launched on SuiPump`;
-      const tokenDesc = encodeDescription(rawDesc, {
-        telegram: form.telegram,
-        twitter: form.twitter,
-        website: form.website,
+      const fd = new FormData();
+      fd.append('image', file);
+      const res = await fetch('https://api.imgur.com/3/image', {
+        method: 'POST',
+        headers: { Authorization: 'Client-ID 546c25a59c58ad7' },
+        body: fd,
       });
-      const tokenIcon = form.iconUrl.trim() || 'https://suipump.test/icon-placeholder.png';
+      const json = await res.json();
+      if (!json.success) throw new Error(json.data?.error || 'Upload failed');
+      setForm(f => ({ ...f, iconUrl: json.data.link, uploading: false }));
+    } catch (err) {
+      setForm(f => ({ ...f, uploadError: err.message, uploading: false }));
+    }
+  };
 
-      setTxStep('tx1');
+  const handleLaunch = useCallback(async () => {
+    if (!account || launching) return;
+    setLaunching(true);
+    setError(null);
+    setTxStep('tx1');
+
+    try {
       await ensureWasm();
-      const templateRes = await fetch(TEMPLATE_URL);
-      if (!templateRes.ok) throw new Error('Could not load template bytecode');
-      const templateBuf = await templateRes.arrayBuffer();
-      let patched = bytecodeTemplate.update_identifiers(new Uint8Array(templateBuf), { 'TEMPLATE': tokenSymbol, 'template': moduleName });
-      patched = bytecodeTemplate.update_constants(patched, bcsBytes(tokenSymbol), bcsBytes('TMPL'), 'Vector(U8)');
-      patched = bytecodeTemplate.update_constants(patched, bcsBytes(tokenName), bcsBytes('Template Coin'), 'Vector(U8)');
-      patched = bytecodeTemplate.update_constants(patched, bcsBytes(tokenDesc), bcsBytes('Template description placeholder that is intentionally long to accommodate real token descriptions.'), 'Vector(U8)');
-      patched = bytecodeTemplate.update_constants(patched, bcsBytes(tokenIcon), bcsBytes('https://suipump.test/icon-placeholder.png'), 'Vector(U8)');
+
+      const templateBytes = await fetch(TEMPLATE_URL).then(r => r.arrayBuffer()).then(b => new Uint8Array(b));
+
+      const tokenName = form.name.trim();
+      const tokenSymbol = form.symbol.trim().toUpperCase();
+      const descWithLinks = encodeDescription(form.description.trim(), {
+        telegram: form.telegram, twitter: form.twitter, website: form.website,
+      });
+
+      const patched = bytecodeTemplate.update_identifiers(
+        bytecodeTemplate.update_constants(
+          templateBytes,
+          [bcsBytes(tokenName), bcsBytes(tokenSymbol), bcsBytes(descWithLinks)],
+          [bcsBytes('TEMPLATE_NAME'), bcsBytes('TMPL'), bcsBytes('template description')],
+          ['String', 'String', 'String'],
+        ),
+        { TEMPLATE: tokenSymbol, template: tokenSymbol.toLowerCase() },
+      );
 
       const tx1 = new Transaction();
-      const [upgradeCap] = tx1.publish({
-        modules: [Array.from(patched)],
-        dependencies: [
-          '0x0000000000000000000000000000000000000000000000000000000000000001',
-          '0x0000000000000000000000000000000000000000000000000000000000000002',
-        ],
-      });
+      const [upgradeCap] = tx1.publish({ modules: [[...patched]], dependencies: ['0x1', '0x2'] });
       tx1.transferObjects([upgradeCap], account.address);
+
       const res1raw = await signAndExecute({ transaction: tx1 });
-      const res1 = await client.waitForTransaction({ digest: res1raw.digest, options: { showEffects: true, showObjectChanges: true } });
-      if (res1.effects.status.status !== 'success') throw new Error('Tx1 failed: ' + res1.effects.status.error);
       setTx1Digest(res1raw.digest);
 
-      const published = res1.objectChanges.find(c => c.type === 'published');
-      const newPackageId = published.packageId;
-      const newTokenType = `${newPackageId}::${moduleName}::${tokenSymbol}`;
-      const treasuryCapObj = res1.objectChanges.find(c => c.type === 'created' && c.objectType?.includes('TreasuryCap'));
-      if (!treasuryCapObj) throw new Error('TreasuryCap not found in Tx1 effects');
-      const treasuryCapId = treasuryCapObj.objectId;
+      const res1 = await client.waitForTransaction({
+        digest: res1raw.digest,
+        options: { showEffects: true, showObjectChanges: true },
+      });
+      if (res1.effects.status.status !== 'success') throw new Error('Tx1 failed: ' + res1.effects.status.error);
 
-      await new Promise(r => setTimeout(r, 3000));
+      const createdObjs = res1.objectChanges?.filter(c => c.type === 'created') ?? [];
+      const treasuryCapObj = createdObjs.find(o => o.objectType?.includes('TreasuryCap'));
+      if (!treasuryCapObj) throw new Error('TreasuryCap not found in Tx1 output');
+
+      const treasuryCapId = treasuryCapObj.objectId;
+      const newTokenType = treasuryCapObj.objectType.match(/<(.+)>/)?.[1];
+      if (!newTokenType) throw new Error('Could not parse token type');
+
       setTxStep('tx2');
 
       const tx2 = new Transaction();
       const [launchFeeCoin] = tx2.splitCoins(tx2.gas, [tx2.pure.u64(LAUNCH_FEE_MIST)]);
+
       const payoutAddrs = payouts.map(p => p.address);
       const payoutBps = payouts.map(p => parseInt(p.bps));
       const [curve, cap] = tx2.moveCall({
         target: `${PACKAGE_ID}::bonding_curve::create_and_return`,
         typeArguments: [newTokenType],
-        arguments: [tx2.object(treasuryCapId), launchFeeCoin, tx2.pure.string(tokenName), tx2.pure.string(tokenSymbol), tx2.pure(bcsVectorAddress(payoutAddrs)), tx2.pure(bcsVectorU64(payoutBps))],
+        arguments: [
+          tx2.object(treasuryCapId),
+          launchFeeCoin,
+          tx2.pure.string(tokenName),
+          tx2.pure.string(tokenSymbol),
+          tx2.pure(bcsVectorAddress(payoutAddrs)),
+          tx2.pure(bcsVectorU64(payoutBps)),
+        ],
       });
 
       const devBuyAmount = parseFloat(devBuy);
@@ -219,7 +241,10 @@ export default function LaunchModal({ onClose, onLaunched }) {
       tx2.transferObjects([cap], account.address);
 
       const res2raw = await signAndExecute({ transaction: tx2 });
-      const res2 = await client.waitForTransaction({ digest: res2raw.digest, options: { showEffects: true, showObjectChanges: true, showEvents: true } });
+      const res2 = await client.waitForTransaction({
+        digest: res2raw.digest,
+        options: { showEffects: true, showObjectChanges: true, showEvents: true },
+      });
       if (res2.effects.status.status !== 'success') throw new Error('Tx2 failed: ' + res2.effects.status.error);
       setTx2Digest(res2raw.digest);
 
@@ -244,7 +269,7 @@ export default function LaunchModal({ onClose, onLaunched }) {
         <div className="flex items-center justify-between px-6 py-4 border-b border-white/5">
           <div>
             <div className="text-[9px] tracking-widest text-white/20">SUIPUMP</div>
-            <div className="text-lg font-bold text-white">LAUNCH A TOKEN</div>
+            <div className="text-lg font-bold text-white">{t(lang, 'launchTokenTitle')}</div>
           </div>
           <button onClick={onClose} className="text-white/30 hover:text-white transition-colors rounded-xl p-1.5 hover:bg-white/5">
             <X size={18} />
@@ -261,7 +286,7 @@ export default function LaunchModal({ onClose, onLaunched }) {
               <div className={`text-[9px] font-mono tracking-widest transition-colors ${
                 i === step ? 'text-lime-400' : i < step ? 'text-lime-400/50' : 'text-white/20'
               }`}>
-                {i < step ? '✓' : s.label.toUpperCase()}
+                {i < step ? '✓' : t(lang, s.labelKey).toUpperCase()}
               </div>
             </div>
           ))}
@@ -276,7 +301,7 @@ export default function LaunchModal({ onClose, onLaunched }) {
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-[9px] tracking-widest text-white/30 mb-1.5">TOKEN NAME *</label>
+                  <label className="block text-[9px] tracking-widest text-white/30 mb-1.5">{t(lang, 'tokenName')} *</label>
                   <input
                     value={form.name}
                     onChange={e => setForm({ ...form, name: e.target.value })}
@@ -285,7 +310,7 @@ export default function LaunchModal({ onClose, onLaunched }) {
                   />
                 </div>
                 <div>
-                  <label className="block text-[9px] tracking-widest text-white/30 mb-1.5">SYMBOL *</label>
+                  <label className="block text-[9px] tracking-widest text-white/30 mb-1.5">{t(lang, 'symbol')} *</label>
                   <input
                     value={form.symbol}
                     onChange={e => setForm({ ...form, symbol: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 5) })}
@@ -299,7 +324,7 @@ export default function LaunchModal({ onClose, onLaunched }) {
 
               <div>
                 <div className="flex items-center justify-between mb-1.5">
-                  <label className="block text-[9px] tracking-widest text-white/30">DESCRIPTION</label>
+                  <label className="block text-[9px] tracking-widest text-white/30">{t(lang, 'description')}</label>
                   <span className={`text-[9px] font-mono ${
                     form.description.length > MAX_DESCRIPTION_CHARS * 0.9
                       ? form.description.length >= MAX_DESCRIPTION_CHARS ? 'text-red-400' : 'text-lime-400'
@@ -311,90 +336,52 @@ export default function LaunchModal({ onClose, onLaunched }) {
                 <textarea
                   value={form.description}
                   onChange={e => setForm({ ...form, description: e.target.value.slice(0, MAX_DESCRIPTION_CHARS) })}
-                  placeholder="What is this token about?"
+                  placeholder={t(lang, 'descriptionPlaceholder')}
                   rows={3}
-                  className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-lime-400/50 resize-none transition-colors"
+                  className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-lime-400/50 transition-colors resize-none"
                 />
               </div>
 
+              {/* Icon URL */}
               <div>
-                <label className="block text-[9px] tracking-widest text-white/30 mb-1.5">TOKEN ICON</label>
-                <div className="flex gap-3 items-center">
-                  <label className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl border text-[10px] font-mono cursor-pointer transition-all ${
-                    form.uploading ? 'border-white/5 text-white/20 cursor-not-allowed' : 'border-white/10 text-white/40 hover:border-lime-400/40 hover:text-lime-400'
-                  }`}>
-                    <input
-                      type="file"
-                      accept="image/jpeg,image/png,image/gif,image/webp"
-                      className="hidden"
-                      disabled={form.uploading}
-                      onChange={async (e) => {
-                        const file = e.target.files?.[0];
-                        if (!file) return;
-                        if (file.size > 5 * 1024 * 1024) { alert('Image must be under 5MB'); return; }
-                        setForm(f => ({ ...f, uploading: true, uploadError: null }));
-                        try {
-                          const data = new FormData();
-                          data.append('image', file);
-                          const res = await fetch('https://api.imgur.com/3/image', {
-                            method: 'POST',
-                            headers: { Authorization: 'Client-ID 546c25a59c58ad7' },
-                            body: data,
-                          });
-                          const json = await res.json();
-                          if (json.success) {
-                            setForm(f => ({ ...f, iconUrl: json.data.link, uploading: false }));
-                          } else {
-                            throw new Error(json.data?.error || 'Upload failed');
-                          }
-                        } catch (err) {
-                          setForm(f => ({ ...f, uploading: false, uploadError: err.message }));
-                        }
-                      }}
-                    />
-                    {form.uploading ? 'UPLOADING…' : '📁 UPLOAD IMAGE'}
-                  </label>
+                <label className="block text-[9px] tracking-widest text-white/30 mb-1.5">{t(lang, 'iconUrl')}</label>
+                <div className="flex gap-2">
                   <input
                     value={form.iconUrl}
                     onChange={e => setForm({ ...form, iconUrl: e.target.value })}
-                    placeholder="or paste URL (.gif ok)"
-                    className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-white/60 text-xs focus:outline-none focus:border-lime-400/50 transition-colors"
+                    placeholder="https://i.imgur.com/..."
+                    className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-lime-400/50 transition-colors"
                   />
+                  <label className="shrink-0 px-3 py-2.5 bg-white/5 border border-white/10 rounded-xl text-[10px] font-mono text-white/50 hover:text-white hover:border-lime-400/30 transition-colors cursor-pointer">
+                    {form.uploading ? '…' : '↑'}
+                    <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
+                  </label>
                 </div>
                 {form.uploadError && <div className="text-[10px] text-red-400 mt-1">{form.uploadError}</div>}
               </div>
 
               {/* Social links */}
               <div>
-                <label className="block text-[9px] tracking-widest text-white/30 mb-1.5">SOCIAL LINKS <span className="text-white/15">(OPTIONAL)</span></label>
+                <label className="block text-[9px] tracking-widest text-white/30 mb-2">{t(lang, 'socialLinks')}</label>
                 <div className="space-y-2">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[10px] font-mono text-white/20 w-20 shrink-0">TELEGRAM</span>
-                    <input
-                      value={form.telegram}
-                      onChange={e => setForm({ ...form, telegram: e.target.value })}
-                      placeholder="https://t.me/yourgroup"
-                      className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white/60 text-xs focus:outline-none focus:border-lime-400/50 transition-colors"
-                    />
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-[10px] font-mono text-white/20 w-20 shrink-0">X / TWITTER</span>
-                    <input
-                      value={form.twitter}
-                      onChange={e => setForm({ ...form, twitter: e.target.value })}
-                      placeholder="https://x.com/yourtoken"
-                      className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white/60 text-xs focus:outline-none focus:border-lime-400/50 transition-colors"
-                    />
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-[10px] font-mono text-white/20 w-20 shrink-0">WEBSITE</span>
-                    <input
-                      value={form.website}
-                      onChange={e => setForm({ ...form, website: e.target.value })}
-                      placeholder="https://yourtoken.com"
-                      className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white/60 text-xs focus:outline-none focus:border-lime-400/50 transition-colors"
-                    />
-                  </div>
+                  <input
+                    value={form.telegram}
+                    onChange={e => setForm({ ...form, telegram: e.target.value })}
+                    placeholder={`${t(lang, 'telegram')} — @handle or https://t.me/...`}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 transition-colors"
+                  />
+                  <input
+                    value={form.twitter}
+                    onChange={e => setForm({ ...form, twitter: e.target.value })}
+                    placeholder={`${t(lang, 'twitter')} — @handle or https://x.com/...`}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 transition-colors"
+                  />
+                  <input
+                    value={form.website}
+                    onChange={e => setForm({ ...form, website: e.target.value })}
+                    placeholder={`${t(lang, 'website')} — https://...`}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 transition-colors"
+                  />
                 </div>
               </div>
             </div>
@@ -404,7 +391,7 @@ export default function LaunchModal({ onClose, onLaunched }) {
           {step === 1 && (
             <div className="space-y-3">
               <div className="text-[10px] text-white/30 leading-relaxed">
-                Set who receives creator fees. Percentages must sum to 100%. Up to 10 recipients.
+                Percentages must sum to 100%. Up to 10 recipients.
               </div>
               {payouts.map((p, i) => (
                 <div key={i} className="flex gap-2 items-center">
@@ -435,7 +422,7 @@ export default function LaunchModal({ onClose, onLaunched }) {
                 <button onClick={addPayout} disabled={payouts.length >= 10}
                   className="flex items-center gap-1 text-[10px] text-white/30 hover:text-lime-400 disabled:opacity-20 transition-colors"
                 >
-                  <Plus size={10} /> ADD RECIPIENT
+                  <Plus size={10} /> {t(lang, 'addPayout')}
                 </button>
                 <div className={`text-[10px] font-bold ${payoutSum === 10000 ? 'text-lime-400' : 'text-red-400'}`}>
                   {payoutSum / 100}% {payoutSum !== 10000 ? '≠ 100%' : '✓'}
@@ -448,13 +435,13 @@ export default function LaunchModal({ onClose, onLaunched }) {
           {step === 2 && (
             <div className="space-y-4">
               <div className="text-[10px] text-white/30 leading-relaxed">
-                Optional: buy tokens at launch in the same transaction. Leave blank to skip.
+                {t(lang, 'devBuyHint')}
               </div>
               <div className="rounded-2xl border border-white/10 bg-white/5 p-3 text-[10px] text-white/30 leading-relaxed">
-                ⚠ Large dev buys are permanently visible on-chain and may reduce community trust.
+                {t(lang, 'devBuyWarning')}
               </div>
               <div>
-                <label className="block text-[9px] tracking-widest text-white/30 mb-1.5">DEV BUY AMOUNT (SUI)</label>
+                <label className="block text-[9px] tracking-widest text-white/30 mb-1.5">{t(lang, 'devBuyAmount')}</label>
                 <input
                   value={devBuy}
                   onChange={e => setDevBuy(e.target.value)}
@@ -464,15 +451,15 @@ export default function LaunchModal({ onClose, onLaunched }) {
               </div>
               <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-2 text-xs font-mono">
                 <div className="flex justify-between text-white/30">
-                  <span>LAUNCH FEE</span><span className="text-white">2 SUI</span>
+                  <span>{t(lang, 'launchFee')}</span><span className="text-white">2 SUI</span>
                 </div>
                 {devBuy && parseFloat(devBuy) > 0 && (
                   <div className="flex justify-between text-white/30">
-                    <span>DEV BUY</span><span className="text-white">{devBuy} SUI</span>
+                    <span>{t(lang, 'devBuy').toUpperCase()}</span><span className="text-white">{devBuy} SUI</span>
                   </div>
                 )}
                 <div className="flex justify-between border-t border-white/5 pt-2 text-white/50">
-                  <span>TOTAL</span>
+                  <span>{t(lang, 'total')}</span>
                   <span className="text-lime-400 font-bold">
                     {(2 + (parseFloat(devBuy) || 0)).toFixed(4)} SUI
                   </span>
@@ -505,11 +492,11 @@ export default function LaunchModal({ onClose, onLaunched }) {
                       </div>
                     ))}
                     <div className="flex justify-between border-t border-white/5 pt-2.5">
-                      <span className="text-white/30">LAUNCH FEE</span>
+                      <span className="text-white/30">{t(lang, 'launchFee').toUpperCase()}</span>
                       <span className="text-lime-400 font-bold">2 SUI</span>
                     </div>
                   </div>
-                  <div className="text-[10px] text-white/20 text-center">Two wallet signatures required</div>
+                  <div className="text-[10px] text-white/20 text-center">{t(lang, 'twoSignaturesRequired')}</div>
                 </>
               )}
 
@@ -518,8 +505,8 @@ export default function LaunchModal({ onClose, onLaunched }) {
                   <div className="flex items-center gap-3">
                     <div className="w-8 h-8 rounded-full border-2 border-lime-400 border-t-transparent animate-spin" />
                     <div>
-                      <div className="text-sm text-white font-bold">Publishing coin module…</div>
-                      <div className="text-[10px] text-white/30">Approve in your wallet — Tx 1 of 2</div>
+                      <div className="text-sm text-white font-bold">{t(lang, 'publishing')}</div>
+                      <div className="text-[10px] text-white/30">{t(lang, 'approveInWallet')} — Tx 1 {t(lang, 'of')} 2</div>
                     </div>
                   </div>
                   <div className="flex gap-2">
@@ -531,21 +518,11 @@ export default function LaunchModal({ onClose, onLaunched }) {
 
               {txStep === 'tx2' && (
                 <div className="space-y-4 py-4">
-                  <div className="flex items-center gap-3 text-lime-400/60">
-                    <CheckCircle size={20} />
-                    <div className="text-sm text-white/50">Module published</div>
-                    {tx1Digest && (
-                      <a href={`https://testnet.suivision.xyz/txblock/${tx1Digest}`} target="_blank" rel="noreferrer"
-                        className="flex items-center gap-1 text-[10px] text-white/20 hover:text-lime-400 ml-auto transition-colors">
-                        Tx 1 <ExternalLink size={9} />
-                      </a>
-                    )}
-                  </div>
                   <div className="flex items-center gap-3">
                     <div className="w-8 h-8 rounded-full border-2 border-lime-400 border-t-transparent animate-spin" />
                     <div>
-                      <div className="text-sm text-white font-bold">Configuring curve…</div>
-                      <div className="text-[10px] text-white/30">Approve in your wallet — Tx 2 of 2</div>
+                      <div className="text-sm text-white font-bold">{t(lang, 'creating')}</div>
+                      <div className="text-[10px] text-white/30">{t(lang, 'approveInWallet')} — Tx 2 {t(lang, 'of')} 2</div>
                     </div>
                   </div>
                   <div className="flex gap-2">
@@ -557,83 +534,95 @@ export default function LaunchModal({ onClose, onLaunched }) {
 
               {txStep === 'done' && (
                 <div className="space-y-4 py-4 text-center">
-                  <div className="text-4xl">🎉</div>
-                  <div className="text-xl font-bold text-white">${form.symbol} IS LIVE</div>
-                  <div className="text-sm text-white/40">{form.name} launched on Sui testnet</div>
-                  <div className="flex gap-3 justify-center pt-2">
-                    {tx1Digest && (
-                      <a href={`https://testnet.suivision.xyz/txblock/${tx1Digest}`} target="_blank" rel="noreferrer"
-                        className="flex items-center gap-1 text-[10px] text-white/30 hover:text-lime-400 transition-colors">
-                        Publish tx <ExternalLink size={9} />
-                      </a>
-                    )}
-                    {tx2Digest && (
-                      <a href={`https://testnet.suivision.xyz/txblock/${tx2Digest}`} target="_blank" rel="noreferrer"
-                        className="flex items-center gap-1 text-[10px] text-white/30 hover:text-lime-400 transition-colors">
-                        Configure tx <ExternalLink size={9} />
-                      </a>
-                    )}
-                  </div>
+                  <CheckCircle size={40} className="text-lime-400 mx-auto" />
+                  <div className="text-lg font-bold text-white">{t(lang, 'success')}</div>
+                  {newCurveId && (
+                    <button
+                      onClick={() => { onClose(); window.location.href = `/token/${newCurveId}`; }}
+                      className="w-full py-3 bg-lime-400 text-black font-bold rounded-xl text-sm font-mono hover:bg-lime-300 transition-colors"
+                    >
+                      {t(lang, 'viewToken')}
+                    </button>
+                  )}
                 </div>
               )}
 
               {error && (
-                <div className="rounded-2xl border border-red-500/20 bg-red-950/10 p-4 text-xs text-red-400 break-all space-y-2">
-                  <div>{error}</div>
-                  {error.includes('TreasuryCap') && (
-                    <div className="text-[10px] text-red-600">
-                      Tip: The coin module published (Tx 1 succeeded). You can retry the configuration step.
-                    </div>
-                  )}
+                <div className="rounded-xl border border-red-500/20 bg-red-950/20 p-4 text-xs font-mono text-red-400">
+                  {error}
                 </div>
               )}
             </div>
           )}
         </div>
 
-        {/* Footer */}
-        <div className="flex gap-3 px-6 py-4 border-t border-white/5">
-          {txStep === 'done' ? (
-            <button onClick={onClose}
-              className="flex-1 py-3 bg-lime-400 text-black text-xs font-mono tracking-widest hover:bg-lime-300 rounded-xl font-bold transition-colors">
-              VIEW TOKEN →
-            </button>
-          ) : (
-            <>
+        {/* Footer nav */}
+        {!txStep && !error && (
+          <div className="px-6 pb-6 flex gap-3">
+            {step > 0 && step < 3 && (
               <button
-                onClick={() => step > 0 ? setStep(s => s - 1) : onClose()}
-                disabled={launching}
-                className="flex-1 py-3 rounded-xl border border-white/10 text-white/40 text-xs font-mono tracking-widest hover:border-white/20 hover:text-white/60 disabled:opacity-20 transition-all"
+                onClick={() => setStep(s => s - 1)}
+                className="flex-1 py-3 rounded-xl border border-white/10 text-sm font-mono text-white/50 hover:text-white hover:border-white/25 transition-colors"
               >
-                {step === 0 ? 'CANCEL' : 'BACK'}
+                {t(lang, 'back')}
               </button>
-              {step < 3 ? (
+            )}
+            {step === 3 && !txStep && (
+              <button
+                onClick={() => setStep(2)}
+                className="flex-1 py-3 rounded-xl border border-white/10 text-sm font-mono text-white/50 hover:text-white hover:border-white/25 transition-colors"
+              >
+                {t(lang, 'back')}
+              </button>
+            )}
+            {step < 3 ? (
+              <button
+                onClick={() => canNext && setStep(s => s + 1)}
+                disabled={!canNext}
+                className={`flex-1 py-3 rounded-xl text-sm font-mono font-bold transition-colors ${
+                  canNext
+                    ? 'bg-lime-400 text-black hover:bg-lime-300'
+                    : 'bg-white/5 text-white/20 cursor-not-allowed'
+                }`}
+              >
+                {t(lang, 'next')}
+              </button>
+            ) : (
+              !txStep && (
                 <button
-                  onClick={() => setStep(s => s + 1)}
-                  disabled={!canNext}
-                  className="flex-1 py-3 bg-lime-400 text-black text-xs font-mono tracking-widest hover:bg-lime-300 disabled:bg-white/5 disabled:text-white/20 disabled:cursor-not-allowed rounded-xl font-bold transition-all"
+                  onClick={handleLaunch}
+                  disabled={!account || launching}
+                  className={`flex-1 py-3 rounded-xl text-sm font-mono font-bold transition-colors flex items-center justify-center gap-2 ${
+                    !account || launching
+                      ? 'bg-white/5 text-white/20 cursor-not-allowed'
+                      : 'bg-lime-400 text-black hover:bg-lime-300'
+                  }`}
                 >
-                  NEXT →
+                  <Rocket size={14} />
+                  {t(lang, 'launchTokenTitle')}
                 </button>
-              ) : !txStep && !error ? (
-                <button
-                  onClick={launch}
-                  disabled={launching}
-                  className="flex-1 py-3 bg-lime-400 text-black text-xs font-mono tracking-widest hover:bg-lime-300 disabled:opacity-50 rounded-xl font-bold transition-all flex items-center justify-center gap-2"
-                >
-                  <Rocket size={13} /> LAUNCH TOKEN
-                </button>
-              ) : error ? (
-                <button
-                  onClick={() => { setError(null); setTxStep(null); }}
-                  className="flex-1 py-3 rounded-xl border border-white/10 text-white/40 text-xs font-mono tracking-widest hover:border-lime-400/40 hover:text-lime-400 transition-all"
-                >
-                  TRY AGAIN
-                </button>
-              ) : null}
-            </>
-          )}
-        </div>
+              )
+            )}
+          </div>
+        )}
+
+        {/* Error retry */}
+        {error && (
+          <div className="px-6 pb-6 flex gap-3">
+            <button
+              onClick={() => { setError(null); setStep(3); }}
+              className="flex-1 py-3 rounded-xl border border-white/10 text-sm font-mono text-white/50 hover:text-white transition-colors"
+            >
+              {t(lang, 'back')}
+            </button>
+            <button
+              onClick={handleLaunch}
+              className="flex-1 py-3 rounded-xl bg-lime-400 text-black font-bold text-sm font-mono hover:bg-lime-300 transition-colors"
+            >
+              Retry
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
