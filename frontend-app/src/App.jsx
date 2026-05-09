@@ -701,6 +701,109 @@ function StatsBar({ tokenCount, stats }) {
   );
 }
 
+// ── Community Crown featured banner ──────────────────────────────────────────
+
+function CrownBanner({ token, stats, suiUsd }) {
+  const client = useSuiClient();
+  const navigate = useNavigate();
+  const [curveState, setCurveState] = useState(null);
+  const [iconUrl, setIconUrl] = useState(null);
+
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    client.getObject({ id: token.curveId, options: { showContent: true } })
+      .then(o => { if (!cancelled) setCurveState(o.data?.content?.fields ?? null); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [token?.curveId, client]);
+
+  useEffect(() => {
+    if (!token?.tokenType) return;
+    let cancelled = false;
+    client.getCoinMetadata({ coinType: token.tokenType })
+      .then(m => { if (!cancelled && m?.iconUrl) setIconUrl(m.iconUrl); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [token?.tokenType, client]);
+
+  if (!token) return null;
+
+  const reserveMist = curveState ? BigInt(curveState.sui_reserve) : 0n;
+  const tokensRemaining = curveState ? BigInt(curveState.token_reserve) : 0n;
+  const tokensSold = BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS) - tokensRemaining;
+  const priceMist = curveState ? priceMistPerToken(reserveMist, tokensSold) : 0n;
+  const priceSui = Number(priceMist) / 1e9;
+  const mcapSui = priceSui * TOTAL_SUPPLY_WHOLE;
+  const progress = Math.min(100, (mistToSui(reserveMist) / DRAIN_SUI_APPROX) * 100);
+
+  return (
+    <button
+      onClick={() => token.tokenType && navigate(`/token/${token.curveId}`)}
+      className="w-full text-left rounded-2xl border border-lime-400/40 bg-gradient-to-r from-lime-950/30 via-black to-black p-4 mb-4 relative overflow-hidden hover:border-lime-400/60 transition-all group"
+    >
+      {/* Glow */}
+      <div className="absolute top-0 left-0 w-64 h-full bg-lime-400/5 blur-3xl pointer-events-none" />
+
+      <div className="relative flex items-center gap-4">
+        {/* Crown badge */}
+        <div className="flex items-center gap-1.5 shrink-0">
+          <Crown size={14} className="text-lime-400" />
+          <span className="text-[9px] font-mono font-bold text-lime-400 tracking-widest">COMMUNITY CROWN</span>
+        </div>
+
+        <div className="w-px h-6 bg-white/10 shrink-0" />
+
+        {/* Icon */}
+        <div className="w-10 h-10 rounded-full border-2 border-lime-400/40 overflow-hidden flex items-center justify-center bg-lime-950/30 shrink-0">
+          {iconUrl
+            ? <img src={iconUrl} alt={token.symbol} className="w-full h-full object-cover" onError={e => { e.target.style.display='none'; e.target.nextSibling.style.display='block'; }} />
+            : null}
+          <span className="text-lg" style={{ display: iconUrl ? 'none' : 'block' }}>🔥</span>
+        </div>
+
+        {/* Name + symbol */}
+        <div className="min-w-0">
+          <div className="text-sm font-bold text-white font-mono group-hover:text-lime-400 transition-colors">{token.name}</div>
+          <div className="text-[11px] text-lime-400/60 font-mono">${token.symbol}</div>
+        </div>
+
+        {/* Stats */}
+        <div className="hidden sm:flex items-center gap-6 ml-auto shrink-0">
+          {stats?.volume > 0 && (
+            <div className="text-right">
+              <div className="text-xs font-mono font-bold text-white">{fmt(stats.volume, 2)} SUI</div>
+              <div className="text-[9px] font-mono text-white/30">VOLUME</div>
+            </div>
+          )}
+          {mcapSui > 0 && (
+            <div className="text-right">
+              <div className="text-xs font-mono font-bold text-white">
+                {suiUsd > 0
+                  ? `$${mcapSui * suiUsd >= 1000 ? ((mcapSui * suiUsd) / 1000).toFixed(1) + 'k' : (mcapSui * suiUsd).toFixed(0)}`
+                  : `${fmt(mcapSui)} SUI`}
+              </div>
+              <div className="text-[9px] font-mono text-white/30">MCAP</div>
+            </div>
+          )}
+          <div className="text-right">
+            <div className="text-xs font-mono font-bold text-lime-400">{progress.toFixed(1)}%</div>
+            <div className="text-[9px] font-mono text-white/30">CURVE</div>
+          </div>
+        </div>
+
+        {/* Progress bar — full width at bottom on mobile */}
+        <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-white/5">
+          <div
+            className="h-full bg-gradient-to-r from-lime-500 to-lime-300 transition-all duration-500"
+            style={{ width: `${Math.max(progress, 1)}%` }}
+          />
+        </div>
+      </div>
+    </button>
+  );
+}
+
 // ── Sort options ──────────────────────────────────────────────────────────────
 
 const SORT_OPTIONS = [
@@ -828,6 +931,15 @@ function HomePage({ onLaunch }) {
           <div className="text-[10px] font-mono text-white/35">market cap = latest price × 1B supply</div>
         )}
       </div>
+
+      {/* Community Crown featured banner */}
+      {!search.trim() && crownCurveId && (
+        <CrownBanner
+          token={tokens.find(t => t.curveId === crownCurveId)}
+          stats={tokenStats[crownCurveId]}
+          suiUsd={suiUsd}
+        />
+      )}
 
       {error && (
         <div className="rounded-2xl border border-red-500/20 bg-red-950/20 p-4 text-xs font-mono text-red-400 mb-4">Failed to load tokens: {error}</div>

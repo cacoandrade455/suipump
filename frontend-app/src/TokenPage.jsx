@@ -90,6 +90,7 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
   // copy CA / share
   const [copied, setCopied] = useState(false);
   const [shared, setShared] = useState(false);
+  const [linkCopied, setLinkCopied] = useState(false);
 
   // ── data loading ─────────────────────────────────────────────────────────
 
@@ -173,22 +174,37 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
     });
   }, [curveId]);
 
-  const handleShare = useCallback(async () => {
+  const handleShare = useCallback(() => {
     const url = `${window.location.origin}/token/${curveId}`;
-    const text = `Check out $${symbol} on SuiPump 🚀\n${url}`;
-    if (navigator.share) {
-      try {
-        await navigator.share({ title: `$${symbol} on SuiPump`, text, url });
-        setShared(true);
-        setTimeout(() => setShared(false), 2000);
-      } catch {}
-    } else {
-      navigator.clipboard.writeText(url).then(() => {
-        setShared(true);
-        setTimeout(() => setShared(false), 2000);
-      });
-    }
-  }, [curveId, symbol]);
+    const priceStr = priceSui > 0
+      ? suiUsd > 0
+        ? `$${(priceSui * suiUsd).toFixed(6)}`
+        : `${priceSui.toFixed(8)} SUI`
+      : null;
+    const progressStr = progress > 0 ? `${progress.toFixed(1)}%` : null;
+
+    const lines = [
+      `🔥 $${symbol} is live on SuiPump!`,
+      [priceStr && `Price: ${priceStr}`, progressStr && `Curve: ${progressStr}`]
+        .filter(Boolean).join(' · '),
+      ``,
+      `Trade now 👇`,
+      url,
+    ].filter(l => l !== undefined);
+
+    const tweetText = encodeURIComponent(lines.join('\n'));
+    window.open(`https://twitter.com/intent/tweet?text=${tweetText}`, '_blank', 'noopener');
+    setShared(true);
+    setTimeout(() => setShared(false), 2000);
+  }, [curveId, symbol, priceSui, suiUsd, progress]);
+
+  const handleCopyLink = useCallback(() => {
+    const url = `${window.location.origin}/token/${curveId}`;
+    navigator.clipboard.writeText(url).then(() => {
+      setLinkCopied(true);
+      setTimeout(() => setLinkCopied(false), 2000);
+    });
+  }, [curveId]);
 
   const quoteTrade = useCallback(() => {
     const a = parseFloat(amount);
@@ -357,8 +373,16 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
                     onClick={handleShare}
                     className="text-white/35 hover:text-lime-400 transition-colors flex items-center gap-1 text-[10px] font-mono"
                   >
-                    <Share2 size={10} />
+                    {/* X logo */}
+                    <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
                     {shared ? 'SHARED!' : 'SHARE'}
+                  </button>
+                  <button
+                    onClick={handleCopyLink}
+                    className="text-white/35 hover:text-lime-400 transition-colors flex items-center gap-1 text-[10px] font-mono"
+                  >
+                    {linkCopied ? <Check size={10} /> : <Share2 size={10} />}
+                    {linkCopied ? 'COPIED!' : 'COPY LINK'}
                   </button>
                 </div>
 
