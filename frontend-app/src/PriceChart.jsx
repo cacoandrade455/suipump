@@ -322,18 +322,29 @@ export default function PriceChart({ curveId, refreshKey }) {
     return ((clientX - rect.left) / rect.width) * W;
   }, []);
 
-  // Find nearest data point to a timestamp
-  const nearestPoint = useCallback(time => {
+  // Given a timestamp, return the candle/price that applies at that moment.
+  // This is the TradingView approach: every pixel has a price — the last known price
+  // at or before that time. Crosshair never returns null in a valid chart area.
+  const dataAtTime = useCallback(time => {
     if (useCandles) {
-      const real = candleData.filter(d => !d.empty);
-      if (!real.length) return null;
-      return real.reduce((best, d) => Math.abs(d.time - time) < Math.abs(best.time - time) ? d : best);
+      // Find the candle bucket that contains this time
+      const bucket = candleData.find(d => {
+        const { ms: bucketMs } = INTERVALS[intervalIdx];
+        const effectiveMs = bucketMs || 3_600_000;
+        return time >= d.time && time < d.time + effectiveMs;
+      });
+      if (bucket) return { candle: bucket, price: bucket.c * 1 };
+      // Past the last candle — use last candle's close
+      const last = candleData[candleData.length - 1];
+      return last ? { candle: last, price: last.c } : null;
     } else {
-      const real = lineData.filter(d => !d.synthetic);
-      if (!real.length) return null;
-      return real.reduce((best, d) => Math.abs(d.time - time) < Math.abs(best.time - time) ? d : best);
+      // Line chart: find last trade at or before this time
+      const before = lineData.filter(d => d.time <= time);
+      if (before.length) return { point: before[before.length - 1], price: before[before.length - 1].value };
+      if (lineData.length) return { point: lineData[0], price: lineData[0].value };
+      return null;
     }
-  }, [useCandles, candleData, lineData]);
+  }, [useCandles, candleData, lineData, intervalIdx]);
 
   const handleMouseMove = useCallback(e => {
     const svgX = getSvgX(e.clientX);
@@ -341,17 +352,20 @@ export default function PriceChart({ curveId, refreshKey }) {
     if (panRef.current.active) return;
 
     const time = toTime(svgX);
-    const pt   = nearestPoint(time);
-    const val  = useCandles ? pt?.c : pt?.value;
+    const data = dataAtTime(time);
+    if (!data) { setCrosshair(null); return; }
 
-    setCrosshair(pt ? {
-      x: toX(pt.time),
+    const val    = data.price;
+    const snapX  = data.candle ? toX(data.candle.time) : (data.point ? toX(data.point.time) : svgX);
+
+    setCrosshair({
+      x: snapX,          // dot snaps to nearest candle center
+      mouseX: svgX,      // vertical line follows mouse exactly (like TradingView)
       y: toY(val),
-      mouseX: svgX, // vertical line follows mouse exactly
-      time: pt.time,
+      time: time,        // show exact hovered time
       price: val,
-      candle: useCandles ? pt : null,
-    } : null);
+      candle: data.candle ?? null,
+    });
   }, [getSvgX, toTime, toX, toY, nearestPoint, useCandles]);
 
   // ── Zoom (mouse wheel) ────────────────────────────────────────────────────────
@@ -484,20 +498,28 @@ export default function PriceChart({ curveId, refreshKey }) {
             <span className="text-lg font-bold font-mono" style={{ color: accentColor }}>{fmtPrice(displayPrice)} SUI</span>
           )}
           {crosshair && (
-            <span className="text-[10px] font-mono text-lime-800 ml-auto">
-              {new Date(crosshair.time).toLocaleString()}
+            <span className="text-[10px] font-mono text-lime-700 ml-auto">
+              {new Date(crosshair.time).toLocaleString([], {
+                month: 'short', day: 'numeric',
+                hour: '2-digit', minute: '2-digit', second: '2-digit'
+              })}
             </span>
           )}
         </div>
       )}
 
       {/* OHLC on candle hover */}
-      {crosshair?.candle && (
+      {crosshair?.candle && !crosshair.candle.empty && (
         <div className="flex gap-3 mb-1.5 text-[9px] font-mono">
           <span className="text-white/40">O <span className="text-white/60">{fmtPrice(crosshair.candle.o)}</span></span>
           <span className="text-white/40">H <span className="text-lime-500">{fmtPrice(crosshair.candle.h)}</span></span>
           <span className="text-white/40">L <span className="text-red-500">{fmtPrice(crosshair.candle.l)}</span></span>
           <span className="text-white/40">C <span className="text-white/60">{fmtPrice(crosshair.candle.c)}</span></span>
+        </div>
+      )}
+      {crosshair?.candle?.empty && (
+        <div className="flex gap-3 mb-1.5 text-[9px] font-mono text-white/25">
+          No trades in this period — price held at {fmtPrice(crosshair.candle.c)}
         </div>
       )}
 
@@ -572,18 +594,22 @@ export default function PriceChart({ curveId, refreshKey }) {
             <g clipPath="url(#chartClip)">
               {candleData.map((d, i) => {
                 if (d.empty) {
-                  // Doji — price held, no trades. Render as visible flat candle:
-                  // a vertical wick of zero height + a horizontal body tick.
+                  // Flat doji — price held here, no trades in this period.
+                  // Renders as a proper candle body (1px tall rect) — same width
+                  // as real candles so the chart feels continuous.
                   const cx = toX(d.time);
                   const py = toY(d.c);
                   return (
-                    <g key={i} opacity="0.45">
-                      {/* Thin vertical center line (zero-height wick) */}
-                      <line x1={cx} x2={cx} y1={py - 3} y2={py + 3}
-                        stroke="#4a7a2a" strokeWidth="0.75" />
-                      {/* Horizontal body tick — same width as real candles */}
-                      <line x1={cx - candlePixelW/2} x2={cx + candlePixelW/2}
-                        y1={py} y2={py} stroke="#4a7a2a" strokeWidth="1.5" />
+                    <g key={i} opacity="0.3">
+                      {/* Flat candle body — 1px tall, full candle width */}
+                      <rect
+                        x={cx - candlePixelW / 2}
+                        y={py - 0.5}
+                        width={candlePixelW}
+                        height={1}
+                        fill="#84CC16"
+                        rx="0"
+                      />
                     </g>
                   );
                 }
