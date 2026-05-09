@@ -558,6 +558,23 @@ function WalletButton({ size = 'md' }) {
   );
 }
 
+// ── Hero connect button ───────────────────────────────────────────────────────
+
+function ConnectWalletHero() {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button
+        onClick={() => setOpen(true)}
+        className="inline-flex items-center gap-2 px-6 py-3 rounded-2xl border border-white/10 text-sm font-mono text-white/50 hover:border-lime-400/40 hover:text-white/80 transition-all"
+      >
+        CONNECT WALLET TO LAUNCH
+      </button>
+      <ConnectModal trigger={<span />} open={open} onOpenChange={setOpen} />
+    </>
+  );
+}
+
 // ── Header ────────────────────────────────────────────────────────────────────
 
 function Header({ onLaunch }) {
@@ -774,7 +791,7 @@ function HomePage({ onLaunch }) {
               <Rocket size={14} /> LAUNCH A TOKEN
             </button>
           ) : (
-            <div className="inline-flex items-center gap-2 px-6 py-3 rounded-2xl border border-white/10 text-sm font-mono text-white/40">CONNECT WALLET TO LAUNCH</div>
+            <ConnectWalletHero />
           )}
         </div>
       </div>
