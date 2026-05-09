@@ -3,7 +3,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useCurrentAccount, useSuiClient, useSignAndExecuteTransaction } from '@mysten/dapp-kit';
 import { Transaction } from '@mysten/sui/transactions';
-import { ArrowLeft, Copy, Check, Share2, ExternalLink, TrendingUp, TrendingDown } from 'lucide-react';
+import { ArrowLeft, Copy, Check, Share2, ExternalLink, TrendingUp, TrendingDown, Settings } from 'lucide-react';
 
 import PriceChart from './PriceChart.jsx';
 import TradeHistory from './TradeHistory.jsx';
@@ -15,7 +15,7 @@ import { paginateEvents } from './paginateEvents.js';
 
 const TOTAL_SUPPLY_WHOLE = 1_000_000_000;
 
-// ── helpers ─────────────────────────────────────────────────────────────────
+// ── helpers ──────────────────────────────────────────────────────────────────
 
 function fmt(n, d = 2) {
   if (n == null) return '—';
@@ -60,6 +60,9 @@ function parseDescription(raw) {
   };
 }
 
+// Slippage presets
+const SLIPPAGE_PRESETS = ['0.5', '1', '2', '5'];
+
 // ── main component ───────────────────────────────────────────────────────────
 
 export default function TokenPage({ curveId, tokenType, onBack }) {
@@ -74,21 +77,21 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
   const [iconUrl, setIconUrl] = useState(null);
 
   // balances
-  const [suiBalance, setSuiBalance] = useState(0); // SUI whole units
-  const [tokenBalance, setTokenBalance] = useState(0); // token whole units
+  const [suiBalance, setSuiBalance] = useState(0);
+  const [tokenBalance, setTokenBalance] = useState(0);
 
   // trade panel
   const [side, setSide] = useState('buy');
   const [amount, setAmount] = useState('');
-  const [txStatus, setTxStatus] = useState(null); // null | 'pending' | 'success' | 'error'
+  const [slippage, setSlippage] = useState('1');       // % string, e.g. '1' = 1%
+  const [txStatus, setTxStatus] = useState(null);      // null | 'pending' | 'success' | 'error'
   const [txMsg, setTxMsg] = useState('');
 
   // copy CA / share
   const [copied, setCopied] = useState(false);
   const [shared, setShared] = useState(false);
 
-
-  // ── data loading ────────────────────────────────────────────────────────
+  // ── data loading ─────────────────────────────────────────────────────────
 
   useEffect(() => {
     fetchSuiUsd().then(setSuiUsd);
@@ -110,24 +113,16 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
     return () => { cancelled = true; clearInterval(t); };
   }, [curveId, client]);
 
-  // Fetch wallet balances
   useEffect(() => {
     if (!account || !client) return;
     let cancelled = false;
     async function loadBalances() {
       try {
-        // SUI balance
         const suiBal = await client.getBalance({ owner: account.address, coinType: '0x2::sui::SUI' });
-        if (!cancelled) {
-          const whole = Number(BigInt(suiBal.totalBalance)) / 1e9;
-          setSuiBalance(whole);
-        }
-        // Token balance
+        if (!cancelled) setSuiBalance(Number(BigInt(suiBal.totalBalance)) / 1e9);
         if (tokenType) {
           const tokBal = await client.getBalance({ owner: account.address, coinType: tokenType });
-          if (!cancelled) {
-            setTokenBalance(Number(BigInt(tokBal.totalBalance)) / (10 ** TOKEN_DECIMALS));
-          }
+          if (!cancelled) setTokenBalance(Number(BigInt(tokBal.totalBalance)) / (10 ** TOKEN_DECIMALS));
         }
       } catch {}
     }
@@ -150,27 +145,26 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
     return () => { cancelled = true; };
   }, [tokenType, client]);
 
-  // ── derived state ────────────────────────────────────────────────────────
+  // ── derived state ─────────────────────────────────────────────────────────
 
   const reserveMist = curveState ? BigInt(curveState.sui_reserve ?? 0) : 0n;
   const tokenReserve = curveState ? BigInt(curveState.token_reserve ?? 0) : 0n;
-  const tokensSold = BigInt(800_000_000) * BigInt(10 ** TOKEN_DECIMALS) - tokenReserve;
-  const graduated = curveState?.graduated ?? false;
-  const creatorAddr = curveState?.creator ?? null;
-  const creatorFeesMist = curveState ? BigInt(curveState.creator_fees ?? 0) : 0n;
-  const isCreator = account && creatorAddr && account.address === creatorAddr;
-  const progress = Math.min(100, (mistToSui(reserveMist) / DRAIN_SUI_APPROX) * 100);
+  const tokensSold = BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS) - tokenReserve;
   const priceMist = priceMistPerToken(reserveMist, tokensSold);
   const priceSui = Number(priceMist) / 1e9;
   const priceUsd = priceSui * suiUsd;
   const marketCapSui = priceSui * TOTAL_SUPPLY_WHOLE;
-  const marketCapUsd = marketCapSui * suiUsd;
+  const progress = Math.min(100, (mistToSui(reserveMist) / DRAIN_SUI_APPROX) * 100);
+  const graduated = curveState?.graduated ?? false;
+  const isCreator = account && curveState && curveState.creator === account.address;
+  const creatorFeesMist = curveState ? BigInt(curveState.creator_fees ?? 0) : 0n;
 
-  const { desc, twitter, telegram, website } = parseDescription(curveState?.description);
-  const name = metadata?.name || curveState?.name || '…';
-  const symbol = metadata?.symbol || curveState?.symbol || '…';
+  const rawDesc = curveState?.description ?? metadata?.description ?? '';
+  const { desc, twitter, telegram, website } = parseDescription(rawDesc);
+  const name = metadata?.name ?? curveState?.name ?? '';
+  const symbol = metadata?.symbol ?? curveState?.symbol ?? '';
 
-  // ── handlers ────────────────────────────────────────────────────────────
+  // ── actions ───────────────────────────────────────────────────────────────
 
   const handleCopy = useCallback(() => {
     navigator.clipboard.writeText(curveId).then(() => {
@@ -181,7 +175,7 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
 
   const handleShare = useCallback(async () => {
     const url = `${window.location.origin}/token/${curveId}`;
-    const text = `Check out $${symbol} on SuiPump! 🚀\n${url}`;
+    const text = `Check out $${symbol} on SuiPump 🚀\n${url}`;
     if (navigator.share) {
       try {
         await navigator.share({ title: `$${symbol} on SuiPump`, text, url });
@@ -222,25 +216,49 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
 
     try {
       const tx = new Transaction();
-      // Fetch initialSharedVersion — required for sharedObjectRef with dapp-kit
       const objForRef = await client.getObject({ id: curveId, options: { showOwner: true } });
       const initialSharedVersion = objForRef.data?.owner?.Shared?.initial_shared_version;
       const curveRef = initialSharedVersion
         ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion, mutable: true })
-        : tx.object(curveId); // fallback
+        : tx.object(curveId);
+
+      // Compute slippage tolerance
+      const slippagePct = Math.max(0, parseFloat(slippage) || 0);
+      const slippageFactor = 1 - slippagePct / 100;
 
       if (side === 'buy') {
         const suiMist = Math.floor(a * 1e9);
+
+        // Compute min_tokens_out from quote with slippage applied
+        let minTokensOut = 0n;
+        if (slippagePct > 0 && curveState) {
+          try {
+            const q = quoteBuy(BigInt(suiMist), reserveMist, tokensSold);
+            // Apply slippage: accept at least (quoted * slippageFactor) tokens
+            minTokensOut = BigInt(Math.floor(Number(q.tokensOut) * slippageFactor));
+          } catch {}
+        }
+
         const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(suiMist)]);
         const [tokens, refund] = tx.moveCall({
           target: `${PACKAGE_ID}::bonding_curve::buy`,
           typeArguments: [tokenType],
-          arguments: [curveRef, coin, tx.pure.u64(0n)],
+          arguments: [curveRef, coin, tx.pure.u64(minTokensOut)],
         });
         tx.transferObjects([tokens, refund], account.address);
       } else {
         const tokensIn = Math.floor(a * (10 ** TOKEN_DECIMALS));
-        // Fetch token coins, merge if needed, split exact amount
+
+        // Compute min_sui_out from quote with slippage applied
+        let minSuiOut = 0n;
+        if (slippagePct > 0 && curveState) {
+          try {
+            const q = quoteSell(BigInt(tokensIn), reserveMist, tokensSold);
+            // Apply slippage: accept at least (quoted * slippageFactor) SUI
+            minSuiOut = BigInt(Math.floor(Number(q.suiOut) * slippageFactor));
+          } catch {}
+        }
+
         const coins = await client.getCoins({ owner: account.address, coinType: tokenType });
         if (!coins.data.length) throw new Error('No tokens to sell');
         const primary = tx.object(coins.data[0].coinObjectId);
@@ -251,7 +269,7 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
         const suiOut = tx.moveCall({
           target: `${PACKAGE_ID}::bonding_curve::sell`,
           typeArguments: [tokenType],
-          arguments: [curveRef, toSell, tx.pure.u64(0)],
+          arguments: [curveRef, toSell, tx.pure.u64(minSuiOut)],
         });
         tx.transferObjects([suiOut], account.address);
       }
@@ -277,11 +295,11 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
       setTxMsg(err.message || 'Transaction failed');
       setTimeout(() => { setTxStatus(null); setTxMsg(''); }, 4000);
     }
-  }, [account, curveState, curveId, tokenType, side, amount, client, signAndExecute]);
+  }, [account, curveState, curveId, tokenType, side, amount, slippage, client, signAndExecute, reserveMist, tokensSold]);
 
   const quote = quoteTrade();
 
-  // ── render ───────────────────────────────────────────────────────────────
+  // ── render ────────────────────────────────────────────────────────────────
 
   return (
     <div className="min-h-screen" style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}>
@@ -326,43 +344,26 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
                 {/* Contract address row */}
                 <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
                   <span className="text-white/35 text-[10px] font-mono truncate max-w-[180px]">
-                    {curveId ? `${curveId.slice(0, 8)}…${curveId.slice(-6)}` : '—'}
+                    {curveId ? `${curveId.slice(0, 6)}...${curveId.slice(-4)}` : ''}
                   </span>
-                  {/* Copy CA */}
                   <button
                     onClick={handleCopy}
-                    title="Copy contract address"
-                    className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono border transition-all ${
-                      copied
-                        ? 'border-lime-400/50 text-lime-400 bg-lime-400/10'
-                        : 'border-white/15 text-white/50 hover:text-white/80 hover:border-white/30'
-                    }`}
+                    className="text-white/35 hover:text-lime-400 transition-colors flex items-center gap-1 text-[10px] font-mono"
                   >
                     {copied ? <Check size={10} /> : <Copy size={10} />}
                     {copied ? 'COPIED' : 'COPY CA'}
                   </button>
-                  {/* Share */}
                   <button
                     onClick={handleShare}
-                    title="Share token"
-                    className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono border transition-all ${
-                      shared
-                        ? 'border-lime-400/50 text-lime-400 bg-lime-400/10'
-                        : 'border-white/15 text-white/50 hover:text-white/80 hover:border-white/30'
-                    }`}
+                    className="text-white/35 hover:text-lime-400 transition-colors flex items-center gap-1 text-[10px] font-mono"
                   >
-                    {shared ? <Check size={10} /> : <Share2 size={10} />}
-                    {shared ? 'LINK COPIED' : 'SHARE'}
+                    <Share2 size={10} />
+                    {shared ? 'SHARED!' : 'SHARE'}
                   </button>
                 </div>
 
-                {/* Description */}
-                {desc && (
-                  <p className="text-white/50 text-xs mt-2 leading-relaxed">{desc}</p>
-                )}
-
                 {/* Social links */}
-                <div className="flex items-center gap-3 mt-2">
+                <div className="flex items-center gap-3 mt-1.5 flex-wrap">
                   {twitter && (
                     <a href={twitter.startsWith('http') ? twitter : `https://x.com/${twitter.replace('@', '')}`}
                       target="_blank" rel="noopener noreferrer"
@@ -386,7 +387,7 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
                 </div>
               </div>
 
-              {/* Stats */}
+              {/* Stats — desktop only */}
               <div className="hidden sm:flex flex-col items-end gap-1 flex-shrink-0">
                 <div className="text-right">
                   <div className="text-white text-sm font-mono font-bold">
@@ -402,6 +403,11 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
                 </div>
               </div>
             </div>
+
+            {/* Description */}
+            {desc && (
+              <p className="mt-3 text-xs font-mono text-white/40 leading-relaxed">{desc}</p>
+            )}
 
             {/* Progress bar */}
             <div className="mt-4">
@@ -439,6 +445,8 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
             setSide={setSide}
             amount={amount}
             setAmount={setAmount}
+            slippage={slippage}
+            setSlippage={setSlippage}
             quote={quote}
             txStatus={txStatus}
             txMsg={txMsg}
@@ -478,10 +486,12 @@ export default function TokenPage({ curveId, tokenType, onBack }) {
   );
 }
 
-// ── Trade Panel ──────────────────────────────────────────────────────────────
+// ── Trade Panel ───────────────────────────────────────────────────────────────
 
 function TradePanelContent({
-  side, setSide, amount, setAmount, quote, txStatus, txMsg,
+  side, setSide, amount, setAmount,
+  slippage, setSlippage,
+  quote, txStatus, txMsg,
   account, onExecute, priceSui, priceUsd, suiUsd, symbol, graduated,
   suiBalance, tokenBalance,
   isCreator, creatorFeesMist, curveId: panelCurveId, tokenType: panelTokenType,
@@ -490,20 +500,36 @@ function TradePanelContent({
   const client2 = useSuiClient();
   const [claiming, setClaiming] = useState(false);
   const [claimMsg, setClaimMsg] = useState('');
+  const [showSlippage, setShowSlippage] = useState(false);
+  const [customSlippage, setCustomSlippage] = useState('');
   const isPending = txStatus === 'pending';
+
+  const slippageNum = parseFloat(slippage) || 0;
+  const isCustom = !SLIPPAGE_PRESETS.includes(slippage);
+
+  const handleSlippagePreset = (v) => {
+    setSlippage(v);
+    setCustomSlippage('');
+  };
+
+  const handleCustomSlippage = (v) => {
+    // Allow only numbers and one decimal point, max 50%
+    const clean = v.replace(/[^0-9.]/g, '');
+    setCustomSlippage(clean);
+    const n = parseFloat(clean);
+    if (!isNaN(n) && n >= 0 && n <= 50) setSlippage(clean);
+  };
 
   const handleClaim = async () => {
     if (!account || !panelCurveId || !panelTokenType || claiming) return;
     setClaiming(true);
     setClaimMsg('');
     try {
-      // Find CreatorCap in wallet — required by v4 contract
       const ownedObjs = await client2.getOwnedObjects({
         owner: account.address,
         filter: { StructType: `${PACKAGE_ID}::bonding_curve::CreatorCap` },
         options: { showContent: true },
       });
-      // Find the cap whose curve_id matches this curve
       const capObj = ownedObjs.data?.find(o => {
         const fields = o.data?.content?.fields;
         return fields?.curve_id === panelCurveId;
@@ -517,7 +543,6 @@ function TradePanelContent({
       const curveRef = initialSharedVersion
         ? tx.sharedObjectRef({ objectId: panelCurveId, initialSharedVersion, mutable: true })
         : tx.object(panelCurveId);
-      // claim_creator_fees<T>(cap: &CreatorCap, curve: &mut Curve<T>, ctx) — void, transfers internally
       tx.moveCall({
         target: `${PACKAGE_ID}::bonding_curve::claim_creator_fees`,
         typeArguments: [panelTokenType],
@@ -538,7 +563,82 @@ function TradePanelContent({
 
   return (
     <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 space-y-4">
-      <div className="text-[10px] font-mono text-white/35 tracking-widest">TRADE</div>
+      {/* Header row with slippage toggle */}
+      <div className="flex items-center justify-between">
+        <div className="text-[10px] font-mono text-white/35 tracking-widest">TRADE</div>
+        <button
+          onClick={() => setShowSlippage(s => !s)}
+          className={`flex items-center gap-1.5 px-2 py-1 rounded-lg text-[10px] font-mono transition-colors ${
+            showSlippage
+              ? 'bg-lime-400/10 border border-lime-400/30 text-lime-400'
+              : 'text-white/35 hover:text-white/60'
+          }`}
+        >
+          <Settings size={10} />
+          {slippageNum === 0 ? 'NO SLIPPAGE' : `${slippage}% SLIP`}
+        </button>
+      </div>
+
+      {/* Slippage panel — collapsed by default */}
+      {showSlippage && (
+        <div className="bg-white/[0.02] border border-white/10 rounded-lg p-3 space-y-2">
+          <div className="text-[9px] font-mono text-white/35 tracking-widest">SLIPPAGE TOLERANCE</div>
+          <div className="flex gap-1.5">
+            {SLIPPAGE_PRESETS.map(v => (
+              <button
+                key={v}
+                onClick={() => handleSlippagePreset(v)}
+                className={`flex-1 py-1.5 text-[10px] font-mono rounded-lg border transition-colors ${
+                  slippage === v && !isCustom
+                    ? 'bg-lime-400 text-black border-lime-400 font-bold'
+                    : 'text-white/40 border-white/10 hover:border-white/25 hover:text-white/70'
+                }`}
+              >
+                {v}%
+              </button>
+            ))}
+            {/* Custom input */}
+            <div className={`flex-1 relative flex items-center rounded-lg border transition-colors ${
+              isCustom && slippage !== ''
+                ? 'border-lime-400/50 bg-lime-400/5'
+                : 'border-white/10'
+            }`}>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={customSlippage}
+                onChange={e => handleCustomSlippage(e.target.value)}
+                placeholder="?"
+                className="w-full bg-transparent text-center text-[10px] font-mono text-white placeholder-white/20 focus:outline-none py-1.5 px-1"
+              />
+              {customSlippage && (
+                <span className="absolute right-1 text-[9px] font-mono text-white/35">%</span>
+              )}
+            </div>
+          </div>
+
+          {/* Warnings */}
+          {slippageNum === 0 && (
+            <div className="text-[10px] font-mono text-red-400/80 bg-red-400/5 border border-red-400/20 rounded-lg px-2.5 py-1.5">
+              ⚠ 0% slippage — trade will fail if price moves at all
+            </div>
+          )}
+          {slippageNum > 5 && (
+            <div className="text-[10px] font-mono text-lime-400/70 bg-lime-400/5 border border-lime-400/20 rounded-lg px-2.5 py-1.5">
+              ⚠ High slippage — you may receive significantly less
+            </div>
+          )}
+          {slippageNum > 0 && slippageNum <= 5 && quote && (
+            <div className="text-[10px] font-mono text-white/30">
+              {side === 'buy' && quote.tokensOut != null
+                ? `Min received: ${fmt(quote.tokensOut * (1 - slippageNum / 100), 0)} $${symbol}`
+                : side === 'sell' && quote.suiOut != null
+                  ? `Min received: ${fmt(quote.suiOut * (1 - slippageNum / 100))} SUI`
+                  : null}
+            </div>
+          )}
+        </div>
+      )}
 
       {graduated && (
         <div className="text-[10px] font-mono text-lime-400/70 bg-lime-400/5 border border-lime-400/20 rounded-lg px-3 py-2">
@@ -584,7 +684,6 @@ function TradePanelContent({
           <button
             onClick={() => {
               if (side === 'buy') {
-                // Leave 0.1 SUI for gas
                 const max = Math.max(0, suiBalance - 0.1);
                 setAmount(max > 0 ? max.toFixed(4) : '0');
               } else {
@@ -632,6 +731,19 @@ function TradePanelContent({
             <span className="text-white/25">Price impact</span>
             <span className="text-white/40">~1% fee</span>
           </div>
+          {/* Min received line in quote box when slippage panel is closed */}
+          {!showSlippage && slippageNum > 0 && (
+            <div className="flex justify-between text-[10px] font-mono border-t border-white/5 pt-1.5">
+              <span className="text-white/25">Min received ({slippage}% slip)</span>
+              <span className="text-white/40">
+                {side === 'buy' && quote.tokensOut != null
+                  ? `${fmt(quote.tokensOut * (1 - slippageNum / 100), 0)} $${symbol}`
+                  : side === 'sell' && quote.suiOut != null
+                    ? `${fmt(quote.suiOut * (1 - slippageNum / 100))} SUI`
+                    : '—'}
+              </span>
+            </div>
+          )}
         </div>
       )}
 
@@ -645,46 +757,38 @@ function TradePanelContent({
             : isPending
               ? 'bg-white/10 text-white/50 cursor-wait'
               : side === 'buy'
-                ? 'bg-lime-400 hover:bg-lime-300 text-black'
-                : 'bg-red-500 hover:bg-red-400 text-white'
+                ? 'bg-lime-400 text-black hover:bg-lime-300'
+                : 'bg-red-500 text-white hover:bg-red-400'
         }`}
       >
-        {!account
-          ? 'CONNECT WALLET'
-          : isPending
-            ? 'PROCESSING…'
-            : side === 'buy' ? `BUY $${symbol}` : `SELL $${symbol}`}
+        {isPending ? 'CONFIRMING…' : side === 'buy' ? 'BUY' : 'SELL'}
       </button>
 
       {/* Tx status */}
       {txMsg && (
-        <div className={`text-[11px] font-mono text-center px-3 py-2 rounded-lg ${
-          txStatus === 'success'
-            ? 'text-lime-400 bg-lime-400/10 border border-lime-400/20'
-            : 'text-red-400 bg-red-400/10 border border-red-400/20'
+        <div className={`text-[10px] font-mono text-center ${
+          txStatus === 'success' ? 'text-lime-400' : 'text-red-400'
         }`}>
           {txMsg}
         </div>
       )}
 
-      {/* Claim creator fees */}
+      {/* Claim fees — creator only */}
       {isCreator && (
-        <div className="pt-3 border-t border-white/5 space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] font-mono text-white/35 tracking-widest">CREATOR FEES</span>
-            <span className="text-xs font-mono text-lime-400">
-              {creatorFeesMist > 0n ? `${(Number(creatorFeesMist) / 1e9).toFixed(4)} SUI` : '0 SUI'}
+        <div className="pt-2 border-t border-white/5 space-y-2">
+          <div className="flex justify-between text-[10px] font-mono text-white/35">
+            <span>CREATOR FEES</span>
+            <span className="text-lime-400/70">
+              {fmt(Number(creatorFeesMist) / 1e9)} SUI
             </span>
           </div>
           <button
             onClick={handleClaim}
             disabled={claiming || creatorFeesMist === 0n}
-            className={`w-full py-2.5 rounded-xl text-xs font-mono font-bold transition-all ${
-              creatorFeesMist === 0n
-                ? 'bg-white/5 text-white/25 cursor-not-allowed'
-                : claiming
-                  ? 'bg-white/10 text-white/50 cursor-wait'
-                  : 'bg-lime-400/15 hover:bg-lime-400/25 text-lime-400 border border-lime-400/30'
+            className={`w-full py-2 rounded-lg text-[10px] font-mono font-bold transition-colors ${
+              claiming || creatorFeesMist === 0n
+                ? 'bg-white/5 text-white/20 cursor-not-allowed'
+                : 'bg-lime-400/10 border border-lime-400/30 text-lime-400 hover:bg-lime-400/20'
             }`}
           >
             {claiming ? 'CLAIMING…' : 'CLAIM FEES'}
@@ -714,14 +818,13 @@ function TradePanelContent({
   );
 }
 
-// ── Trades / Holders toggle block ────────────────────────────────────────────
+// ── Trades / Holders toggle block ─────────────────────────────────────────────
 
 function TradesHoldersBlock({ curveId, tokenType, suiUsd }) {
   const [tab, setTab] = useState('trades');
 
   return (
     <div className="space-y-0">
-      {/* Toggle header */}
       <div className="flex bg-white/[0.03] border border-white/10 rounded-t-xl overflow-hidden">
         <button
           onClick={() => setTab('trades')}
@@ -744,7 +847,6 @@ function TradesHoldersBlock({ curveId, tokenType, suiUsd }) {
           HOLDERS
         </button>
       </div>
-      {/* Content — each component has its own card styling */}
       <div className="[&>div]:rounded-t-none [&>div]:border-t-0">
         {tab === 'trades'
           ? <TradeHistory curveId={curveId} suiUsd={suiUsd} />
