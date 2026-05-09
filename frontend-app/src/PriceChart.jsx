@@ -187,7 +187,7 @@ export default function PriceChart({ curveId, refreshKey }) {
       // Current price line — white for clarity against green/red candles
       priceLineColor: '#FFFFFF',
       priceLineWidth: 1,
-      priceLineStyle: 2, // dotted
+      priceLineStyle: 4, // sparse-dashed (LineStyle.LargeDashed)
       lastValueVisible: true,
     });
 
