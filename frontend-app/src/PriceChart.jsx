@@ -568,7 +568,15 @@ export default function PriceChart({ curveId, refreshKey }) {
           {useCandles && (
             <g clipPath="url(#chartClip)">
               {candleData.map((d, i) => {
-                if (d.empty) return null;
+                if (d.empty) {
+                  // Flat doji — thin horizontal tick at prevClose, very dim
+                  const cx = toX(d.time);
+                  const py = toY(d.c);
+                  return (
+                    <line key={i} x1={cx - candlePixelW/2} x2={cx + candlePixelW/2}
+                      y1={py} y2={py} stroke="#2a4a1a" strokeWidth="1" opacity="0.6" />
+                  );
+                }
                 const isGreen    = d.c >= d.o;
                 const color      = isGreen ? '#84CC16' : '#EF4444';
                 const cx         = toX(d.time);
