@@ -39,7 +39,16 @@ function filterByWindow(points, windowMs) {
   if (!windowMs) return points;
   const cutoff = Date.now() - windowMs;
   const out = points.filter(p => p.time >= cutoff);
-  return out.length === 0 && points.length > 0 ? [points[points.length - 1]] : out;
+  // Always prepend the last known price before the window as a synthetic anchor.
+  // This ensures the chart is never blank — it shows the current price even if
+  // no trades happened in the selected interval (same logic as TradingView).
+  const lastBefore = [...points].reverse().find(p => p.time < cutoff);
+  if (lastBefore) {
+    // Clone it with time = window start so it anchors correctly on the left edge
+    const anchor = { ...lastBefore, time: cutoff, synthetic: true };
+    return [anchor, ...out];
+  }
+  return out.length === 0 && points.length > 0 ? [{ ...points[points.length - 1], time: cutoff, synthetic: true }] : out;
 }
 
 // Forward-fill candles: empty buckets carry previous close as a flat doji.
@@ -68,9 +77,10 @@ function toCandles(points, intervalMs, windowMs) {
     tradeMap[b].push(p.price);
   }
 
-  // prevClose = last known price before window
-  const pre = points.filter(p => p.time < winStart);
-  let prevClose = pre.length > 0 ? pre[pre.length - 1].price : points[0].price;
+  // prevClose = last known price before window (or synthetic anchor injected by filterByWindow)
+  const synthetic = points.find(p => p.synthetic);
+  const pre = points.filter(p => p.time < winStart && !p.synthetic);
+  let prevClose = synthetic?.price ?? (pre.length > 0 ? pre[pre.length - 1].price : points[0].price);
 
   const result = [];
   for (let b = firstBucket; b <= lastBucket; b += ms) {
@@ -169,11 +179,17 @@ export default function PriceChart({ curveId, refreshKey }) {
 
   const mul = view === 'MCAP' ? TOTAL_SUPPLY_WHOLE : 1;
 
-  // Line chart data — one point per trade
-  const lineData = useMemo(
-    () => visiblePoints.map(p => ({ ...p, value: p.price * mul })),
-    [visiblePoints, mul]
-  );
+  // Line chart data — one point per trade.
+  // If only the synthetic anchor exists, add a second point at "now" so the
+  // flat line stretches across the full chart width (TradingView style).
+  const lineData = useMemo(() => {
+    const pts = visiblePoints.map(p => ({ ...p, value: p.price * mul }));
+    if (pts.length === 1) {
+      // Extend flat line to now
+      pts.push({ ...pts[0], time: Date.now(), synthetic: true });
+    }
+    return pts;
+  }, [visiblePoints, mul]);
 
   // Candle chart data
   const candleData = useMemo(
@@ -376,14 +392,23 @@ export default function PriceChart({ curveId, refreshKey }) {
             <path key={`a${animKey}`} d={areaD} fill={`url(#${gradId})`}
               style={{ animation: 'chartFade 0.45s ease-out forwards', opacity: 0 }} />
           )}
-          {!useCandles && pathD && (
-            <path key={`l${animKey}`} d={pathD} fill="none" stroke={lineColor} strokeWidth="1.5"
-              strokeLinejoin="round" strokeLinecap="round"
-              style={{ strokeDasharray: 3000, strokeDashoffset: 3000, animation: 'chartDraw 0.55s ease-out forwards' }} />
-          )}
+          {!useCandles && pathD && (() => {
+            const allSynthetic = lineData.every(d => d.synthetic);
+            return (
+              <path key={`l${animKey}`} d={pathD} fill="none"
+                stroke={allSynthetic ? 'rgba(132,204,22,0.25)' : lineColor}
+                strokeWidth={allSynthetic ? '1' : '1.5'}
+                strokeDasharray={allSynthetic ? '4,4' : '3000'}
+                strokeDashoffset={allSynthetic ? '0' : '3000'}
+                strokeLinejoin="round" strokeLinecap="round"
+                style={allSynthetic ? {} : { strokeDasharray: 3000, strokeDashoffset: 3000, animation: 'chartDraw 0.55s ease-out forwards' }} />
+            );
+          })()}
           {!useCandles && lineData.map((d, i) => (
-            <circle key={i} cx={toXLine(i)} cy={toY(d.value)} r="2.5"
-              fill={d.kind === 'sell' ? '#EF4444' : '#84CC16'} opacity="0.6" />
+            !d.synthetic && (
+              <circle key={i} cx={toXLine(i)} cy={toY(d.value)} r="2.5"
+                fill={d.kind === 'sell' ? '#EF4444' : '#84CC16'} opacity="0.6" />
+            )
           ))}
 
           {/* ── CANDLE CHART (dense) ────────────────────────────────────────── */}
