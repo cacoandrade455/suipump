@@ -15,6 +15,7 @@ import PortfolioPage from './PortfolioPage.jsx';
 import RoadmapPage from './RoadmapPage.jsx';
 import StatsPage from './StatsPage.jsx';
 import { LANGUAGES, translations, t } from './i18n.js';
+import { PACKAGE_ID, DRAIN_SUI_APPROX, TOKEN_DECIMALS } from './constants.js';
 import { mistToSui, priceMistPerToken } from './curve.js';
 import { paginateEvents, paginateMultipleEvents } from './paginateEvents.js';
 
@@ -492,7 +493,7 @@ function NotificationBell({ walletAddress }) {
 // ── Custom wallet button ──────────────────────────────────────────────────────
 // Replaces dapp-kit's ConnectButton to avoid its white-box styling.
 
-function WalletButton({ size = 'md' }) {
+function WalletButton({ size = 'md', lang = 'en' }) {
   const account = useCurrentAccount();
   const { mutate: disconnect } = useDisconnectWallet();
   const [open, setOpen] = useState(false);
@@ -519,7 +520,7 @@ function WalletButton({ size = 'md' }) {
           onClick={() => setOpen(true)}
           className={`${btnCls} bg-white/5 border-white/15 text-white/70 hover:border-lime-400/40 hover:text-white`}
         >
-          CONNECT
+          {t(lang,'connect')}
         </button>
         <ConnectModal trigger={<span />} open={open} onOpenChange={setOpen} />
       </>
@@ -543,14 +544,14 @@ function WalletButton({ size = 'md' }) {
       {showMenu && (
         <div className="absolute right-0 top-full mt-1.5 w-44 bg-[#111] border border-white/10 rounded-xl shadow-xl z-50 overflow-hidden">
           <div className="px-3 py-2 border-b border-white/5">
-            <div className="text-[9px] font-mono text-white/30 tracking-widest mb-0.5">WALLET</div>
+            <div className="text-[9px] font-mono text-white/30 tracking-widest mb-0.5">{t(lang,'wallet')}</div>
             <div className="text-[10px] font-mono text-white/60 truncate">{short}</div>
           </div>
           <button
             onClick={() => { disconnect(); setShowMenu(false); }}
             className="w-full px-3 py-2.5 text-left text-[10px] font-mono text-red-400/80 hover:bg-white/5 hover:text-red-400 transition-colors"
           >
-            DISCONNECT
+            {t(lang,'disconnect')}
           </button>
         </div>
       )}
@@ -560,7 +561,7 @@ function WalletButton({ size = 'md' }) {
 
 // ── Hero connect button ───────────────────────────────────────────────────────
 
-function ConnectWalletHero() {
+function ConnectWalletHero({ lang = 'en' }) {
   const [open, setOpen] = useState(false);
   return (
     <>
@@ -568,7 +569,7 @@ function ConnectWalletHero() {
         onClick={() => setOpen(true)}
         className="inline-flex items-center gap-2 px-6 py-3 rounded-2xl border border-white/10 text-sm font-mono text-white/50 hover:border-lime-400/40 hover:text-white/80 transition-all"
       >
-        CONNECT WALLET TO LAUNCH
+        {t(lang,'connectWalletToLaunch')}
       </button>
       <ConnectModal trigger={<span />} open={open} onOpenChange={setOpen} />
     </>
@@ -677,10 +678,10 @@ function Header({ onLaunch, lang, setLang }) {
         <div className="flex sm:hidden items-center gap-2">
           {account && (
             <button onClick={onLaunch} className="flex items-center gap-1 px-3 py-1.5 bg-lime-400 text-black text-[10px] font-mono font-bold rounded-xl hover:bg-lime-300 transition-colors">
-              <Plus size={11} /> LAUNCH
+              <Plus size={11} /> {t(lang,'launch')}
             </button>
           )}
-          <WalletButton size="sm" />
+          <WalletButton size="sm" lang={lang} />
           <NotificationBell walletAddress={account?.address} />
           <button onClick={() => setMenuOpen(o => !o)} className="p-1.5 rounded-lg border border-white/10 text-white/50 hover:text-white transition-colors">
             {menuOpen ? <X size={16} /> : <Menu size={16} />}
@@ -719,12 +720,12 @@ function Header({ onLaunch, lang, setLang }) {
 
 // ── Stats bar ─────────────────────────────────────────────────────────────────
 
-function StatsBar({ tokenCount, stats }) {
+function StatsBar({ tokenCount, stats, lang = 'en' }) {
   const items = [
-    { icon: <Coins size={13} />, label: 'TOKENS', value: tokenCount ?? '—' },
-    { icon: <TrendingUp size={13} />, label: 'TRADES', value: stats.tradeCount ?? '—' },
-    { icon: <Flame size={13} />, label: 'VOLUME', value: stats.volume != null ? `${fmt(stats.volume)} SUI` : '—' },
-    { icon: <Gift size={13} />, label: 'S1 POOL', value: stats.poolSui != null ? `${stats.poolSui.toFixed(2)} SUI` : '—' },
+    { icon: <Coins size={13} />, label: t(lang,'tokens'), value: tokenCount ?? '—' },
+    { icon: <TrendingUp size={13} />, label: t(lang,'trades'), value: stats.tradeCount ?? '—' },
+    { icon: <Flame size={13} />, label: t(lang,'volume'), value: stats.volume != null ? `${fmt(stats.volume)} SUI` : '—' },
+    { icon: <Gift size={13} />, label: t(lang,'s1Pool'), value: stats.poolSui != null ? `${stats.poolSui.toFixed(2)} SUI` : '—' },
   ];
   return (
     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-8">
@@ -844,23 +845,21 @@ function CrownBanner({ token, stats, suiUsd }) {
   );
 }
 
-// ── Sort options ──────────────────────────────────────────────────────────────
-
-const SORT_OPTIONS = [
-  { id: 'newest',     label: 'NEWEST' },
-  { id: 'oldest',     label: 'OLDEST' },
-  { id: 'trending',   label: '🔥 TRENDING' },
-  { id: 'last_trade', label: 'LAST TRADE' },
-  { id: 'market_cap', label: 'MARKET CAP' },
-  { id: 'volume',     label: 'VOLUME' },
-  { id: 'trades',     label: 'TRADES' },
-  { id: 'reserve',    label: 'RESERVE' },
-  { id: 'progress',   label: 'PROGRESS' },
-];
+  const SORT_OPTIONS = [
+    { id: 'newest',     label: t(lang,'newest') },
+    { id: 'oldest',     label: t(lang,'oldest') },
+    { id: 'trending',   label: t(lang,'trending') },
+    { id: 'last_trade', label: t(lang,'lastTrade') },
+    { id: 'market_cap', label: t(lang,'marketCap') },
+    { id: 'volume',     label: t(lang,'volumeSort') },
+    { id: 'trades',     label: t(lang,'tradesSort') },
+    { id: 'reserve',    label: t(lang,'reserve') },
+    { id: 'progress',   label: t(lang,'progress') },
+  ];
 
 // ── Home page ─────────────────────────────────────────────────────────────────
 
-function HomePage({ onLaunch }) {
+function HomePage({ onLaunch, lang = 'en' }) {
   const account = useCurrentAccount();
   const { tokens, loading, error } = useTokenList();
   const stats = useStats();
@@ -927,26 +926,26 @@ function HomePage({ onLaunch }) {
               SUIPUMP<span className="text-lime-400">.</span>
             </h1>
           </div>
-          <p className="text-sm sm:text-base text-white/50 font-mono mb-2 max-w-lg mx-auto leading-relaxed">Permissionless token launchpad on Sui.</p>
-          <p className="text-xs text-white/30 font-mono mb-8 max-w-lg mx-auto">Fair launch · No pre-mine · 40% creator fees · Graduates to Cetus</p>
+          <p className="text-sm sm:text-base text-white/50 font-mono mb-2 max-w-lg mx-auto leading-relaxed">{t(lang,'heroTagline')}</p>
+          <p className="text-xs text-white/30 font-mono mb-8 max-w-lg mx-auto">{t(lang,'heroSub')}</p>
           {account ? (
             <button onClick={onLaunch} className="inline-flex items-center gap-2 px-8 py-3.5 bg-lime-400 text-black font-mono text-sm tracking-widest hover:bg-lime-300 transition-colors rounded-2xl font-bold shadow-lg shadow-lime-400/20">
-              <Rocket size={14} /> LAUNCH A TOKEN
+              <Rocket size={14} /> {t(lang,'launchAToken')}
             </button>
           ) : (
-            <ConnectWalletHero />
+            <ConnectWalletHero lang={lang} />
           )}
         </div>
       </div>
 
-      <StatsBar tokenCount={tokens.length} stats={stats} />
+      <StatsBar tokenCount={tokens.length} stats={stats} lang={lang} />
 
       <div className="flex flex-col sm:flex-row gap-3 mb-4">
         <div className="relative flex-1">
           <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/35 pointer-events-none" />
           <input
             value={search} onChange={e => setSearch(e.target.value)}
-            placeholder="Search name, symbol, or 0x address…"
+            placeholder={t(lang,'searchPlaceholder')}
             className="w-full bg-white/5 border border-white/10 rounded-xl pl-9 pr-4 py-2.5 text-white text-xs font-mono focus:outline-none focus:border-lime-400/40 transition-colors placeholder-white/20"
           />
         </div>
@@ -962,13 +961,13 @@ function HomePage({ onLaunch }) {
 
       <div className="mb-3 flex items-center justify-between">
         <div className="text-xs font-mono text-white/30 tracking-widest">
-          {loading ? 'LOADING TOKENS…' : `${sorted.length} TOKEN${sorted.length !== 1 ? 'S' : ''}${search ? ' FOUND' : ' LAUNCHED'}`}
+          {loading ? t(lang,'loadingTokens') : `${sorted.length} ${t(lang, sorted.length !== 1 ? 'tokensLaunched' : 'tokensLaunched')}${search ? ` ${t(lang,'tokensFound')}` : ''}`}
         </div>
         {showLastTradeHint && (
-          <div className="text-[10px] font-mono text-white/35">sorted by most recent trade activity</div>
+          <div className="text-[10px] font-mono text-white/35">{t(lang,'sortedByLastTrade')}</div>
         )}
         {sort === 'market_cap' && (
-          <div className="text-[10px] font-mono text-white/35">market cap = latest price × 1B supply</div>
+          <div className="text-[10px] font-mono text-white/35">{t(lang,'marketCapFormula')}</div>
         )}
       </div>
 
@@ -994,8 +993,8 @@ function HomePage({ onLaunch }) {
       {!loading && sorted.length === 0 && !error && (
         <div className="rounded-3xl border border-white/10 p-16 text-center">
           <div className="text-5xl mb-4">{search ? '🔍' : '🔥'}</div>
-          <div className="text-sm font-mono text-white/40 mb-2">{search ? `No tokens matching "${search}"` : 'NO TOKENS YET'}</div>
-          {!search && <div className="text-xs font-mono text-white/35">Be the first to launch a token on SuiPump.</div>}
+          <div className="text-sm font-mono text-white/40 mb-2">{search ? `No tokens matching "${search}"` : t(lang,'noTokensYet')}</div>
+          {!search && <div className="text-xs font-mono text-white/35">{t(lang,'beFirstToLaunch')}</div>}
         </div>
       )}
 
@@ -1090,7 +1089,7 @@ export default function App() {
         </Routes>
       </main>
       <footer className="max-w-6xl mx-auto px-4 py-8 text-[10px] font-mono text-white/35 text-center tracking-widest border-t border-white/5 mt-8">
-        SUIPUMP · TESTNET DEMO · CONTRACTS UNAUDITED · DYOR
+        {t(lang,'footerText')}
       </footer>
       {showLaunch && <LaunchModal onClose={() => setShowLaunch(false)} onLaunched={handleLaunched} />}
     </div>
