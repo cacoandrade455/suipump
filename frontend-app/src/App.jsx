@@ -19,10 +19,8 @@ import { mistToSui, priceMistPerToken } from './curve.js';
 import { paginateEvents, paginateMultipleEvents } from './paginateEvents.js';
 
 const MIST_PER_SUI = 1e9;
-// Market cap = price × total supply (1B tokens)
 const TOTAL_SUPPLY_WHOLE = 1_000_000_000;
 
-// Module-level SUI/USD cache (refreshed by App, shared across TokenCards)
 let _suiUsdCache = 0;
 async function refreshSuiUsd() {
   try {
@@ -63,7 +61,8 @@ function ScrollToTop() {
   return null;
 }
 
-// Live stats hook
+// ── Live stats hook ──────────────────────────────────────────────────────────
+
 function useStats() {
   const client = useSuiClient();
   const [stats, setStats] = useState({ poolSui: null, tradeCount: null, volume: null });
@@ -99,7 +98,8 @@ function useStats() {
   return stats;
 }
 
-// % change badge
+// ── % change badge ───────────────────────────────────────────────────────────
+
 function PctBadge({ pct }) {
   if (pct == null || !Number.isFinite(pct)) return null;
   const isUp = pct >= 0;
@@ -112,7 +112,8 @@ function PctBadge({ pct }) {
   );
 }
 
-// Token card
+// ── Token card ───────────────────────────────────────────────────────────────
+
 function TokenCard({ token, stats, isCrown, suiUsd = 0 }) {
   const client = useSuiClient();
   const navigate = useNavigate();
@@ -148,10 +149,8 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0 }) {
   const priceMist = curveState ? priceMistPerToken(reserveMist, tokensSold) : 0n;
   const graduated = curveState?.graduated ?? false;
 
-  // Market cap in SUI = price per whole token × total supply
-  const pricePerWhole = Number(priceMist) / 1e9;  // SUI per whole token
+  const pricePerWhole = Number(priceMist) / 1e9;
   const marketCapSui = pricePerWhole * TOTAL_SUPPLY_WHOLE;
-
   const isTrending = stats?.recentTrades >= 3;
 
   const timeAgo = token.timestamp ? (() => {
@@ -171,7 +170,6 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0 }) {
           : 'border-white/10 hover:border-lime-400/30'
       }`}
     >
-      {/* Community Crown badge */}
       {isCrown && (
         <div className="absolute -top-3 left-1/2 -translate-x-1/2 flex items-center gap-1 bg-[#080808] border border-lime-400/40 rounded-full px-2.5 py-0.5">
           <Crown size={10} className="text-lime-400" />
@@ -306,13 +304,12 @@ function MobileWalletButtons() {
   );
 }
 
-// ── Notifications ──────────────────────────────────────────────────────────
+// ── Notifications ─────────────────────────────────────────────────────────────
 
 function useNotifications(walletAddress) {
   const client = useSuiClient();
   const [notifications, setNotifications] = useState([]);
   const [unread, setUnread] = useState(0);
-
   const storageKey = walletAddress ? `suipump_notif_seen_${walletAddress}` : null;
 
   useEffect(() => {
@@ -321,7 +318,6 @@ function useNotifications(walletAddress) {
 
     async function load() {
       try {
-        // 1. Get all curves created by this wallet
         const curveCreatedType = `${PACKAGE_ID}::bonding_curve::CurveCreated`;
         const createdEvents = await paginateEvents(client, { MoveEventType: curveCreatedType }, { order: 'descending' });
         const myCurveIds = new Set(
@@ -336,7 +332,6 @@ function useNotifications(walletAddress) {
           return;
         }
 
-        // 2. Get comments + graduation events for those curves in parallel
         const commentType = `${PACKAGE_ID}::bonding_curve::CommentPosted`;
         const gradType = `${PACKAGE_ID}::bonding_curve::Graduated`;
         const [commentEvents, gradEvents] = await Promise.all([
@@ -494,6 +489,8 @@ function NotificationBell({ walletAddress }) {
   );
 }
 
+// ── Header ────────────────────────────────────────────────────────────────────
+
 function Header({ onLaunch }) {
   const account = useCurrentAccount();
   const { poolSui, tradeCount } = useStats();
@@ -514,6 +511,8 @@ function Header({ onLaunch }) {
             <div className="text-[8px] font-mono text-white/30 tracking-[0.2em] -mt-0.5">TESTNET · LIVE</div>
           </div>
         </Link>
+
+        {/* Desktop nav */}
         <div className="hidden sm:flex items-center gap-2">
           <Link to="/airdrop" className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all">
             <Gift size={10} />
@@ -545,21 +544,30 @@ function Header({ onLaunch }) {
               <Plus size={12} /> LAUNCH TOKEN
             </button>
           )}
-          <ConnectButton />
+          {/* ConnectButton sized to match LAUNCH TOKEN button */}
+          <div className="[&>button]:py-2 [&>button]:px-4 [&>button]:text-xs [&>button]:font-mono [&>button]:rounded-xl [&>button]:font-bold [&>button]:h-auto">
+            <ConnectButton />
+          </div>
         </div>
+
+        {/* Mobile nav */}
         <div className="flex sm:hidden items-center gap-2">
           {account && (
             <button onClick={onLaunch} className="flex items-center gap-1 px-3 py-1.5 bg-lime-400 text-black text-[10px] font-mono font-bold rounded-xl hover:bg-lime-300 transition-colors">
               <Plus size={11} /> LAUNCH
             </button>
           )}
-          <ConnectButton />
+          {/* ConnectButton sized to match LAUNCH button on mobile */}
+          <div className="[&>button]:py-1.5 [&>button]:px-3 [&>button]:text-[10px] [&>button]:font-mono [&>button]:rounded-xl [&>button]:font-bold [&>button]:h-auto">
+            <ConnectButton />
+          </div>
           <NotificationBell walletAddress={account?.address} />
           <button onClick={() => setMenuOpen(o => !o)} className="p-1.5 rounded-lg border border-white/10 text-white/50 hover:text-white transition-colors">
             {menuOpen ? <X size={16} /> : <Menu size={16} />}
           </button>
         </div>
       </div>
+
       {menuOpen && (
         <div className="sm:hidden border-t border-white/5 bg-black/95 px-4 py-3 space-y-2">
           <Link to="/airdrop" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/60 hover:text-lime-400 transition-colors border-b border-white/5">
@@ -589,6 +597,8 @@ function Header({ onLaunch }) {
   );
 }
 
+// ── Stats bar ─────────────────────────────────────────────────────────────────
+
 function StatsBar({ tokenCount, stats }) {
   const items = [
     { icon: <Coins size={13} />, label: 'TOKENS', value: tokenCount ?? '—' },
@@ -611,6 +621,8 @@ function StatsBar({ tokenCount, stats }) {
   );
 }
 
+// ── Sort options ──────────────────────────────────────────────────────────────
+
 const SORT_OPTIONS = [
   { id: 'newest',     label: 'NEWEST' },
   { id: 'oldest',     label: 'OLDEST' },
@@ -622,6 +634,8 @@ const SORT_OPTIONS = [
   { id: 'reserve',    label: 'RESERVE' },
   { id: 'progress',   label: 'PROGRESS' },
 ];
+
+// ── Home page ─────────────────────────────────────────────────────────────────
 
 function HomePage({ onLaunch }) {
   const account = useCurrentAccount();
@@ -647,11 +661,9 @@ function HomePage({ onLaunch }) {
     return false;
   });
 
-  // Find Community Crown holder = #1 by volume (only when not searching/filtering)
   const crownCurveId = React.useMemo(() => {
     if (search.trim()) return null;
-    let best = null;
-    let bestVol = 0;
+    let best = null, bestVol = 0;
     for (const t of tokens) {
       const vol = tokenStats[t.curveId]?.volume ?? 0;
       if (vol > bestVol) { bestVol = vol; best = t.curveId; }
@@ -772,6 +784,8 @@ function HomePage({ onLaunch }) {
   );
 }
 
+// ── Token page wrapper ────────────────────────────────────────────────────────
+
 function TokenPageWrapper() {
   const { curveId } = useParams();
   const navigate = useNavigate();
@@ -807,6 +821,8 @@ function TokenPageWrapper() {
   );
   return <TokenPage curveId={curveId} tokenType={tokenType} onBack={() => navigate('/')} />;
 }
+
+// ── App root ──────────────────────────────────────────────────────────────────
 
 export default function App() {
   const navigate = useNavigate();
