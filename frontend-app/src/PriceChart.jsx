@@ -37,33 +37,71 @@ async function fetchSuiUsd() {
   }
 }
 
-function toCandles(points, intervalMs) {
+// Build OHLC candles with forward-fill.
+// Key insight: on a bonding curve, price is constant between trades.
+// So empty buckets inherit the previous close as a flat candle — just
+// like a real exchange during a quiet period.
+function toCandles(points, intervalMs, windowMs) {
   if (points.length === 0) return [];
-  if (!intervalMs) {
-    // ALL — one candle per trade
-    return points.map(p => ({
-      time: p.time,
-      o: p.price, h: p.price, l: p.price, c: p.price,
-      price: p.price, value: p.price, kind: p.kind,
-    }));
+
+  // Determine bucket size
+  let ms = intervalMs;
+  if (!ms) {
+    // ALL: auto-pick bucket so we get ~60 candles across the full history
+    if (points.length === 1) {
+      const p = points[0];
+      return [{ time: p.time, o: p.price, h: p.price, l: p.price, c: p.price, empty: false }];
+    }
+    const span = points[points.length - 1].time - points[0].time;
+    const raw  = span / 60;
+    const snaps = [60_000, 300_000, 900_000, 1_800_000, 3_600_000, 14_400_000, 86_400_000];
+    ms = snaps.find(s => s >= raw) ?? snaps[snaps.length - 1];
   }
-  const buckets = {};
+
+  // Determine time range for forward-fill
+  const now     = Date.now();
+  const earliest = windowMs
+    ? Math.max(points[0].time, now - windowMs)
+    : points[0].time;
+  const latest   = now;
+
+  // Fill all bucket slots from earliest to now
+  const firstBucket = Math.floor(earliest / ms) * ms;
+  const lastBucket  = Math.floor(latest  / ms) * ms;
+
+  // Group trades into buckets
+  const tradeMap = {};
   for (const p of points) {
-    const bucket = Math.floor(p.time / intervalMs) * intervalMs;
-    if (!buckets[bucket]) buckets[bucket] = { time: bucket, prices: [], kinds: [] };
-    buckets[bucket].prices.push(p.price);
-    buckets[bucket].kinds.push(p.kind);
+    if (windowMs && p.time < now - windowMs) continue;
+    const b = Math.floor(p.time / ms) * ms;
+    if (!tradeMap[b]) tradeMap[b] = [];
+    tradeMap[b].push(p.price);
   }
-  return Object.values(buckets).sort((a, b) => a.time - b.time).map(b => ({
-    time: b.time,
-    o: b.prices[0],
-    h: Math.max(...b.prices),
-    l: Math.min(...b.prices),
-    c: b.prices[b.prices.length - 1],
-    price: b.prices[b.prices.length - 1],
-    value: b.prices[b.prices.length - 1],
-    kind: b.kinds[b.kinds.length - 1],
-  }));
+
+  // Walk every bucket from first to last, forward-filling gaps
+  const result = [];
+  let prevClose = points[0].price; // price before the window starts
+
+  // Find the last trade price before the window to use as initial prevClose
+  const preWindow = points.filter(p => windowMs ? p.time < now - windowMs : false);
+  if (preWindow.length > 0) prevClose = preWindow[preWindow.length - 1].price;
+
+  for (let b = firstBucket; b <= lastBucket; b += ms) {
+    const trades = tradeMap[b];
+    if (trades && trades.length > 0) {
+      const open  = prevClose;           // open = previous close (continuous)
+      const close = trades[trades.length - 1];
+      const high  = Math.max(open, ...trades);
+      const low   = Math.min(open, ...trades);
+      result.push({ time: b, o: open, h: high, l: low, c: close, empty: false });
+      prevClose = close;
+    } else {
+      // Empty bucket — flat doji at prevClose
+      result.push({ time: b, o: prevClose, h: prevClose, l: prevClose, c: prevClose, empty: true });
+    }
+  }
+
+  return result;
 }
 
 function filterByWindow(points, windowMs) {
@@ -132,8 +170,7 @@ export default function PriceChart({ curveId, refreshKey }) {
   }, [curveId, client, refreshKey]);
 
   const { ms: intervalMs, window: windowMs } = INTERVALS[intervalIdx];
-  const filtered  = useMemo(() => filterByWindow(rawTrades, windowMs), [rawTrades, windowMs, intervalIdx]);
-  const candles   = useMemo(() => toCandles(filtered, intervalMs), [filtered, intervalMs]);
+  const candles   = useMemo(() => toCandles(rawTrades, intervalMs, windowMs), [rawTrades, intervalMs, windowMs]);
 
   const chartData = useMemo(() => {
     const mul = view === 'MCAP' ? TOTAL_SUPPLY_WHOLE : 1;
@@ -326,12 +363,13 @@ export default function PriceChart({ curveId, refreshKey }) {
 
           {/* ── Candlesticks ─────────────────────────────────────────────────── */}
           {chartData.map((d, i) => {
-            const isGreen = d.c >= d.o;
-            const color   = isGreen ? '#84CC16' : '#EF4444';
-            const cx      = candleCenterX(i);
+            const isGreen    = d.c >= d.o;
+            const isEmpty    = d.empty === true;
+            const color      = isEmpty ? '#2a3a1a' : (isGreen ? '#84CC16' : '#EF4444');
+            const cx         = candleCenterX(i);
             const bodyTop    = toY(Math.max(d.o, d.c));
             const bodyBottom = toY(Math.min(d.o, d.c));
-            const bodyH      = Math.max(1, bodyBottom - bodyTop);
+            const bodyH      = Math.max(isEmpty ? 1 : 3, bodyBottom - bodyTop);
             const wickTop    = toY(d.h);
             const wickBottom = toY(d.l);
             const isHovered  = hover?.idx === i;
