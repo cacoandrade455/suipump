@@ -184,6 +184,11 @@ export default function PriceChart({ curveId, refreshKey }) {
       borderVisible:  false,
       wickUpColor:    '#84CC16',
       wickDownColor:  '#EF4444',
+      // Current price line — white for clarity against green/red candles
+      priceLineColor: '#FFFFFF',
+      priceLineWidth: 1,
+      priceLineStyle: 2, // dotted
+      lastValueVisible: true,
     });
 
     chartRef.current  = chart;
