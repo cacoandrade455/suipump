@@ -1,7 +1,7 @@
 // App.jsx — react-router-dom based routing
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, useNavigate, useParams, Link, useLocation } from 'react-router-dom';
-import { ConnectButton, useCurrentAccount, useSuiClient } from '@mysten/dapp-kit';
+import { ConnectButton, useCurrentAccount, useSuiClient, useDisconnectWallet, useAccounts, ConnectModal } from '@mysten/dapp-kit';
 import { Flame, Rocket, Plus, Gift, TrendingUp, Coins, Users, Trophy, Wallet, Search, Menu, X, Map, Copy, Crown, BarChart3, Github, MessageCircle, Bell } from 'lucide-react';
 
 import { useTokenList } from './useTokenList.js';
@@ -489,6 +489,75 @@ function NotificationBell({ walletAddress }) {
   );
 }
 
+// ── Custom wallet button ──────────────────────────────────────────────────────
+// Replaces dapp-kit's ConnectButton to avoid its white-box styling.
+
+function WalletButton({ size = 'md' }) {
+  const account = useCurrentAccount();
+  const { mutate: disconnect } = useDisconnectWallet();
+  const [open, setOpen] = useState(false);
+  const [showMenu, setShowMenu] = useState(false);
+  const menuRef = React.useRef(null);
+
+  useEffect(() => {
+    if (!showMenu) return;
+    function handle(e) {
+      if (menuRef.current && !menuRef.current.contains(e.target)) setShowMenu(false);
+    }
+    document.addEventListener('mousedown', handle);
+    return () => document.removeEventListener('mousedown', handle);
+  }, [showMenu]);
+
+  const btnCls = size === 'sm'
+    ? 'flex items-center gap-1.5 px-3 py-1.5 text-[10px] rounded-xl font-mono font-bold border transition-all'
+    : 'flex items-center gap-2 px-4 py-2 text-xs rounded-xl font-mono font-bold border transition-all';
+
+  if (!account) {
+    return (
+      <>
+        <button
+          onClick={() => setOpen(true)}
+          className={`${btnCls} bg-white/5 border-white/15 text-white/70 hover:border-lime-400/40 hover:text-white`}
+        >
+          CONNECT
+        </button>
+        <ConnectModal trigger={<span />} open={open} onOpenChange={setOpen} />
+      </>
+    );
+  }
+
+  const addr = account.address;
+  const short = `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+
+  return (
+    <div className="relative" ref={menuRef}>
+      <button
+        onClick={() => setShowMenu(o => !o)}
+        className={`${btnCls} bg-white/5 border-white/15 text-white/70 hover:border-lime-400/40 hover:text-white`}
+      >
+        <span>{short}</span>
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor" className="opacity-50">
+          <path d="M5 7L1 3h8z"/>
+        </svg>
+      </button>
+      {showMenu && (
+        <div className="absolute right-0 top-full mt-1.5 w-44 bg-[#111] border border-white/10 rounded-xl shadow-xl z-50 overflow-hidden">
+          <div className="px-3 py-2 border-b border-white/5">
+            <div className="text-[9px] font-mono text-white/30 tracking-widest mb-0.5">WALLET</div>
+            <div className="text-[10px] font-mono text-white/60 truncate">{short}</div>
+          </div>
+          <button
+            onClick={() => { disconnect(); setShowMenu(false); }}
+            className="w-full px-3 py-2.5 text-left text-[10px] font-mono text-red-400/80 hover:bg-white/5 hover:text-red-400 transition-colors"
+          >
+            DISCONNECT
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Header ────────────────────────────────────────────────────────────────────
 
 function Header({ onLaunch }) {
@@ -544,10 +613,7 @@ function Header({ onLaunch }) {
               <Plus size={12} /> LAUNCH TOKEN
             </button>
           )}
-          {/* ConnectButton sized to match LAUNCH TOKEN button */}
-          <div className="[&>button]:py-2 [&>button]:px-4 [&>button]:text-xs [&>button]:font-mono [&>button]:rounded-xl [&>button]:font-bold [&>button]:h-auto">
-            <ConnectButton />
-          </div>
+          <WalletButton size="md" />
         </div>
 
         {/* Mobile nav */}
@@ -557,10 +623,7 @@ function Header({ onLaunch }) {
               <Plus size={11} /> LAUNCH
             </button>
           )}
-          {/* ConnectButton sized to match LAUNCH button on mobile */}
-          <div className="[&>button]:py-1.5 [&>button]:px-3 [&>button]:text-[10px] [&>button]:font-mono [&>button]:rounded-xl [&>button]:font-bold [&>button]:h-auto">
-            <ConnectButton />
-          </div>
+          <WalletButton size="sm" />
           <NotificationBell walletAddress={account?.address} />
           <button onClick={() => setMenuOpen(o => !o)} className="p-1.5 rounded-lg border border-white/10 text-white/50 hover:text-white transition-colors">
             {menuOpen ? <X size={16} /> : <Menu size={16} />}
