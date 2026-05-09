@@ -366,7 +366,7 @@ export default function PriceChart({ curveId, refreshKey }) {
       price: val,
       candle: data.candle ?? null,
     });
-  }, [getSvgX, toTime, toX, toY, nearestPoint, useCandles]);
+  }, [getSvgX, toTime, toX, toY, dataAtTime]);
 
   // ── Zoom (mouse wheel) ────────────────────────────────────────────────────────
   const handleWheel = useCallback(e => {
