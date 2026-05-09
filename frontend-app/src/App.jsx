@@ -14,7 +14,7 @@ import LeaderboardPage from './LeaderboardPage.jsx';
 import PortfolioPage from './PortfolioPage.jsx';
 import RoadmapPage from './RoadmapPage.jsx';
 import StatsPage from './StatsPage.jsx';
-import { PACKAGE_ID, DRAIN_SUI_APPROX, TOKEN_DECIMALS } from './constants.js';
+import { LANGUAGES, translations, t } from './i18n.js';
 import { mistToSui, priceMistPerToken } from './curve.js';
 import { paginateEvents, paginateMultipleEvents } from './paginateEvents.js';
 
@@ -577,10 +577,23 @@ function ConnectWalletHero() {
 
 // ── Header ────────────────────────────────────────────────────────────────────
 
-function Header({ onLaunch }) {
+function Header({ onLaunch, lang, setLang }) {
   const account = useCurrentAccount();
   const { poolSui, tradeCount } = useStats();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [langOpen, setLangOpen] = useState(false);
+  const langRef = React.useRef(null);
+
+  useEffect(() => {
+    if (!langOpen) return;
+    function handle(e) {
+      if (langRef.current && !langRef.current.contains(e.target)) setLangOpen(false);
+    }
+    document.addEventListener('mousedown', handle);
+    return () => document.removeEventListener('mousedown', handle);
+  }, [langOpen]);
+
+  const currentLang = LANGUAGES.find(l => l.code === lang) || LANGUAGES[0];
 
   return (
     <header className="border-b border-white/5 bg-black/80 backdrop-blur sticky top-0 z-40">
@@ -602,15 +615,42 @@ function Header({ onLaunch }) {
         <div className="hidden sm:flex items-center gap-2">
           <Link to="/airdrop" className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all">
             <Gift size={10} />
-            {poolSui !== null ? <span>S1 {poolSui.toFixed(4)} SUI</span> : <span>S1 AIRDROP</span>}
-            {tradeCount !== null && <span className="text-white/35 ml-1">· {tradeCount} trades</span>}
+            {poolSui !== null ? <span>{t(lang,'s1Airdrop')} {poolSui.toFixed(4)} SUI</span> : <span>{t(lang,'s1Airdrop')}</span>}
+            {tradeCount !== null && <span className="text-white/35 ml-1">· {tradeCount} {t(lang,'trades').toLowerCase()}</span>}
           </Link>
-          <Link to="/stats" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5"><BarChart3 size={10} /> STATS</Link>
-          <Link to="/leaderboard" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5"><Trophy size={10} /> LEADERBOARD</Link>
-          <Link to="/portfolio" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5"><Wallet size={10} /> PORTFOLIO</Link>
-          <Link to="/whitepaper" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all">WHITEPAPER</Link>
-          <Link to="/roadmap" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5"><Map size={10} /> ROADMAP</Link>
+          <Link to="/stats" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5"><BarChart3 size={10} /> {t(lang,'stats')}</Link>
+          <Link to="/leaderboard" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5"><Trophy size={10} /> {t(lang,'leaderboard')}</Link>
+          <Link to="/portfolio" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5"><Wallet size={10} /> {t(lang,'portfolio')}</Link>
+          <Link to="/whitepaper" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all">{t(lang,'whitepaper')}</Link>
+          <Link to="/roadmap" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5"><Map size={10} /> {t(lang,'roadmap')}</Link>
           <div className="flex items-center gap-1 ml-1">
+            {/* Language picker */}
+            <div className="relative" ref={langRef}>
+              <button
+                onClick={() => setLangOpen(o => !o)}
+                className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-[10px] font-mono text-white/40 hover:text-white border border-transparent hover:border-white/10 transition-all"
+              >
+                <span>{currentLang.flag}</span>
+                <span>{currentLang.label}</span>
+                <svg width="8" height="8" viewBox="0 0 10 10" fill="currentColor" className="opacity-40"><path d="M5 7L1 3h8z"/></svg>
+              </button>
+              {langOpen && (
+                <div className="absolute right-0 top-full mt-1 bg-[#111] border border-white/10 rounded-xl shadow-xl z-50 overflow-hidden min-w-[110px]">
+                  {LANGUAGES.map(l => (
+                    <button
+                      key={l.code}
+                      onClick={() => { setLang(l.code); setLangOpen(false); }}
+                      className={`w-full flex items-center gap-2 px-3 py-2 text-[10px] font-mono transition-colors ${
+                        lang === l.code ? 'text-lime-400 bg-lime-400/10' : 'text-white/50 hover:bg-white/5 hover:text-white'
+                      }`}
+                    >
+                      <span>{l.flag}</span>
+                      <span>{l.label}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             <a href="https://x.com/SuiPump_SUMP" target="_blank" rel="noreferrer"
               className="p-1.5 rounded-lg text-white/30 hover:text-white transition-colors" title="X / Twitter">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
@@ -627,10 +667,10 @@ function Header({ onLaunch }) {
           </div>
           {account && (
             <button onClick={onLaunch} className="flex items-center gap-2 px-4 py-2 bg-lime-400 text-black text-xs font-mono tracking-widest hover:bg-lime-300 transition-colors rounded-xl font-bold">
-              <Plus size={12} /> LAUNCH TOKEN
+              <Plus size={12} /> {t(lang,'launchToken')}
             </button>
           )}
-          <WalletButton size="md" />
+          <WalletButton size="md" lang={lang} />
         </div>
 
         {/* Mobile nav */}
@@ -1019,6 +1059,13 @@ function TokenPageWrapper() {
 export default function App() {
   const navigate = useNavigate();
   const [showLaunch, setShowLaunch] = useState(false);
+  const [lang, setLang] = useState(() => localStorage.getItem('suipump_lang') || 'en');
+
+  const handleLang = (code) => {
+    setLang(code);
+    localStorage.setItem('suipump_lang', code);
+  };
+
   const handleLaunched = ({ curveId }) => { setShowLaunch(false); navigate(`/token/${curveId}`); };
 
   return (
@@ -1029,10 +1076,10 @@ export default function App() {
         backgroundSize: '60px 60px',
       }} />
       <ScrollToTop />
-      <Header onLaunch={() => setShowLaunch(true)} />
+      <Header onLaunch={() => setShowLaunch(true)} lang={lang} setLang={handleLang} />
       <main className="max-w-6xl mx-auto px-4 py-6">
         <Routes>
-          <Route path="/" element={<HomePage onLaunch={() => setShowLaunch(true)} />} />
+          <Route path="/" element={<HomePage onLaunch={() => setShowLaunch(true)} lang={lang} />} />
           <Route path="/token/:curveId" element={<TokenPageWrapper />} />
           <Route path="/airdrop" element={<AirdropPage onBack={() => navigate('/')} />} />
           <Route path="/stats" element={<StatsPage onBack={() => navigate('/')} />} />
