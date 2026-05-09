@@ -228,6 +228,22 @@ export default function PriceChart({ curveId, refreshKey }) {
 
     seriesRef.current.setData(candles);
 
+    // Force a visible price range even when most candles are flat dojis.
+    // Without this, lightweight-charts auto-fits to the tiny variation
+    // and renders the candles too small to see.
+    if (candles.length > 0) {
+      const lows  = candles.map(c => c.low);
+      const highs = candles.map(c => c.high);
+      const minP  = Math.min(...lows);
+      const maxP  = Math.max(...highs);
+      const pad   = Math.max((maxP - minP) * 0.5, maxP * 0.05);
+      seriesRef.current.applyOptions({
+        autoscaleInfoProvider: () => ({
+          priceRange: { minValue: minP - pad, maxValue: maxP + pad },
+        }),
+      });
+    }
+
     // Custom price formatter for tiny values
     seriesRef.current.applyOptions({
       priceFormat: {
@@ -318,14 +334,15 @@ export default function PriceChart({ curveId, refreshKey }) {
         </div>
       )}
 
-      {/* Chart container */}
-      {loading ? (
-        <div className="h-[280px] flex items-center justify-center text-[10px] font-mono text-lime-900">LOADING TRADES…</div>
-      ) : rawTrades.length === 0 ? (
-        <div className="h-[280px] flex items-center justify-center text-[10px] font-mono text-lime-900">NO TRADES YET — BE THE FIRST TO BUY</div>
-      ) : (
+      {/* Chart container — always mounted so the chart instance has a target */}
+      <div className="relative">
         <div ref={containerRef} style={{ width: '100%', height: '280px' }} />
-      )}
+        {(loading || rawTrades.length === 0) && (
+          <div className="absolute inset-0 flex items-center justify-center text-[10px] font-mono text-lime-900 bg-black pointer-events-none">
+            {loading ? 'LOADING TRADES…' : 'NO TRADES YET — BE THE FIRST TO BUY'}
+          </div>
+        )}
+      </div>
 
       {/* Required attribution per Apache 2.0 license */}
       <div className="text-[8px] font-mono text-lime-900/40 mt-1 text-right">
