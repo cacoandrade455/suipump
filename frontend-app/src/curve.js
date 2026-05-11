@@ -1,91 +1,67 @@
 // curve.js
-// Calling convention matches TokenPage.jsx exactly:
-//   buyQuote(reserveMist, tokensRemaining, suiInMist)
-//   sellQuote(reserveMist, tokensRemaining, tokensInAtomic)
-// All BigInt inputs, all BigInt outputs.
+import {
+  TRADE_FEE_BPS, CREATOR_SHARE_BPS, PROTOCOL_SHARE_BPS,
+  CURVE_SUPPLY, VIRTUAL_SUI, VIRTUAL_TOKENS, MIST_PER_SUI, TOKEN_DECIMALS,
+} from './constants.js';
 
-const VIRTUAL_SUI_SUI = 30000;
-const VIRTUAL_TOKENS_WHOLE = 1073000000;
-const TOKEN_DEC = 6;
-const MIST = 1000000000n;
-const TRADE_FEE = 100n;       // 1% = 100 bps
-const CREATOR_BPS = 4000n;    // 40%
-const PROTOCOL_BPS = 5000n;   // 50%
-const SCALE = 10n ** 6n;      // 1e6 for price scaling
-
-const VIRT_SUI_MIST = BigInt(VIRTUAL_SUI_SUI) * MIST;
-const VIRT_TOK_ATOMIC = BigInt(VIRTUAL_TOKENS_WHOLE) * SCALE;
+function quoteOut(dx, x, y) {
+  return (BigInt(y) * BigInt(dx)) / (BigInt(x) + BigInt(dx));
+}
 
 function splitFee(fee) {
-  const creator = (fee * CREATOR_BPS) / 10000n;
-  const protocol = (fee * PROTOCOL_BPS) / 10000n;
-  const lp = fee - creator - protocol;
+  const creator  = (fee * BigInt(CREATOR_SHARE_BPS))  / 10_000n;
+  const protocol = (fee * BigInt(PROTOCOL_SHARE_BPS)) / 10_000n;
+  const lp       = fee - creator - protocol;
   return { creator, protocol, lp };
 }
 
-// dy = y * dx / (x + dx) — constant product
-function cpOut(dx, x, y) {
-  if (x + dx === 0n) return 0n;
-  return (y * dx) / (x + dx);
-}
-
+// TokenPage.jsx calls: buyQuote(reserveMist, tokensRemaining, suiInMist)
 export function buyQuote(reserveMist, tokensRemaining, suiInMist) {
-  const suiIn = BigInt(suiInMist);
-  const reserve = BigInt(reserveMist);
-  const tokensLeft = BigInt(tokensRemaining);
+  const suiIn  = BigInt(suiInMist);
+  const fee    = (suiIn * BigInt(TRADE_FEE_BPS)) / 10_000n;
+  const fees   = splitFee(fee);
+  const swap   = suiIn - fee;
 
-  const fee = (suiIn * TRADE_FEE) / 10000n;
-  const fees = splitFee(fee);
-  const swap = suiIn - fee;
+  const vSui = BigInt(VIRTUAL_SUI) * BigInt(MIST_PER_SUI);
+  const x    = BigInt(reserveMist) + vSui;
+  const y    = BigInt(tokensRemaining);
 
-  const x = reserve + VIRT_SUI_MIST;
-  const y = tokensLeft;
-
-  const out = cpOut(swap, x, y);
-  const clipped = out >= tokensLeft;
+  const out     = quoteOut(swap, x, y);
+  const clipped = out >= y;
 
   return {
-    tokensOut: clipped ? tokensLeft : out,
-    fee,
-    fees,
+    tokensOut:  clipped ? y : out,
+    fee, fees,
     actualSwap: swap,
-    refund: 0n,
+    refund:     0n,
     clipped,
   };
 }
 
+// TokenPage.jsx calls: sellQuote(reserveMist, tokensRemaining, tokensInAtomic)
 export function sellQuote(reserveMist, tokensRemaining, tokensInAtomic) {
   const tokIn = BigInt(tokensInAtomic);
-  const reserve = BigInt(reserveMist);
-  const tokensLeft = BigInt(tokensRemaining);
+  const vSui  = BigInt(VIRTUAL_SUI) * BigInt(MIST_PER_SUI);
 
-  // x = token side, y = SUI side
-  const x = tokensLeft;
-  const y = reserve + VIRT_SUI_MIST;
-
-  const gross = cpOut(tokIn, x, y);
-  const fee = (gross * TRADE_FEE) / 10000n;
-  const fees = splitFee(fee);
+  const x       = BigInt(tokensRemaining);
+  const y       = BigInt(reserveMist) + vSui;
+  const gross   = quoteOut(tokIn, x, y);
+  const fee     = (gross * BigInt(TRADE_FEE_BPS)) / 10_000n;
+  const fees    = splitFee(fee);
   return { suiOut: gross - fee, fee, fees };
 }
 
-export function priceMistPerToken(reserveMist, tokensSold) {
-  const x = BigInt(reserveMist) + VIRT_SUI_MIST;
-  const y = VIRT_TOK_ATOMIC - BigInt(tokensSold);
+export function priceMistPerToken(realSuiReserve, tokensSold) {
+  const vSui  = BigInt(VIRTUAL_SUI) * BigInt(MIST_PER_SUI);
+  const vTok  = BigInt(VIRTUAL_TOKENS) * (10n ** BigInt(TOKEN_DECIMALS));
+  const x     = BigInt(realSuiReserve) + vSui;
+  const y     = vTok - BigInt(tokensSold);
   if (y <= 0n) return 0n;
-  return (x * SCALE) / y;
+  return (x * 1_000_000n) / y;
 }
 
-export function mistToSui(m) {
-  if (m == null) return 0;
-  return Number(BigInt(m)) / 1e9;
-}
+export const mistToSui = (m) => (m == null ? 0 : Number(BigInt(m)) / 1e9);
+export const tokenUnitsToWhole = (u) => (u == null ? 0 : Number(BigInt(u)) / 1e6);
 
-export function tokenUnitsToWhole(u) {
-  if (u == null) return 0;
-  return Number(BigInt(u)) / 1e6;
-}
-
-// Both naming conventions
-export const quoteBuy = buyQuote;
+export const quoteBuy  = buyQuote;
 export const quoteSell = sellQuote;

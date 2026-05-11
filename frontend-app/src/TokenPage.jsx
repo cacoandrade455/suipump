@@ -720,7 +720,7 @@ function TradePanelContent({
                   <span className="text-white/35">{t(lang, 'youReceive')}</span>
                   <span className="text-lime-400">
                     {suiUsd > 0
-                      ? `$${(quote.suiOut * suiUsd).toFixed(2)}`
+                      ? `$${(Number(quote.suiOut) / 1e9 * suiUsd).toFixed(2)}`
                       : `${fmt(quote.suiOut)} SUI`}
                   </span>
                 </div>
@@ -734,9 +734,9 @@ function TradePanelContent({
                   <span className="text-white/25">{t(lang, 'minReceived')} ({slippage}% {t(lang, 'slippage')})</span>
                   <span className="text-white/40">
                     {side === 'buy' && quote.tokensOut != null
-                      ? `${fmt(quote.tokensOut * (1 - slippageNum / 100), 0)} $${symbol}`
+                      ? `${fmt(Number(quote.tokensOut) / 1e6 * (1 - slippageNum / 100), 0)} $${symbol}`
                       : side === 'sell' && quote.suiOut != null
-                        ? `${fmt(quote.suiOut * (1 - slippageNum / 100))} SUI`
+                        ? `${fmt(Number(quote.suiOut) / 1e9 * (1 - slippageNum / 100))} SUI`
                         : '—'}
                   </span>
                 </div>
