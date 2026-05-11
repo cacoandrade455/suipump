@@ -1,4 +1,4 @@
-// useTokenStats.js  v16-holdercount-fix
+// useTokenStats.js  v16-holdercount-fix2
 // Per-token stats computed from on-chain events.
 // Returns map: { [curveId]: { volume, trades, reserveSui, pctChange, recentTrades,
 //   lastTradeTime, lastPrice, firstPrice, volume24h, commentCount, devBuyMist,
@@ -16,14 +16,9 @@ const ONE_DAY_MS   = 24 * 60 * 60 * 1000;
 export function useTokenStats(tokens) {
   const client = useSuiClient();
   const [stats, setStats] = useState({});
-  const prevTokenIds = useRef('');
 
   useEffect(() => {
     if (!tokens || tokens.length === 0) return;
-
-    const ids = tokens.map(t => t.curveId).join(',');
-    if (ids === prevTokenIds.current) return;
-    prevTokenIds.current = ids;
 
     let cancelled = false;
 
