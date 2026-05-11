@@ -1,6 +1,6 @@
-// i18n v2 — full 6-language support
+// i18n v3 — full 7-language support
 // i18n.js — SuiPump translations
-// Languages: EN, ZH (Chinese), PT (Brazilian Portuguese), KO (Korean), VI (Vietnamese), RU (Russian)
+// Languages: EN, ZH (Chinese), PT (Brazilian Portuguese), KO (Korean), VI (Vietnamese), RU (Russian), ES (Spanish)
 
 export const LANGUAGES = [
   { code: 'en', label: 'EN', flag: '🇺🇸' },
@@ -9,6 +9,7 @@ export const LANGUAGES = [
   { code: 'ko', label: '한국어', flag: '🇰🇷' },
   { code: 'vi', label: 'VI', flag: '🇻🇳' },
   { code: 'ru', label: 'РУС', flag: '🇷🇺' },
+  { code: 'es', label: 'ES', flag: '🇪🇸' },
 ];
 
 export const translations = {
@@ -197,11 +198,21 @@ export const translations = {
 
     // Whitepaper
     whitepaperTitle: 'WHITEPAPER',
+
+    // Token page tabs
+    tradesTab: 'TRADES',
+    sortedByLastTrade: 'SORTED BY LAST TRADE',
+    marketCapFormula: 'MARKET CAP = PRICE × 1B SUPPLY',
+    failedToLoad: 'FAILED TO LOAD:',
+    confirming: 'CONFIRMING…',
+    claiming: 'CLAIMING…',
+    tokenGraduated: 'TOKEN GRADUATED',
+    share: 'SHARE',
+    linkCopied: 'LINK COPIED',
   },
 
   // ── CHINESE ──────────────────────────────────────────────────────────────
   zh: {
-    // Header
     testnet: '测试网',
     live: '运行中',
     s1Airdrop: 'S1 空投',
@@ -215,17 +226,14 @@ export const translations = {
     connect: '连接',
     disconnect: '断开',
     wallet: '钱包',
-
     heroTagline: 'Sui 上的无许可代币发行平台。',
     heroSub: '公平发行 · 无预挖 · 创作者获40%手续费 · 毕业至 Cetus',
     launchAToken: '发行代币',
     connectWalletToLaunch: '连接钱包以发行',
-
     tokens: '代币',
     trades: '交易',
     volume: '交易量',
     s1Pool: 'S1 池',
-
     newest: '最新',
     oldest: '最旧',
     trending: '🔥 热门',
@@ -235,24 +243,18 @@ export const translations = {
     tradesSort: '交易数',
     reserve: '储备',
     progress: '进度',
-
     searchPlaceholder: '搜索名称、符号或 0x 地址…',
-
     loadingTokens: '加载代币中…',
     tokensLaunched: '个代币已发行',
     tokensFound: '个代币',
     noTokensYet: '暂无代币',
     beFirstToLaunch: '成为 SuiPump 上第一个发行代币的人。',
-
     hot: '热门',
     communityCrown: '社区之冠',
     curve: '曲线',
     mcap: '市值',
-
     footerText: 'SUIPUMP · 测试网 · SUI 无许可代币发行平台 · 非投资建议',
-
     backToHome: '返回首页',
-
     bondingCurveProgress: '联合曲线进度',
     suiRaised: '已筹 SUI',
     suiTarget: 'SUI 目标',
@@ -283,7 +285,6 @@ export const translations = {
     graduatedToCetus: '该代币已毕业，现可在 Cetus DEX 上交易。',
     viewOnCetus: '在 Cetus 查看',
     socialLinks: '社交链接',
-
     launchATokenTitle: '发行代币',
     details: '详情',
     payouts: '收益',
@@ -313,7 +314,6 @@ export const translations = {
     of: '/',
     success: '代币已发行！🎉',
     viewToken: '查看代币',
-
     s1AirdropTitle: '第一赛季空投',
     airdropSubtitle: '50% 的主网协议费用将分配给早期交易者。',
     currentPool: '当前池',
@@ -322,7 +322,6 @@ export const translations = {
     eligibility2: '越早交易，份额越大',
     eligibility3: '无 KYC，无申请表 — 主网上线时自动分配',
     eligibility4: '无内部分配 — 100% 归社区所有',
-
     leaderboardTitle: '排行榜',
     leaderboardSub: '按 SuiPump 测试网总交易量排名。',
     topTokens: '热门代币',
@@ -332,7 +331,6 @@ export const translations = {
     rank: '#',
     loading: '加载中…',
     noData: '暂无数据。',
-
     portfolioTitle: '我的资产',
     connectToView: '连接钱包以查看您的资产。',
     holdings: '持有',
@@ -348,7 +346,6 @@ export const translations = {
     buys: '买入',
     sells: '卖出',
     valuesEstimate: '数值基于当前联合曲线价格估算 · 非投资建议',
-
     statsTitle: '协议数据',
     statsSub: 'SuiPump 测试网实时链上数据。',
     totalVolume: '总交易量',
@@ -363,12 +360,19 @@ export const translations = {
     topTokensByVolume: '按交易量排名前列代币',
     volumeLast7Days: '近7天交易量',
     feeBreakdown: '费用构成',
-
     roadmapTitle: '路线图',
     roadmapSub: '从测试网到加密世界领先的代币发行平台。',
     target: '目标',
-
     whitepaperTitle: '白皮书',
+    tradesTab: '交易',
+    sortedByLastTrade: '按最近交易排序',
+    marketCapFormula: '市值 = 价格 × 10亿供应量',
+    failedToLoad: '加载失败：',
+    confirming: '确认中…',
+    claiming: '领取中…',
+    tokenGraduated: '代币已毕业',
+    share: '分享',
+    linkCopied: '链接已复制',
   },
 
   // ── PORTUGUESE (BR) ──────────────────────────────────────────────────────
@@ -378,7 +382,7 @@ export const translations = {
     s1Airdrop: 'AIRDROP T1',
     stats: 'STATS',
     leaderboard: 'RANKING',
-    portfolio: 'PORTFÓLIO',
+    portfolio: 'PORTFOLIO',
     whitepaper: 'WHITEPAPER',
     roadmap: 'ROADMAP',
     launchToken: 'LANÇAR TOKEN',
@@ -386,17 +390,14 @@ export const translations = {
     connect: 'CONECTAR',
     disconnect: 'DESCONECTAR',
     wallet: 'CARTEIRA',
-
     heroTagline: 'Launchpad permissionless de tokens na Sui.',
     heroSub: 'Lançamento justo · Sem pré-mineração · 40% de taxas aos criadores · Gradua no Cetus',
     launchAToken: 'LANÇAR UM TOKEN',
     connectWalletToLaunch: 'CONECTE A CARTEIRA PARA LANÇAR',
-
     tokens: 'TOKENS',
     trades: 'TRADES',
     volume: 'VOLUME',
     s1Pool: 'POOL T1',
-
     newest: 'MAIS NOVOS',
     oldest: 'MAIS ANTIGOS',
     trending: '🔥 TENDÊNCIA',
@@ -406,24 +407,18 @@ export const translations = {
     tradesSort: 'TRADES',
     reserve: 'RESERVA',
     progress: 'PROGRESSO',
-
     searchPlaceholder: 'Buscar nome, símbolo ou endereço 0x…',
-
     loadingTokens: 'CARREGANDO TOKENS…',
     tokensLaunched: 'TOKENS LANÇADOS',
     tokensFound: 'TOKENS ENCONTRADOS',
     noTokensYet: 'NENHUM TOKEN AINDA',
     beFirstToLaunch: 'Seja o primeiro a lançar um token no SuiPump.',
-
     hot: 'QUENTE',
     communityCrown: 'COROA DA COMUNIDADE',
     curve: 'CURVA',
     mcap: 'MCAP',
-
     footerText: 'SUIPUMP · TESTNET · LAUNCHPAD PERMISSIONLESS NA SUI · NÃO É CONSELHO FINANCEIRO',
-
     backToHome: 'VOLTAR',
-
     bondingCurveProgress: 'PROGRESSO DA CURVA',
     suiRaised: 'SUI ARRECADADO',
     suiTarget: 'META SUI',
@@ -454,7 +449,6 @@ export const translations = {
     graduatedToCetus: 'Este token foi graduado e agora está no Cetus DEX.',
     viewOnCetus: 'VER NO CETUS',
     socialLinks: 'REDES SOCIAIS',
-
     launchATokenTitle: 'LANÇAR UM TOKEN',
     details: 'DETALHES',
     payouts: 'PAGAMENTOS',
@@ -484,7 +478,6 @@ export const translations = {
     of: 'de',
     success: 'Token lançado! 🎉',
     viewToken: 'VER TOKEN',
-
     s1AirdropTitle: 'AIRDROP TEMPORADA 1',
     airdropSubtitle: '50% das taxas do protocolo na mainnet vão para os primeiros traders.',
     currentPool: 'POOL ATUAL',
@@ -493,7 +486,6 @@ export const translations = {
     eligibility2: 'Quanto antes negociar, maior sua parte',
     eligibility3: 'Sem KYC, sem formulário — distribuído automaticamente no lançamento da mainnet',
     eligibility4: 'Sem alocação para insiders — 100% vai para a comunidade',
-
     leaderboardTitle: 'RANKING',
     leaderboardSub: 'Classificado por volume total de negociação no testnet do SuiPump.',
     topTokens: 'TOP TOKENS',
@@ -503,8 +495,7 @@ export const translations = {
     rank: '#',
     loading: 'Carregando…',
     noData: 'Sem dados ainda.',
-
-    portfolioTitle: 'PORTFÓLIO',
+    portfolioTitle: 'PORTFOLIO',
     connectToView: 'Conecte sua carteira para ver seu perfil.',
     holdings: 'POSIÇÕES',
     traded: 'NEGOCIADOS',
@@ -519,7 +510,6 @@ export const translations = {
     buys: 'COMPRAS',
     sells: 'VENDAS',
     valuesEstimate: 'VALORES SÃO ESTIMATIVAS COM BASE NO PREÇO ATUAL DA CURVA · NÃO É CONSELHO FINANCEIRO',
-
     statsTitle: 'STATS DO PROTOCOLO',
     statsSub: 'Métricas on-chain ao vivo do testnet do SuiPump.',
     totalVolume: 'VOLUME TOTAL',
@@ -534,12 +524,19 @@ export const translations = {
     topTokensByVolume: 'TOP TOKENS POR VOLUME',
     volumeLast7Days: 'VOLUME — ÚLTIMOS 7 DIAS',
     feeBreakdown: 'DISTRIBUIÇÃO DE TAXAS',
-
     roadmapTitle: 'ROADMAP',
     roadmapSub: 'Do testnet ao launchpad de tokens líder em cripto.',
     target: 'META',
-
     whitepaperTitle: 'WHITEPAPER',
+    tradesTab: 'TRADES',
+    sortedByLastTrade: 'ORDENADO POR ÚLTIMO TRADE',
+    marketCapFormula: 'MARKET CAP = PREÇO × 1B DE FORNECIMENTO',
+    failedToLoad: 'FALHA AO CARREGAR:',
+    confirming: 'CONFIRMANDO…',
+    claiming: 'SACANDO…',
+    tokenGraduated: 'TOKEN GRADUADO',
+    share: 'COMPARTILHAR',
+    linkCopied: 'LINK COPIADO',
   },
 
   // ── KOREAN ───────────────────────────────────────────────────────────────
@@ -557,17 +554,14 @@ export const translations = {
     connect: '지갑 연결',
     disconnect: '연결 해제',
     wallet: '지갑',
-
     heroTagline: 'Sui의 무허가 토큰 런치패드.',
     heroSub: '공정 출시 · 프리마이닝 없음 · 크리에이터 수수료 40% · Cetus로 졸업',
     launchAToken: '토큰 출시하기',
     connectWalletToLaunch: '출시하려면 지갑을 연결하세요',
-
     tokens: '토큰',
     trades: '거래',
     volume: '거래량',
     s1Pool: 'S1 풀',
-
     newest: '최신순',
     oldest: '오래된순',
     trending: '🔥 트렌딩',
@@ -577,24 +571,18 @@ export const translations = {
     tradesSort: '거래 수',
     reserve: '보유량',
     progress: '진행도',
-
     searchPlaceholder: '이름, 심볼 또는 0x 주소 검색…',
-
     loadingTokens: '토큰 로딩 중…',
     tokensLaunched: '개 토큰 출시됨',
     tokensFound: '개 토큰 발견됨',
     noTokensYet: '아직 토큰 없음',
     beFirstToLaunch: 'SuiPump에서 첫 번째로 토큰을 출시하세요.',
-
     hot: '핫',
     communityCrown: '커뮤니티 크라운',
     curve: '곡선',
     mcap: '시총',
-
     footerText: 'SUIPUMP · 테스트넷 · SUI 무허가 토큰 런치패드 · 투자 조언 아님',
-
     backToHome: '홈으로',
-
     bondingCurveProgress: '본딩 커브 진행률',
     suiRaised: '모인 SUI',
     suiTarget: 'SUI 목표',
@@ -625,7 +613,6 @@ export const translations = {
     graduatedToCetus: '이 토큰은 졸업하여 Cetus DEX에서 거래됩니다.',
     viewOnCetus: 'Cetus에서 보기',
     socialLinks: '소셜 링크',
-
     launchATokenTitle: '토큰 출시하기',
     details: '세부 정보',
     payouts: '수익 배분',
@@ -655,7 +642,6 @@ export const translations = {
     of: '/',
     success: '토큰 출시 완료! 🎉',
     viewToken: '토큰 보기',
-
     s1AirdropTitle: '시즌 1 에어드랍',
     airdropSubtitle: '메인넷 프로토콜 수수료의 50%가 초기 거래자에게 지급됩니다.',
     currentPool: '현재 풀',
@@ -664,7 +650,6 @@ export const translations = {
     eligibility2: '빨리 거래할수록 더 많은 몫을 받습니다',
     eligibility3: 'KYC 없음, 신청서 없음 — 메인넷 출시 시 자동 지급',
     eligibility4: '내부자 배분 없음 — 100% 커뮤니티에게',
-
     leaderboardTitle: '리더보드',
     leaderboardSub: 'SuiPump 테스트넷 총 거래량 기준 순위.',
     topTokens: '상위 토큰',
@@ -674,7 +659,6 @@ export const translations = {
     rank: '#',
     loading: '로딩 중…',
     noData: '데이터 없음.',
-
     portfolioTitle: '포트폴리오',
     connectToView: '지갑을 연결하여 프로필을 확인하세요.',
     holdings: '보유 중',
@@ -690,7 +674,6 @@ export const translations = {
     buys: '매수',
     sells: '매도',
     valuesEstimate: '현재 본딩 커브 가격 기준 추정값 · 투자 조언 아님',
-
     statsTitle: '프로토콜 통계',
     statsSub: 'SuiPump 테스트넷 실시간 온체인 지표.',
     totalVolume: '총 거래량',
@@ -705,12 +688,19 @@ export const translations = {
     topTokensByVolume: '거래량 상위 토큰',
     volumeLast7Days: '최근 7일 거래량',
     feeBreakdown: '수수료 구성',
-
     roadmapTitle: '로드맵',
     roadmapSub: '테스트넷에서 크립토 최고 토큰 런치패드로.',
     target: '목표',
-
     whitepaperTitle: '백서',
+    tradesTab: '거래',
+    sortedByLastTrade: '최근 거래순 정렬',
+    marketCapFormula: '시총 = 가격 × 10억 공급량',
+    failedToLoad: '로드 실패:',
+    confirming: '확인 중…',
+    claiming: '청구 중…',
+    tokenGraduated: '토큰 졸업',
+    share: '공유',
+    linkCopied: '링크 복사됨',
   },
 
   // ── VIETNAMESE ───────────────────────────────────────────────────────────
@@ -728,17 +718,14 @@ export const translations = {
     connect: 'KẾT NỐI',
     disconnect: 'NGẮT KẾT NỐI',
     wallet: 'VÍ',
-
     heroTagline: 'Nền tảng phát hành token không cần phép trên Sui.',
     heroSub: 'Ra mắt công bằng · Không pre-mine · 40% phí về tay người tạo · Tốt nghiệp lên Cetus',
     launchAToken: 'PHÁT HÀNH TOKEN',
     connectWalletToLaunch: 'KẾT NỐI VÍ ĐỂ PHÁT HÀNH',
-
     tokens: 'TOKEN',
     trades: 'GIAO DỊCH',
     volume: 'KHỐI LƯỢNG',
     s1Pool: 'QUỸ MÙA 1',
-
     newest: 'MỚI NHẤT',
     oldest: 'CŨ NHẤT',
     trending: '🔥 XU HƯỚNG',
@@ -748,24 +735,18 @@ export const translations = {
     tradesSort: 'SỐ GIAO DỊCH',
     reserve: 'DỰ TRỮ',
     progress: 'TIẾN ĐỘ',
-
     searchPlaceholder: 'Tìm tên, ký hiệu hoặc địa chỉ 0x…',
-
     loadingTokens: 'ĐANG TẢI TOKEN…',
     tokensLaunched: 'TOKEN ĐÃ PHÁT HÀNH',
     tokensFound: 'TOKEN TÌM THẤY',
     noTokensYet: 'CHƯA CÓ TOKEN',
     beFirstToLaunch: 'Hãy là người đầu tiên phát hành token trên SuiPump.',
-
     hot: 'HOT',
     communityCrown: 'VƯƠNG MIỆN CỘNG ĐỒNG',
     curve: 'ĐƯỜNG CONG',
     mcap: 'VỐN HÓA',
-
     footerText: 'SUIPUMP · TESTNET · NỀN TẢNG PHÁT HÀNH TOKEN TRÊN SUI · KHÔNG PHẢI TƯ VẤN TÀI CHÍNH',
-
     backToHome: 'VỀ TRANG CHỦ',
-
     bondingCurveProgress: 'TIẾN ĐỘ ĐƯỜNG CONG',
     suiRaised: 'SUI ĐÃ HUY ĐỘNG',
     suiTarget: 'MỤC TIÊU SUI',
@@ -796,7 +777,6 @@ export const translations = {
     graduatedToCetus: 'Token này đã tốt nghiệp và đang giao dịch trên Cetus DEX.',
     viewOnCetus: 'XEM TRÊN CETUS',
     socialLinks: 'LIÊN KẾT MẠNG XÃ HỘI',
-
     launchATokenTitle: 'PHÁT HÀNH TOKEN',
     details: 'CHI TIẾT',
     payouts: 'THANH TOÁN',
@@ -826,7 +806,6 @@ export const translations = {
     of: 'của',
     success: 'Token đã phát hành! 🎉',
     viewToken: 'XEM TOKEN',
-
     s1AirdropTitle: 'AIRDROP MÙA 1',
     airdropSubtitle: '50% phí giao thức mainnet sẽ được phân phối cho các nhà giao dịch sớm.',
     currentPool: 'QUỸ HIỆN TẠI',
@@ -835,7 +814,6 @@ export const translations = {
     eligibility2: 'Giao dịch càng sớm, phần chia càng lớn',
     eligibility3: 'Không KYC, không đơn đăng ký — phân phối tự động khi mainnet ra mắt',
     eligibility4: 'Không phân bổ nội bộ — 100% cho cộng đồng',
-
     leaderboardTitle: 'BẢNG XẾP HẠNG',
     leaderboardSub: 'Xếp hạng theo tổng khối lượng giao dịch trên testnet SuiPump.',
     topTokens: 'TOP TOKEN',
@@ -845,7 +823,6 @@ export const translations = {
     rank: '#',
     loading: 'Đang tải…',
     noData: 'Chưa có dữ liệu.',
-
     portfolioTitle: 'TÀI SẢN',
     connectToView: 'Kết nối ví để xem hồ sơ của bạn.',
     holdings: 'ĐANG NẮM GIỮ',
@@ -861,7 +838,6 @@ export const translations = {
     buys: 'MUA',
     sells: 'BÁN',
     valuesEstimate: 'GIÁ TRỊ ƯỚC TÍNH THEO GIÁ ĐƯỜNG CONG HIỆN TẠI · KHÔNG PHẢI TƯ VẤN TÀI CHÍNH',
-
     statsTitle: 'THỐNG KÊ GIAO THỨC',
     statsSub: 'Dữ liệu on-chain trực tiếp từ testnet SuiPump.',
     totalVolume: 'TỔNG KHỐI LƯỢNG',
@@ -876,12 +852,19 @@ export const translations = {
     topTokensByVolume: 'TOP TOKEN THEO KHỐI LƯỢNG',
     volumeLast7Days: 'KHỐI LƯỢNG 7 NGÀY QUA',
     feeBreakdown: 'CƠ CẤU PHÍ',
-
     roadmapTitle: 'LỘ TRÌNH',
     roadmapSub: 'Từ testnet đến nền tảng phát hành token hàng đầu trong crypto.',
     target: 'MỤC TIÊU',
-
     whitepaperTitle: 'WHITEPAPER',
+    tradesTab: 'GIAO DỊCH',
+    sortedByLastTrade: 'SẮP XẾP THEO GIAO DỊCH GẦN NHẤT',
+    marketCapFormula: 'VỐN HÓA = GIÁ × 1 TỶ CUNG',
+    failedToLoad: 'TẢI THẤT BẠI:',
+    confirming: 'ĐANG XÁC NHẬN…',
+    claiming: 'ĐANG RÚT…',
+    tokenGraduated: 'TOKEN TỐT NGHIỆP',
+    share: 'CHIA SẺ',
+    linkCopied: 'ĐÃ SAO CHÉP LIÊN KẾT',
   },
 
   // ── RUSSIAN ──────────────────────────────────────────────────────────────
@@ -899,17 +882,14 @@ export const translations = {
     connect: 'ПОДКЛЮЧИТЬ',
     disconnect: 'ОТКЛЮЧИТЬ',
     wallet: 'КОШЕЛЁК',
-
     heroTagline: 'Беспрепятственный лаунчпад токенов на Sui.',
     heroSub: 'Честный запуск · Без пре-майнинга · 40% комиссий создателям · Выпуск на Cetus',
     launchAToken: 'ВЫПУСТИТЬ ТОКЕН',
     connectWalletToLaunch: 'ПОДКЛЮЧИТЕ КОШЕЛЁК ДЛЯ ЗАПУСКА',
-
     tokens: 'ТОКЕНЫ',
     trades: 'СДЕЛКИ',
     volume: 'ОБЪЁМ',
     s1Pool: 'ПУЛ S1',
-
     newest: 'НОВЫЕ',
     oldest: 'СТАРЫЕ',
     trending: '🔥 ТРЕНДЫ',
@@ -919,24 +899,18 @@ export const translations = {
     tradesSort: 'СДЕЛКИ',
     reserve: 'РЕЗЕРВ',
     progress: 'ПРОГРЕСС',
-
     searchPlaceholder: 'Поиск по названию, символу или 0x адресу…',
-
     loadingTokens: 'ЗАГРУЗКА ТОКЕНОВ…',
     tokensLaunched: 'ТОКЕНОВ ВЫПУЩЕНО',
     tokensFound: 'ТОКЕНОВ НАЙДЕНО',
     noTokensYet: 'ТОКЕНОВ ЕЩЁ НЕТ',
     beFirstToLaunch: 'Станьте первым, кто выпустит токен на SuiPump.',
-
     hot: 'ГОРЯЧИЙ',
     communityCrown: 'КОРОНА СООБЩЕСТВА',
     curve: 'КРИВАЯ',
     mcap: 'КАПА',
-
     footerText: 'SUIPUMP · ТЕСТНЕТ · БЕСПРЕПЯТСТВЕННЫЙ ЛАУНЧПАД НА SUI · НЕ ИНВЕСТИЦИОННЫЙ СОВЕТ',
-
     backToHome: 'НА ГЛАВНУЮ',
-
     bondingCurveProgress: 'ПРОГРЕСС КРИВОЙ',
     suiRaised: 'SUI СОБРАНО',
     suiTarget: 'ЦЕЛЬ SUI',
@@ -967,7 +941,6 @@ export const translations = {
     graduatedToCetus: 'Токен выпущен и торгуется на Cetus DEX.',
     viewOnCetus: 'СМОТРЕТЬ НА CETUS',
     socialLinks: 'СОЦИАЛЬНЫЕ СЕТИ',
-
     launchATokenTitle: 'ВЫПУСТИТЬ ТОКЕН',
     details: 'ДЕТАЛИ',
     payouts: 'ВЫПЛАТЫ',
@@ -997,7 +970,6 @@ export const translations = {
     of: 'из',
     success: 'Токен запущен! 🎉',
     viewToken: 'СМОТРЕТЬ ТОКЕН',
-
     s1AirdropTitle: 'АИРДРОП S1',
     airdropSubtitle: '50% всех комиссий протокола на майннете идут ранним трейдерам.',
     currentPool: 'ТЕКУЩИЙ ПУЛ',
@@ -1006,7 +978,6 @@ export const translations = {
     eligibility2: 'Чем раньше торгуете, тем больше доля',
     eligibility3: 'Без KYC и заявок — раздача автоматическая при запуске майннета',
     eligibility4: 'Никаких инсайдерских распределений — 100% сообществу',
-
     leaderboardTitle: 'РЕЙТИНГ',
     leaderboardSub: 'Ранжирование по общему объёму торгов на тестнете SuiPump.',
     topTokens: 'ТОП ТОКЕНЫ',
@@ -1016,7 +987,6 @@ export const translations = {
     rank: '#',
     loading: 'Загрузка…',
     noData: 'Данных нет.',
-
     portfolioTitle: 'ПОРТФЕЛЬ',
     connectToView: 'Подключите кошелёк для просмотра профиля.',
     holdings: 'БАЛАНС',
@@ -1032,7 +1002,6 @@ export const translations = {
     buys: 'ПОКУПКИ',
     sells: 'ПРОДАЖИ',
     valuesEstimate: 'ОЦЕНКИ ОСНОВАНЫ НА ТЕКУЩЕЙ ЦЕНЕ КРИВОЙ · НЕ ИНВЕСТИЦИОННЫЙ СОВЕТ',
-
     statsTitle: 'СТАТИСТИКА ПРОТОКОЛА',
     statsSub: 'Данные on-chain в реальном времени с тестнета SuiPump.',
     totalVolume: 'ОБЩИЙ ОБЪЁМ',
@@ -1047,12 +1016,218 @@ export const translations = {
     topTokensByVolume: 'ТОП ТОКЕНЫ ПО ОБЪЁМУ',
     volumeLast7Days: 'ОБЪЁМ ЗА 7 ДНЕЙ',
     feeBreakdown: 'СТРУКТУРА КОМИССИЙ',
-
     roadmapTitle: 'РОАДМАП',
     roadmapSub: 'От тестнета до ведущего лаунчпада токенов в крипте.',
     target: 'ЦЕЛЬ',
-
     whitepaperTitle: 'ВАЙТПЕЙПЕР',
+    tradesTab: 'СДЕЛКИ',
+    sortedByLastTrade: 'СОРТИРОВКА ПО ПОСЛЕДНЕЙ СДЕЛКЕ',
+    marketCapFormula: 'КАПА = ЦЕНА × 1 МЛРД ТОКЕНОВ',
+    failedToLoad: 'ОШИБКА ЗАГРУЗКИ:',
+    confirming: 'ПОДТВЕРЖДЕНИЕ…',
+    claiming: 'ПОЛУЧЕНИЕ…',
+    tokenGraduated: 'ТОКЕН ВЫПУЩЕН',
+    share: 'ПОДЕЛИТЬСЯ',
+    linkCopied: 'ССЫЛКА СКОПИРОВАНА',
+  },
+
+  // ── SPANISH ──────────────────────────────────────────────────────────────
+  es: {
+    // Header
+    testnet: 'TESTNET',
+    live: 'EN VIVO',
+    s1Airdrop: 'AIRDROP T1',
+    stats: 'STATS',
+    leaderboard: 'RANKING',
+    portfolio: 'PORTAFOLIO',
+    whitepaper: 'WHITEPAPER',
+    roadmap: 'ROADMAP',
+    launchToken: 'LANZAR TOKEN',
+    launch: 'LANZAR',
+    connect: 'CONECTAR',
+    disconnect: 'DESCONECTAR',
+    wallet: 'BILLETERA',
+
+    // Hero
+    heroTagline: 'Plataforma de lanzamiento de tokens sin permisos en Sui.',
+    heroSub: 'Lanzamiento justo · Sin pre-minado · 40% de comisiones a creadores · Gradúa en Cetus',
+    launchAToken: 'LANZAR UN TOKEN',
+    connectWalletToLaunch: 'CONECTA TU BILLETERA PARA LANZAR',
+
+    // Stats bar
+    tokens: 'TOKENS',
+    trades: 'TRADES',
+    volume: 'VOLUMEN',
+    s1Pool: 'POOL T1',
+
+    // Sort
+    newest: 'MÁS NUEVOS',
+    oldest: 'MÁS ANTIGUOS',
+    trending: '🔥 TENDENCIA',
+    lastTrade: 'ÚLTIMO TRADE',
+    marketCap: 'CAP. DE MERCADO',
+    volumeSort: 'VOLUMEN',
+    tradesSort: 'TRADES',
+    reserve: 'RESERVA',
+    progress: 'PROGRESO',
+
+    // Search
+    searchPlaceholder: 'Buscar nombre, símbolo o dirección 0x…',
+
+    // Token grid
+    loadingTokens: 'CARGANDO TOKENS…',
+    tokensLaunched: 'TOKENS LANZADOS',
+    tokensFound: 'TOKENS ENCONTRADOS',
+    noTokensYet: 'AÚN NO HAY TOKENS',
+    beFirstToLaunch: 'Sé el primero en lanzar un token en SuiPump.',
+
+    // Token card
+    hot: 'CALIENTE',
+    communityCrown: 'CORONA DE LA COMUNIDAD',
+    curve: 'CURVA',
+    mcap: 'MCAP',
+
+    // Footer
+    footerText: 'SUIPUMP · TESTNET · PLATAFORMA DE LANZAMIENTO SIN PERMISOS EN SUI · NO ES ASESORAMIENTO FINANCIERO',
+
+    // Back nav
+    backToHome: 'VOLVER AL INICIO',
+
+    // TokenPage
+    bondingCurveProgress: 'PROGRESO DE LA CURVA',
+    suiRaised: 'SUI RECAUDADO',
+    suiTarget: 'META SUI',
+    price: 'PRECIO',
+    inSui: 'EN SUI',
+    trade: 'OPERAR',
+    buy: 'COMPRAR',
+    sell: 'VENDER',
+    amount: 'CANTIDAD (SUI)',
+    max: 'MÁX',
+    youReceive: 'RECIBES',
+    priceImpact: 'IMPACTO EN EL PRECIO',
+    minReceived: 'MÍN RECIBIDO',
+    fee: 'COMISIÓN',
+    slippage: 'SLIPPAGE',
+    creatorFees: 'COMISIONES DEL CREADOR',
+    claimFees: 'RECLAMAR COMISIONES',
+    graduated: 'GRADUADO',
+    tradeToCetus: 'Token graduado — opera en Cetus DEX',
+    holders: 'TENEDORES',
+    tradeHistory: 'TRADES',
+    comments: 'COMENTARIOS',
+    noCommentsYet: 'Sin comentarios aún. ¡Sé el primero!',
+    writeComment: 'Escribe un comentario… (Enter para publicar)',
+    copyCA: 'COPIAR CA',
+    copied: 'COPIADO',
+    graduationComplete: 'GRADUACIÓN COMPLETA',
+    graduatedToCetus: 'Este token ha graduado y ahora opera en Cetus DEX.',
+    viewOnCetus: 'VER EN CETUS',
+    socialLinks: 'REDES SOCIALES',
+
+    // LaunchModal
+    launchATokenTitle: 'LANZAR UN TOKEN',
+    details: 'DETALLES',
+    payouts: 'PAGOS',
+    devBuy: 'COMPRA DEV',
+    preview: 'VISTA PREVIA',
+    tokenName: 'NOMBRE DEL TOKEN',
+    symbol: 'SÍMBOLO',
+    description: 'DESCRIPCIÓN',
+    tokenIcon: 'ÍCONO DEL TOKEN',
+    uploadImage: 'SUBIR IMAGEN',
+    orPasteUrl: 'o pega la URL (.gif ok)',
+    iconUrl: 'URL DEL ÍCONO',
+    next: 'SIGUIENTE',
+    back: 'ATRÁS',
+    launchFee: 'TARIFA DE LANZAMIENTO',
+    total: 'TOTAL',
+    devBuyAmount: 'COMPRA DEV (SUI)',
+    devBuyHint: 'Opcional — compra tokens al lanzar. Deja en blanco para omitir.',
+    devBuyWarning: '⚠ Las compras grandes del dev son visibles en cadena y pueden reducir la confianza de la comunidad.',
+    payoutAddress: 'DIRECCIÓN',
+    payoutShare: 'PORCENTAJE %',
+    addPayout: '+ AGREGAR DESTINATARIO',
+    twoSignaturesRequired: 'Se requieren dos firmas de billetera',
+    publishing: 'Publicando módulo del token…',
+    creating: 'Creando curva de bonding…',
+    approveInWallet: 'Aprueba en tu billetera',
+    of: 'de',
+    success: '¡Token lanzado! 🎉',
+    viewToken: 'VER TOKEN',
+
+    // Airdrop
+    s1AirdropTitle: 'AIRDROP TEMPORADA 1',
+    airdropSubtitle: 'El 50% de todas las comisiones del protocolo en mainnet van a los traders tempranos.',
+    currentPool: 'POOL ACTUAL',
+    eligibilityTitle: 'CÓMO GANAR',
+    eligibility1: 'Opera en testnet — se registra toda billetera que opera',
+    eligibility2: 'Cuanto antes operes, mayor será tu parte',
+    eligibility3: 'Sin KYC ni formularios — distribuido automáticamente al lanzar mainnet',
+    eligibility4: 'Sin asignación interna — el 100% va a la comunidad',
+
+    // Leaderboard
+    leaderboardTitle: 'RANKING',
+    leaderboardSub: 'Clasificado por volumen total de operaciones en el testnet de SuiPump.',
+    topTokens: 'TOP TOKENS',
+    topTraders: 'TOP TRADERS',
+    token: 'TOKEN',
+    trader: 'TRADER',
+    rank: '#',
+    loading: 'Cargando…',
+    noData: 'Sin datos aún.',
+
+    // Portfolio
+    portfolioTitle: 'PORTAFOLIO',
+    connectToView: 'Conecta tu billetera para ver tu perfil.',
+    holdings: 'POSICIONES',
+    traded: 'OPERADOS',
+    created: 'CREADOS',
+    noHoldings: 'No hay tokens SuiPump en esta billetera.',
+    noTrades: 'No se encontraron operaciones para esta billetera.',
+    noCreated: 'No hay tokens lanzados por esta billetera.',
+    totalValue: 'VALOR TOTAL',
+    pnl: 'PNL',
+    spent: 'GASTADO',
+    received: 'RECIBIDO',
+    buys: 'COMPRAS',
+    sells: 'VENTAS',
+    valuesEstimate: 'LOS VALORES SON ESTIMACIONES BASADAS EN EL PRECIO ACTUAL DE LA CURVA · NO ES ASESORAMIENTO FINANCIERO',
+
+    // Stats
+    statsTitle: 'STATS DEL PROTOCOLO',
+    statsSub: 'Métricas on-chain en vivo del testnet de SuiPump.',
+    totalVolume: 'VOLUMEN TOTAL',
+    protocolFees: 'COMISIONES DEL PROTOCOLO',
+    creatorFeesTotal: 'COMISIONES DE CREADORES',
+    lpFees: 'COMISIONES LP',
+    totalTrades: 'TOTAL TRADES',
+    totalBuys: 'COMPRAS',
+    totalSells: 'VENTAS',
+    graduations: 'GRADUACIONES',
+    s1AirdropPool: 'POOL AIRDROP T1',
+    topTokensByVolume: 'TOP TOKENS POR VOLUMEN',
+    volumeLast7Days: 'VOLUMEN — ÚLTIMOS 7 DÍAS',
+    feeBreakdown: 'DESGLOSE DE COMISIONES',
+
+    // Roadmap
+    roadmapTitle: 'ROADMAP',
+    roadmapSub: 'Del testnet a la plataforma de lanzamiento de tokens líder en cripto.',
+    target: 'META',
+
+    // Whitepaper
+    whitepaperTitle: 'WHITEPAPER',
+
+    // Token page tabs
+    tradesTab: 'TRADES',
+    sortedByLastTrade: 'ORDENADO POR ÚLTIMO TRADE',
+    marketCapFormula: 'CAP. = PRECIO × 1.000M DE TOKENS',
+    failedToLoad: 'ERROR AL CARGAR:',
+    confirming: 'CONFIRMANDO…',
+    claiming: 'RECLAMANDO…',
+    tokenGraduated: 'TOKEN GRADUADO',
+    share: 'COMPARTIR',
+    linkCopied: 'ENLACE COPIADO',
   },
 };
 
