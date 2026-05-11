@@ -319,7 +319,7 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch
           {stats?.trades > 0 && (
             <span>{stats.trades} trades</span>
           )}
-          {stats?.holderCount != null && (
+          {stats?.holderCount > 0 && (
             <span className="flex items-center gap-0.5">
               <Users size={8} /> {stats.holderCount}
             </span>
