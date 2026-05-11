@@ -1,4 +1,4 @@
-// v15-pnl-fix
+// v16-holdercount
 // App.jsx  -  react-router-dom based routing
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, useNavigate, useParams, Link, useLocation } from 'react-router-dom';
@@ -318,6 +318,11 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch
           )}
           {stats?.trades > 0 && (
             <span>{stats.trades} trades</span>
+          )}
+          {stats?.holderCount != null && (
+            <span className="flex items-center gap-0.5">
+              <Users size={8} /> {stats.holderCount}
+            </span>
           )}
           {stats?.commentCount > 0 && (
             <span className="flex items-center gap-0.5">
