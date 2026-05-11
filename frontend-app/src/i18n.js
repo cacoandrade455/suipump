@@ -1,3 +1,4 @@
+// i18n v2 — full 6-language support
 // i18n.js — SuiPump translations
 // Languages: EN, ZH (Chinese), PT (Brazilian Portuguese), KO (Korean), VI (Vietnamese), RU (Russian)
 
