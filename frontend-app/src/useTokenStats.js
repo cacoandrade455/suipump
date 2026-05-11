@@ -1,5 +1,5 @@
-// useTokenStats.js  v16-holdercount
-// Per-token stats computed from on-chain events + holder count via coin query.
+// useTokenStats.js  v16-holdercount-fix
+// Per-token stats computed from on-chain events.
 // Returns map: { [curveId]: { volume, trades, reserveSui, pctChange, recentTrades,
 //   lastTradeTime, lastPrice, firstPrice, volume24h, commentCount, devBuyMist,
 //   sparkline24h, holderCount } }
@@ -13,55 +13,11 @@ const MIST_PER_SUI = 1e9;
 const ONE_HOUR_MS  = 60 * 60 * 1000;
 const ONE_DAY_MS   = 24 * 60 * 60 * 1000;
 
-// Count unique non-zero holders for a given coin type.
-// Uses getAllCoins with cursor pagination. Returns a number.
-async function fetchHolderCount(client, coinType) {
-  const holders = new Set();
-  let cursor = null;
-  let pages = 0;
-  // Safety cap: max 20 pages (each page ~50 objects) = 1000 coin objects
-  // More than enough for testnet; revisit with indexer on mainnet
-  while (pages < 20) {
-    let result;
-    try {
-      result = await client.getAllCoins({ coinType, cursor, limit: 50 });
-    } catch {
-      break;
-    }
-    for (const coin of result.data) {
-      // Only count wallets with a non-zero balance
-      if (coin.balance && coin.balance !== '0') {
-        holders.add(coin.previousTransaction
-          ? coin.coinObjectId // unique object per owner address isn't exposed; use owner
-          : coin.coinObjectId
-        );
-        // getOwner not directly on coin objects from getAllCoins —
-        // we count unique coinObjectIds as a lower bound, then dedupe by
-        // querying owner field if present
-        if (coin.owner) {
-          const ownerAddr =
-            typeof coin.owner === 'string'
-              ? coin.owner
-              : coin.owner?.AddressOwner ?? coin.owner?.ObjectOwner ?? null;
-          if (ownerAddr) holders.add(ownerAddr);
-        }
-      }
-    }
-    if (!result.hasNextPage) break;
-    cursor = result.nextCursor;
-    pages++;
-  }
-  return holders.size;
-}
-
 export function useTokenStats(tokens) {
   const client = useSuiClient();
   const [stats, setStats] = useState({});
-  // holderCounts stored separately so they merge without clobbering event stats
-  const holderCountsRef = useRef({});
   const prevTokenIds = useRef('');
 
-  // ── Main stats loop (events) — runs every 30s ───────────────────────────────
   useEffect(() => {
     if (!tokens || tokens.length === 0) return;
 
@@ -94,6 +50,9 @@ export function useTokenStats(tokens) {
         const now = Date.now();
         const map = {};
 
+        // per-curve balance maps for holder count: curveId -> Map<addr, bigint>
+        const balanceMaps = {};
+
         const ensure = (curveId) => {
           if (!map[curveId]) {
             map[curveId] = {
@@ -104,10 +63,9 @@ export function useTokenStats(tokens) {
               commentCount: 0,
               devBuyMist: 0,
               sparkline24h: [],
-              // holderCount seeded from last known value so card shows stale
-              // data rather than blank while the slow pass runs
-              holderCount: holderCountsRef.current[curveId] ?? null,
+              holderCount: null,
             };
+            balanceMaps[curveId] = new Map();
           }
           return map[curveId];
         };
@@ -133,6 +91,13 @@ export function useTokenStats(tokens) {
               s.sparkline24h.push({ t: ts, p: price });
             }
           }
+          // track balance for holder count
+          const buyer = j.buyer;
+          const tokensRaw = BigInt(j.tokens_out ?? 0);
+          if (buyer && tokensRaw > 0n) {
+            const bm = balanceMaps[j.curve_id];
+            bm.set(buyer, (bm.get(buyer) ?? 0n) + tokensRaw);
+          }
         }
 
         // ── Sells ─────────────────────────────────────────────────────────
@@ -156,9 +121,16 @@ export function useTokenStats(tokens) {
               s.sparkline24h.push({ t: ts, p: price });
             }
           }
+          // track balance for holder count
+          const seller = j.seller;
+          const tokensRaw = BigInt(j.tokens_in ?? 0);
+          if (seller && tokensRaw > 0n) {
+            const bm = balanceMaps[j.curve_id];
+            bm.set(seller, (bm.get(seller) ?? 0n) - tokensRaw);
+          }
         }
 
-        // Fix lastTradeTime — take max across both streams per curve
+        // Fix lastTradeTime + sparkline + holderCount per curve
         for (const curveId of Object.keys(map)) {
           const s = map[curveId];
           let latestTs = s.lastTradeTime ?? 0;
@@ -168,8 +140,11 @@ export function useTokenStats(tokens) {
             if (ts > latestTs) latestTs = ts;
           }
           s.lastTradeTime = latestTs || null;
-          // Sort sparkline oldest→newest
           s.sparkline24h.sort((a, b) => a.t - b.t);
+
+          // holderCount = wallets with net positive token balance
+          const bm = balanceMaps[curveId];
+          s.holderCount = [...bm.values()].filter(bal => bal > 0n).length;
         }
 
         // ── Comments ──────────────────────────────────────────────────────
@@ -208,49 +183,6 @@ export function useTokenStats(tokens) {
     load();
     const interval = setInterval(load, 30_000);
     return () => { cancelled = true; clearInterval(interval); };
-  }, [tokens, client]);
-
-  // ── Holder count loop — runs every 60s, staggered 5s after mount ────────────
-  // Runs independently so it never blocks event stats from rendering.
-  // Results are merged into stats state via a functional update.
-  useEffect(() => {
-    if (!tokens || tokens.length === 0) return;
-
-    // Only tokens that have a tokenType can be queried
-    const queryable = tokens.filter(t => t.tokenType);
-    if (queryable.length === 0) return;
-
-    let cancelled = false;
-
-    async function loadHolders() {
-      // Process tokens one at a time to avoid hammering the RPC
-      for (const token of queryable) {
-        if (cancelled) return;
-        try {
-          const count = await fetchHolderCount(client, token.tokenType);
-          if (cancelled) return;
-          // Cache in ref so next event-stats pass seeds from it
-          holderCountsRef.current[token.curveId] = count;
-          // Merge into stats state without overwriting other fields
-          setStats(prev => {
-            if (!prev[token.curveId]) return prev;
-            return {
-              ...prev,
-              [token.curveId]: { ...prev[token.curveId], holderCount: count },
-            };
-          });
-        } catch {
-          // Non-fatal — leave holderCount as whatever it was
-        }
-        // Small delay between tokens to be polite to the RPC
-        await new Promise(r => setTimeout(r, 300));
-      }
-    }
-
-    // Stagger 5s after mount so event stats render first
-    const initial = setTimeout(loadHolders, 5_000);
-    const interval = setInterval(loadHolders, 60_000);
-    return () => { cancelled = true; clearTimeout(initial); clearInterval(interval); };
   }, [tokens, client]);
 
   return stats;

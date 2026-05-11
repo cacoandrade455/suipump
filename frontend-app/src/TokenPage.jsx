@@ -847,7 +847,7 @@ function TradesHoldersBlock({ curveId, tokenType, suiUsd, lang }) {
               : 'text-white/40 hover:text-white/70'
           }`}
         >
-          {t(lang, 'tradesTab')}
+          TRADES
         </button>
         <button
           onClick={() => setTab('holders')}
