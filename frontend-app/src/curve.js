@@ -1,89 +1,91 @@
-// curve.js  -  bonding curve math helpers
-// Mirrors the Move contract exactly.
-// Calling convention (matches TokenPage.jsx):
-//   buyQuote(realSuiReserve, tokensRemaining, suiInMist)
-//   sellQuote(realSuiReserve, tokensRemaining, tokensInAtomic)
+// curve.js
+// Calling convention matches TokenPage.jsx exactly:
+//   buyQuote(reserveMist, tokensRemaining, suiInMist)
+//   sellQuote(reserveMist, tokensRemaining, tokensInAtomic)
+// All BigInt inputs, all BigInt outputs.
 
-import {
-  TRADE_FEE_BPS, CREATOR_SHARE_BPS, PROTOCOL_SHARE_BPS,
-  CURVE_SUPPLY, VIRTUAL_SUI, VIRTUAL_TOKENS, MIST_PER_SUI, TOKEN_DECIMALS,
-} from './constants.js';
+const VIRTUAL_SUI_SUI = 30000;
+const VIRTUAL_TOKENS_WHOLE = 1073000000;
+const TOKEN_DEC = 6;
+const MIST = 1000000000n;
+const TRADE_FEE = 100n;       // 1% = 100 bps
+const CREATOR_BPS = 4000n;    // 40%
+const PROTOCOL_BPS = 5000n;   // 50%
+const SCALE = 10n ** 6n;      // 1e6 for price scaling
 
-// Constant-product: dy = y * dx / (x + dx)
-function cpOut(dx, x, y) {
-  return (BigInt(y) * BigInt(dx)) / (BigInt(x) + BigInt(dx));
-}
+const VIRT_SUI_MIST = BigInt(VIRTUAL_SUI_SUI) * MIST;
+const VIRT_TOK_ATOMIC = BigInt(VIRTUAL_TOKENS_WHOLE) * SCALE;
 
-export function splitFee(fee) {
-  const creator  = (fee * BigInt(CREATOR_SHARE_BPS))  / 10_000n;
-  const protocol = (fee * BigInt(PROTOCOL_SHARE_BPS)) / 10_000n;
-  const lp       = fee - creator - protocol;
+function splitFee(fee) {
+  const creator = (fee * CREATOR_BPS) / 10000n;
+  const protocol = (fee * PROTOCOL_BPS) / 10000n;
+  const lp = fee - creator - protocol;
   return { creator, protocol, lp };
 }
 
-// buyQuote(realSuiReserve, tokensRemaining, suiInMist)
-export function buyQuote(realSuiReserve, tokensRemaining, suiInMist) {
+// dy = y * dx / (x + dx) — constant product
+function cpOut(dx, x, y) {
+  if (x + dx === 0n) return 0n;
+  return (y * dx) / (x + dx);
+}
+
+export function buyQuote(reserveMist, tokensRemaining, suiInMist) {
   const suiIn = BigInt(suiInMist);
-  const fee   = (suiIn * BigInt(TRADE_FEE_BPS)) / 10_000n;
-  const fees  = splitFee(fee);
-  const swap  = suiIn - fee;
+  const reserve = BigInt(reserveMist);
+  const tokensLeft = BigInt(tokensRemaining);
 
-  const virtSuiMist = BigInt(VIRTUAL_SUI) * BigInt(MIST_PER_SUI);
-  // x = SUI side (real + virtual), y = token side (remaining)
-  const x = BigInt(realSuiReserve) + virtSuiMist;
-  const y = BigInt(tokensRemaining);
+  const fee = (suiIn * TRADE_FEE) / 10000n;
+  const fees = splitFee(fee);
+  const swap = suiIn - fee;
 
-  const naiveOut = cpOut(swap, x, y);
+  const x = reserve + VIRT_SUI_MIST;
+  const y = tokensLeft;
 
-  if (naiveOut >= y) {
-    // Clip to all remaining tokens, refund excess SUI
-    const actualSwap = (x * y) / y; // simplified: won't happen cleanly, use full drain
-    return {
-      tokensOut:  y,
-      fee, fees,
-      actualSwap: swap,
-      refund:     0n,
-      clipped:    true,
-    };
-  }
+  const out = cpOut(swap, x, y);
+  const clipped = out >= tokensLeft;
 
   return {
-    tokensOut:  naiveOut,
-    fee, fees,
+    tokensOut: clipped ? tokensLeft : out,
+    fee,
+    fees,
     actualSwap: swap,
-    refund:     0n,
-    clipped:    false,
+    refund: 0n,
+    clipped,
   };
 }
 
-// sellQuote(realSuiReserve, tokensRemaining, tokensInAtomic)
-export function sellQuote(realSuiReserve, tokensRemaining, tokensInAtomic) {
-  const tokIn    = BigInt(tokensInAtomic);
-  const virtSuiMist = BigInt(VIRTUAL_SUI) * BigInt(MIST_PER_SUI);
+export function sellQuote(reserveMist, tokensRemaining, tokensInAtomic) {
+  const tokIn = BigInt(tokensInAtomic);
+  const reserve = BigInt(reserveMist);
+  const tokensLeft = BigInt(tokensRemaining);
 
   // x = token side, y = SUI side
-  const x = BigInt(tokensRemaining);
-  const y = BigInt(realSuiReserve) + virtSuiMist;
+  const x = tokensLeft;
+  const y = reserve + VIRT_SUI_MIST;
 
-  const grossOut = cpOut(tokIn, x, y);
-  const fee      = (grossOut * BigInt(TRADE_FEE_BPS)) / 10_000n;
-  const fees     = splitFee(fee);
-  return { suiOut: grossOut - fee, fee, fees };
+  const gross = cpOut(tokIn, x, y);
+  const fee = (gross * TRADE_FEE) / 10000n;
+  const fees = splitFee(fee);
+  return { suiOut: gross - fee, fee, fees };
 }
 
-// priceMistPerToken(realSuiReserve, tokensSold)
-export function priceMistPerToken(realSuiReserve, tokensSold) {
-  const virtSuiMist = BigInt(VIRTUAL_SUI) * BigInt(MIST_PER_SUI);
-  const virtTokAtomic = BigInt(VIRTUAL_TOKENS) * 10n ** BigInt(TOKEN_DECIMALS);
-  const x = BigInt(realSuiReserve) + virtSuiMist;
-  const y = virtTokAtomic - BigInt(tokensSold);
-  if (y === 0n) return 0n;
-  return (x * 1_000_000n) / y;
+export function priceMistPerToken(reserveMist, tokensSold) {
+  const x = BigInt(reserveMist) + VIRT_SUI_MIST;
+  const y = VIRT_TOK_ATOMIC - BigInt(tokensSold);
+  if (y <= 0n) return 0n;
+  return (x * SCALE) / y;
 }
 
-export const mistToSui = (m) => (m == null ? 0 : Number(BigInt(m)) / 1e9);
-export const tokenUnitsToWhole = (u) => (u == null ? 0 : Number(BigInt(u)) / 10 ** TOKEN_DECIMALS);
+export function mistToSui(m) {
+  if (m == null) return 0;
+  return Number(BigInt(m)) / 1e9;
+}
 
-// Both naming conventions work
-export const quoteBuy  = buyQuote;
+export function tokenUnitsToWhole(u) {
+  if (u == null) return 0;
+  return Number(BigInt(u)) / 1e6;
+}
+
+// Both naming conventions
+export const quoteBuy = buyQuote;
 export const quoteSell = sellQuote;
