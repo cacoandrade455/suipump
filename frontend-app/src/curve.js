@@ -81,3 +81,7 @@ export function priceMistPerToken(realSuiReserve, tokensSold) {
 // Guards against null/undefined — BigInt(undefined) throws hard
 export const mistToSui = (m) => (m == null ? 0 : Number(BigInt(m)) / 1e9);
 export const tokenUnitsToWhole = (u) => (u == null ? 0 : Number(BigInt(u)) / 10 ** TOKEN_DECIMALS);
+
+// Aliases used by TokenPage.jsx
+export const buyQuote = quoteBuy;
+export const sellQuote = quoteSell;
