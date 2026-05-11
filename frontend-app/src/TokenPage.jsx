@@ -9,6 +9,7 @@ import PriceChart from './PriceChart.jsx';
 import TradeHistory from './TradeHistory.jsx';
 import HolderList from './HolderList.jsx';
 import Comments from './Comments.jsx';
+import AIAnalysis from './AIAnalysis.jsx';
 import { PACKAGE_ID, MIST_PER_SUI } from './constants.js';
 import { buyQuote, sellQuote } from './curve.js';
 import { t } from './i18n.js';
@@ -463,7 +464,18 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
           {/* Block 2 — Trades / Holders toggle */}
           <TradesHoldersBlock curveId={curveId} tokenType={tokenType} suiUsd={suiUsd} lang={lang} />
 
-          {/* Block 3 — Comments */}
+          {/* Block 3 — AI Analysis */}
+          <AIAnalysis
+            curveId={curveId}
+            name={name}
+            symbol={symbol}
+            progress={progress}
+            reserveSui={mistToSui(reserveMist)}
+            creatorFeesSui={Number(creatorFeesMist) / 1e9}
+            graduated={graduated}
+          />
+
+          {/* Block 4 — Comments */}
           <CommentsBlock curveId={curveId} lang={lang} />
         </div>
 
