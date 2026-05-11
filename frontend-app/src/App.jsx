@@ -655,28 +655,23 @@ function ConnectWalletHero({ lang = 'en' }) {
 
 // ── Header ────────────────────────────────────────────────────────────────────
 
-// ── Language flag image ───────────────────────────────────────────────────────
-const LANG_FLAG_MAP = {
-  en: 'us',
-  zh: 'cn',
-  pt: 'br',
-  ko: 'kr',
-  vi: 'vn',
-  ru: 'ru',
-  es: 'es',
+// ── Language flag emoji ───────────────────────────────────────────────────────
+const LANG_FLAG_EMOJI = {
+  en: '🇺🇸',
+  zh: '🇨🇳',
+  pt: '🇧🇷',
+  ko: '🇰🇷',
+  vi: '🇻🇳',
+  ru: '🇷🇺',
+  es: '🇪🇸',
 };
 
 function FlagImg({ code }) {
-  const country = LANG_FLAG_MAP[code] || code;
+  const emoji = LANG_FLAG_EMOJI[code] || '🌐';
   return (
-    <img
-      src={`https://flagcdn.com/16x12/${country}.png`}
-      srcSet={`https://flagcdn.com/32x24/${country}.png 2x`}
-      width="16"
-      height="12"
-      alt={code}
-      className="rounded-[2px] object-cover"
-    />
+    <span style={{ fontFamily: "'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji',sans-serif", fontSize: '13px', lineHeight: 1 }}>
+      {emoji}
+    </span>
   );
 }
 
