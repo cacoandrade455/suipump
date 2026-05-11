@@ -249,7 +249,7 @@ function drawPnlCard({ canvas, name, symbol, pnlSui, pnlPct, spent, entryPrice, 
 
   // Mascot image (right side)
   if (mascotImg) {
-    ctx.drawImage(mascotImg, W - 240, H - 260, 220, 220);
+    ctx.drawImage(mascotImg, W - 320, H - 370, 310, 310);
   }
 }
 
