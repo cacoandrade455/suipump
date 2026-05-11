@@ -1,4 +1,4 @@
-// App.jsx — react-router-dom based routing
+// App.jsx  -  react-router-dom based routing
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, useNavigate, useParams, Link, useLocation } from 'react-router-dom';
 import { ConnectButton, useCurrentAccount, useSuiClient, useDisconnectWallet, useAccounts, ConnectModal } from '@mysten/dapp-kit';
@@ -41,8 +41,8 @@ async function refreshSuiUsd() {
 }
 
 function fmt(n, d = 2) {
-  if (n == null) return '—';
-  if (!Number.isFinite(n)) return '—';
+  if (n == null) return ' - ';
+  if (!Number.isFinite(n)) return ' - ';
   if (n >= 1e9) return (n / 1e9).toFixed(d) + 'B';
   if (n >= 1e6) return (n / 1e6).toFixed(d) + 'M';
   if (n >= 1e3) return (n / 1e3).toFixed(d) + 'k';
@@ -50,7 +50,7 @@ function fmt(n, d = 2) {
 }
 
 function timeAgoShort(ts) {
-  if (!ts) return '—';
+  if (!ts) return ' - ';
   const diff = Date.now() - ts;
   if (diff < 60_000) return 'just now';
   if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
@@ -176,7 +176,7 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch
   const isTrending = stats?.recentTrades >= 3;
   const suiUntilGrad = Math.max(0, DRAIN_SUI_APPROX - mistToSui(reserveMist));
 
-  // Social links — twitter/telegram parsed from description via || delimiter
+  // Social links  -  twitter/telegram parsed from description via || delimiter
   const description = curveState?.description || '';
   const parts = description.split('||');
   const hasTwitter  = parts.some(p => p.trim().startsWith('tw:'));
@@ -210,7 +210,7 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch
         </div>
       )}
 
-      {/* Row 1 — icon + name + badges + watchlist */}
+      {/* Row 1  -  icon + name + badges + watchlist */}
       <div className={`flex items-start justify-between mb-2 ${isCrown ? 'mt-1' : ''}`}>
         <div className="flex items-center gap-2.5">
           <div className={`w-10 h-10 rounded-full overflow-hidden border-2 flex items-center justify-center bg-lime-950/30 shrink-0 transition-all ${
@@ -261,7 +261,7 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch
         </div>
       </div>
 
-      {/* Row 2 — sparkline + price */}
+      {/* Row 2  -  sparkline + price */}
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
           {stats?.sparkline24h?.length >= 2 ? (
@@ -290,7 +290,7 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch
         </div>
       </div>
 
-      {/* Row 3 — progress bar + graduation countdown */}
+      {/* Row 3  -  progress bar + graduation countdown */}
       <div className="mb-2">
         <div className="h-1.5 bg-white/5 rounded-full overflow-hidden mb-1">
           <div
@@ -309,7 +309,7 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch
         )}
       </div>
 
-      {/* Row 4 — stats strip */}
+      {/* Row 4  -  stats strip */}
       <div className="flex items-center justify-between text-[9px] font-mono">
         <div className="flex items-center gap-2 text-white/30">
           {stats?.volume24h > 0 && (
@@ -490,7 +490,7 @@ function NotificationBell({ walletAddress }) {
   }
 
   function shortAddr(addr) {
-    if (!addr) return '—';
+    if (!addr) return ' - ';
     return addr.slice(0, 6) + '…' + addr.slice(-4);
   }
 
@@ -679,7 +679,7 @@ function Header({ onLaunch, lang, setLang, onToggleFeed, showFeed }) {
             <div className="text-sm font-bold tracking-tight text-white" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
               SUIPUMP<span className="text-lime-400">.</span>
             </div>
-            <div className="text-[8px] font-mono text-white/30 tracking-[0.2em] -mt-0.5">TESTNET · LIVE</div>
+            <div className="text-[8px] font-mono text-white/30 tracking-[0.2em] -mt-0.5">TESTNET - LIVE</div>
           </div>
         </Link>
 
@@ -690,7 +690,7 @@ function Header({ onLaunch, lang, setLang, onToggleFeed, showFeed }) {
             {poolSui !== null
               ? <span>{t(lang, 's1Airdrop')} {poolSui.toFixed(4)} SUI</span>
               : <span>{t(lang, 's1Airdrop')}</span>}
-            {tradeCount !== null && <span className="text-white/35 ml-1">· {tradeCount} {t(lang, 'trades').toLowerCase()}</span>}
+            {tradeCount !== null && <span className="text-white/35 ml-1">- {tradeCount} {t(lang, 'trades').toLowerCase()}</span>}
           </Link>
           <Link to="/stats" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5"><BarChart3 size={10} /> {t(lang, 'stats')}</Link>
           <Link to="/leaderboard" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5"><Trophy size={10} /> {t(lang, 'leaderboard')}</Link>
@@ -834,10 +834,10 @@ function Header({ onLaunch, lang, setLang, onToggleFeed, showFeed }) {
 
 function StatsBar({ tokenCount, stats, lang = 'en' }) {
   const items = [
-    { icon: <Coins size={13} />, label: t(lang, 'tokens'), value: tokenCount ?? '—' },
-    { icon: <TrendingUp size={13} />, label: t(lang, 'trades'), value: stats.tradeCount ?? '—' },
-    { icon: <Flame size={13} />, label: t(lang, 'volume'), value: stats.volume != null ? `${fmt(stats.volume)} SUI` : '—' },
-    { icon: <Gift size={13} />, label: t(lang, 's1Pool'), value: stats.poolSui != null ? `${stats.poolSui.toFixed(2)} SUI` : '—' },
+    { icon: <Coins size={13} />, label: t(lang, 'tokens'), value: tokenCount ?? ' - ' },
+    { icon: <TrendingUp size={13} />, label: t(lang, 'trades'), value: stats.tradeCount ?? ' - ' },
+    { icon: <Flame size={13} />, label: t(lang, 'volume'), value: stats.volume != null ? `${fmt(stats.volume)} SUI` : ' - ' },
+    { icon: <Gift size={13} />, label: t(lang, 's1Pool'), value: stats.poolSui != null ? `${stats.poolSui.toFixed(2)} SUI` : ' - ' },
   ];
   return (
     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-8">
@@ -932,7 +932,7 @@ function CrownBanner({ token, stats, suiUsd }) {
           </div>
         </div>
 
-        {/* Progress bar — full width at bottom on mobile */}
+        {/* Progress bar  -  full width at bottom on mobile */}
         <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-white/5">
           <div
             className="h-full bg-gradient-to-r from-lime-500 to-lime-300 transition-all duration-500"

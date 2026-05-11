@@ -1,4 +1,4 @@
-// useWatchlist.js — localStorage-backed token watchlist
+// useWatchlist.js  -  localStorage-backed token watchlist
 import { useState, useCallback } from 'react';
 
 const KEY = 'suipump_watchlist';

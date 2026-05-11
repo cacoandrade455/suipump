@@ -1,4 +1,4 @@
-// LiveFeedSidebar.jsx — real-time buys/sells across all tokens
+// LiveFeedSidebar.jsx  -  real-time buys/sells across all tokens
 import React, { useState, useEffect, useRef } from 'react';
 import { useSuiClient } from '@mysten/dapp-kit';
 import { useNavigate } from 'react-router-dom';
@@ -15,7 +15,7 @@ function shortAddr(a) {
 }
 
 function fmt(n) {
-  if (n == null) return '—';
+  if (n == null) return ' - ';
   if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
   return n.toFixed(2);
 }
@@ -165,7 +165,7 @@ export default function LiveFeedSidebar({ tokens, onClose }) {
       </div>
 
       <div className="px-4 py-2 border-t border-white/5 text-[9px] font-mono text-white/15 text-center">
-        REFRESHES EVERY 8s · TESTNET
+        REFRESHES EVERY 8s - TESTNET
       </div>
     </div>
   );

@@ -12,7 +12,7 @@ import { t } from './i18n.js';
 const MIST_PER_SUI = 1e9;
 
 function fmt(n, d = 2) {
-  if (n == null) return '—';
+  if (n == null) return ' - ';
   if (!Number.isFinite(n) || n === 0) return '0';
   if (n >= 1e6) return (n / 1e6).toFixed(d) + 'M';
   if (n >= 1e3) return (n / 1e3).toFixed(d) + 'k';
@@ -20,7 +20,7 @@ function fmt(n, d = 2) {
 }
 
 function fmtPnl(n, d = 3) {
-  if (n == null || !Number.isFinite(n)) return '—';
+  if (n == null || !Number.isFinite(n)) return ' - ';
   const abs = Math.abs(n);
   const str = abs >= 1e3 ? (abs/1e3).toFixed(1) + 'k' : abs.toFixed(d);
   return (n >= 0 ? '+' : '-') + str + ' SUI';
@@ -458,7 +458,7 @@ function CreatedTab({ account, tokens, client, lang }) {
                     {s.creatorFeesSui > 0 && <div className="text-[9px] font-mono text-lime-400/50">{fmt(s.creatorFeesSui, 3)} fees</div>}
                     {s.graduated && <div className="text-[9px] font-mono text-emerald-400">GRAD</div>}
                   </>
-                ) : <div className="text-[10px] font-mono text-white/20">—</div>}
+                ) : <div className="text-[10px] font-mono text-white/20"> - </div>}
               </div>
             }
           />
@@ -476,7 +476,7 @@ export default function PortfolioPage({ onBack, lang = 'en' }) {
   const { tokens } = useTokenList();
   const [tab, setTab] = useState('holdings');
 
-  // Total portfolio value from holdings — passed down
+  // Total portfolio value from holdings  -  passed down
   const TABS = [
     { id: 'holdings', label: t(lang, 'holdings'),  icon: <Wallet size={11} /> },
     { id: 'traded',   label: t(lang, 'traded'),    icon: <TrendingUp size={11} /> },

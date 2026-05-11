@@ -1,3 +1,4 @@
+// v2-clean
 // AirdropPage.jsx
 import React from 'react';
 import { ArrowLeft, Gift } from 'lucide-react';
@@ -25,7 +26,7 @@ export default function AirdropPage({ onBack, lang = 'en' }) {
             SuiPump charges a 1% fee on every trade. Of that, 0.50% goes to the protocol.
             At the end of Season 1, we will take 50% of all accumulated protocol fees and
             distribute them proportionally to users based on their points. The final amount
-            is determined at season close — nothing is locked ahead of time.
+            is determined at season close  -  nothing is locked ahead of time.
           </p>
           <p className="text-sm font-mono text-white/50 leading-relaxed">
             Distribution happens in SUI. No vesting. No governance token. No strings.
@@ -37,10 +38,10 @@ export default function AirdropPage({ onBack, lang = 'en' }) {
         <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-6 space-y-3">
           <div className="text-[10px] font-mono tracking-widest text-lime-400">{t(lang, 'eligibilityTitle')}</div>
           <div className="space-y-2 text-xs font-mono text-white/50 leading-relaxed">
-            <p>· {t(lang, 'eligibility1')}</p>
-            <p>· {t(lang, 'eligibility2')}</p>
-            <p>· {t(lang, 'eligibility3')}</p>
-            <p>· {t(lang, 'eligibility4')}</p>
+            <p>- {t(lang, 'eligibility1')}</p>
+            <p>- {t(lang, 'eligibility2')}</p>
+            <p>- {t(lang, 'eligibility3')}</p>
+            <p>- {t(lang, 'eligibility4')}</p>
           </div>
         </div>
 
@@ -56,7 +57,7 @@ export default function AirdropPage({ onBack, lang = 'en' }) {
               { action: 'Token reaches 50% graduation', pts: '500 bonus pts (creator)' },
               { action: 'Token graduates to DEX', pts: '2,000 bonus pts (creator)' },
               { action: 'Refer a new launcher', pts: "20% of referee's launch points" },
-              { action: 'Early adopter (first 1,000 wallets)', pts: '2× multiplier on all points' },
+              { action: 'Early adopter (first 1,000 wallets)', pts: '2x multiplier on all points' },
             ].map(({ action, pts }) => (
               <div key={action} className="flex items-center justify-between py-2.5 border-b border-white/5 last:border-0">
                 <span className="text-xs font-mono text-white/60">{action}</span>
@@ -95,7 +96,7 @@ export default function AirdropPage({ onBack, lang = 'en' }) {
         {/* Disclaimer */}
         <div className="rounded-2xl border border-white/5 p-4">
           <p className="text-[10px] font-mono text-white/20 leading-relaxed">
-            TESTNET PREVIEW — Testnet activity does not count toward the real S1 airdrop.
+            TESTNET PREVIEW  -  Testnet activity does not count toward the real S1 airdrop.
             The counter above is illustrative only. Final distribution amount, eligibility rules,
             and timeline are subject to change. This is not financial advice. DYOR.
           </p>

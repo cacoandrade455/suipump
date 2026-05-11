@@ -1,4 +1,4 @@
-// curve.js — bonding curve math helpers
+// curve.js  -  bonding curve math helpers
 // Mirrors the Move contract exactly.
 // Calling convention (matches TokenPage.jsx):
 //   buyQuote(realSuiReserve, tokensRemaining, suiInMist)

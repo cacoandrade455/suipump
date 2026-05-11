@@ -110,7 +110,7 @@ export function useTokenStats(tokens) {
           }
         }
 
-        // Fix lastTradeTime — take max across both streams per curve
+        // Fix lastTradeTime  -  take max across both streams per curve
         for (const curveId of Object.keys(map)) {
           const s = map[curveId];
           let latestTs = s.lastTradeTime ?? 0;
@@ -132,7 +132,7 @@ export function useTokenStats(tokens) {
           s.commentCount += 1;
         }
 
-        // ── Dev buy — from CurveCreated event ─────────────────────────────
+        // ── Dev buy  -  from CurveCreated event ─────────────────────────────
         for (const evt of createdData) {
           const j = evt.parsedJson;
           if (!j?.curve_id) continue;
