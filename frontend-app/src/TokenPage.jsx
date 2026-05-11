@@ -353,10 +353,10 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
               {/* Icon */}
               <div className="w-12 h-12 rounded-xl overflow-hidden flex-shrink-0 bg-white/5 flex items-center justify-center text-xl">
                 {iconUrl ? (
-                  <img src={iconUrl} alt={symbol} className="w-full h-full object-cover" />
-                ) : (
-                  <span>{symbol?.slice(0, 2)}</span>
-                )}
+                  <img src={iconUrl} alt={symbol} className="w-full h-full object-cover"
+                    onError={e => { e.target.style.display='none'; e.target.nextSibling.style.display='flex'; }} />
+                ) : null}
+                <span style={{ display: iconUrl ? 'none' : 'flex' }} className="text-2xl items-center justify-center w-full h-full">🔥</span>
               </div>
 
               {/* Name + CA + social */}
@@ -847,7 +847,7 @@ function TradesHoldersBlock({ curveId, tokenType, suiUsd, lang }) {
               : 'text-white/40 hover:text-white/70'
           }`}
         >
-          TRADES
+          {t(lang, 'tradesTab')}
         </button>
         <button
           onClick={() => setTab('holders')}
