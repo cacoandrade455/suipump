@@ -1058,3 +1058,4 @@ export const translations = {
 export function t(lang, key) {
   return translations[lang]?.[key] ?? translations['en'][key] ?? key;
 }
+"// cache bust" 
