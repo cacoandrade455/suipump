@@ -1,4 +1,4 @@
-// v15-pnl-fix
+// v16-creator-check
 // TokenPage.jsx
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -191,9 +191,22 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
     metadata?.description || curveState?.description || ''
   );
 
-  const isCreator = account && curveState?.creator_cap_exists !== false &&
-    (curveState?.payouts?.fields?.addresses?.fields?.contents?.some?.(a => a === account.address) ||
-     curveState?.payouts?.[0]?.address === account.address);
+  // Check creator by querying owned CreatorCap objects
+  const [isCreator, setIsCreator] = React.useState(false);
+  React.useEffect(() => {
+    if (!account?.address || !curveId || !client) { setIsCreator(false); return; }
+    let cancelled = false;
+    client.getOwnedObjects({
+      owner: account.address,
+      filter: { StructType: `${PACKAGE_ID}::bonding_curve::CreatorCap` },
+      options: { showContent: true },
+    }).then(res => {
+      if (cancelled) return;
+      const found = res.data?.some(o => o.data?.content?.fields?.curve_id === curveId);
+      setIsCreator(!!found);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [account?.address, curveId, client]);
 
   // ── actions ────────────────────────────────────────────────────────────
 
