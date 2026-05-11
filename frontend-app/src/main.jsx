@@ -9,8 +9,11 @@ import { Analytics } from '@vercel/analytics/react';
 import App from './App.jsx';
 import './index.css';
 
+// Primary: Mysten public RPC. Fallback order if rate limited:
+// https://sui-testnet.nodeinfra.com
+// https://rpc-testnet.suiscan.xyz
 const { networkConfig } = createNetworkConfig({
-  testnet: { url: getFullnodeUrl('testnet') },
+  testnet: { url: 'https://sui-testnet-endpoint.blockvision.org' },
 });
 
 const queryClient = new QueryClient();
