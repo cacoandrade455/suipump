@@ -1,10 +1,7 @@
 // useTokenStats.js
-// For each token in the list, fetches TokensPurchased + TokensSold events
-// and computes: volume, trades, reserveSui, pctChange, recentTrades (last 60m),
-// lastTradeTime (timestamp ms of most recent trade)
-// Returns a map: { [curveId]: { volume, trades, reserveSui, pctChange, recentTrades, lastTradeTime } }
-//
-// Uses cursor-based pagination to fetch ALL events — no more 100-event cap.
+// Per-token stats computed from on-chain events.
+// Returns map: { [curveId]: { volume, trades, reserveSui, pctChange, recentTrades,
+//   lastTradeTime, lastPrice, firstPrice, volume24h, commentCount, devBuyMist, sparkline24h } }
 
 import { useState, useEffect, useRef } from 'react';
 import { useSuiClient } from '@mysten/dapp-kit';
@@ -12,7 +9,8 @@ import { PACKAGE_ID } from './constants.js';
 import { paginateMultipleEvents } from './paginateEvents.js';
 
 const MIST_PER_SUI = 1e9;
-const ONE_HOUR_MS = 60 * 60 * 1000;
+const ONE_HOUR_MS  = 60 * 60 * 1000;
+const ONE_DAY_MS   = 24 * 60 * 60 * 1000;
 
 export function useTokenStats(tokens) {
   const client = useSuiClient();
@@ -30,19 +28,23 @@ export function useTokenStats(tokens) {
 
     async function load() {
       try {
-        const buyType = `${PACKAGE_ID}::bonding_curve::TokensPurchased`;
-        const sellType = `${PACKAGE_ID}::bonding_curve::TokensSold`;
+        const buyType     = `${PACKAGE_ID}::bonding_curve::TokensPurchased`;
+        const sellType    = `${PACKAGE_ID}::bonding_curve::TokensSold`;
+        const commentType = `${PACKAGE_ID}::bonding_curve::CommentPosted`;
+        const createdType = `${PACKAGE_ID}::bonding_curve::CurveCreated`;
 
         const eventMap = await paginateMultipleEvents(
           client,
-          [buyType, sellType],
+          [buyType, sellType, commentType, createdType],
           { order: 'descending', maxPages: 20 }
         );
 
         if (cancelled) return;
 
-        const buysData = eventMap[buyType];
-        const sellsData = eventMap[sellType];
+        const buysData     = eventMap[buyType]     || [];
+        const sellsData    = eventMap[sellType]    || [];
+        const commentsData = eventMap[commentType] || [];
+        const createdData  = eventMap[createdType] || [];
 
         const now = Date.now();
         const map = {};
@@ -50,80 +52,98 @@ export function useTokenStats(tokens) {
         const ensure = (curveId) => {
           if (!map[curveId]) {
             map[curveId] = {
-              volume: 0,
-              trades: 0,
-              recentTrades: 0,
-              firstPrice: null,
-              lastPrice: null,
-              reserveSui: 0,
-              lastTradeTime: null,  // timestamp ms of most recent trade
+              volume: 0, trades: 0, recentTrades: 0,
+              firstPrice: null, lastPrice: null, reserveSui: 0,
+              lastTradeTime: null,
+              volume24h: 0,
+              commentCount: 0,
+              devBuyMist: 0,
+              sparkline24h: [], // array of { t: timestamp, p: price }
             };
           }
           return map[curveId];
         };
 
-        // Events arrive descending (newest first) — first seen = most recent
+        // ── Buys ──────────────────────────────────────────────────────────
         for (const evt of buysData) {
           const j = evt.parsedJson;
           if (!j?.curve_id) continue;
           const s = ensure(j.curve_id);
           const suiIn = Number(j.sui_in ?? 0) / MIST_PER_SUI;
           const ts = evt.timestampMs ? Number(evt.timestampMs) : 0;
-          s.volume += suiIn;
-          s.trades += 1;
+          s.volume  += suiIn;
+          s.trades  += 1;
           if (ts && now - ts < ONE_HOUR_MS) s.recentTrades += 1;
-          // First event seen in descending order = latest trade
+          if (ts && now - ts < ONE_DAY_MS)  s.volume24h    += suiIn;
           if (ts && s.lastTradeTime === null) s.lastTradeTime = ts;
           const tokensOut = Number(j.tokens_out ?? 0) / 1e6;
           if (tokensOut > 0) {
             const price = suiIn / tokensOut;
             if (s.lastPrice === null) s.lastPrice = price;
             s.firstPrice = price;
+            if (ts && now - ts < ONE_DAY_MS) {
+              s.sparkline24h.push({ t: ts, p: price });
+            }
           }
         }
 
+        // ── Sells ─────────────────────────────────────────────────────────
         for (const evt of sellsData) {
           const j = evt.parsedJson;
           if (!j?.curve_id) continue;
           const s = ensure(j.curve_id);
           const suiOut = Number(j.sui_out ?? 0) / MIST_PER_SUI;
           const ts = evt.timestampMs ? Number(evt.timestampMs) : 0;
-          s.volume += suiOut;
-          s.trades += 1;
+          s.volume  += suiOut;
+          s.trades  += 1;
           if (ts && now - ts < ONE_HOUR_MS) s.recentTrades += 1;
+          if (ts && now - ts < ONE_DAY_MS)  s.volume24h    += suiOut;
           if (ts && s.lastTradeTime === null) s.lastTradeTime = ts;
           const tokensIn = Number(j.tokens_in ?? 0) / 1e6;
           if (tokensIn > 0) {
             const price = suiOut / tokensIn;
             if (s.lastPrice === null) s.lastPrice = price;
             s.firstPrice = price;
+            if (ts && now - ts < ONE_DAY_MS) {
+              s.sparkline24h.push({ t: ts, p: price });
+            }
           }
         }
 
-        // After merging both streams, lastTradeTime may be wrong for tokens
-        // where buys and sells interleave. Re-derive by taking the max.
-        // (The above loop already handles this correctly because we only
-        // set lastTradeTime on the FIRST event seen per curve, which is the
-        // most recent one in descending order — but sells and buys are
-        // fetched separately. Fix: take the max across both.)
+        // Fix lastTradeTime — take max across both streams per curve
         for (const curveId of Object.keys(map)) {
           const s = map[curveId];
-          // Gather all timestamps for this curve from both streams
           let latestTs = s.lastTradeTime ?? 0;
-          for (const evt of sellsData) {
-            if (evt.parsedJson?.curve_id !== curveId) continue;
-            const ts = evt.timestampMs ? Number(evt.timestampMs) : 0;
-            if (ts > latestTs) latestTs = ts;
-          }
-          for (const evt of buysData) {
+          for (const evt of [...buysData, ...sellsData]) {
             if (evt.parsedJson?.curve_id !== curveId) continue;
             const ts = evt.timestampMs ? Number(evt.timestampMs) : 0;
             if (ts > latestTs) latestTs = ts;
           }
           s.lastTradeTime = latestTs || null;
+          // Sort sparkline oldest→newest
+          s.sparkline24h.sort((a, b) => a.t - b.t);
         }
 
-        // Compute % change
+        // ── Comments ──────────────────────────────────────────────────────
+        for (const evt of commentsData) {
+          const j = evt.parsedJson;
+          if (!j?.curve_id) continue;
+          const s = ensure(j.curve_id);
+          s.commentCount += 1;
+        }
+
+        // ── Dev buy — from CurveCreated event ─────────────────────────────
+        for (const evt of createdData) {
+          const j = evt.parsedJson;
+          if (!j?.curve_id) continue;
+          const s = ensure(j.curve_id);
+          // dev_buy_sui_in field emitted by contract on launch with dev buy
+          if (j.dev_buy_sui_in) {
+            s.devBuyMist = Number(j.dev_buy_sui_in);
+          }
+        }
+
+        // ── % change ──────────────────────────────────────────────────────
         for (const s of Object.values(map)) {
           if (s.firstPrice && s.lastPrice && s.firstPrice > 0) {
             s.pctChange = ((s.lastPrice - s.firstPrice) / s.firstPrice) * 100;

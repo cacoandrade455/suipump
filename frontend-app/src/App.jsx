@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, useNavigate, useParams, Link, useLocation } from 'react-router-dom';
 import { ConnectButton, useCurrentAccount, useSuiClient, useDisconnectWallet, useAccounts, ConnectModal } from '@mysten/dapp-kit';
-import { Flame, Rocket, Plus, Gift, TrendingUp, Coins, Users, Trophy, Wallet, Search, Menu, X, Map, Copy, Crown, BarChart3, Github, MessageCircle, Bell } from 'lucide-react';
+import { Flame, Rocket, Plus, Gift, TrendingUp, Coins, Users, Trophy, Wallet, Search, Menu, X, Map, Copy, Crown, BarChart3, Github, MessageCircle, Bell, Star, Zap, Activity, ChevronRight } from 'lucide-react';
 
 import { useTokenList } from './useTokenList.js';
 import { useTokenStats } from './useTokenStats.js';
@@ -18,6 +18,8 @@ import { LANGUAGES, translations, t } from './i18n.js';
 import { PACKAGE_ID, DRAIN_SUI_APPROX, TOKEN_DECIMALS } from './constants.js';
 import { mistToSui, priceMistPerToken } from './curve.js';
 import { paginateEvents, paginateMultipleEvents } from './paginateEvents.js';
+import LiveFeedSidebar from './LiveFeedSidebar.jsx';
+import { useWatchlist } from './useWatchlist.js';
 
 const MIST_PER_SUI = 1e9;
 const TOTAL_SUPPLY_WHOLE = 1_000_000_000;
@@ -115,7 +117,27 @@ function PctBadge({ pct }) {
 
 // ── Token card ───────────────────────────────────────────────────────────────
 
-function TokenCard({ token, stats, isCrown, suiUsd = 0 }) {
+// ── Sparkline mini chart ─────────────────────────────────────────────────────
+function Sparkline({ points, width = 80, height = 24 }) {
+  if (!points || points.length < 2) return null;
+  const prices = points.map(p => p.p);
+  const min = Math.min(...prices);
+  const max = Math.max(...prices);
+  const range = max - min || 1;
+  const pts = prices.map((p, i) => {
+    const x = (i / (prices.length - 1)) * width;
+    const y = height - ((p - min) / range) * height;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  const isUp = prices[prices.length - 1] >= prices[0];
+  return (
+    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ overflow: 'visible' }}>
+      <polyline points={pts} fill="none" stroke={isUp ? '#84cc16' : '#f87171'} strokeWidth="1.5" strokeLinejoin="round" opacity="0.8" />
+    </svg>
+  );
+}
+
+function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch }) {
   const client = useSuiClient();
   const navigate = useNavigate();
   const [curveState, setCurveState] = useState(null);
@@ -149,17 +171,27 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0 }) {
   const progress = Math.min(100, (mistToSui(reserveMist) / DRAIN_SUI_APPROX) * 100);
   const priceMist = curveState ? priceMistPerToken(reserveMist, tokensSold) : 0n;
   const graduated = curveState?.graduated ?? false;
-
   const pricePerWhole = Number(priceMist) / 1e9;
   const marketCapSui = pricePerWhole * TOTAL_SUPPLY_WHOLE;
   const isTrending = stats?.recentTrades >= 3;
+  const suiUntilGrad = Math.max(0, DRAIN_SUI_APPROX - mistToSui(reserveMist));
+
+  // Social links — twitter/telegram parsed from description via || delimiter
+  const description = curveState?.description || '';
+  const parts = description.split('||');
+  const hasTwitter  = parts.some(p => p.trim().startsWith('tw:'));
+  const hasTelegram = parts.some(p => p.trim().startsWith('tg:'));
+  const hasVerified = hasTwitter || hasTelegram;
+
+  // Dev buy
+  const devBuySui = stats?.devBuyMist ? stats.devBuyMist / 1e9 : 0;
 
   const timeAgo = token.timestamp ? (() => {
     const diff = Date.now() - token.timestamp;
     if (diff < 60_000) return 'just now';
-    if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
-    if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
-    return `${Math.floor(diff / 86_400_000)}d ago`;
+    if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m`;
+    if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h`;
+    return `${Math.floor(diff / 86_400_000)}d`;
   })() : '';
 
   return (
@@ -178,43 +210,89 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0 }) {
         </div>
       )}
 
-      <div className={`flex items-start justify-between mb-3 ${isCrown ? 'mt-1' : ''}`}>
-        <div className="flex items-center gap-3">
-          <div className={`w-11 h-11 rounded-full overflow-hidden border-2 flex items-center justify-center bg-lime-950/30 shrink-0 transition-all ${
+      {/* Row 1 — icon + name + badges + watchlist */}
+      <div className={`flex items-start justify-between mb-2 ${isCrown ? 'mt-1' : ''}`}>
+        <div className="flex items-center gap-2.5">
+          <div className={`w-10 h-10 rounded-full overflow-hidden border-2 flex items-center justify-center bg-lime-950/30 shrink-0 transition-all ${
             isCrown ? 'border-lime-400/40' : 'border-white/10 group-hover:border-lime-400/30'
           }`}>
             {iconUrl
               ? <img src={iconUrl} alt={token.symbol} className="w-full h-full object-cover"
                   onError={e => { e.target.style.display='none'; e.target.nextSibling.style.display='block'; }} />
               : null}
-            <span className="text-xl" style={{ display: iconUrl ? 'none' : 'block' }}>🔥</span>
+            <span className="text-lg" style={{ display: iconUrl ? 'none' : 'block' }}>🔥</span>
           </div>
           <div>
-            <div className="text-sm font-bold text-white font-mono">{token.name}</div>
-            <div className="text-[11px] text-lime-400/70 font-mono">${token.symbol}</div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-sm font-bold text-white font-mono leading-none">{token.name}</span>
+              {hasVerified && (
+                <span className="text-lime-400" title="Has social links">
+                  <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><path d="M5 0L6.18 3.18L9.51 3.09L7 5.14L7.94 8.41L5 6.5L2.06 8.41L3 5.14L.49 3.09L3.82 3.18Z"/></svg>
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-1.5 mt-0.5">
+              <span className="text-[10px] text-lime-400/70 font-mono">${token.symbol}</span>
+              <span className="text-[9px] font-mono text-white/25">{timeAgo}</span>
+            </div>
           </div>
         </div>
-        <div className="flex items-center gap-1.5 flex-wrap justify-end">
-          {isTrending && (
-            <div className="text-[10px] font-mono text-lime-400 bg-lime-400/10 border border-lime-400/20 px-1.5 py-0.5 rounded-full flex items-center gap-1">
-              <Flame size={9} /> HOT
-            </div>
-          )}
-          {graduated && (
-            <div className="text-[10px] font-mono text-emerald-400 bg-emerald-400/10 border border-emerald-400/20 px-2 py-0.5 rounded-full">
-              GRAD
-            </div>
-          )}
-          <PctBadge pct={stats?.pctChange} />
+        <div className="flex items-center gap-1 flex-col items-end">
+          <div className="flex items-center gap-1">
+            {isTrending && (
+              <div className="text-[9px] font-mono text-lime-400 bg-lime-400/10 border border-lime-400/20 px-1.5 py-0.5 rounded-full flex items-center gap-0.5">
+                <Flame size={8} /> HOT
+              </div>
+            )}
+            {graduated && (
+              <div className="text-[9px] font-mono text-emerald-400 bg-emerald-400/10 border border-emerald-400/20 px-1.5 py-0.5 rounded-full">
+                GRAD
+              </div>
+            )}
+            <PctBadge pct={stats?.pctChange} />
+          </div>
+          {/* Watchlist star */}
+          <button
+            onClick={e => { e.stopPropagation(); onToggleWatch && onToggleWatch(token.curveId); }}
+            className={`p-0.5 transition-colors ${isWatched ? 'text-lime-400' : 'text-white/15 hover:text-white/40'}`}
+          >
+            <Star size={11} fill={isWatched ? 'currentColor' : 'none'} />
+          </button>
         </div>
       </div>
 
-      <div className="mb-3">
-        <div className="flex justify-between text-[10px] font-mono mb-1.5">
-          <span className="text-white/30">BONDING CURVE</span>
-          <span className="text-lime-400/60">{fmt(progress, 1)}%</span>
+      {/* Row 2 — sparkline + price */}
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          {stats?.sparkline24h?.length >= 2 ? (
+            <Sparkline points={stats.sparkline24h} width={72} height={22} />
+          ) : (
+            <div className="w-[72px] h-[22px] flex items-center">
+              <div className="w-full h-px bg-white/5" />
+            </div>
+          )}
         </div>
-        <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
+        <div className="text-right">
+          <div className="text-[11px] font-mono font-bold text-white/80">
+            {curveState
+              ? suiUsd > 0
+                ? (() => { const p = (Number(priceMist)/1e9)*suiUsd; return p >= 0.01 ? `$${p.toFixed(4)}` : p >= 1e-6 ? `$${p.toFixed(8)}` : `$${p.toPrecision(4)}`; })()
+                : `${(Number(priceMist) / 1e9).toFixed(7)} SUI`
+              : '…'}
+          </div>
+          {marketCapSui > 0 && (
+            <div className="text-[9px] font-mono text-white/25">
+              {suiUsd > 0
+                ? (() => { const mc = marketCapSui * suiUsd; return mc >= 1e6 ? `MC $${(mc/1e6).toFixed(2)}M` : mc >= 1e3 ? `MC $${(mc/1e3).toFixed(1)}k` : `MC $${mc.toFixed(0)}`; })()
+                : `MC ${fmt(marketCapSui, 0)} SUI`}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Row 3 — progress bar + graduation countdown */}
+      <div className="mb-2">
+        <div className="h-1.5 bg-white/5 rounded-full overflow-hidden mb-1">
           <div
             className={`h-full rounded-full transition-all duration-500 ${
               isCrown
@@ -224,30 +302,31 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0 }) {
             style={{ width: `${Math.max(progress, 1)}%` }}
           />
         </div>
+        {!graduated && suiUntilGrad > 0 && (
+          <div className="text-[9px] font-mono text-white/25">
+            {fmt(suiUntilGrad, 0)} SUI until graduation
+          </div>
+        )}
       </div>
 
-      <div className="flex items-center justify-between">
-        <span className="text-[11px] font-mono text-white/30">{timeAgo}</span>
-        <div className="flex items-center gap-2">
-          {stats?.trades > 0 && (
-            <span className="text-[10px] font-mono text-white/35">{stats.trades} trade{stats.trades !== 1 ? 's' : ''}</span>
+      {/* Row 4 — stats strip */}
+      <div className="flex items-center justify-between text-[9px] font-mono">
+        <div className="flex items-center gap-2 text-white/30">
+          {stats?.volume24h > 0 && (
+            <span className="text-lime-400/60">{fmt(stats.volume24h, 1)} SUI 24h</span>
           )}
-          {marketCapSui > 0 && (() => {
-            const mcUsd = suiUsd > 0 ? marketCapSui * suiUsd : null;
-            return (
-              <span className="text-[10px] font-mono text-white/30">
-                MC {mcUsd != null ? (mcUsd >= 1e6 ? `$${(mcUsd/1e6).toFixed(2)}M` : mcUsd >= 1e3 ? `$${(mcUsd/1e3).toFixed(1)}k` : `$${mcUsd.toFixed(0)}`) : `${fmt(marketCapSui, 0)} SUI`}
-              </span>
-            );
-          })()}
-          <span className="text-[11px] font-mono text-white/60">
-            {curveState
-              ? suiUsd > 0
-                ? (() => { const p = (Number(priceMist)/1e9)*suiUsd; return p >= 0.01 ? `$${p.toFixed(4)}` : p >= 1e-6 ? `$${p.toFixed(8)}` : `$${p.toPrecision(4)}`; })()
-                : `${(Number(priceMist) / 1e9).toFixed(7)} SUI`
-              : '…'}
-          </span>
+          {stats?.trades > 0 && (
+            <span>{stats.trades} trades</span>
+          )}
+          {stats?.commentCount > 0 && (
+            <span className="flex items-center gap-0.5">
+              <MessageCircle size={8} /> {stats.commentCount}
+            </span>
+          )}
         </div>
+        {devBuySui > 0 && (
+          <span className="text-white/20">dev {fmt(devBuySui, 2)} SUI</span>
+        )}
       </div>
     </button>
   );
@@ -570,7 +649,7 @@ function ConnectWalletHero({ lang = 'en' }) {
 
 // ── Header ────────────────────────────────────────────────────────────────────
 
-function Header({ onLaunch, lang, setLang }) {
+function Header({ onLaunch, lang, setLang, onToggleFeed, showFeed }) {
   const account = useCurrentAccount();
   const { poolSui, tradeCount } = useStats();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -661,6 +740,13 @@ function Header({ onLaunch, lang, setLang }) {
               <Github size={13} />
             </a>
             <NotificationBell walletAddress={account?.address} />
+            <button
+              onClick={onToggleFeed}
+              className={`p-1.5 rounded-lg transition-colors ${showFeed ? 'text-lime-400 bg-lime-400/10' : 'text-white/30 hover:text-lime-400'}`}
+              title="Live Feed"
+            >
+              <Activity size={13} />
+            </button>
           </div>
           {account && (
             <button onClick={onLaunch} className="flex items-center gap-2 px-4 py-2 bg-lime-400 text-black text-xs font-mono tracking-widest hover:bg-lime-300 transition-colors rounded-xl font-bold">
@@ -861,6 +947,7 @@ function CrownBanner({ token, stats, suiUsd }) {
 // ── Home page ─────────────────────────────────────────────────────────────────
 
 function HomePage({ onLaunch, lang = 'en' }) {
+  const { isWatched, toggle: toggleWatch } = useWatchlist();
   const account = useCurrentAccount();
   const { tokens, loading, error } = useTokenList();
   const stats = useStats();
@@ -879,6 +966,7 @@ function HomePage({ onLaunch, lang = 'en' }) {
     { id: 'trades',     label: t(lang, 'tradesSort') },
     { id: 'reserve',    label: t(lang, 'reserve') },
     { id: 'progress',   label: t(lang, 'progress') },
+    { id: 'watchlist',  label: '⭐ WATCHLIST' },
   ];
 
   useEffect(() => {
@@ -919,6 +1007,7 @@ function HomePage({ onLaunch, lang = 'en' }) {
       case 'trades':     return (sb?.trades || 0) - (sa?.trades || 0);
       case 'reserve':    return (sb?.reserveSui || 0) - (sa?.reserveSui || 0);
       case 'progress':   return (sb?.reserveSui || 0) - (sa?.reserveSui || 0);
+      case 'watchlist':  return (isWatched(b.curveId) ? 1 : 0) - (isWatched(a.curveId) ? 1 : 0);
       default: return 0;
     }
   });
@@ -1020,6 +1109,8 @@ function HomePage({ onLaunch, lang = 'en' }) {
               stats={tokenStats[token.curveId]}
               isCrown={token.curveId === crownCurveId}
               suiUsd={suiUsd}
+              isWatched={isWatched(token.curveId)}
+              onToggleWatch={toggleWatch}
             />
           ))}
         </div>
@@ -1079,6 +1170,8 @@ export default function App() {
   };
 
   const handleLaunched = ({ curveId }) => { setShowLaunch(false); navigate(`/token/${curveId}`); };
+  const [showFeed, setShowFeed] = useState(false);
+  const { tokens: allTokens } = useTokenList();
 
   return (
     <div className="min-h-screen bg-[#080808] text-white" style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}>
@@ -1088,7 +1181,7 @@ export default function App() {
         backgroundSize: '60px 60px',
       }} />
       <ScrollToTop />
-      <Header onLaunch={() => setShowLaunch(true)} lang={lang} setLang={handleLang} />
+      <Header onLaunch={() => setShowLaunch(true)} lang={lang} setLang={handleLang} onToggleFeed={() => setShowFeed(o => !o)} showFeed={showFeed} />
       <main className="max-w-6xl mx-auto px-4 py-6">
         <Routes>
           <Route path="/" element={<HomePage onLaunch={() => setShowLaunch(true)} lang={lang} />} />
@@ -1110,6 +1203,9 @@ export default function App() {
           onLaunched={handleLaunched}
           lang={lang}
         />
+      )}
+      {showFeed && (
+        <LiveFeedSidebar tokens={allTokens} onClose={() => setShowFeed(false)} />
       )}
     </div>
   );
