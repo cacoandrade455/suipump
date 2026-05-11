@@ -249,7 +249,9 @@ function drawPnlCard({ canvas, name, symbol, pnlSui, pnlPct, spent, entryPrice, 
 
   // Mascot image (right side)
   if (mascotImg) {
+    ctx.globalCompositeOperation = 'screen';
     ctx.drawImage(mascotImg, W - 320, H - 370, 310, 310);
+    ctx.globalCompositeOperation = 'source-over';
   }
 }
 
