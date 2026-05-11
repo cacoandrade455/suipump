@@ -655,6 +655,31 @@ function ConnectWalletHero({ lang = 'en' }) {
 
 // ── Header ────────────────────────────────────────────────────────────────────
 
+// ── Language flag image ───────────────────────────────────────────────────────
+const LANG_FLAG_MAP = {
+  en: 'us',
+  zh: 'cn',
+  pt: 'br',
+  ko: 'kr',
+  vi: 'vn',
+  ru: 'ru',
+  es: 'es',
+};
+
+function FlagImg({ code }) {
+  const country = LANG_FLAG_MAP[code] || code;
+  return (
+    <img
+      src={`https://flagcdn.com/16x12/${country}.png`}
+      srcSet={`https://flagcdn.com/32x24/${country}.png 2x`}
+      width="16"
+      height="12"
+      alt={code}
+      className="rounded-[2px] object-cover"
+    />
+  );
+}
+
 function Header({ onLaunch, lang, setLang, onToggleFeed, showFeed }) {
   const account = useCurrentAccount();
   const { poolSui, tradeCount } = useStats();
@@ -710,7 +735,7 @@ function Header({ onLaunch, lang, setLang, onToggleFeed, showFeed }) {
                 onClick={() => setLangOpen(o => !o)}
                 className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-[10px] font-mono text-white/40 hover:text-white border border-transparent hover:border-white/10 transition-all"
               >
-                <span>{currentLang.flag}</span>
+                <FlagImg code={currentLang.code} />
                 <span>{currentLang.label}</span>
                 <svg width="8" height="8" viewBox="0 0 10 10" fill="currentColor" className="opacity-40"><path d="M5 7L1 3h8z"/></svg>
               </button>
@@ -726,7 +751,7 @@ function Header({ onLaunch, lang, setLang, onToggleFeed, showFeed }) {
                           : 'text-white/50 hover:bg-white/5 hover:text-white'
                       }`}
                     >
-                      <span>{l.flag}</span>
+                      <FlagImg code={l.code} />
                       <span>{l.label}</span>
                     </button>
                   ))}
