@@ -14,6 +14,10 @@ export default function AirdropPage({ onBack, lang = 'en' }) {
         <ArrowLeft size={12} /> {t(lang, 'backToHome')}
       </button>
 
+      {/* DEBUG - remove after fix */}
+      <div style={{position:'fixed',bottom:8,right:8,background:'red',color:'white',padding:'4px 8px',fontSize:'10px',zIndex:9999,fontFamily:'monospace'}}>
+        lang={lang}
+      </div>
       <div className="max-w-2xl mx-auto space-y-4">
 
         {/* Live counter */}
