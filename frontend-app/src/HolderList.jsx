@@ -1,4 +1,4 @@
-// v16-holdercount
+// v16-holderfix
 // HolderList.jsx — Top Holders + Top Traders toggle, USD primary
 import React, { useState, useEffect } from 'react';
 import { useSuiClient } from '@mysten/dapp-kit';
@@ -6,7 +6,6 @@ import { Users, BarChart2 } from 'lucide-react';
 import { PACKAGE_ID } from './constants.js';
 import { paginateMultipleEvents } from './paginateEvents.js';
 
-const MIST_PER_SUI = 1_000_000_000n;
 const TOKEN_DECIMALS = 6;
 const TOKEN_SCALE = 10 ** TOKEN_DECIMALS;
 const TOTAL_SUPPLY = 1_000_000_000; // 1B whole tokens — denominator for %
@@ -31,57 +30,6 @@ function walletColor(addr) {
   return `hsl(${hue}, 70%, 55%)`;
 }
 
-// Fetch real on-chain holder balances via getAllCoins pagination
-async function fetchHolders(client, coinType) {
-  const ownerMap = new Map(); // address → total balance (whole tokens)
-  let cursor = null;
-  let pages = 0;
-
-  while (pages < 30) {
-    let result;
-    try {
-      result = await client.getAllCoins({ coinType, cursor, limit: 50 });
-    } catch (e) {
-      console.error('getAllCoins error:', e);
-      break;
-    }
-
-    for (const coin of result.data) {
-      const bal = BigInt(coin.balance ?? 0);
-      if (bal === 0n) continue;
-
-      // coin.owner can be { AddressOwner: "0x..." } or a string
-      let owner = null;
-      if (typeof coin.owner === 'string') {
-        owner = coin.owner;
-      } else if (coin.owner?.AddressOwner) {
-        owner = coin.owner.AddressOwner;
-      } else if (coin.owner?.ObjectOwner) {
-        // Owned by an object (e.g. wrapped) — skip
-        continue;
-      }
-
-      if (!owner) continue;
-      ownerMap.set(owner, (ownerMap.get(owner) ?? 0n) + bal);
-    }
-
-    if (!result.hasNextPage) break;
-    cursor = result.nextCursor;
-    pages++;
-  }
-
-  return [...ownerMap.entries()]
-    .filter(([, bal]) => bal > 0n)
-    .map(([addr, bal]) => ({
-      addr,
-      balance: Number(bal) / TOKEN_SCALE,
-      // % of TOTAL SUPPLY (1B), not just circulating
-      pct: (Number(bal) / TOKEN_SCALE / TOTAL_SUPPLY) * 100,
-    }))
-    .sort((a, b) => b.balance - a.balance)
-    .slice(0, 20);
-}
-
 export default function HolderList({ curveId, tokenType, suiUsd = 0 }) {
   const client = useSuiClient();
   const [tab, setTab] = useState('holders');
@@ -96,7 +44,6 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0 }) {
     async function load() {
       setLoading(true);
       try {
-        // ── TOP TRADERS (from events, same as before) ─────────────────
         const buyType  = `${PACKAGE_ID}::bonding_curve::TokensPurchased`;
         const sellType = `${PACKAGE_ID}::bonding_curve::TokensSold`;
 
@@ -109,12 +56,39 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0 }) {
         const buys  = (eventMap[buyType]  || []).filter(e => e.parsedJson?.curve_id === curveId);
         const sells = (eventMap[sellType] || []).filter(e => e.parsedJson?.curve_id === curveId);
 
+        // ── TOP HOLDERS ──────────────────────────────────────────────
+        const balanceMap = new Map(); // addr → raw token balance (atomic)
+        for (const e of buys) {
+          const j = e.parsedJson;
+          const addr = j?.buyer;
+          const tokens = BigInt(j?.tokens_out ?? 0);
+          if (addr) balanceMap.set(addr, (balanceMap.get(addr) ?? 0n) + tokens);
+        }
+        for (const e of sells) {
+          const j = e.parsedJson;
+          const addr = j?.seller;
+          const tokens = BigInt(j?.tokens_in ?? 0);
+          if (addr) balanceMap.set(addr, (balanceMap.get(addr) ?? 0n) - tokens);
+        }
+
+        const holderList = [...balanceMap.entries()]
+          .filter(([, bal]) => bal > 0n)
+          .map(([addr, bal]) => ({
+            addr,
+            balance: Number(bal) / TOKEN_SCALE,
+            // % of TOTAL SUPPLY (1B whole tokens), not just circulating
+            pct: (Number(bal) / TOKEN_SCALE / TOTAL_SUPPLY) * 100,
+          }))
+          .sort((a, b) => b.balance - a.balance)
+          .slice(0, 20);
+
+        // ── TOP TRADERS ──────────────────────────────────────────────
         const traderMap = new Map();
         for (const e of buys) {
           const j = e.parsedJson;
           const addr = j?.buyer;
           if (!addr) continue;
-          const suiIn    = Number(BigInt(j?.sui_in    ?? 0)) / 1e9;
+          const suiIn     = Number(BigInt(j?.sui_in     ?? 0)) / 1e9;
           const tokensOut = Number(BigInt(j?.tokens_out ?? 0)) / TOKEN_SCALE;
           const t = traderMap.get(addr) ?? { suiSpent: 0, suiReceived: 0, buyCount: 0, sellCount: 0, tokensIn: 0, tokensOut: 0 };
           t.suiSpent  += suiIn;
@@ -126,7 +100,7 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0 }) {
           const j = e.parsedJson;
           const addr = j?.seller;
           if (!addr) continue;
-          const suiOut  = Number(BigInt(j?.sui_out  ?? 0)) / 1e9;
+          const suiOut   = Number(BigInt(j?.sui_out   ?? 0)) / 1e9;
           const tokensIn = Number(BigInt(j?.tokens_in ?? 0)) / TOKEN_SCALE;
           const t = traderMap.get(addr) ?? { suiSpent: 0, suiReceived: 0, buyCount: 0, sellCount: 0, tokensIn: 0, tokensOut: 0 };
           t.suiReceived += suiOut;
@@ -146,12 +120,9 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0 }) {
           .sort((a, b) => b.volume - a.volume)
           .slice(0, 20);
 
-        if (!cancelled) setTraders(traderList);
-
-        // ── TOP HOLDERS (real on-chain balances via getAllCoins) ───────
-        if (tokenType) {
-          const holderList = await fetchHolders(client, tokenType);
-          if (!cancelled) setHolders(holderList);
+        if (!cancelled) {
+          setHolders(holderList);
+          setTraders(traderList);
         }
       } catch (err) {
         console.error('HolderList error:', err);
@@ -163,11 +134,10 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0 }) {
     load();
     const interval = setInterval(load, 30_000);
     return () => { cancelled = true; clearInterval(interval); };
-  }, [curveId, tokenType, client]);
+  }, [curveId, client]);
 
   return (
     <div className="bg-white/[0.03] border border-white/10 rounded-xl overflow-hidden">
-      {/* Tab toggle */}
       <div className="flex border-b border-white/10">
         <button
           onClick={() => setTab('holders')}
@@ -215,7 +185,7 @@ function HoldersView({ holders }) {
         <span>#</span>
         <span>WALLET</span>
         <span className="text-right">BALANCE</span>
-        <span className="text-right w-14">% SUPPLY</span>
+        <span className="text-right w-16">% SUPPLY</span>
       </div>
 
       {holders.map((h, i) => (
@@ -232,7 +202,7 @@ function HoldersView({ holders }) {
             <span className="text-xs font-mono text-white/70 truncate">{shortAddr(h.addr)}</span>
           </div>
           <span className="text-xs font-mono text-white/70 text-right">{fmt(h.balance, 0)}</span>
-          <span className="text-xs font-mono text-lime-400/80 text-right w-14">{h.pct.toFixed(2)}%</span>
+          <span className="text-xs font-mono text-lime-400/80 text-right w-16">{h.pct.toFixed(2)}%</span>
         </div>
       ))}
     </div>
