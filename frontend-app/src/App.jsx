@@ -1094,11 +1094,11 @@ export default function App() {
           <Route path="/" element={<HomePage onLaunch={() => setShowLaunch(true)} lang={lang} />} />
           <Route path="/token/:curveId" element={<TokenPageWrapper lang={lang} />} />
           <Route path="/airdrop" element={<AirdropPage onBack={() => navigate('/')} lang={lang} />} />
-          <Route path="/stats" element={<StatsPage onBack={() => navigate('/')} />} />
-          <Route path="/whitepaper" element={<WhitepaperPage onBack={() => navigate('/')} />} />
-          <Route path="/leaderboard" element={<LeaderboardPage onBack={() => navigate('/')} />} />
-          <Route path="/portfolio" element={<PortfolioPage onBack={() => navigate('/')} />} />
-          <Route path="/roadmap" element={<RoadmapPage onBack={() => navigate('/')} />} />
+          <Route path="/stats" element={<StatsPage onBack={() => navigate('/')} lang={lang} />} />
+          <Route path="/whitepaper" element={<WhitepaperPage onBack={() => navigate('/')} lang={lang} />} />
+          <Route path="/leaderboard" element={<LeaderboardPage onBack={() => navigate('/')} lang={lang} />} />
+          <Route path="/portfolio" element={<PortfolioPage onBack={() => navigate('/')} lang={lang} />} />
+          <Route path="/roadmap" element={<RoadmapPage onBack={() => navigate('/')} lang={lang} />} />
         </Routes>
       </main>
       <footer className="max-w-6xl mx-auto px-4 py-8 text-[10px] font-mono text-white/35 text-center tracking-widest border-t border-white/5 mt-8">

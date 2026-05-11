@@ -1,6 +1,6 @@
 // AirdropPage.jsx
 import React from 'react';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Gift } from 'lucide-react';
 import S1AirdropCounter from './S1AirdropCounter.jsx';
 import { t } from './i18n.js';
 
@@ -16,21 +16,12 @@ export default function AirdropPage({ onBack, lang = 'en' }) {
 
       <div className="max-w-2xl mx-auto space-y-4">
 
-        {/* Title + subtitle */}
-        <div className="text-center space-y-2 pb-2">
-          <div className="text-2xl font-bold font-mono text-white tracking-widest">{t(lang, 's1AirdropTitle')}</div>
-          <div className="text-sm font-mono text-white/40">{t(lang, 'airdropSubtitle')}</div>
-        </div>
-
         {/* Live counter */}
         <S1AirdropCounter />
 
-        {/* Current pool label */}
-        <div className="text-[10px] font-mono tracking-widest text-lime-400 text-center">{t(lang, 'currentPool')}</div>
-
         {/* How it works */}
         <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-6 space-y-4">
-          <div className="text-[10px] font-mono tracking-widest text-lime-400">HOW IT WORKS</div>
+          <div className="text-[10px] font-mono tracking-widest text-lime-400">{t(lang, 'eligibilityTitle')}</div>
           <p className="text-sm font-mono text-white/50 leading-relaxed">
             SuiPump charges a 1% fee on every trade. Of that, 0.50% goes to the protocol.
             At the end of Season 1, we will take 50% of all accumulated protocol fees and
@@ -43,25 +34,18 @@ export default function AirdropPage({ onBack, lang = 'en' }) {
           </p>
         </div>
 
-        {/* How to earn */}
-        <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-6">
-          <div className="text-[10px] font-mono tracking-widest text-lime-400 mb-4">{t(lang, 'eligibilityTitle')}</div>
-          <div className="space-y-1">
-            {[
-              { action: t(lang, 'eligibility1'), pts: '1 pt per 0.01 SUI' },
-              { action: t(lang, 'eligibility2'), pts: '0.5 pts per 0.01 SUI' },
-              { action: t(lang, 'eligibility3'), pts: '500 pts flat' },
-              { action: t(lang, 'eligibility4'), pts: '2× multiplier' },
-            ].map(({ action, pts }) => (
-              <div key={action} className="flex items-center justify-between py-2.5 border-b border-white/5 last:border-0">
-                <span className="text-xs font-mono text-white/60">{action}</span>
-                <span className="text-xs font-mono text-lime-400/70 ml-4 text-right shrink-0">{pts}</span>
-              </div>
-            ))}
+        {/* Eligibility bullets */}
+        <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-6 space-y-3">
+          <div className="text-[10px] font-mono tracking-widest text-lime-400">{t(lang, 'eligibilityTitle')}</div>
+          <div className="space-y-2 text-xs font-mono text-white/50 leading-relaxed">
+            <p>· {t(lang, 'eligibility1')}</p>
+            <p>· {t(lang, 'eligibility2')}</p>
+            <p>· {t(lang, 'eligibility3')}</p>
+            <p>· {t(lang, 'eligibility4')}</p>
           </div>
         </div>
 
-        {/* Points table */}
+        {/* Points earn table */}
         <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-6">
           <div className="text-[10px] font-mono tracking-widest text-lime-400 mb-4">HOW TO EARN POINTS</div>
           <div className="space-y-1">
@@ -83,18 +67,6 @@ export default function AirdropPage({ onBack, lang = 'en' }) {
           </div>
         </div>
 
-        {/* Eligibility */}
-        <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-6 space-y-3">
-          <div className="text-[10px] font-mono tracking-widest text-lime-400">ELIGIBILITY</div>
-          <div className="space-y-2 text-xs font-mono text-white/50 leading-relaxed">
-            <p>· Minimum 100 points required to claim</p>
-            <p>· Sybil wallets (wash trading, cluster farms) will be excluded</p>
-            <p>· Anti-sybil methodology published before snapshot</p>
-            <p>· 7-day challenge period after snapshot before distribution</p>
-            <p>· No registration needed — every on-chain interaction counts automatically</p>
-          </div>
-        </div>
-
         {/* Timeline */}
         <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-6 space-y-3">
           <div className="text-[10px] font-mono tracking-widest text-lime-400">TIMELINE</div>
@@ -103,7 +75,7 @@ export default function AirdropPage({ onBack, lang = 'en' }) {
               { label: 'Testnet preview', desc: 'You are here. Counter shows estimated pool from testnet activity.' },
               { label: 'Security audit', desc: 'Independent Move contract audit. Gate for mainnet.' },
               { label: 'Mainnet deployment', desc: 'S1 counter resets to zero. All trades from block 0 count.' },
-              { label: 'Season 1 close', desc: 'Announced with ≥30 days notice. Snapshot taken.' },
+              { label: 'Season 1 close', desc: 'Announced with 30+ days notice. Snapshot taken.' },
               { label: '7-day challenge period', desc: 'Community reviews snapshot, disputes resolved.' },
               { label: 'Airdrop distribution', desc: 'SUI sent directly to eligible wallets.' },
             ].map(({ label, desc }, i, arr) => (
@@ -126,8 +98,7 @@ export default function AirdropPage({ onBack, lang = 'en' }) {
           <p className="text-[10px] font-mono text-white/20 leading-relaxed">
             TESTNET PREVIEW — Testnet activity does not count toward the real S1 airdrop.
             The counter above is illustrative only. Final distribution amount, eligibility rules,
-            and timeline are subject to change. This is not financial advice. SuiPump contracts
-            are unaudited. DYOR.
+            and timeline are subject to change. This is not financial advice. DYOR.
           </p>
         </div>
 

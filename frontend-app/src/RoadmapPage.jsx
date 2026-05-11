@@ -1,77 +1,62 @@
 // RoadmapPage.jsx
 import React from 'react';
-import { ArrowLeft, CheckCircle, Circle, Zap, Globe, TrendingUp, Star } from 'lucide-react';
+import { ArrowLeft, Star } from 'lucide-react';
+import { t } from './i18n.js';
 
 const phases = [
   {
-    id: 'phase1',
-    label: 'PHASE 1',
-    title: 'Testnet',
+    id: 1,
+    phase: 'PHASE 1',
     status: 'complete',
-    icon: <CheckCircle size={18} className="text-lime-400" />,
-    color: 'lime',
+    label: 'COMPLETE',
     items: [
-      { done: true,  text: 'Move contracts deployed — 18/18 unit tests passing' },
-      { done: true,  text: 'Constant-product bonding curve with virtual reserves' },
-      { done: true,  text: 'Creator-first fee model (40% creator / 50% protocol / 10% LP)' },
-      { done: true,  text: 'Graduation fee: 1% (0.5% creator bonus + 0.5% protocol bonus)' },
-      { done: true,  text: 'Front-run-safe graduation — internal transfers, no return values' },
-      { done: true,  text: 'Transferable CreatorCap with up to 10 payout splits' },
-      { done: true,  text: 'Browser-based two-tx token launch flow with social links' },
-      { done: true,  text: 'Live trading UI with price chart (OHLC candles, PRICE/MCAP, all intervals)' },
-      { done: true,  text: 'On-chain social comments with wallet avatar colors' },
-      { done: true,  text: 'Leaderboard, portfolio, token search (partial CA), trending sort' },
-      { done: true,  text: 'Season 1 airdrop counter' },
-      { done: true,  text: 'Cursor-based event pagination — no data loss on busy curves' },
-      { done: true,  text: 'Pre-audit security review completed' },
-      { done: true,  text: 'Mobile layout with WalletConnect + Phantom/Slush deep links' },
+      { text: 'Move contracts + 26/26 tests', done: true },
+      { text: 'Full trading UI live', done: true },
+      { text: '2-tx token launch flow', done: true },
+      { text: 'Comments, leaderboard, portfolio, search & sort', done: true },
+      { text: 'USD price display + OHLC charts', done: true },
+      { text: '6-language i18n rollout', done: true },
+      { text: 'Vercel Analytics + Discord community', done: true },
     ],
   },
   {
-    id: 'phase2',
-    label: 'PHASE 2',
-    title: 'Pre-Mainnet',
+    id: 2,
+    phase: 'PHASE 2',
     status: 'active',
-    icon: <Zap size={18} className="text-amber-400" />,
-    color: 'amber',
+    label: 'PRE-MAINNET',
     items: [
-      { done: false, text: 'Independent Move security audit (OtterSec / Movebit / Zellic)' },
-      { done: false, text: 'AdminCap transferred to multisig' },
-      { done: false, text: 'Cetus CLMM auto-graduation PTB' },
-      { done: false, text: 'Dedicated RPC node + monitoring infrastructure' },
-      { done: false, text: 'Mobile app (iOS + Android)' },
-      { done: false, text: 'KOL partnerships and creator incentive program' },
+      { text: 'Security audit (hard gate)', done: false },
+      { text: 'DeepBook / Cetus auto-graduation PTB', done: false },
+      { text: 'Dedicated RPC infra', done: false },
+      { text: 'On-chain referral system', done: false },
+      { text: 'KOL + creator partnerships', done: false },
     ],
   },
   {
-    id: 'phase3',
-    label: 'PHASE 3',
-    title: 'Mainnet',
+    id: 3,
+    phase: 'PHASE 3',
     status: 'upcoming',
-    icon: <Globe size={18} className="text-white/30" />,
-    color: 'white',
+    label: 'MAINNET',
     items: [
-      { done: false, text: 'Mainnet deployment post-audit' },
-      { done: false, text: 'Season 1 airdrop tracking activated from block 0' },
-      { done: false, text: 'First wave of real token launches and communities' },
-      { done: false, text: 'Referral system — on-chain, permissionless' },
-      { done: false, text: 'Off-chain indexer for real-time trade history and charts' },
-      { done: false, text: 'Season 1 close and SUI airdrop distribution' },
+      { text: 'Mainnet deployment', done: false },
+      { text: 'S1 airdrop tracking live', done: false },
+      { text: 'First wave token launches', done: false },
+      { text: 'Ambassador program', done: false },
+      { text: 'Off-chain indexer', done: false },
     ],
   },
   {
-    id: 'phase4',
-    label: 'PHASE 4',
-    title: 'Scale',
+    id: 4,
+    phase: 'PHASE 4',
     status: 'upcoming',
-    icon: <TrendingUp size={18} className="text-white/30" />,
-    color: 'white',
+    label: 'SCALE',
     items: [
-      { done: false, text: '$SUMP token — buyback-and-burn from protocol fees' },
-      { done: false, text: 'Season 2 airdrop with enhanced point mechanics' },
-      { done: false, text: 'SuiPump Perps — derivatives market for graduated tokens' },
-      { done: false, text: 'Multi-chain expansion (post Sui dominance)' },
-      { done: false, text: 'DAO governance via $SUMP' },
+      { text: '$SUMP token + governance', done: false },
+      { text: 'Season 2 airdrop', done: false },
+      { text: 'SuiPump Perps', done: false },
+      { text: 'Multi-chain expansion', done: false },
+      { text: 'DAO treasury management', done: false },
+      { text: 'DAO governance via $SUMP', done: false },
     ],
   },
 ];
@@ -94,14 +79,14 @@ const dotColors = {
   upcoming: 'bg-white/20',
 };
 
-export default function RoadmapPage({ onBack }) {
+export default function RoadmapPage({ onBack, lang = 'en' }) {
   return (
     <div>
       <button
         onClick={onBack}
         className="flex items-center gap-2 text-xs font-mono text-white/40 hover:text-white mb-6 transition-colors"
       >
-        <ArrowLeft size={12} /> BACK TO HOME
+        <ArrowLeft size={12} /> {t(lang, 'backToHome')}
       </button>
 
       <div className="max-w-2xl mx-auto space-y-6">
@@ -113,47 +98,38 @@ export default function RoadmapPage({ onBack }) {
             <div className="flex items-center justify-center gap-2 mb-3">
               <Star className="text-lime-400" size={18} />
               <h1 className="text-2xl font-bold text-white" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
-                ROADMAP
+                {t(lang, 'roadmapTitle')}
               </h1>
             </div>
             <p className="text-xs font-mono text-white/40 mb-4">
-              From testnet to the leading token launchpad in crypto.
+              {t(lang, 'roadmapSub')}
             </p>
             {/* Progress bar */}
             <div className="flex gap-1.5 justify-center">
               {phases.map(p => (
                 <div key={p.id} className={`h-1.5 flex-1 rounded-full max-w-[60px] ${
                   p.status === 'complete' ? 'bg-lime-400' :
-                  p.status === 'active' ? 'bg-amber-400/60 animate-pulse' :
-                  'bg-white/10'
+                  p.status === 'active' ? 'bg-lime-400/40' : 'bg-white/10'
                 }`} />
               ))}
             </div>
-            <div className="mt-2 text-[9px] font-mono text-white/20">PHASE 1 COMPLETE · PHASE 2 IN PROGRESS</div>
           </div>
         </div>
 
         {/* Phases */}
-        {phases.map((phase) => (
+        {phases.map(phase => (
           <div key={phase.id} className={`rounded-2xl border p-5 ${statusColors[phase.status]}`}>
             <div className="flex items-center gap-3 mb-4">
-              <div className={`w-2 h-2 rounded-full shrink-0 ${dotColors[phase.status]}`} />
-              <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full border ${labelColors[phase.status]}`}>
+              <div className={`w-2.5 h-2.5 rounded-full ${dotColors[phase.status]}`} />
+              <span className="text-[10px] font-mono font-bold text-white/50 tracking-widest">{phase.phase}</span>
+              <span className={`text-[9px] font-mono px-2 py-0.5 rounded-full border ${labelColors[phase.status]}`}>
                 {phase.label}
               </span>
-              <span className="text-sm font-bold text-white font-mono">{phase.title}</span>
-              {phase.status === 'complete' && (
-                <span className="ml-auto text-[10px] font-mono text-lime-400">✓ COMPLETE</span>
-              )}
-              {phase.status === 'active' && (
-                <span className="ml-auto text-[10px] font-mono text-lime-400/60">⬡ IN PROGRESS</span>
-              )}
             </div>
-
-            <div className="space-y-2.5">
+            <div className="space-y-2.5 pl-5">
               {phase.items.map((item, i) => (
-                <div key={i} className="flex items-start gap-3">
-                  <div className={`mt-0.5 w-4 h-4 rounded-full border flex items-center justify-center shrink-0 ${
+                <div key={i} className="flex items-start gap-2.5">
+                  <div className={`mt-1 w-3 h-3 rounded-sm border flex-shrink-0 flex items-center justify-center ${
                     item.done
                       ? 'bg-lime-400/20 border-lime-400/40'
                       : phase.status === 'active'
@@ -175,7 +151,7 @@ export default function RoadmapPage({ onBack }) {
 
         {/* Target */}
         <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5 text-center">
-          <div className="text-[10px] font-mono text-white/20 tracking-widest mb-2">TARGET</div>
+          <div className="text-[10px] font-mono text-white/20 tracking-widest mb-2">{t(lang, 'target')}</div>
           <div className="text-3xl font-bold text-white font-mono mb-1">$50M</div>
           <div className="text-xs font-mono text-white/40">monthly trading volume within 12 months of mainnet</div>
           <div className="mt-3 text-[9px] font-mono text-white/15">

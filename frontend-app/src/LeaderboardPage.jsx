@@ -1,8 +1,4 @@
 // LeaderboardPage.jsx
-// Ranks all SuiPump tokens by trading volume, computed from on-chain events.
-// Also shows top traders by total SUI spent.
-// Uses cursor-based pagination to fetch ALL events.
-
 import React, { useState, useEffect } from 'react';
 import { useSuiClient } from '@mysten/dapp-kit';
 import { useNavigate } from 'react-router-dom';
@@ -10,6 +6,7 @@ import { ArrowLeft, TrendingUp, Trophy, Zap } from 'lucide-react';
 import { PACKAGE_ID } from './constants.js';
 import { useTokenList } from './useTokenList.js';
 import { paginateMultipleEvents } from './paginateEvents.js';
+import { t } from './i18n.js';
 
 const MIST_PER_SUI = 1e9;
 
@@ -33,7 +30,7 @@ function RankBadge({ rank }) {
   return <span className="text-white/20 font-mono text-xs w-5 text-center">{rank}</span>;
 }
 
-export default function LeaderboardPage({ onBack }) {
+export default function LeaderboardPage({ onBack, lang = 'en' }) {
   const client = useSuiClient();
   const navigate = useNavigate();
   const { tokens } = useTokenList();
@@ -93,19 +90,11 @@ export default function LeaderboardPage({ onBack }) {
         }
 
         const sortedTokens = Object.entries(volumeByCurve)
-          .map(([curveId, volume]) => ({
-            curveId,
-            volume,
-            trades: tradesByCurve[curveId] || 0,
-          }))
+          .map(([curveId, volume]) => ({ curveId, volume, trades: tradesByCurve[curveId] || 0 }))
           .sort((a, b) => b.volume - a.volume);
 
         const sortedTraders = Object.entries(volumeByTrader)
-          .map(([addr, volume]) => ({
-            addr,
-            volume,
-            trades: tradesByTrader[addr] || 0,
-          }))
+          .map(([addr, volume]) => ({ addr, volume, trades: tradesByTrader[addr] || 0 }))
           .sort((a, b) => b.volume - a.volume)
           .slice(0, 20);
 
@@ -124,7 +113,7 @@ export default function LeaderboardPage({ onBack }) {
   }, [client]);
 
   const enrichedTokens = tokenVolumes.map(tv => {
-    const meta = tokens.find(t => t.curveId === tv.curveId);
+    const meta = tokens.find(tk => tk.curveId === tv.curveId);
     return { ...tv, name: meta?.name || 'Unknown', symbol: meta?.symbol || '???', tokenType: meta?.tokenType };
   });
 
@@ -137,7 +126,7 @@ export default function LeaderboardPage({ onBack }) {
         onClick={onBack}
         className="flex items-center gap-2 text-xs font-mono text-white/40 hover:text-white mb-6 transition-colors"
       >
-        <ArrowLeft size={12} /> BACK TO HOME
+        <ArrowLeft size={12} /> {t(lang, 'backToHome')}
       </button>
 
       <div className="max-w-2xl mx-auto">
@@ -146,10 +135,10 @@ export default function LeaderboardPage({ onBack }) {
           <div className="relative flex items-center gap-3 mb-1">
             <Trophy className="text-lime-400" size={20} />
             <h1 className="text-xl font-bold text-white" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
-              LEADERBOARD
+              {t(lang, 'leaderboardTitle')}
             </h1>
           </div>
-          <p className="text-xs font-mono text-white/30">Ranked by total trading volume on SuiPump testnet.</p>
+          <p className="text-xs font-mono text-white/30">{t(lang, 'leaderboardSub')}</p>
         </div>
 
         <div className="flex gap-2 mb-4">
@@ -159,7 +148,7 @@ export default function LeaderboardPage({ onBack }) {
               tab === 'tokens' ? 'bg-lime-400 text-black font-bold' : 'bg-white/5 text-white/40 hover:bg-white/10'
             }`}
           >
-            <TrendingUp size={12} /> TOP TOKENS
+            <TrendingUp size={12} /> {t(lang, 'topTokens')}
           </button>
           <button
             onClick={() => setTab('traders')}
@@ -167,95 +156,71 @@ export default function LeaderboardPage({ onBack }) {
               tab === 'traders' ? 'bg-lime-400 text-black font-bold' : 'bg-white/5 text-white/40 hover:bg-white/10'
             }`}
           >
-            <Zap size={12} /> TOP TRADERS
+            <Zap size={12} /> {t(lang, 'topTraders')}
           </button>
         </div>
 
         <div className="rounded-2xl border border-white/10 bg-white/[0.03] overflow-hidden">
           <div className="grid grid-cols-12 text-[9px] font-mono text-white/20 tracking-widest px-5 py-3 border-b border-white/5">
-            <span className="col-span-1">#</span>
-            <span className="col-span-5">{tab === 'tokens' ? 'TOKEN' : 'WALLET'}</span>
-            <span className="col-span-3 text-right">VOLUME</span>
-            <span className="col-span-3 text-right">TRADES</span>
+            <span className="col-span-1">{t(lang, 'rank')}</span>
+            <span className="col-span-5">{tab === 'tokens' ? t(lang, 'token') : t(lang, 'trader')}</span>
+            <span className="col-span-3 text-right">{t(lang, 'volume')}</span>
+            <span className="col-span-3 text-right">{t(lang, 'trades')}</span>
           </div>
 
-          {loading && (
-            <div className="space-y-px">
-              {[...Array(6)].map((_, i) => (
-                <div key={i} className="grid grid-cols-12 items-center px-5 py-4 gap-2 animate-pulse">
-                  <div className="col-span-1 h-4 w-4 bg-white/5 rounded" />
-                  <div className="col-span-5 h-3 bg-white/5 rounded w-24" />
-                  <div className="col-span-3 h-3 bg-white/5 rounded ml-auto w-16" />
-                  <div className="col-span-3 h-3 bg-white/5 rounded ml-auto w-12" />
-                </div>
-              ))}
-            </div>
-          )}
-
-          {!loading && tab === 'tokens' && (
-            <div>
-              {enrichedTokens.length === 0 && (
-                <div className="text-xs font-mono text-white/20 text-center py-10">No trades yet.</div>
-              )}
-              {enrichedTokens.map((token, i) => (
+          {loading ? (
+            <div className="py-12 text-center text-white/30 text-xs font-mono">{t(lang, 'loading')}</div>
+          ) : tab === 'tokens' ? (
+            enrichedTokens.length === 0 ? (
+              <div className="py-12 text-center text-white/20 text-xs font-mono">{t(lang, 'noData')}</div>
+            ) : (
+              enrichedTokens.map((token, i) => (
                 <button
                   key={token.curveId}
-                  onClick={() => token.tokenType && navigate(`/token/${token.curveId}`)}
-                  className="w-full grid grid-cols-12 items-center px-5 py-4 border-b border-white/[0.03] last:border-0 hover:bg-white/5 transition-colors group text-left"
+                  onClick={() => navigate(`/token/${token.curveId}`)}
+                  className="w-full grid grid-cols-12 items-center px-5 py-3.5 border-b border-white/[0.03] last:border-0 hover:bg-white/5 transition-colors text-left"
                 >
-                  <div className="col-span-1 flex items-center"><RankBadge rank={i + 1} /></div>
-                  <div className="col-span-5">
-                    <div className="text-xs font-mono font-bold text-white group-hover:text-lime-400 transition-colors">{token.name}</div>
+                  <span className="col-span-1 flex items-center"><RankBadge rank={i + 1} /></span>
+                  <div className="col-span-5 min-w-0">
+                    <div className="text-xs font-mono font-bold text-white truncate">{token.name}</div>
                     <div className="text-[10px] font-mono text-white/30">${token.symbol}</div>
-                    <div className="mt-1.5 h-1 bg-white/5 rounded-full overflow-hidden w-24">
-                      <div className="h-full bg-gradient-to-r from-lime-600 to-lime-400 rounded-full" style={{ width: `${(token.volume / maxVolume) * 100}%` }} />
+                    <div className="mt-1 h-1 bg-white/5 rounded-full overflow-hidden w-full max-w-[120px]">
+                      <div
+                        className="h-full bg-lime-400/60 rounded-full transition-all"
+                        style={{ width: `${(token.volume / maxVolume) * 100}%` }}
+                      />
                     </div>
                   </div>
-                  <div className="col-span-3 text-right">
-                    <div className="text-xs font-mono font-bold text-white">{fmt(token.volume, 2)} SUI</div>
-                  </div>
-                  <div className="col-span-3 text-right">
-                    <div className="text-xs font-mono text-white/50">{token.trades}</div>
-                  </div>
+                  <span className="col-span-3 text-right text-xs font-mono text-lime-400 font-bold">{fmt(token.volume)} SUI</span>
+                  <span className="col-span-3 text-right text-xs font-mono text-white/30">{token.trades}</span>
                 </button>
-              ))}
-            </div>
-          )}
-
-          {!loading && tab === 'traders' && (
-            <div>
-              {topTraders.length === 0 && (
-                <div className="text-xs font-mono text-white/20 text-center py-10">No trades yet.</div>
-              )}
-              {topTraders.map((trader, i) => (
-                <a
+              ))
+            )
+          ) : (
+            topTraders.length === 0 ? (
+              <div className="py-12 text-center text-white/20 text-xs font-mono">{t(lang, 'noData')}</div>
+            ) : (
+              topTraders.map((trader, i) => (
+                <div
                   key={trader.addr}
-                  href={`https://testnet.suivision.xyz/account/${trader.addr}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="w-full grid grid-cols-12 items-center px-5 py-4 border-b border-white/[0.03] last:border-0 hover:bg-white/5 transition-colors group"
+                  className="grid grid-cols-12 items-center px-5 py-3.5 border-b border-white/[0.03] last:border-0"
                 >
-                  <div className="col-span-1 flex items-center"><RankBadge rank={i + 1} /></div>
-                  <div className="col-span-5">
-                    <div className="text-xs font-mono font-bold text-white group-hover:text-lime-400 transition-colors">{shortAddr(trader.addr)}</div>
-                    <div className="mt-1.5 h-1 bg-white/5 rounded-full overflow-hidden w-24">
-                      <div className="h-full bg-gradient-to-r from-lime-600 to-lime-400 rounded-full" style={{ width: `${(trader.volume / maxTraderVolume) * 100}%` }} />
+                  <span className="col-span-1 flex items-center"><RankBadge rank={i + 1} /></span>
+                  <div className="col-span-5 min-w-0">
+                    <div className="text-xs font-mono text-white">{shortAddr(trader.addr)}</div>
+                    <div className="mt-1 h-1 bg-white/5 rounded-full overflow-hidden w-full max-w-[120px]">
+                      <div
+                        className="h-full bg-lime-400/60 rounded-full"
+                        style={{ width: `${(trader.volume / maxTraderVolume) * 100}%` }}
+                      />
                     </div>
                   </div>
-                  <div className="col-span-3 text-right">
-                    <div className="text-xs font-mono font-bold text-white">{fmt(trader.volume, 2)} SUI</div>
-                  </div>
-                  <div className="col-span-3 text-right">
-                    <div className="text-xs font-mono text-white/50">{trader.trades}</div>
-                  </div>
-                </a>
-              ))}
-            </div>
+                  <span className="col-span-3 text-right text-xs font-mono text-lime-400 font-bold">{fmt(trader.volume)} SUI</span>
+                  <span className="col-span-3 text-right text-xs font-mono text-white/30">{trader.trades}</span>
+                </div>
+              ))
+            )
           )}
-        </div>
-
-        <div className="mt-4 text-[9px] font-mono text-white/15 text-center">
-          TESTNET DATA ONLY · RESETS AT MAINNET LAUNCH
         </div>
       </div>
     </div>

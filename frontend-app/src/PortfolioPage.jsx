@@ -1,10 +1,4 @@
 // PortfolioPage.jsx
-// Profile page — pump.fun style.
-// Three tabs:
-//   HOLDINGS  — tokens currently held (existing behaviour)
-//   TRADED    — all tokens ever bought or sold (historical, even if 0 balance)
-//   CREATED   — tokens launched by this wallet (CurveCreated events)
-
 import React, { useState, useEffect, useMemo } from 'react';
 import { useCurrentAccount, useSuiClient } from '@mysten/dapp-kit';
 import { useNavigate } from 'react-router-dom';
@@ -13,6 +7,7 @@ import { useTokenList } from './useTokenList.js';
 import { priceMistPerToken, mistToSui } from './curve.js';
 import { TOKEN_DECIMALS, DRAIN_SUI_APPROX, PACKAGE_ID } from './constants.js';
 import { paginateEvents, paginateMultipleEvents } from './paginateEvents.js';
+import { t } from './i18n.js';
 
 const MIST_PER_SUI = 1e9;
 
@@ -28,8 +23,6 @@ function shortAddr(a) {
   if (!a) return '';
   return `${a.slice(0, 6)}…${a.slice(-4)}`;
 }
-
-// ── Token row — shared across tabs ──────────────────────────────────────────
 
 function TokenRow({ token, iconUrl, right, onClick }) {
   return (
@@ -57,7 +50,7 @@ function TokenRow({ token, iconUrl, right, onClick }) {
 
 // ── HOLDINGS tab ─────────────────────────────────────────────────────────────
 
-function HoldingsTab({ account, tokens, client }) {
+function HoldingsTab({ account, tokens, client, lang }) {
   const navigate = useNavigate();
   const [holdings, setHoldings] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -71,7 +64,7 @@ function HoldingsTab({ account, tokens, client }) {
       setLoading(true);
       try {
         const results = await Promise.all(
-          tokens.filter(t => t.tokenType).map(async (token) => {
+          tokens.filter(tk => tk.tokenType).map(async (token) => {
             try {
               const [balance, curveObj] = await Promise.all([
                 client.getBalance({ owner: account.address, coinType: token.tokenType }),
@@ -116,7 +109,7 @@ function HoldingsTab({ account, tokens, client }) {
   const totalValueSui = holdings.reduce((s, h) => s + h.valueSui, 0);
 
   if (!account) return (
-    <div className="text-xs font-mono text-white/30 text-center py-12">Connect your wallet to view holdings.</div>
+    <div className="text-xs font-mono text-white/30 text-center py-12">{t(lang, 'connectToView')}</div>
   );
 
   if (loading) return (
@@ -135,14 +128,14 @@ function HoldingsTab({ account, tokens, client }) {
   );
 
   if (holdings.length === 0) return (
-    <div className="text-xs font-mono text-white/20 text-center py-12">No SuiPump tokens in this wallet.</div>
+    <div className="text-xs font-mono text-white/20 text-center py-12">{t(lang, 'noHoldings')}</div>
   );
 
   return (
     <>
       <div className="px-5 py-3 border-b border-white/5 flex items-center justify-between">
         <span className="text-[10px] font-mono text-white/30">{holdings.length} token{holdings.length !== 1 ? 's' : ''}</span>
-        <span className="text-[10px] font-mono text-lime-400/70">~{fmt(totalValueSui, 4)} SUI total</span>
+        <span className="text-[10px] font-mono text-lime-400/70">~{fmt(totalValueSui, 4)} SUI {t(lang, 'totalValue')}</span>
       </div>
       {holdings.map((h) => (
         <TokenRow
@@ -165,7 +158,7 @@ function HoldingsTab({ account, tokens, client }) {
 
 // ── TRADED tab ────────────────────────────────────────────────────────────────
 
-function TradedTab({ account, tokens, client }) {
+function TradedTab({ account, tokens, client, lang }) {
   const navigate = useNavigate();
   const [tradedTokens, setTradedTokens] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -188,8 +181,7 @@ function TradedTab({ account, tokens, client }) {
         if (cancelled) return;
 
         const addr = account.address;
-        // Collect unique curveIds this wallet has ever touched
-        const curveVolume = {}; // curveId → { suiSpent, suiReceived, buys, sells }
+        const curveVolume = {};
 
         for (const e of eventMap[buyType]) {
           if (e.parsedJson?.buyer !== addr) continue;
@@ -209,9 +201,8 @@ function TradedTab({ account, tokens, client }) {
         const curveIds = Object.keys(curveVolume);
         if (!curveIds.length) { if (!cancelled) { setTradedTokens([]); setLoading(false); } return; }
 
-        // Enrich with token metadata from token list
         const enriched = curveIds.map(curveId => {
-          const meta = tokens.find(t => t.curveId === curveId);
+          const meta = tokens.find(tk => tk.curveId === curveId);
           const stats = curveVolume[curveId];
           const pnl = stats.suiReceived - stats.suiSpent;
           return {
@@ -232,13 +223,12 @@ function TradedTab({ account, tokens, client }) {
           setLoading(false);
         }
 
-        // Fetch icons
         const icons = {};
-        await Promise.all(enriched.map(async (t) => {
-          if (!t.tokenType) return;
+        await Promise.all(enriched.map(async (tk) => {
+          if (!tk.tokenType) return;
           try {
-            const m = await client.getCoinMetadata({ coinType: t.tokenType });
-            if (m?.iconUrl) icons[t.curveId] = m.iconUrl;
+            const m = await client.getCoinMetadata({ coinType: tk.tokenType });
+            if (m?.iconUrl) icons[tk.curveId] = m.iconUrl;
           } catch {}
         }));
         if (!cancelled) setIconUrls(icons);
@@ -251,7 +241,7 @@ function TradedTab({ account, tokens, client }) {
   }, [account?.address, tokens.length, client]);
 
   if (!account) return (
-    <div className="text-xs font-mono text-white/30 text-center py-12">Connect your wallet to view trade history.</div>
+    <div className="text-xs font-mono text-white/30 text-center py-12">{t(lang, 'connectToView')}</div>
   );
 
   if (loading) return (
@@ -270,28 +260,26 @@ function TradedTab({ account, tokens, client }) {
   );
 
   if (tradedTokens.length === 0) return (
-    <div className="text-xs font-mono text-white/20 text-center py-12">No trades found for this wallet.</div>
+    <div className="text-xs font-mono text-white/20 text-center py-12">{t(lang, 'noTrades')}</div>
   );
 
   return (
     <>
       <div className="px-5 py-3 border-b border-white/5">
-        <span className="text-[10px] font-mono text-white/30">{tradedTokens.length} token{tradedTokens.length !== 1 ? 's' : ''} traded</span>
+        <span className="text-[10px] font-mono text-white/30">{tradedTokens.length} token{tradedTokens.length !== 1 ? 's' : ''}</span>
       </div>
-      {tradedTokens.map((t) => (
+      {tradedTokens.map((tk) => (
         <TokenRow
-          key={t.curveId}
-          token={t}
-          iconUrl={iconUrls[t.curveId]}
-          onClick={() => navigate(`/token/${t.curveId}`)}
+          key={tk.curveId}
+          token={tk}
+          iconUrl={iconUrls[tk.curveId]}
+          onClick={() => navigate(`/token/${tk.curveId}`)}
           right={
             <div className="text-right shrink-0 space-y-0.5">
-              <div className={`text-xs font-mono font-bold ${t.pnl >= 0 ? 'text-lime-400' : 'text-red-400'}`}>
-                {t.pnl >= 0 ? '+' : ''}{fmt(t.pnl, 3)} SUI
+              <div className={`text-xs font-mono font-bold ${tk.pnl >= 0 ? 'text-lime-400' : 'text-red-400'}`}>
+                {tk.pnl >= 0 ? '+' : ''}{fmt(tk.pnl, 3)} SUI
               </div>
-              <div className="text-[10px] font-mono text-white/25">
-                {t.buys}B · {t.sells}S
-              </div>
+              <div className="text-[10px] font-mono text-white/30">{tk.buys}B / {tk.sells}S</div>
             </div>
           }
         />
@@ -302,16 +290,16 @@ function TradedTab({ account, tokens, client }) {
 
 // ── CREATED tab ───────────────────────────────────────────────────────────────
 
-function CreatedTab({ account, tokens, client }) {
+function CreatedTab({ account, tokens, client, lang }) {
   const navigate = useNavigate();
-  const [iconUrls, setIconUrls] = useState({});
   const [curveStats, setCurveStats] = useState({});
   const [loading, setLoading] = useState(true);
+  const [iconUrls, setIconUrls] = useState({});
 
   const createdTokens = useMemo(() => {
     if (!account?.address) return [];
-    return tokens.filter(t => t.creator === account.address);
-  }, [account?.address, tokens]);
+    return tokens.filter(tk => tk.creator === account.address);
+  }, [tokens, account?.address]);
 
   useEffect(() => {
     if (!createdTokens.length) { setLoading(false); return; }
@@ -320,37 +308,33 @@ function CreatedTab({ account, tokens, client }) {
     async function load() {
       setLoading(true);
       try {
-        // Fetch curve state + icons for created tokens
-        const [curveObjs, ...iconResults] = await Promise.all([
-          Promise.all(createdTokens.map(t =>
-            client.getObject({ id: t.curveId, options: { showContent: true } })
-              .then(o => ({ curveId: t.curveId, fields: o.data?.content?.fields ?? null }))
-              .catch(() => ({ curveId: t.curveId, fields: null }))
-          )),
-          ...createdTokens.map(t =>
-            t.tokenType
-              ? client.getCoinMetadata({ coinType: t.tokenType })
-                  .then(m => ({ curveId: t.curveId, iconUrl: m?.iconUrl ?? null }))
-                  .catch(() => ({ curveId: t.curveId, iconUrl: null }))
-              : Promise.resolve({ curveId: t.curveId, iconUrl: null })
-          ),
-        ]);
+        const curveObjs = await Promise.all(
+          createdTokens.map(tk =>
+            client.getObject({ id: tk.curveId, options: { showContent: true } }).catch(() => null)
+          )
+        );
+        const iconResults = await Promise.all(
+          createdTokens.map(async (tk) => {
+            try {
+              const m = await client.getCoinMetadata({ coinType: tk.tokenType });
+              return { curveId: tk.curveId, iconUrl: m?.iconUrl || null };
+            } catch { return { curveId: tk.curveId, iconUrl: null }; }
+          })
+        );
 
         if (cancelled) return;
 
         const stats = {};
-        for (const { curveId, fields } of curveObjs) {
-          if (!fields) continue;
+        for (let i = 0; i < createdTokens.length; i++) {
+          const obj = curveObjs[i];
+          if (!obj?.data?.content?.fields) continue;
+          const fields = obj.data.content.fields;
+          const curveId = createdTokens[i].curveId;
           const reserveMist = BigInt(fields.sui_reserve ?? 0);
           const reserveSui = mistToSui(reserveMist);
           const progress = Math.min(100, (reserveSui / DRAIN_SUI_APPROX) * 100);
           const creatorFeesSui = Number(BigInt(fields.creator_fees ?? 0)) / MIST_PER_SUI;
-          stats[curveId] = {
-            progress,
-            reserveSui,
-            creatorFeesSui,
-            graduated: fields.graduated ?? false,
-          };
+          stats[curveId] = { progress, reserveSui, creatorFeesSui, graduated: fields.graduated ?? false };
         }
         setCurveStats(stats);
 
@@ -368,26 +352,11 @@ function CreatedTab({ account, tokens, client }) {
   }, [createdTokens.length, client]);
 
   if (!account) return (
-    <div className="text-xs font-mono text-white/30 text-center py-12">Connect your wallet to view created tokens.</div>
-  );
-
-  if (loading && createdTokens.length > 0) return (
-    <div className="space-y-px">
-      {[...Array(3)].map((_, i) => (
-        <div key={i} className="flex items-center gap-3 px-5 py-4 animate-pulse">
-          <div className="w-9 h-9 rounded-full bg-white/5 shrink-0" />
-          <div className="flex-1">
-            <div className="h-3 bg-white/5 rounded w-20 mb-1.5" />
-            <div className="h-2 bg-white/5 rounded w-14" />
-          </div>
-          <div className="h-3 bg-white/5 rounded w-16 ml-auto" />
-        </div>
-      ))}
-    </div>
+    <div className="text-xs font-mono text-white/30 text-center py-12">{t(lang, 'connectToView')}</div>
   );
 
   if (createdTokens.length === 0) return (
-    <div className="text-xs font-mono text-white/20 text-center py-12">No tokens launched from this wallet yet.</div>
+    <div className="text-xs font-mono text-white/20 text-center py-12">{t(lang, 'noCreated')}</div>
   );
 
   return (
@@ -395,14 +364,14 @@ function CreatedTab({ account, tokens, client }) {
       <div className="px-5 py-3 border-b border-white/5">
         <span className="text-[10px] font-mono text-white/30">{createdTokens.length} token{createdTokens.length !== 1 ? 's' : ''} launched</span>
       </div>
-      {createdTokens.map((t) => {
-        const s = curveStats[t.curveId];
+      {createdTokens.map((tk) => {
+        const s = curveStats[tk.curveId];
         return (
           <TokenRow
-            key={t.curveId}
-            token={t}
-            iconUrl={iconUrls[t.curveId]}
-            onClick={() => navigate(`/token/${t.curveId}`)}
+            key={tk.curveId}
+            token={tk}
+            iconUrl={iconUrls[tk.curveId]}
+            onClick={() => navigate(`/token/${tk.curveId}`)}
             right={
               <div className="text-right shrink-0 space-y-0.5">
                 {s ? (
@@ -436,17 +405,17 @@ function CreatedTab({ account, tokens, client }) {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
-const TABS = [
-  { id: 'holdings', label: 'HOLDINGS',  icon: <Wallet size={11} /> },
-  { id: 'traded',   label: 'TRADED',    icon: <TrendingUp size={11} /> },
-  { id: 'created',  label: 'CREATED',   icon: <Plus size={11} /> },
-];
-
-export default function PortfolioPage({ onBack }) {
+export default function PortfolioPage({ onBack, lang = 'en' }) {
   const account = useCurrentAccount();
   const client = useSuiClient();
   const { tokens } = useTokenList();
   const [tab, setTab] = useState('holdings');
+
+  const TABS = [
+    { id: 'holdings', label: t(lang, 'holdings'),  icon: <Wallet size={11} /> },
+    { id: 'traded',   label: t(lang, 'traded'),    icon: <TrendingUp size={11} /> },
+    { id: 'created',  label: t(lang, 'created'),   icon: <Plus size={11} /> },
+  ];
 
   return (
     <div>
@@ -454,7 +423,7 @@ export default function PortfolioPage({ onBack }) {
         onClick={onBack}
         className="flex items-center gap-2 text-xs font-mono text-white/40 hover:text-white mb-6 transition-colors"
       >
-        <ArrowLeft size={12} /> BACK TO HOME
+        <ArrowLeft size={12} /> {t(lang, 'backToHome')}
       </button>
 
       <div className="max-w-2xl mx-auto space-y-4">
@@ -466,43 +435,43 @@ export default function PortfolioPage({ onBack }) {
             <div className="flex items-center gap-3 mb-2">
               <Wallet className="text-lime-400" size={20} />
               <h1 className="text-xl font-bold text-white" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
-                PORTFOLIO
+                {t(lang, 'portfolioTitle')}
               </h1>
             </div>
             {account ? (
               <div className="text-[10px] font-mono text-white/35 break-all">{account.address}</div>
             ) : (
-              <div className="text-sm font-mono text-white/30">Connect your wallet to view your profile.</div>
+              <div className="text-sm font-mono text-white/30">{t(lang, 'connectToView')}</div>
             )}
           </div>
         </div>
 
         {/* Tab toggle */}
         <div className="flex gap-2">
-          {TABS.map(t => (
+          {TABS.map(tk => (
             <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
+              key={tk.id}
+              onClick={() => setTab(tk.id)}
               className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-mono transition-all ${
-                tab === t.id
+                tab === tk.id
                   ? 'bg-lime-400 text-black font-bold'
                   : 'bg-white/5 text-white/40 hover:bg-white/10 hover:text-white/70'
               }`}
             >
-              {t.icon} {t.label}
+              {tk.icon} {tk.label}
             </button>
           ))}
         </div>
 
         {/* Content */}
         <div className="rounded-2xl border border-white/10 bg-white/[0.03] overflow-hidden">
-          {tab === 'holdings' && <HoldingsTab account={account} tokens={tokens} client={client} />}
-          {tab === 'traded'   && <TradedTab   account={account} tokens={tokens} client={client} />}
-          {tab === 'created'  && <CreatedTab  account={account} tokens={tokens} client={client} />}
+          {tab === 'holdings' && <HoldingsTab account={account} tokens={tokens} client={client} lang={lang} />}
+          {tab === 'traded'   && <TradedTab   account={account} tokens={tokens} client={client} lang={lang} />}
+          {tab === 'created'  && <CreatedTab  account={account} tokens={tokens} client={client} lang={lang} />}
         </div>
 
         <div className="text-[9px] font-mono text-white/15 text-center">
-          VALUES ARE ESTIMATES BASED ON CURRENT BONDING CURVE PRICE · NOT FINANCIAL ADVICE
+          {t(lang, 'valuesEstimate')}
         </div>
       </div>
     </div>
