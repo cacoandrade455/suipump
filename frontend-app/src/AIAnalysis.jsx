@@ -194,6 +194,10 @@ Token data:
           Get an AI-generated risk assessment based on holder concentration, trading momentum, and curve progress.
         </p>
       )}
+      {/* Anthropic attribution */}
+      <div className="mt-3 pt-2 border-t border-white/5 flex items-center justify-end">
+        <span className="text-[9px] font-mono text-white/15 tracking-widest">ANALYSIS BY CLAUDE · ANTHROPIC</span>
+      </div>
     </div>
   );
 }
