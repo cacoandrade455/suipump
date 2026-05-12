@@ -181,7 +181,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
           [bcsBytes('TEMPLATE_NAME'), bcsBytes('TMPL'), bcsBytes('template description')],
           ['String', 'String', 'String'],
         ),
-        { TEMPLATE: tokenSymbol, template: tokenSymbol.toLowerCase() },
+        new Map([['TEMPLATE', tokenSymbol], ['template', tokenSymbol.toLowerCase()]]),
       );
 
       const tx1 = new Transaction();
