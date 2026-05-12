@@ -107,6 +107,7 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
   const [curveState, setCurveState] = useState(null);
   const [metadata, setMetadata] = useState(null);
   const [iconUrl, setIconUrl] = useState(null);
+  const [curveCreatedData, setCurveCreatedData] = useState(null);
 
   // balances
   const [suiBalance, setSuiBalance] = useState(0);
@@ -149,8 +150,21 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
   useEffect(() => {
     if (!tokenType) return;
     let cancelled = false;
+    // Fetch coin metadata
     client.getCoinMetadata({ coinType: tokenType })
-      .then(m => { if (!cancelled) { setMetadata(m); if (m?.iconUrl) setIconUrl(m.iconUrl); } })
+      .then(m => { if (!cancelled) { setMetadata(m); if (m?.iconUrl) setIconUrl(m.iconUrl); } });
+
+    // Also fetch name/symbol from CurveCreated event — always correct even if metadata patch failed
+    client.queryEvents({
+      query: { MoveEventType: `${PACKAGE_ID}::bonding_curve::CurveCreated` },
+      limit: 50,
+    }).then(res => {
+      if (cancelled) return;
+      const evt = res.data?.find(e => e.parsedJson?.curve_id === curveId);
+      if (evt?.parsedJson) {
+        setCurveCreatedData(evt.parsedJson);
+      }
+    }).catch(() => {})
       .catch(() => {});
     return () => { cancelled = true; };
   }, [tokenType, client]);
@@ -186,12 +200,12 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
   const graduated = curveState?.graduated ?? false;
   const creatorFeesMist = curveState ? BigInt(curveState.creator_fees ?? 0) : 0n;
 
-  // curveState has priority — always set correctly by the PTB
+  // CurveCreated event has correct name/symbol — use it over metadata
   // metadata can show "Template Coin" if bytecode patching failed
-  const name = curveState?.name || metadata?.name || '';
-  const symbol = curveState?.symbol || metadata?.symbol || '';
+  const name = curveCreatedData?.name || metadata?.name || '';
+  const symbol = curveCreatedData?.symbol || metadata?.symbol || '';
   const { desc, twitter, telegram, website } = parseDescription(
-    curveState?.description || metadata?.description || ''
+    curveCreatedData?.description || metadata?.description || ''
   );
 
   // Check creator by querying owned CreatorCap objects
