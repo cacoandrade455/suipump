@@ -62,6 +62,12 @@ function encodeDescription(desc, links) {
   return `${desc}||${JSON.stringify(linksObj)}`;
 }
 
+// Placeholder constants — must exactly match coin-template/sources/template.move
+const PLACEHOLDER_NAME   = 'Template Coin';
+const PLACEHOLDER_SYM    = 'TMPL';
+const PLACEHOLDER_DESC   = 'Template description placeholder that is intentionally long to accommodate real token descriptions.';
+const PLACEHOLDER_ICON   = 'https://suipump.test/icon-placeholder.png';
+
 const STEPS = [
   { id: 'details', labelKey: 'details' },
   { id: 'payouts', labelKey: 'payouts' },
@@ -174,35 +180,39 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
         telegram: form.telegram, twitter: form.twitter, website: form.website,
       });
 
-      // Pad values to exact placeholder length — update_constants requires equal byte length
-      const safeName = tokenName.slice(0, 13).padEnd(13, ' ');
-      const safeSym  = tokenSymbol.slice(0, 4).padEnd(4, ' ');
-      const safeDesc = descWithLinks.slice(0, 99).padEnd(99, ' ');
-      const safeIcon = (form.iconUrl || '').slice(0, 41).padEnd(41, ' ');
+      // Pad values to exact placeholder byte length.
+      // update_constants requires new value BCS length == existing value BCS length.
+      // Placeholder lengths: NAME=13, SYM=4, DESC=99, ICON=41 bytes.
+      const safeName = tokenName.slice(0, PLACEHOLDER_NAME.length).padEnd(PLACEHOLDER_NAME.length, ' ');
+      const safeSym  = tokenSymbol.slice(0, PLACEHOLDER_SYM.length).padEnd(PLACEHOLDER_SYM.length, ' ');
+      const safeDesc = descWithLinks.slice(0, PLACEHOLDER_DESC.length).padEnd(PLACEHOLDER_DESC.length, ' ');
+      const safeIcon = (form.iconUrl || '').slice(0, PLACEHOLDER_ICON.length).padEnd(PLACEHOLDER_ICON.length, ' ');
 
+      // *** FIX: type must be 'Vector(U8)' — the Move template uses vector<u8>, NOT String ***
+      // Using 'String' caused update_constants to silently fail, leaving raw placeholder bytes.
       let patched = bytecodeTemplate.update_constants(
         templateBytes,
         bcsBytes(safeName),
-        bcsBytes('Template Coin'),
-        'String',
+        bcsBytes(PLACEHOLDER_NAME),
+        'Vector(U8)',
       );
       patched = bytecodeTemplate.update_constants(
         patched,
         bcsBytes(safeSym),
-        bcsBytes('TMPL'),
-        'String',
+        bcsBytes(PLACEHOLDER_SYM),
+        'Vector(U8)',
       );
       patched = bytecodeTemplate.update_constants(
         patched,
         bcsBytes(safeDesc),
-        bcsBytes('Template description placeholder that is intentionally long to accommodate real token descriptions.'),
-        'String',
+        bcsBytes(PLACEHOLDER_DESC),
+        'Vector(U8)',
       );
       patched = bytecodeTemplate.update_constants(
         patched,
         bcsBytes(safeIcon),
-        bcsBytes('https://suipump.test/icon-placeholder.png'),
-        'String',
+        bcsBytes(PLACEHOLDER_ICON),
+        'Vector(U8)',
       );
 
       const tx1 = new Transaction();
@@ -374,36 +384,36 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
                     className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-lime-400/50 transition-colors"
                   />
                   <label className="shrink-0 px-3 py-2.5 bg-white/5 border border-white/10 rounded-xl text-[10px] font-mono text-white/50 hover:text-white hover:border-lime-400/30 transition-colors cursor-pointer">
-                    {form.uploading ? '…' : '↑'}
+                    {form.uploading ? (
+                      <span className="animate-pulse">…</span>
+                    ) : (
+                      t(lang, 'uploadImage')
+                    )}
                     <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
                   </label>
                 </div>
-                {form.uploadError && <div className="text-[10px] text-red-400 mt-1">{form.uploadError}</div>}
+                {form.uploadError && (
+                  <div className="mt-1 text-[10px] font-mono text-red-400">{form.uploadError}</div>
+                )}
+                <div className="mt-1 text-[9px] font-mono text-white/20">{t(lang, 'orPasteUrl')}</div>
               </div>
 
               {/* Social links */}
-              <div>
-                <label className="block text-[9px] tracking-widest text-white/30 mb-2">{t(lang, 'socialLinks')}</label>
-                <div className="space-y-2">
+              <div className="space-y-2 pt-1">
+                <div className="text-[9px] tracking-widest text-white/20">SOCIAL LINKS (OPTIONAL)</div>
+                {[
+                  { key: 'twitter', placeholder: 'https://x.com/yourtoken' },
+                  { key: 'telegram', placeholder: 'https://t.me/yourtoken' },
+                  { key: 'website', placeholder: 'https://yourtoken.xyz' },
+                ].map(({ key, placeholder }) => (
                   <input
-                    value={form.telegram}
-                    onChange={e => setForm({ ...form, telegram: e.target.value })}
-                    placeholder={`${'Telegram'} — @handle or https://t.me/...`}
-                    className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 transition-colors"
+                    key={key}
+                    value={form[key]}
+                    onChange={e => setForm({ ...form, [key]: e.target.value })}
+                    placeholder={placeholder}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-lime-400/50 transition-colors"
                   />
-                  <input
-                    value={form.twitter}
-                    onChange={e => setForm({ ...form, twitter: e.target.value })}
-                    placeholder={`${'Twitter / X'} — @handle or https://x.com/...`}
-                    className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 transition-colors"
-                  />
-                  <input
-                    value={form.website}
-                    onChange={e => setForm({ ...form, website: e.target.value })}
-                    placeholder={`${'Website'} — https://...`}
-                    className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 transition-colors"
-                  />
-                </div>
+                ))}
               </div>
             </div>
           )}
@@ -411,113 +421,121 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
           {/* Step 1: Payouts */}
           {step === 1 && (
             <div className="space-y-3">
-              <div className="text-[10px] text-white/30 leading-relaxed">
-                Percentages must sum to 100%. Up to 10 recipients.
-              </div>
+              <div className="text-[9px] font-mono text-white/30 tracking-widest mb-2">FEE RECIPIENTS</div>
               {payouts.map((p, i) => (
-                <div key={i} className="flex gap-2 items-center">
-                  <input
-                    value={p.address}
-                    onChange={e => updatePayout(i, 'address', e.target.value)}
-                    placeholder="0x..."
-                    className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-white text-xs focus:outline-none focus:border-lime-400/50 min-w-0 transition-colors"
-                  />
-                  <div className="flex items-center gap-1.5 shrink-0">
+                <div key={i} className="flex gap-2 items-start">
+                  <div className="flex-1 space-y-1.5">
                     <input
-                      type="number"
-                      value={Math.round(p.bps / 100)}
-                      onChange={e => updatePayout(i, 'bps', Math.round(parseFloat(e.target.value || 0) * 100))}
-                      min={1} max={100}
-                      className="w-16 bg-white/5 border border-white/10 rounded-xl px-2 py-2.5 text-white text-xs focus:outline-none focus:border-lime-400/50 text-right transition-colors"
+                      value={p.address}
+                      onChange={e => updatePayout(i, 'address', e.target.value)}
+                      placeholder="0x…"
+                      className={`w-full bg-white/5 border rounded-xl px-3 py-2 text-white text-xs focus:outline-none transition-colors ${
+                        p.address && (!p.address.startsWith('0x') || p.address.length !== 66)
+                          ? 'border-red-500/40' : 'border-white/10 focus:border-lime-400/50'
+                      }`}
                     />
-                    <span className="text-white/30 text-xs">%</span>
-                    {payouts.length > 1 && (
-                      <button onClick={() => removePayout(i)} className="text-white/20 hover:text-red-400 transition-colors">
-                        <Trash2 size={13} />
-                      </button>
-                    )}
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        value={p.bps}
+                        onChange={e => updatePayout(i, 'bps', e.target.value)}
+                        min={1}
+                        max={10000}
+                        className="w-24 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 transition-colors"
+                      />
+                      <span className="text-[10px] font-mono text-white/30">bps = {((parseInt(p.bps)||0)/100).toFixed(2)}%</span>
+                    </div>
                   </div>
+                  {payouts.length > 1 && (
+                    <button onClick={() => removePayout(i)} className="mt-2 text-white/20 hover:text-red-400 transition-colors">
+                      <Trash2 size={14} />
+                    </button>
+                  )}
                 </div>
               ))}
-              <div className="flex items-center justify-between pt-1">
-                <button onClick={addPayout} disabled={payouts.length >= 10}
-                  className="flex items-center gap-1 text-[10px] text-white/30 hover:text-lime-400 disabled:opacity-20 transition-colors"
-                >
-                  <Plus size={10} /> {t(lang, 'addPayout')}
-                </button>
-                <div className={`text-[10px] font-bold ${payoutSum === 10000 ? 'text-lime-400' : 'text-red-400'}`}>
-                  {payoutSum / 100}% {payoutSum !== 10000 ? '≠ 100%' : '✓'}
-                </div>
+              <div className={`text-[10px] font-mono ${payoutSum === 10000 ? 'text-lime-400' : 'text-red-400'}`}>
+                Total: {payoutSum} / 10000 bps ({(payoutSum/100).toFixed(2)}%)
               </div>
+              {payouts.length < 10 && (
+                <button
+                  onClick={addPayout}
+                  className="flex items-center gap-1.5 text-[10px] font-mono text-white/30 hover:text-lime-400 transition-colors"
+                >
+                  <Plus size={12} /> {t(lang, 'addPayout')}
+                </button>
+              )}
             </div>
           )}
 
           {/* Step 2: Dev buy */}
           {step === 2 && (
             <div className="space-y-4">
-              <div className="text-[10px] text-white/30 leading-relaxed">
-                {t(lang, 'devBuyHint')}
-              </div>
-              <div className="rounded-2xl border border-white/10 bg-white/5 p-3 text-[10px] text-white/30 leading-relaxed">
-                {t(lang, 'devBuyWarning')}
-              </div>
               <div>
                 <label className="block text-[9px] tracking-widest text-white/30 mb-1.5">{t(lang, 'devBuyAmount')}</label>
                 <input
+                  type="number"
                   value={devBuy}
                   onChange={e => setDevBuy(e.target.value)}
-                  placeholder="0 — leave blank to skip"
+                  placeholder="0"
+                  min="0"
+                  step="0.1"
                   className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-lime-400/50 transition-colors"
                 />
+                <div className="mt-1.5 text-[9px] font-mono text-white/20">{t(lang, 'devBuyHint')}</div>
               </div>
-              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-2 text-xs font-mono">
-                <div className="flex justify-between text-white/30">
-                  <span>{t(lang, 'launchFee')}</span><span className="text-white">2 SUI</span>
+              {parseFloat(devBuy) > 5 && (
+                <div className="rounded-xl border border-yellow-500/20 bg-yellow-950/20 p-3 text-[10px] font-mono text-yellow-400">
+                  {t(lang, 'devBuyWarning')}
                 </div>
-                {devBuy && parseFloat(devBuy) > 0 && (
-                  <div className="flex justify-between text-white/30">
-                    <span>{t(lang, 'devBuy').toUpperCase()}</span><span className="text-white">{devBuy} SUI</span>
+              )}
+              <div className="rounded-2xl border border-white/5 bg-white/[0.02] p-4 space-y-2">
+                <div className="flex justify-between text-[10px] font-mono">
+                  <span className="text-white/30">{t(lang, 'launchFee')}</span>
+                  <span className="text-white">2 SUI</span>
+                </div>
+                {parseFloat(devBuy) > 0 && (
+                  <div className="flex justify-between text-[10px] font-mono">
+                    <span className="text-white/30">{t(lang, 'devBuyAmount')}</span>
+                    <span className="text-white">{parseFloat(devBuy).toFixed(2)} SUI</span>
                   </div>
                 )}
-                <div className="flex justify-between border-t border-white/5 pt-2 text-white/50">
-                  <span>{t(lang, 'total')}</span>
-                  <span className="text-lime-400 font-bold">
-                    {(2 + (parseFloat(devBuy) || 0)).toFixed(4)} SUI
-                  </span>
+                <div className="border-t border-white/5 pt-2 flex justify-between text-[10px] font-mono font-bold">
+                  <span className="text-white/50">{t(lang, 'total')}</span>
+                  <span className="text-lime-400">{(2 + (parseFloat(devBuy) || 0)).toFixed(2)} SUI + gas</span>
                 </div>
               </div>
+              <div className="text-[9px] font-mono text-white/20 text-center">{t(lang, 'twoSignaturesRequired')}</div>
             </div>
           )}
 
-          {/* Step 3: Review + Launch */}
+          {/* Step 3: Review / launch */}
           {step === 3 && (
             <div className="space-y-4">
               {!txStep && !error && (
                 <>
                   <TokenPreview name={form.name} symbol={form.symbol} iconUrl={form.iconUrl} />
-
-                  <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-2.5 text-xs font-mono">
-                    {[
-                      { label: 'NAME', value: form.name },
-                      { label: 'SYMBOL', value: `$${form.symbol}` },
-                      { label: 'DESCRIPTION', value: form.description ? `${form.description.slice(0, 60)}${form.description.length > 60 ? '…' : ''}` : 'None' },
-                      { label: 'PAYOUTS', value: `${payouts.length} recipient${payouts.length > 1 ? 's' : ''}` },
-                      { label: 'DEV BUY', value: parseFloat(devBuy) > 0 ? `${devBuy} SUI` : 'None' },
-                      ...(form.telegram ? [{ label: 'TELEGRAM', value: form.telegram }] : []),
-                      ...(form.twitter ? [{ label: 'X / TWITTER', value: form.twitter }] : []),
-                      ...(form.website ? [{ label: 'WEBSITE', value: form.website }] : []),
-                    ].map(({ label, value }) => (
-                      <div key={label} className="flex justify-between">
-                        <span className="text-white/30">{label}</span>
-                        <span className="text-white truncate ml-4 max-w-[200px]">{value}</span>
-                      </div>
-                    ))}
-                    <div className="flex justify-between border-t border-white/5 pt-2.5">
-                      <span className="text-white/30">{t(lang, 'launchFee').toUpperCase()}</span>
-                      <span className="text-lime-400 font-bold">2 SUI</span>
+                  <div className="rounded-2xl border border-white/5 bg-white/[0.02] p-4 space-y-2 text-[10px] font-mono">
+                    <div className="flex justify-between">
+                      <span className="text-white/30">Name</span>
+                      <span className="text-white">{form.name}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-white/30">Symbol</span>
+                      <span className="text-lime-400">${form.symbol}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-white/30">Recipients</span>
+                      <span className="text-white">{payouts.length}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-white/30">Dev buy</span>
+                      <span className="text-white">{parseFloat(devBuy) > 0 ? `${parseFloat(devBuy)} SUI` : 'none'}</span>
+                    </div>
+                    <div className="border-t border-white/5 pt-2 flex justify-between font-bold">
+                      <span className="text-white/50">{t(lang, 'total')}</span>
+                      <span className="text-lime-400">{(2 + (parseFloat(devBuy) || 0)).toFixed(2)} SUI + gas</span>
                     </div>
                   </div>
-                  <div className="text-[10px] text-white/20 text-center">{t(lang, 'twoSignaturesRequired')}</div>
                 </>
               )}
 
