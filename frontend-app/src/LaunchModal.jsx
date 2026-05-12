@@ -53,12 +53,13 @@ function bcsVectorU64(nums) {
 }
 
 function encodeDescription(desc, links) {
-  const hasLinks = links.telegram || links.twitter || links.website;
+  const hasLinks = links.telegram || links.twitter || links.website || links.dex;
   if (!hasLinks) return desc;
   const linksObj = {};
   if (links.telegram) linksObj.telegram = links.telegram.trim();
   if (links.twitter) linksObj.twitter = links.twitter.trim();
   if (links.website) linksObj.website = links.website.trim();
+  if (links.dex) linksObj.dex = links.dex;
   return `${desc}||${JSON.stringify(linksObj)}`;
 }
 
@@ -112,6 +113,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
     name: '', symbol: '', description: '', iconUrl: '',
     uploading: false, uploadError: null,
     telegram: '', twitter: '', website: '',
+    graduationDex: 'cetus',
   });
   const [payouts, setPayouts] = useState([{ address: account?.address ?? '', bps: 10000 }]);
   const [devBuy, setDevBuy] = useState('');
@@ -178,6 +180,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
       const tokenSymbol = form.symbol.trim().toUpperCase();
       const descWithLinks = encodeDescription(form.description.trim(), {
         telegram: form.telegram, twitter: form.twitter, website: form.website,
+        dex: form.graduationDex,
       });
 
       // Pad values to exact placeholder byte length.
@@ -396,6 +399,33 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
                   <div className="mt-1 text-[10px] font-mono text-red-400">{form.uploadError}</div>
                 )}
                 <div className="mt-1 text-[9px] font-mono text-white/20">{t(lang, 'orPasteUrl')}</div>
+              </div>
+
+              {/* Graduation DEX toggle */}
+              <div className="space-y-2 pt-1">
+                <div className="text-[9px] tracking-widest text-white/20">GRADUATES TO</div>
+                <div className="flex gap-2">
+                  {[
+                    { id: 'cetus', label: 'Cetus', sub: 'AMM · LP position' },
+                    { id: 'deepbook', label: 'DeepBook', sub: 'CLOB · Order book' },
+                  ].map(({ id, label, sub }) => (
+                    <button
+                      key={id}
+                      onClick={() => setForm(f => ({ ...f, graduationDex: id }))}
+                      className={`flex-1 flex flex-col items-center gap-0.5 py-2.5 rounded-xl border text-[10px] font-mono transition-colors ${
+                        form.graduationDex === id
+                          ? 'border-lime-400/50 bg-lime-400/10 text-lime-400'
+                          : 'border-white/10 text-white/30 hover:border-white/25 hover:text-white/50'
+                      }`}
+                    >
+                      <span className="font-bold">{label}</span>
+                      <span className="text-[8px] opacity-60">{sub}</span>
+                    </button>
+                  ))}
+                </div>
+                <div className="text-[8px] font-mono text-white/15 text-center">
+                  DeepBook graduation coming soon · Selection stored on-chain
+                </div>
               </div>
 
               {/* Social links */}

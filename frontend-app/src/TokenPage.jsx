@@ -70,9 +70,9 @@ async function fetchSuiUsd() {
 }
 
 function parseDescription(raw) {
-  if (!raw) return { desc: '', twitter: '', telegram: '', website: '' };
+  if (!raw) return { desc: '', twitter: '', telegram: '', website: '', dex: 'cetus' };
   const idx = raw.indexOf('||');
-  if (idx === -1) return { desc: raw, twitter: '', telegram: '', website: '' };
+  if (idx === -1) return { desc: raw, twitter: '', telegram: '', website: '', dex: 'cetus' };
   const descPart = raw.slice(0, idx);
   try {
     const links = JSON.parse(raw.slice(idx + 2));
@@ -81,6 +81,7 @@ function parseDescription(raw) {
       twitter: links.twitter || '',
       telegram: links.telegram || '',
       website: links.website || '',
+      dex: links.dex || 'cetus',
     };
   } catch {
     const parts = raw.split('||');
@@ -89,6 +90,7 @@ function parseDescription(raw) {
       twitter: parts[1]?.trim() || '',
       telegram: parts[2]?.trim() || '',
       website: parts[3]?.trim() || '',
+      dex: 'cetus',
     };
   }
 }
@@ -620,7 +622,7 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
   // FIX: strip placeholder description strings left by unpatched bytecode (old on-chain tokens)
   const _rawDesc = (metadata?.description || '').trim();
   const rawDesc = isPlaceholderDesc(_rawDesc) ? '' : _rawDesc;
-  const { desc, twitter, telegram, website } = parseDescription(rawDesc);
+  const { desc, twitter, telegram, website, dex } = parseDescription(rawDesc);
 
   // Check creator by querying owned CreatorCap objects
   const [isCreator, setIsCreator] = React.useState(false);
@@ -891,11 +893,25 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
                   style={{ width: `${progress}%` }}
                 />
               </div>
-              <div className="flex justify-between text-[10px] font-mono text-white/25 mt-1">
+              <div className="flex items-center justify-between text-[10px] font-mono text-white/25 mt-1">
                 <span>{fmt(mistToSui(reserveMist))} {t(lang, 'suiRaised')}</span>
                 <span>{fmt(DRAIN_SUI_APPROX)} {t(lang, 'suiTarget')}</span>
               </div>
             </div>
+
+            {/* Graduation target badge */}
+            {!graduated && (
+              <div className="mt-3 flex items-center gap-1.5">
+                <span className="text-[8px] font-mono text-white/20 tracking-widest">GRADUATES TO</span>
+                <span className={`text-[9px] font-mono px-2 py-0.5 rounded-full border ${
+                  dex === 'deepbook'
+                    ? 'border-blue-400/30 text-blue-400/70 bg-blue-400/5'
+                    : 'border-lime-400/30 text-lime-400/70 bg-lime-400/5'
+                }`}>
+                  {dex === 'deepbook' ? '⚡ DeepBook' : '🌊 Cetus'}
+                </span>
+              </div>
+            )}
           </div>
 
           {/* Block 1 — Chart */}
