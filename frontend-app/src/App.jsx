@@ -711,7 +711,7 @@ function Header({ onLaunch, lang, setLang, onToggleFeed, showFeed }) {
             <div className="text-sm font-bold tracking-tight text-white" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
               SUIPUMP<span className="text-lime-400">.</span>
             </div>
-            <div className="text-[8px] font-mono text-white/30 tracking-[0.2em] -mt-0.5">TESTNET - LIVE</div>
+            <div className="hidden sm:block text-[8px] font-mono text-white/30 tracking-[0.2em] -mt-0.5">TESTNET</div>
           </div>
         </Link>
 
@@ -1191,6 +1191,27 @@ function TokenPageWrapper({ lang }) {
 
 // ── App root ──────────────────────────────────────────────────────────────────
 
+// ── 404 Page ─────────────────────────────────────────────────────────────────
+function NotFoundPage({ onBack }) {
+  return (
+    <div className="min-h-screen bg-black flex flex-col items-center justify-center gap-6 px-4">
+      <div className="text-lime-400 font-mono text-6xl font-bold">404</div>
+      <div className="text-white/50 font-mono text-sm tracking-widest text-center">
+        PAGE NOT FOUND
+      </div>
+      <div className="text-white/25 font-mono text-xs text-center max-w-xs">
+        This token or page doesn't exist. It may have been moved or the address is invalid.
+      </div>
+      <button
+        onClick={onBack}
+        className="px-6 py-2.5 bg-lime-400 text-black font-mono text-xs font-bold rounded-xl hover:bg-lime-300 transition-colors tracking-widest"
+      >
+        BACK TO HOME
+      </button>
+    </div>
+  );
+}
+
 export default function App() {
   const navigate = useNavigate();
   const [showLaunch, setShowLaunch] = useState(false);
@@ -1224,6 +1245,7 @@ export default function App() {
           <Route path="/leaderboard" element={<LeaderboardPage onBack={() => navigate('/')} lang={lang} />} />
           <Route path="/portfolio" element={<PortfolioPage onBack={() => navigate('/')} lang={lang} />} />
           <Route path="/roadmap" element={<RoadmapPage onBack={() => navigate('/')} lang={lang} />} />
+          <Route path="*" element={<NotFoundPage onBack={() => navigate('/')} />} />
         </Routes>
       </main>
       <footer className="max-w-6xl mx-auto px-4 py-8 text-[10px] font-mono text-white/35 text-center tracking-widest border-t border-white/5 mt-8">
