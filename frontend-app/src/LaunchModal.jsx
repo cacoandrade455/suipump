@@ -269,7 +269,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
         <div className="flex items-center justify-between px-6 py-4 border-b border-white/5">
           <div>
             <div className="text-[9px] tracking-widest text-white/20">SUIPUMP</div>
-            <div className="text-lg font-bold text-white">{t(lang, 'launchTokenTitle')}</div>
+            <div className="text-lg font-bold text-white">{t(lang, 'launchATokenTitle')}</div>
           </div>
           <button onClick={onClose} className="text-white/30 hover:text-white transition-colors rounded-xl p-1.5 hover:bg-white/5">
             <X size={18} />
@@ -336,7 +336,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
                 <textarea
                   value={form.description}
                   onChange={e => setForm({ ...form, description: e.target.value.slice(0, MAX_DESCRIPTION_CHARS) })}
-                  placeholder={t(lang, 'descriptionPlaceholder')}
+                  placeholder={'Describe your token…'}
                   rows={3}
                   className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-lime-400/50 transition-colors resize-none"
                 />
@@ -367,19 +367,19 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
                   <input
                     value={form.telegram}
                     onChange={e => setForm({ ...form, telegram: e.target.value })}
-                    placeholder={`${t(lang, 'telegram')} — @handle or https://t.me/...`}
+                    placeholder={`${'Telegram'} — @handle or https://t.me/...`}
                     className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 transition-colors"
                   />
                   <input
                     value={form.twitter}
                     onChange={e => setForm({ ...form, twitter: e.target.value })}
-                    placeholder={`${t(lang, 'twitter')} — @handle or https://x.com/...`}
+                    placeholder={`${'Twitter / X'} — @handle or https://x.com/...`}
                     className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 transition-colors"
                   />
                   <input
                     value={form.website}
                     onChange={e => setForm({ ...form, website: e.target.value })}
-                    placeholder={`${t(lang, 'website')} — https://...`}
+                    placeholder={`${'Website'} — https://...`}
                     className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 transition-colors"
                   />
                 </div>
@@ -599,7 +599,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
                   }`}
                 >
                   <Rocket size={14} />
-                  {t(lang, 'launchTokenTitle')}
+                  {t(lang, 'launchATokenTitle')}
                 </button>
               )
             )}
