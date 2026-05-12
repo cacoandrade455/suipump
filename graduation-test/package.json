@@ -1,0 +1,16 @@
+{
+  "name": "suipump-graduation-test",
+  "version": "1.0.0",
+  "description": "Throwaway DeepBook graduation test — isolated from main scripts",
+  "type": "module",
+  "scripts": {
+    "deploy": "node deploy_test.js",
+    "launch": "node launch_test.js",
+    "graduate": "node graduate_test.js"
+  },
+  "dependencies": {
+    "@mysten/deepbook-v3": "latest",
+    "@mysten/move-bytecode-template": "^0.3.2",
+    "@mysten/sui": "latest"
+  }
+}
