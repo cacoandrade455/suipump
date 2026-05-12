@@ -174,27 +174,13 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
         telegram: form.telegram, twitter: form.twitter, website: form.website,
       });
 
-      // update_constants must be called once per constant (not arrays)
-      const patched1 = bytecodeTemplate.update_constants(
-        templateBytes,
-        bcsBytes(tokenName),
-        bcsBytes('TEMPLATE_NAME'),
-        'String',
-      );
-      const patched2 = bytecodeTemplate.update_constants(
-        patched1,
-        bcsBytes(tokenSymbol),
-        bcsBytes('TMPL'),
-        'String',
-      );
-      const patched3 = bytecodeTemplate.update_constants(
-        patched2,
-        bcsBytes(descWithLinks),
-        bcsBytes('template description'),
-        'String',
-      );
       const patched = bytecodeTemplate.update_identifiers(
-        patched3,
+        bytecodeTemplate.update_constants(
+          templateBytes,
+          [bcsBytes(tokenName), bcsBytes(tokenSymbol), bcsBytes(descWithLinks)],
+          [bcsBytes('TEMPLATE_NAME'), bcsBytes('TMPL'), bcsBytes('template description')],
+          ['String', 'String', 'String'],
+        ),
         { TEMPLATE: tokenSymbol, template: tokenSymbol.toLowerCase() },
       );
 
