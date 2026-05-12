@@ -23,6 +23,8 @@ module suipump::bonding_curve {
     const ESlippageExceeded: u64 = 3;
     const EAlreadyGraduated: u64 = 4;
     const ENotGraduated: u64 = 5;
+    /// 35k SUI real reserve graduation threshold (~$122k mcap at $3.50 SUI)
+    const GRAD_THRESHOLD_MIST: u64 = 35_000 * 1_000_000_000;
     const EZeroAmount: u64 = 7;
     const ENoFees: u64 = 8;
     const EFeeSplitInvalid: u64 = 9;
@@ -518,7 +520,12 @@ module suipump::bonding_curve {
         ctx: &mut TxContext,
     ) {
         assert!(!curve.graduated, EAlreadyGraduated);
-        assert!(balance::value(&curve.token_reserve) == 0, ENotGraduated);
+        // Graduate when fully drained OR when sui_reserve >= 35k SUI
+        assert!(
+            balance::value(&curve.token_reserve) == 0 ||
+            balance::value(&curve.sui_reserve) >= GRAD_THRESHOLD_MIST,
+            ENotGraduated,
+        );
 
         curve.graduated = true;
 
