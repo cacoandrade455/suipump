@@ -1,8 +1,8 @@
 // paginateEvents.js
 // Shared utility for cursor-based pagination of Sui queryEvents.
-// Includes a small delay between pages to avoid hitting RPC QPS limits.
-
-const PAGE_DELAY_MS = 300; // delay between pagination pages
+// The Sui RPC caps each queryEvents call at ~100 results per page.
+// This helper fetches ALL pages (up to maxPages * pageSize events)
+// using the cursor returned by each response.
 
 export async function paginateEvents(client, eventType, opts = {}) {
   const {
@@ -33,23 +33,18 @@ export async function paginateEvents(client, eventType, opts = {}) {
     hasNext = result.hasNextPage === true && result.data.length > 0;
     cursor = result.nextCursor ?? null;
     page++;
-
-    // Throttle: small delay between pages to avoid QPS spikes
-    if (hasNext) {
-      await new Promise(r => setTimeout(r, PAGE_DELAY_MS));
-    }
   }
 
   return allEvents;
 }
 
 export async function paginateMultipleEvents(client, eventTypes, opts = {}) {
-  // Sequential instead of parallel to reduce QPS pressure
+  const results = await Promise.all(
+    eventTypes.map(type => paginateEvents(client, type, opts))
+  );
   const map = {};
-  for (const type of eventTypes) {
-    map[type] = await paginateEvents(client, type, opts);
-    // Small delay between event type fetches
-    await new Promise(r => setTimeout(r, 100));
-  }
+  eventTypes.forEach((type, i) => {
+    map[type] = results[i];
+  });
   return map;
 }
