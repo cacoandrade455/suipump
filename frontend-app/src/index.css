@@ -55,3 +55,9 @@ body { background: #000; margin: 0; }
   --dapp-kit-radii-large: 0.75rem;
   --dapp-kit-radii-xlarge: 1rem;
 }
+
+/* ── Scrollbar hide utility ───────────────────────────────────────────────────
+   Used on sort tabs row to allow horizontal scroll without showing scrollbar.
+──────────────────────────────────────────────────────────────────────────── */
+.scrollbar-hide::-webkit-scrollbar { display: none; }
+.scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
