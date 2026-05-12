@@ -175,6 +175,7 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch
   const pricePerWhole = Number(priceMist) / 1e9;
   const marketCapSui = pricePerWhole * TOTAL_SUPPLY_WHOLE;
   const isTrending = stats?.recentTrades >= 3;
+  const isNew = token.timestamp && (Date.now() - token.timestamp) < 30 * 60 * 1000;
   const suiUntilGrad = Math.max(0, DRAIN_SUI_APPROX - mistToSui(reserveMist));
 
   // Social links  -  twitter/telegram parsed from description via || delimiter
@@ -240,6 +241,11 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch
         </div>
         <div className="flex items-center gap-1 flex-col items-end">
           <div className="flex items-center gap-1">
+            {isNew && (
+              <div className="text-[9px] font-mono text-white bg-white/15 border border-white/20 px-1.5 py-0.5 rounded-full">
+                NEW
+              </div>
+            )}
             {isTrending && (
               <div className="text-[9px] font-mono text-lime-400 bg-lime-400/10 border border-lime-400/20 px-1.5 py-0.5 rounded-full flex items-center gap-0.5">
                 <Flame size={8} /> HOT
@@ -862,7 +868,7 @@ function StatsBar({ tokenCount, stats, lang = 'en' }) {
   const items = [
     { icon: <Coins size={13} />, label: t(lang, 'tokens'), value: tokenCount ?? ' - ' },
     { icon: <TrendingUp size={13} />, label: t(lang, 'trades'), value: stats.tradeCount ?? ' - ' },
-    { icon: <Flame size={13} />, label: t(lang, 'volume'), value: stats.volume != null ? `${fmt(stats.volume)} SUI` : ' - ' },
+    { icon: <Flame size={13} />, label: t(lang, 'volume'), value: stats.volume != null ? `${fmt(stats.volume)} SUI` : '-' },
     { icon: <Gift size={13} />, label: t(lang, 's1Pool'), value: stats.poolSui != null ? `${stats.poolSui.toFixed(2)} SUI` : ' - ' },
   ];
   return (
@@ -1068,23 +1074,23 @@ function HomePage({ onLaunch, lang = 'en' }) {
 
       <StatsBar tokenCount={tokens.length} stats={stats} lang={lang} />
 
-      <div className="flex flex-col sm:flex-row gap-3 mb-4">
-        <div className="relative flex-1">
-          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/35 pointer-events-none" />
-          <input
-            value={search} onChange={e => setSearch(e.target.value)}
-            placeholder={t(lang, 'searchPlaceholder')}
-            className="w-full bg-white/5 border border-white/10 rounded-xl pl-9 pr-4 py-2.5 text-white text-xs font-mono focus:outline-none focus:border-lime-400/40 transition-colors placeholder-white/20"
-          />
-        </div>
-        <div className="flex gap-1.5 flex-wrap">
-          {SORT_OPTIONS.map(opt => (
-            <button key={opt.id} onClick={() => setSort(opt.id)}
-              className={`px-3 py-2 rounded-xl text-[10px] font-mono tracking-widest transition-all whitespace-nowrap ${
-                sort === opt.id ? 'bg-lime-400 text-black font-bold' : 'bg-white/5 text-white/30 hover:bg-white/10 hover:text-white/60'
-              }`}>{opt.label}</button>
-          ))}
-        </div>
+      {/* Search bar */}
+      <div className="relative mb-2">
+        <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/35 pointer-events-none" />
+        <input
+          value={search} onChange={e => setSearch(e.target.value)}
+          placeholder={t(lang, 'searchPlaceholder')}
+          className="w-full bg-white/5 border border-white/10 rounded-xl pl-9 pr-4 py-2.5 text-white text-xs font-mono focus:outline-none focus:border-lime-400/40 transition-colors placeholder-white/20"
+        />
+      </div>
+      {/* Sort tabs — horizontal scroll on mobile, no wrap */}
+      <div className="flex gap-1.5 overflow-x-auto pb-2 mb-2 scrollbar-hide">
+        {SORT_OPTIONS.map(opt => (
+          <button key={opt.id} onClick={() => setSort(opt.id)}
+            className={`px-3 py-2 rounded-xl text-[10px] font-mono tracking-widest transition-all whitespace-nowrap flex-shrink-0 ${
+              sort === opt.id ? 'bg-lime-400 text-black font-bold' : 'bg-white/5 text-white/30 hover:bg-white/10 hover:text-white/60'
+            }`}>{opt.label}</button>
+        ))}
       </div>
 
       <div className="mb-3 flex items-center justify-between">
