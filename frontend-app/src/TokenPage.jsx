@@ -341,8 +341,20 @@ function TradePanelContent({
                 {t(lang, 'max')}
               </button>
             </div>
-            {/* Sell presets */}
-            {side === 'sell' && tokenBalance > 0 && (
+            {/* Quick presets */}
+            {side === 'buy' ? (
+              <div className="flex gap-1.5">
+                {['1', '10', '50', '100'].map(v => (
+                  <button
+                    key={v}
+                    onClick={() => setAmount(v)}
+                    className="flex-1 py-1 text-[9px] font-mono text-white/30 hover:text-lime-400 border border-white/10 rounded-md hover:border-lime-400/30 transition-colors"
+                  >
+                    {v}
+                  </button>
+                ))}
+              </div>
+            ) : tokenBalance > 0 ? (
               <div className="flex gap-1.5">
                 {[25, 50, 75, 100].map(pct => (
                   <button
@@ -354,7 +366,7 @@ function TradePanelContent({
                   </button>
                 ))}
               </div>
-            )}
+            ) : null}
             <div className="text-[9px] font-mono text-white/20">
               {side === 'buy'
                 ? `Balance: ${fmt(suiBalance, 3)} SUI`
