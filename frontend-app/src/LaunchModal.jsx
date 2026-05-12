@@ -175,14 +175,21 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
       });
 
       const sym = String(tokenSymbol);
-      const patched = bytecodeTemplate.update_identifiers(
+      const patched = bytecodeTemplate.update_constants(
         bytecodeTemplate.update_constants(
-          templateBytes,
-          [bcsBytes(tokenName), bcsBytes(sym), bcsBytes(descWithLinks)],
-          [bcsBytes('TEMPLATE_NAME'), bcsBytes('TMPL'), bcsBytes('template description')],
-          ['String', 'String', 'String'],
+          bytecodeTemplate.update_constants(
+            templateBytes,
+            bcsBytes(String(tokenName)),
+            bcsBytes('TEMPLATE_NAME'),
+            'String',
+          ),
+          bcsBytes(sym),
+          bcsBytes('TMPL'),
+          'String',
         ),
-        { TEMPLATE: sym, template: sym.toLowerCase() },
+        bcsBytes(String(descWithLinks)),
+        bcsBytes('template description'),
+        'String',
       );
 
       const tx1 = new Transaction();
