@@ -186,10 +186,12 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
   const graduated = curveState?.graduated ?? false;
   const creatorFeesMist = curveState ? BigInt(curveState.creator_fees ?? 0) : 0n;
 
-  const name = metadata?.name || curveState?.name || '';
-  const symbol = metadata?.symbol || curveState?.symbol || '';
+  // curveState has priority — always set correctly by the PTB
+  // metadata can show "Template Coin" if bytecode patching failed
+  const name = curveState?.name || metadata?.name || '';
+  const symbol = curveState?.symbol || metadata?.symbol || '';
   const { desc, twitter, telegram, website } = parseDescription(
-    metadata?.description || curveState?.description || ''
+    curveState?.description || metadata?.description || ''
   );
 
   // Check creator by querying owned CreatorCap objects
