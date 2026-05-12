@@ -326,6 +326,7 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
   const quote = quoteTrade();
 
   // ── render ────────────────────────────────────────────────────────────────
+  const scrollToTop = () => window.scrollTo({ top: 0, behavior: 'smooth' });
 
   return (
     <div className="min-h-screen" style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}>
@@ -527,6 +528,17 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
             </div>
           </div>
         </div>
+      </div>
+      {/* Back to top — mobile only */}
+      <div className="sm:hidden fixed bottom-6 right-4 z-50">
+        <button
+          onClick={scrollToTop}
+          className="bg-white/10 hover:bg-white/20 border border-white/20 rounded-full p-3 text-white/60 hover:text-white transition-colors backdrop-blur-sm"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+            <polyline points="18 15 12 9 6 15"/>
+          </svg>
+        </button>
       </div>
     </div>
   );
