@@ -174,21 +174,29 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
         telegram: form.telegram, twitter: form.twitter, website: form.website,
       });
 
-      const sym = String(tokenSymbol);
-      const patched = bytecodeTemplate.update_constants(
-        bytecodeTemplate.update_constants(
-          bytecodeTemplate.update_constants(
-            templateBytes,
-            bcsBytes(String(tokenName)),
-            bcsBytes('TEMPLATE_NAME'),
-            'String',
-          ),
-          bcsBytes(sym),
-          bcsBytes('TMPL'),
-          'String',
-        ),
+      // Patch bytecode — expected values must match template.move exactly
+      let patched = bytecodeTemplate.update_constants(
+        templateBytes,
+        bcsBytes(String(tokenName)),
+        bcsBytes('Template Coin'),
+        'String',
+      );
+      patched = bytecodeTemplate.update_constants(
+        patched,
+        bcsBytes(String(tokenSymbol)),
+        bcsBytes('TMPL'),
+        'String',
+      );
+      patched = bytecodeTemplate.update_constants(
+        patched,
         bcsBytes(String(descWithLinks)),
-        bcsBytes('template description'),
+        bcsBytes('Template description placeholder that is intentionally long to accommodate real token descriptions.'),
+        'String',
+      );
+      patched = bytecodeTemplate.update_constants(
+        patched,
+        bcsBytes(String(form.iconUrl || 'https://suipump.vercel.app/flame.png')),
+        bcsBytes('https://suipump.test/icon-placeholder.png'),
         'String',
       );
 
