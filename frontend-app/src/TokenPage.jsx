@@ -738,7 +738,7 @@ function TradePanelContent({
               {side === 'buy' && quote.tokensOut != null && (
                 <div className="flex justify-between text-[11px] font-mono">
                   <span className="text-white/35">{t(lang, 'youReceive')}</span>
-                  <span className="text-lime-400">{Number(quote.tokensOut).toLocaleString(undefined, {maximumFractionDigits: 0})} ${symbol}</span>
+                  <span className="text-lime-400">{(Number(quote.tokensOut) / 1e6).toLocaleString(undefined, {maximumFractionDigits: 0})} ${symbol}</span>
                 </div>
               )}
               {side === 'sell' && quote.suiOut != null && (
