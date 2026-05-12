@@ -15,6 +15,6 @@ export const LP_SHARE_BPS = 1_000;
 export const CURVE_SUPPLY = 800_000_000;
 export const VIRTUAL_SUI = 30_000;
 export const VIRTUAL_TOKENS = 1_073_000_000;
-export const DRAIN_SUI_APPROX = 87_912;
+export const DRAIN_SUI_APPROX = 35_000;
 export const TOKEN_DECIMALS = 6;
 export const MIST_PER_SUI = 1_000_000_000;

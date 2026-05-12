@@ -17,7 +17,7 @@ import { t } from './i18n.js';
 // ── constants ─────────────────────────────────────────────────────────────────
 const TOKEN_DECIMALS = 6;
 const TOTAL_SUPPLY_WHOLE = 1_000_000_000;
-const DRAIN_SUI_APPROX = 87_900;
+const DRAIN_SUI_APPROX = 35_000;
 const VIRTUAL_SUI = 30_000;
 const VIRTUAL_TOKENS = 1_073_000_000;
 
