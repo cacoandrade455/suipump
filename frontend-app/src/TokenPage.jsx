@@ -691,7 +691,7 @@ function TradePanelContent({
           {/* Amount input */}
           <div className="space-y-1.5">
             <div className="text-[10px] font-mono text-white/35">
-              {side === 'buy' ? `${t(lang, 'amount')} (SUI)` : `${t(lang, 'amount')} ($${symbol})`}
+              {side === 'buy' ? t(lang, 'amount') : `${t(lang, 'amount')} ($${symbol})`}
             </div>
             <div className="flex gap-2">
               <input
