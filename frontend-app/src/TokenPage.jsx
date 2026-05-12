@@ -738,7 +738,7 @@ function TradePanelContent({
               {side === 'buy' && quote.tokensOut != null && (
                 <div className="flex justify-between text-[11px] font-mono">
                   <span className="text-white/35">{t(lang, 'youReceive')}</span>
-                  <span className="text-lime-400">{fmt(quote.tokensOut, 0)} ${symbol}</span>
+                  <span className="text-lime-400">{Number(quote.tokensOut).toLocaleString(undefined, {maximumFractionDigits: 0})} ${symbol}</span>
                 </div>
               )}
               {side === 'sell' && quote.suiOut != null && (
@@ -760,7 +760,7 @@ function TradePanelContent({
                   <span className="text-white/25">{t(lang, 'minReceived')} ({slippage}% {t(lang, 'slippage')})</span>
                   <span className="text-white/40">
                     {side === 'buy' && quote.tokensOut != null
-                      ? `${fmt(Number(quote.tokensOut) / 1e6 * (1 - slippageNum / 100), 0)} $${symbol}`
+                      ? `${(Number(quote.tokensOut) / 1e6 * (1 - slippageNum / 100)).toLocaleString(undefined, {maximumFractionDigits: 0})} $${symbol}`
                       : side === 'sell' && quote.suiOut != null
                         ? `${fmt(Number(quote.suiOut) / 1e9 * (1 - slippageNum / 100))} SUI`
                         : '—'}
