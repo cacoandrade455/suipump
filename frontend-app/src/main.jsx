@@ -13,7 +13,7 @@ import './index.css';
 // https://sui-testnet.nodeinfra.com
 // https://rpc-testnet.suiscan.xyz
 const { networkConfig } = createNetworkConfig({
-  testnet: { url: 'https://rpc-testnet.suiscan.xyz' },
+  testnet: { url: getFullnodeUrl('testnet') },
 });
 
 const queryClient = new QueryClient();
