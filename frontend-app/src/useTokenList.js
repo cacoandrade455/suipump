@@ -39,7 +39,7 @@ export function useTokenList() {
         const events = await paginateEvents(
           client,
           `${PACKAGE_ID}::bonding_curve::CurveCreated`,
-          { order: 'descending', maxPages: 20 }
+          { order: 'descending', maxPages: 5 }
         );
 
         if (cancelled) return;

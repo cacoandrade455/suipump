@@ -2,7 +2,7 @@
 // Shared utility for cursor-based pagination of Sui queryEvents.
 // Includes a small delay between pages to avoid hitting RPC QPS limits.
 
-const PAGE_DELAY_MS = 100; // delay between pagination pages
+const PAGE_DELAY_MS = 300; // delay between pagination pages
 
 export async function paginateEvents(client, eventType, opts = {}) {
   const {
