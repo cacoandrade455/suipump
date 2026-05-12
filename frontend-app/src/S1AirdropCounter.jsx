@@ -59,7 +59,7 @@ export default function S1AirdropCounter() {
         const eventMap = await paginateMultipleEvents(
           client,
           [buyType, sellType],
-          { order: 'descending', maxPages: 999 }
+          { order: 'descending', maxPages: 100 }
         );
 
         let totalVolumeMist = 0;

@@ -77,7 +77,7 @@ function useStats() {
       try {
         const buyType = `${PACKAGE_ID}::bonding_curve::TokensPurchased`;
         const sellType = `${PACKAGE_ID}::bonding_curve::TokensSold`;
-        const eventMap = await paginateMultipleEvents(client, [buyType, sellType], { order: 'descending', maxPages: 999 });
+        const eventMap = await paginateMultipleEvents(client, [buyType, sellType], { order: 'descending', maxPages: 100 });
         let protocolMist = 0, volumeMist = 0;
         for (const e of eventMap[buyType]) {
           protocolMist += Number(e.parsedJson?.protocol_fee ?? 0);
