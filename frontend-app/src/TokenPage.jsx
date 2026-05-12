@@ -155,16 +155,26 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
       .then(m => { if (!cancelled) { setMetadata(m); if (m?.iconUrl) setIconUrl(m.iconUrl); } });
 
     // Also fetch name/symbol from CurveCreated event — always correct even if metadata patch failed
-    client.queryEvents({
-      query: { MoveEventType: `${PACKAGE_ID}::bonding_curve::CurveCreated` },
-      limit: 50,
-    }).then(res => {
-      if (cancelled) return;
-      const evt = res.data?.find(e => e.parsedJson?.curve_id === curveId);
-      if (evt?.parsedJson) {
-        setCurveCreatedData(evt.parsedJson);
-      }
-    }).catch(() => {})
+    // Fetch name/symbol from CurveCreated event — always correct
+    (async () => {
+      try {
+        let found = null;
+        let cursor = null;
+        for (let page = 0; page < 10 && !found; page++) {
+          const res = await client.queryEvents({
+            query: { MoveEventType: `${PACKAGE_ID}::bonding_curve::CurveCreated` },
+            limit: 50,
+            cursor: cursor || undefined,
+          });
+          found = res.data?.find(e => e.parsedJson?.curve_id === curveId);
+          if (!res.hasNextPage) break;
+          cursor = res.nextCursor;
+        }
+        if (found?.parsedJson && !cancelled) {
+          setCurveCreatedData(found.parsedJson);
+        }
+      } catch {}
+    })();
       .catch(() => {});
     return () => { cancelled = true; };
   }, [tokenType, client]);
@@ -204,9 +214,9 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
   // metadata can show "Template Coin" if bytecode patching failed
   const name = curveCreatedData?.name || metadata?.name || '';
   const symbol = curveCreatedData?.symbol || metadata?.symbol || '';
-  const { desc, twitter, telegram, website } = parseDescription(
-    curveCreatedData?.description || metadata?.description || ''
-  );
+  // description only in metadata (not in event), trim spaces from padded bytecode
+  const rawDesc = (metadata?.description || '').trim();
+  const { desc, twitter, telegram, website } = parseDescription(rawDesc);
 
   // Check creator by querying owned CreatorCap objects
   const [isCreator, setIsCreator] = React.useState(false);
