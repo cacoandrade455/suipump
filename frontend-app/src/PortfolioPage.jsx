@@ -58,7 +58,7 @@ function TokenRow({ token, iconUrl, right, onClick }) {
 
 // ── HOLDINGS tab ─────────────────────────────────────────────────────────────
 
-function HoldingsTab({ account, tokens, client, lang }) {
+function HoldingsTab({ account, tokens, client, lang, onTotalValue }) {
   const navigate = useNavigate();
   const [holdings, setHoldings] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -113,6 +113,7 @@ function HoldingsTab({ account, tokens, client, lang }) {
   }, [account?.address, tokens.length, client]);
 
   const totalValueSui = holdings.reduce((s, h) => s + h.valueSui, 0);
+  React.useEffect(() => { if (onTotalValue) onTotalValue(totalValueSui); }, [totalValueSui, onTotalValue]);
 
   if (!account) return <div className="text-xs font-mono text-white/30 text-center py-12">{t(lang, 'connectToView')}</div>;
   if (loading) return (
@@ -646,8 +647,23 @@ export default function PortfolioPage({ onBack, lang = 'en' }) {
   const client = useSuiClient();
   const { tokens } = useTokenList();
   const [tab, setTab] = useState('holdings');
+  const [suiUsd, setSuiUsd] = useState(0);
+  const [totalValueSui, setTotalValueSui] = useState(0);
 
-  // Total portfolio value from holdings  -  passed down
+  // Fetch SUI/USD price
+  React.useEffect(() => {
+    async function fetchPrice() {
+      try {
+        const r = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=sui&vs_currencies=usd');
+        const j = await r.json();
+        setSuiUsd(j?.sui?.usd || 0);
+      } catch {}
+    }
+    fetchPrice();
+    const t = setInterval(fetchPrice, 30_000);
+    return () => clearInterval(t);
+  }, []);
+
   const TABS = [
     { id: 'holdings', label: t(lang, 'holdings'),  icon: <Wallet size={11} /> },
     { id: 'traded',   label: t(lang, 'traded'),    icon: <TrendingUp size={11} /> },
@@ -671,9 +687,23 @@ export default function PortfolioPage({ onBack, lang = 'en' }) {
                 {t(lang, 'portfolioTitle')}
               </h1>
             </div>
-            {account
-              ? <div className="text-[10px] font-mono text-white/35 break-all">{account.address}</div>
-              : <div className="text-sm font-mono text-white/30">{t(lang, 'connectToView')}</div>}
+            {account ? (
+              <>
+                <div className="text-[10px] font-mono text-white/35 break-all mb-3">{account.address}</div>
+                {totalValueSui > 0 && (
+                  <div className="flex items-baseline gap-2">
+                    {suiUsd > 0 && (
+                      <span className="text-2xl font-bold text-white" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
+                        ${(totalValueSui * suiUsd).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                      </span>
+                    )}
+                    <span className="text-sm font-mono text-white/40">{totalValueSui.toFixed(4)} SUI</span>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="text-sm font-mono text-white/30">{t(lang, 'connectToView')}</div>
+            )}
           </div>
         </div>
 
@@ -693,7 +723,7 @@ export default function PortfolioPage({ onBack, lang = 'en' }) {
 
         {/* Content */}
         <div className="rounded-2xl border border-white/10 bg-white/[0.03] overflow-hidden">
-          {tab === 'holdings' && <HoldingsTab account={account} tokens={tokens} client={client} lang={lang} />}
+          {tab === 'holdings' && <HoldingsTab account={account} tokens={tokens} client={client} lang={lang} onTotalValue={setTotalValueSui} />}
           {tab === 'traded'   && <TradedTab   account={account} tokens={tokens} client={client} lang={lang} />}
           {tab === 'created'  && <CreatedTab  account={account} tokens={tokens} client={client} lang={lang} />}
         </div>

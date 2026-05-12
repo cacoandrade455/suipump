@@ -551,12 +551,28 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
                   <CheckCircle size={40} className="text-lime-400 mx-auto" />
                   <div className="text-lg font-bold text-white">{t(lang, 'success')}</div>
                   {newCurveId && (
-                    <button
-                      onClick={() => { onClose(); window.location.href = `/token/${newCurveId}`; }}
-                      className="w-full py-3 bg-lime-400 text-black font-bold rounded-xl text-sm font-mono hover:bg-lime-300 transition-colors"
-                    >
-                      {t(lang, 'viewToken')}
-                    </button>
+                    <>
+                      {/* Shareable link */}
+                      <div className="bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 flex items-center gap-2">
+                        <span className="text-[10px] font-mono text-white/40 flex-1 truncate text-left">
+                          suipump.vercel.app/token/{newCurveId.slice(0,8)}…
+                        </span>
+                        <button
+                          onClick={() => {
+                            navigator.clipboard.writeText(`${window.location.origin}/token/${newCurveId}`);
+                          }}
+                          className="text-[9px] font-mono text-lime-400 hover:text-lime-300 whitespace-nowrap border border-lime-400/30 px-2 py-1 rounded-lg transition-colors"
+                        >
+                          COPY LINK
+                        </button>
+                      </div>
+                      <button
+                        onClick={() => { onClose(); window.location.href = `/token/${newCurveId}`; }}
+                        className="w-full py-3 bg-lime-400 text-black font-bold rounded-xl text-sm font-mono hover:bg-lime-300 transition-colors"
+                      >
+                        {t(lang, 'viewToken')}
+                      </button>
+                    </>
                   )}
                 </div>
               )}
