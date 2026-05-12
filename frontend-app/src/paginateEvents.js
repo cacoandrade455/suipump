@@ -8,7 +8,7 @@ export async function paginateEvents(client, eventType, opts = {}) {
   const {
     order = 'descending',
     pageSize = 50,
-    maxPages = 60,  // bumped from 20 → 60 to handle 3,000+ events (stress test volume)
+    maxPages = 999,  // bumped from 20 → 60 to handle 3,000+ events (stress test volume)
   } = opts;
 
   const allEvents = [];

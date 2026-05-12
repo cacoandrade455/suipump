@@ -121,8 +121,8 @@ export default function StatsPage({ onBack }) {
         const gradType = `${PACKAGE_ID}::bonding_curve::Graduated`;
 
         const [eventMap, gradEvents] = await Promise.all([
-          paginateMultipleEvents(client, [buyType, sellType], { order: 'descending', maxPages: 50 }),
-          paginateMultipleEvents(client, [gradType], { order: 'descending', maxPages: 5 }),
+          paginateMultipleEvents(client, [buyType, sellType], { order: 'descending', maxPages: 999 }),
+          paginateMultipleEvents(client, [gradType], { order: 'descending', maxPages: 999 }),
         ]);
 
         if (cancelled) return;
