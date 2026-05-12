@@ -175,7 +175,6 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
         }
       } catch {}
     })();
-      .catch(() => {});
     return () => { cancelled = true; };
   }, [tokenType, client]);
 
