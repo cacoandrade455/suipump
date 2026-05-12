@@ -13,7 +13,7 @@ import './index.css';
 // https://sui-testnet.nodeinfra.com
 // https://rpc-testnet.suiscan.xyz
 const { networkConfig } = createNetworkConfig({
-  testnet: { url: 'https://api.shinami.com/node/v1/us1_sui_44f84ba17206451cac8fefc21a8d3e9b' },
+  testnet: { url: 'https://api.us1.shinami.com/sui/node/v1/us1_sui_testnet_2eeb714278814c61b15c33ed5bb64836' },
 });
 
 const queryClient = new QueryClient();
