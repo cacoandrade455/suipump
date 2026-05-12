@@ -1,11 +1,26 @@
 // useTokenList.js
 // Queries CurveCreated events from the current suipump package.
 // Uses cursor-based pagination to fetch ALL events (not capped at 50).
+// Throttled: enriches tokens in batches of 3 to avoid hitting RPC QPS limits.
 
 import { useState, useEffect } from 'react';
 import { useSuiClient } from '@mysten/dapp-kit';
 import { PACKAGE_ID } from './constants.js';
 import { paginateEvents } from './paginateEvents.js';
+
+// Process array in batches of `size` with optional delay between batches
+async function batchedMap(arr, size, fn, delayMs = 150) {
+  const results = [];
+  for (let i = 0; i < arr.length; i += size) {
+    const batch = arr.slice(i, i + size);
+    const batchResults = await Promise.all(batch.map(fn));
+    results.push(...batchResults);
+    if (i + size < arr.length) {
+      await new Promise(r => setTimeout(r, delayMs));
+    }
+  }
+  return results;
+}
 
 export function useTokenList() {
   const client = useSuiClient();
@@ -40,7 +55,9 @@ export function useTokenList() {
           };
         });
 
-        const enriched = await Promise.all(list.map(async (token) => {
+        // Enrich in batches of 3 to avoid QPS spikes
+        const enriched = await batchedMap(list, 3, async (token) => {
+          if (cancelled) return { ...token, tokenType: null };
           try {
             const obj = await client.getObject({ id: token.curveId, options: { showType: true } });
             const typeStr = obj.data?.type ?? '';
@@ -50,7 +67,7 @@ export function useTokenList() {
           } catch {
             return { ...token, tokenType: null };
           }
-        }));
+        }, 150);
 
         if (!cancelled) setTokens(enriched);
       } catch (err) {
@@ -61,7 +78,7 @@ export function useTokenList() {
     }
 
     load();
-    const interval = setInterval(load, 15_000);
+    const interval = setInterval(load, 30_000); // slowed from 15s to 30s
     return () => { cancelled = true; clearInterval(interval); };
   }, [client]);
 

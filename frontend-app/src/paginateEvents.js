@@ -1,24 +1,9 @@
 // paginateEvents.js
 // Shared utility for cursor-based pagination of Sui queryEvents.
-// The Sui RPC caps each queryEvents call at ~100 results per page.
-// This helper fetches ALL pages (up to maxPages * pageSize events)
-// using the cursor returned by each response.
-//
-// Usage:
-//   import { paginateEvents } from './paginateEvents.js';
-//   const allEvents = await paginateEvents(client, eventType, { order: 'descending', maxPages: 10 });
+// Includes a small delay between pages to avoid hitting RPC QPS limits.
 
-/**
- * Fetch all events of a given type, paginating through cursor results.
- *
- * @param {SuiClient} client - The Sui RPC client from @mysten/dapp-kit or @mysten/sui
- * @param {string} eventType - Full MoveEventType string, e.g. `${PACKAGE_ID}::bonding_curve::TokensPurchased`
- * @param {object} [opts]
- * @param {'ascending'|'descending'} [opts.order='descending'] - Sort order
- * @param {number} [opts.pageSize=50] - Events per page (Sui RPC max is ~50 reliably)
- * @param {number} [opts.maxPages=20] - Safety cap on total pages to prevent runaway fetches
- * @returns {Promise<Array>} All event objects from result.data across all pages
- */
+const PAGE_DELAY_MS = 100; // delay between pagination pages
+
 export async function paginateEvents(client, eventType, opts = {}) {
   const {
     order = 'descending',
@@ -48,27 +33,23 @@ export async function paginateEvents(client, eventType, opts = {}) {
     hasNext = result.hasNextPage === true && result.data.length > 0;
     cursor = result.nextCursor ?? null;
     page++;
+
+    // Throttle: small delay between pages to avoid QPS spikes
+    if (hasNext) {
+      await new Promise(r => setTimeout(r, PAGE_DELAY_MS));
+    }
   }
 
   return allEvents;
 }
 
-/**
- * Fetch paginated events for MULTIPLE event types in parallel,
- * then return them as a map: { [eventType]: events[] }
- *
- * @param {SuiClient} client
- * @param {string[]} eventTypes - Array of MoveEventType strings
- * @param {object} [opts] - Same opts as paginateEvents
- * @returns {Promise<Object>} Map of eventType -> events[]
- */
 export async function paginateMultipleEvents(client, eventTypes, opts = {}) {
-  const results = await Promise.all(
-    eventTypes.map(type => paginateEvents(client, type, opts))
-  );
+  // Sequential instead of parallel to reduce QPS pressure
   const map = {};
-  eventTypes.forEach((type, i) => {
-    map[type] = results[i];
-  });
+  for (const type of eventTypes) {
+    map[type] = await paginateEvents(client, type, opts);
+    // Small delay between event type fetches
+    await new Promise(r => setTimeout(r, 100));
+  }
   return map;
 }
