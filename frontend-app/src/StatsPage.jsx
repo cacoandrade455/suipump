@@ -121,7 +121,7 @@ export default function StatsPage({ onBack }) {
         const gradType = `${PACKAGE_ID}::bonding_curve::Graduated`;
 
         const [eventMap, gradEvents] = await Promise.all([
-          paginateMultipleEvents(client, [buyType, sellType], { order: 'descending', maxPages: 30 }),
+          paginateMultipleEvents(client, [buyType, sellType], { order: 'descending', maxPages: 50 }),
           paginateMultipleEvents(client, [gradType], { order: 'descending', maxPages: 5 }),
         ]);
 
@@ -151,16 +151,14 @@ export default function StatsPage({ onBack }) {
         for (const e of sells) {
           const p = e.parsedJson;
           const suiOut = Number(p.sui_out ?? 0);
-          // gross out = net + fees
-          const gross = suiOut + Number(p.protocol_fee ?? 0) + Number(p.creator_fee ?? 0);
-          volumeMist += gross;
+          volumeMist += suiOut;
           protocolMist += Number(p.protocol_fee ?? 0);
           creatorMist += Number(p.creator_fee ?? 0);
           lpMist += Number(p.lp_fee ?? 0);
-          if (p.curve_id) volumeByCurve[p.curve_id] = (volumeByCurve[p.curve_id] || 0) + gross;
+          if (p.curve_id) volumeByCurve[p.curve_id] = (volumeByCurve[p.curve_id] || 0) + suiOut;
           if (e.timestampMs) {
             const day = new Date(Number(e.timestampMs)).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-            volumeByDay[day] = (volumeByDay[day] || 0) + gross;
+            volumeByDay[day] = (volumeByDay[day] || 0) + suiOut;
           }
         }
 

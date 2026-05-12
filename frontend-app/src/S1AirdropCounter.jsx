@@ -59,7 +59,7 @@ export default function S1AirdropCounter() {
         const eventMap = await paginateMultipleEvents(
           client,
           [buyType, sellType],
-          { order: 'descending', maxPages: 20 }
+          { order: 'descending', maxPages: 50 }
         );
 
         let totalVolumeMist = 0;
@@ -71,10 +71,10 @@ export default function S1AirdropCounter() {
           totalProtocolMist += Number(p.protocol_fee ?? 0);
         }
 
+        // FIX: use sui_out directly, not gross (was double-counting fees)
         for (const e of eventMap[sellType]) {
           const p = e.parsedJson;
-          const grossOut = Number(p.sui_out ?? 0) + Number(p.protocol_fee ?? 0) + Number(p.creator_fee ?? 0);
-          totalVolumeMist += grossOut;
+          totalVolumeMist += Number(p.sui_out ?? 0);
           totalProtocolMist += Number(p.protocol_fee ?? 0);
         }
 
