@@ -174,14 +174,15 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
         telegram: form.telegram, twitter: form.twitter, website: form.website,
       });
 
+      const sym = String(tokenSymbol);
       const patched = bytecodeTemplate.update_identifiers(
         bytecodeTemplate.update_constants(
           templateBytes,
-          [bcsBytes(tokenName), bcsBytes(tokenSymbol), bcsBytes(descWithLinks)],
+          [bcsBytes(tokenName), bcsBytes(sym), bcsBytes(descWithLinks)],
           [bcsBytes('TEMPLATE_NAME'), bcsBytes('TMPL'), bcsBytes('template description')],
           ['String', 'String', 'String'],
         ),
-        { TEMPLATE: tokenSymbol, template: tokenSymbol.toLowerCase() },
+        { TEMPLATE: sym, template: sym.toLowerCase() },
       );
 
       const tx1 = new Transaction();
@@ -538,15 +539,12 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
                   <div className="text-lg font-bold text-white">{t(lang, 'success')}</div>
                   {newCurveId && (
                     <>
-                      {/* Shareable link */}
                       <div className="bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 flex items-center gap-2">
                         <span className="text-[10px] font-mono text-white/40 flex-1 truncate text-left">
                           suipump.vercel.app/token/{newCurveId.slice(0,8)}…
                         </span>
                         <button
-                          onClick={() => {
-                            navigator.clipboard.writeText(`${window.location.origin}/token/${newCurveId}`);
-                          }}
+                          onClick={() => navigator.clipboard.writeText(`${window.location.origin}/token/${newCurveId}`)}
                           className="text-[9px] font-mono text-lime-400 hover:text-lime-300 whitespace-nowrap border border-lime-400/30 px-2 py-1 rounded-lg transition-colors"
                         >
                           COPY LINK
