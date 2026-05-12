@@ -62,7 +62,7 @@ function StatCard({ icon, label, valueSui, valueUsd, accent = false, sub }) {
           <div className={`text-2xl font-bold font-mono ${accent ? 'text-lime-400' : 'text-white'}`}>
             {valueUsd}
           </div>
-          <div className="text-xs font-mono text-white/30">{valueSui} SUI</div>
+          <div className="text-xs font-mono text-white/30">{valueSui}</div>
         </>
       ) : (
         <div className={`text-2xl font-bold font-mono ${accent ? 'text-lime-400' : 'text-white'}`}>
