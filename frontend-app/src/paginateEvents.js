@@ -1,20 +1,29 @@
 // paginateEvents.js
 // Shared utility for cursor-based pagination of Sui queryEvents.
-// The Sui RPC caps each queryEvents call at ~100 results per page.
-// This helper fetches ALL pages (up to maxPages * pageSize events)
-// using the cursor returned by each response.
+// Includes in-memory cache (30s TTL) and 100 events/page for fewer RPC calls.
+
+const cache = {};
+const CACHE_TTL = 30_000;
 
 export async function paginateEvents(client, eventType, opts = {}) {
   const {
-    order = 'descending',
-    pageSize = 50,
-    maxPages = 100,  // bumped from 20 → 60 to handle 3,000+ events (stress test volume)
+    order    = 'descending',
+    pageSize = 100,   // max supported by Sui RPC — halves round trips vs 50
+    maxPages = 100,
   } = opts;
 
+  const cacheKey = `${eventType}:${order}:${maxPages}`;
+  const now = Date.now();
+
+  // Return cached result if fresh
+  if (cache[cacheKey] && now - cache[cacheKey].ts < CACHE_TTL) {
+    return cache[cacheKey].data;
+  }
+
   const allEvents = [];
-  let cursor = null;
+  let cursor  = null;
   let hasNext = true;
-  let page = 0;
+  let page    = 0;
 
   while (hasNext && page < maxPages) {
     const query = {
@@ -31,9 +40,12 @@ export async function paginateEvents(client, eventType, opts = {}) {
     }
 
     hasNext = result.hasNextPage === true && result.data.length > 0;
-    cursor = result.nextCursor ?? null;
+    cursor  = result.nextCursor ?? null;
     page++;
   }
+
+  // Cache the result
+  cache[cacheKey] = { data: allEvents, ts: now };
 
   return allEvents;
 }
@@ -43,8 +55,6 @@ export async function paginateMultipleEvents(client, eventTypes, opts = {}) {
     eventTypes.map(type => paginateEvents(client, type, opts))
   );
   const map = {};
-  eventTypes.forEach((type, i) => {
-    map[type] = results[i];
-  });
+  eventTypes.forEach((type, i) => { map[type] = results[i]; });
   return map;
 }
