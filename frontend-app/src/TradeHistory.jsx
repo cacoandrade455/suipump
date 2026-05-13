@@ -5,6 +5,8 @@ import { ArrowUpRight, ArrowDownRight } from 'lucide-react';
 import { PACKAGE_ID } from './constants.js';
 import { paginateMultipleEvents } from './paginateEvents.js';
 
+const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
+
 const MIST_PER_SUI = 1e9;
 
 function timeAgo(ts) {
@@ -27,17 +29,35 @@ export default function TradeHistory({ curveId, symbol, refreshKey }) {
       try {
         setLoading(true);
 
+        // Try indexer first
+        if (INDEXER_URL) {
+          try {
+            const res = await fetch(`${INDEXER_URL}/token/${curveId}/trades?limit=50`, { signal: AbortSignal.timeout(5000) });
+            if (res.ok) {
+              const rows = await res.json();
+              const all = rows.map(r => ({
+                kind:   r.event_type.includes('TokensPurchased') ? 'buy' : 'sell',
+                sui:    r.event_type.includes('TokensPurchased')
+                  ? Number(r.data.sui_in) / MIST_PER_SUI
+                  : Number(r.data.sui_out) / MIST_PER_SUI,
+                tokens: r.event_type.includes('TokensPurchased')
+                  ? Number(r.data.tokens_out) / 1e6
+                  : Number(r.data.tokens_in) / 1e6,
+                who:    r.data.buyer || r.data.seller,
+                ts:     r.timestamp_ms ? Number(r.timestamp_ms) : null,
+                digest: r.data.tx_digest,
+              }));
+              if (!cancelled) { setTrades(all); setLoading(false); }
+              return;
+            }
+          } catch {}
+        }
+
+        // Fall back to RPC
         const buyType = `${PACKAGE_ID}::bonding_curve::TokensPurchased`;
         const sellType = `${PACKAGE_ID}::bonding_curve::TokensSold`;
-
-        const eventMap = await paginateMultipleEvents(
-          client,
-          [buyType, sellType],
-          { order: 'descending', maxPages: 20 }
-        );
-
+        const eventMap = await paginateMultipleEvents(client, [buyType, sellType], { order: 'descending', maxPages: 20 });
         if (cancelled) return;
-
         const all = [
           ...eventMap[buyType]
             .filter(e => e.parsedJson?.curve_id === curveId)
@@ -60,7 +80,6 @@ export default function TradeHistory({ curveId, symbol, refreshKey }) {
               digest: e.id?.txDigest,
             })),
         ].sort((a, b) => (b.ts || 0) - (a.ts || 0)).slice(0, 50);
-
         if (!cancelled) { setTrades(all); setLoading(false); }
       } catch { if (!cancelled) setLoading(false); }
     }

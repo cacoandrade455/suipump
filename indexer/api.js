@@ -158,6 +158,48 @@ app.get('/trades/recent', async (req, res) => {
   }
 });
 
+// ── All token stats (for useTokenStats hook) ─────────────────────────────────
+
+app.get('/tokens/stats', async (req, res) => {
+  try {
+    const now = Date.now();
+    const oneDayAgo = now - 24 * 60 * 60 * 1000;
+
+    // Get all token stats + sparkline data in one query
+    const [statsRes, sparklineRes] = await Promise.all([
+      pool.query('SELECT * FROM token_stats'),
+      pool.query(
+        `SELECT curve_id,
+                json_agg(json_build_object('t', timestamp_ms, 'p',
+                  CASE WHEN event_type LIKE '%TokensPurchased'
+                    THEN (data->>'sui_in')::float / 1e9 / NULLIF((data->>'tokens_out')::float / 1e6, 0)
+                    ELSE (data->>'sui_out')::float / 1e9 / NULLIF((data->>'tokens_in')::float / 1e6, 0)
+                  END
+                ) ORDER BY timestamp_ms ASC) as sparkline
+         FROM events
+         WHERE (event_type LIKE '%TokensPurchased' OR event_type LIKE '%TokensSold')
+           AND timestamp_ms > $1
+         GROUP BY curve_id`,
+        [oneDayAgo]
+      ),
+    ]);
+
+    const sparklineMap = {};
+    for (const row of sparklineRes.rows) {
+      sparklineMap[row.curve_id] = (row.sparkline || []).filter(p => p.p > 0);
+    }
+
+    const result = statsRes.rows.map(s => ({
+      ...s,
+      sparkline24h: sparklineMap[s.curve_id] || [],
+    }));
+
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── OHLC trade points for chart ──────────────────────────────────────────────
 
 app.get('/token/:curveId/ohlc', async (req, res) => {

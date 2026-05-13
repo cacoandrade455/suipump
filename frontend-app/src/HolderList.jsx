@@ -6,6 +6,8 @@ import { Users, BarChart2 } from 'lucide-react';
 import { PACKAGE_ID } from './constants.js';
 import { paginateMultipleEvents } from './paginateEvents.js';
 
+const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
+
 const TOKEN_DECIMALS = 6;
 const TOKEN_SCALE = 10 ** TOKEN_DECIMALS;
 const TOTAL_SUPPLY = 1_000_000_000; // 1B whole tokens — denominator for %
@@ -47,14 +49,26 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0 }) {
         const buyType  = `${PACKAGE_ID}::bonding_curve::TokensPurchased`;
         const sellType = `${PACKAGE_ID}::bonding_curve::TokensSold`;
 
-        const eventMap = await paginateMultipleEvents(
-          client,
-          [buyType, sellType],
-          { order: 'descending', maxPages: 20 }
-        );
+        let buys = [], sells = [];
 
-        const buys  = (eventMap[buyType]  || []).filter(e => e.parsedJson?.curve_id === curveId);
-        const sells = (eventMap[sellType] || []).filter(e => e.parsedJson?.curve_id === curveId);
+        // Try indexer for trade data
+        if (INDEXER_URL) {
+          try {
+            const res = await fetch(`${INDEXER_URL}/token/${curveId}/trades?limit=500`, { signal: AbortSignal.timeout(5000) });
+            if (res.ok) {
+              const rows = await res.json();
+              buys  = rows.filter(r => r.event_type.includes('TokensPurchased')).map(r => ({ parsedJson: { ...r.data, buyer: r.data.buyer, curve_id: curveId } }));
+              sells = rows.filter(r => r.event_type.includes('TokensSold')).map(r => ({ parsedJson: { ...r.data, seller: r.data.seller, curve_id: curveId } }));
+            }
+          } catch {}
+        }
+
+        // Fall back to RPC if indexer failed
+        if (buys.length === 0 && sells.length === 0) {
+          const eventMap = await paginateMultipleEvents(client, [buyType, sellType], { order: 'descending', maxPages: 20 });
+          buys  = (eventMap[buyType]  || []).filter(e => e.parsedJson?.curve_id === curveId);
+          sells = (eventMap[sellType] || []).filter(e => e.parsedJson?.curve_id === curveId);
+        }
 
         // ── TOP HOLDERS ──────────────────────────────────────────────
         const balanceMap = new Map(); // addr → raw token balance (atomic)

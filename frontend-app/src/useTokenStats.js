@@ -9,6 +9,8 @@ import { useSuiClient } from '@mysten/dapp-kit';
 import { PACKAGE_ID } from './constants.js';
 import { paginateMultipleEvents } from './paginateEvents.js';
 
+const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
+
 const MIST_PER_SUI = 1e9;
 const ONE_HOUR_MS  = 60 * 60 * 1000;
 const ONE_DAY_MS   = 24 * 60 * 60 * 1000;
@@ -72,6 +74,42 @@ export function useTokenStats(tokens) {
     let cancelled = false;
 
     async function load() {
+      // Try indexer API first — returns all token stats in one call
+      if (INDEXER_URL) {
+        try {
+          const res = await fetch(`${INDEXER_URL}/tokens/stats`, { signal: AbortSignal.timeout(5000) });
+          if (res.ok) {
+            const indexerStats = await res.json();
+            if (!cancelled) {
+              const map = {};
+              for (const s of indexerStats) {
+                map[s.curve_id] = {
+                  volume:        s.volume_sui,
+                  trades:        s.trades,
+                  buys:          s.buys,
+                  sells:         s.sells,
+                  recentTrades:  s.recent_trades,
+                  lastTradeTime: s.last_trade_time,
+                  lastPrice:     s.last_price,
+                  firstPrice:    s.first_price,
+                  volume24h:     s.volume_24h,
+                  commentCount:  s.comment_count,
+                  pctChange:     s.first_price && s.last_price && s.first_price > 0
+                    ? ((s.last_price - s.first_price) / s.first_price) * 100
+                    : null,
+                  sparkline24h:  s.sparkline24h || [],
+                  holderCount:   holderCountsRef.current[s.curve_id] ?? null,
+                  devBuyMist:    0,
+                  reserveSui:    0,
+                };
+              }
+              setStats(map);
+            }
+            return;
+          }
+        } catch {}
+      }
+      // Fall back to RPC pagination
       try {
         const buyType     = `${PACKAGE_ID}::bonding_curve::TokensPurchased`;
         const sellType    = `${PACKAGE_ID}::bonding_curve::TokensSold`;
@@ -200,6 +238,9 @@ export function useTokenStats(tokens) {
         }
 
         if (!cancelled) setStats(map);
+      } catch (err) {
+        console.error('useTokenStats error:', err);
+      }
       } catch (err) {
         console.error('useTokenStats error:', err);
       }
