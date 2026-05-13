@@ -158,6 +158,37 @@ app.get('/trades/recent', async (req, res) => {
   }
 });
 
+// ── OHLC trade points for chart ──────────────────────────────────────────────
+
+app.get('/token/:curveId/ohlc', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT data, timestamp_ms, event_type FROM events
+       WHERE curve_id = $1
+         AND (event_type LIKE '%TokensPurchased' OR event_type LIKE '%TokensSold')
+       ORDER BY timestamp_ms ASC`,
+      [req.params.curveId]
+    );
+
+    const MIST = 1e9;
+    const points = result.rows
+      .map(row => {
+        const d   = row.data;
+        const ts  = row.timestamp_ms ? Math.floor(Number(row.timestamp_ms) / 1000) : 0;
+        const isBuy = row.event_type.includes('TokensPurchased');
+        const price = isBuy
+          ? (Number(d.sui_in   ?? 0) / MIST) / (Number(d.tokens_out ?? 1) / 1e6)
+          : (Number(d.sui_out  ?? 0) / MIST) / (Number(d.tokens_in  ?? 1) / 1e6);
+        return { time: ts, price, kind: isBuy ? 'buy' : 'sell' };
+      })
+      .filter(p => p.price > 0 && p.time > 0);
+
+    res.json(points);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Start ─────────────────────────────────────────────────────────────────────
 
 export function startApi() {
