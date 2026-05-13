@@ -9,6 +9,8 @@ import { createChart, CandlestickSeries, AreaSeries } from 'lightweight-charts';
 import { PACKAGE_ID } from './constants.js';
 import { paginateMultipleEvents } from './paginateEvents.js';
 
+const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
+
 const TOTAL_SUPPLY_WHOLE = 1_000_000_000;
 
 // Candle bucket (in seconds, lightweight-charts uses unix seconds)
@@ -107,6 +109,18 @@ export default function PriceChart({ curveId, refreshKey }) {
     async function load() {
       setLoading(true);
       try {
+        // Try indexer first — instant, pre-computed per token
+        if (INDEXER_URL) {
+          try {
+            const res = await fetch(`${INDEXER_URL}/token/${curveId}/ohlc`, { signal: AbortSignal.timeout(5000) });
+            if (res.ok) {
+              const points = await res.json();
+              if (!cancelled) { setRawTrades(points); setLoading(false); }
+              return;
+            }
+          } catch {}
+        }
+        // Fall back to RPC pagination
         const buyType  = `${PACKAGE_ID}::bonding_curve::TokensPurchased`;
         const sellType = `${PACKAGE_ID}::bonding_curve::TokensSold`;
         const eventMap = await paginateMultipleEvents(client, [buyType, sellType], { order: 'ascending', maxPages: 20 });
@@ -122,7 +136,6 @@ export default function PriceChart({ curveId, refreshKey }) {
           const price = e.kind === 'buy'
             ? (Number(p.sui_in   ?? 0) / 1e9) / (Number(p.tokens_out ?? 1) / 1e6)
             : (Number(p.sui_out  ?? 0) / 1e9) / (Number(p.tokens_in  ?? 1) / 1e6);
-          // Convert to unix seconds (lightweight-charts requirement)
           return { time: Math.floor(Number(e.timestampMs) / 1000), price, kind: e.kind };
         }).filter(p => p.price > 0);
 
