@@ -241,9 +241,6 @@ export function useTokenStats(tokens) {
       } catch (err) {
         console.error('useTokenStats error:', err);
       }
-      } catch (err) {
-        console.error('useTokenStats error:', err);
-      }
     }
 
     load();
