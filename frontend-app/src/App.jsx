@@ -1041,7 +1041,7 @@ function HomePage({ onLaunch, lang = 'en' }) {
       case 'oldest':     return (a.timestamp || 0) - (b.timestamp || 0);
       case 'trending':   return (sb?.recentTrades || 0) - (sa?.recentTrades || 0);
       case 'last_trade': return (sb?.lastTradeTime || 0) - (sa?.lastTradeTime || 0);
-      case 'market_cap': return (sb?.lastPrice || 0) - (sa?.lastPrice || 0);
+      case 'market_cap': return (sb?.reserveSui || 0) - (sa?.reserveSui || 0);
       case 'volume':     return (sb?.volume || 0) - (sa?.volume || 0);
       case 'trades':     return (sb?.trades || 0) - (sa?.trades || 0);
       case 'reserve':    return (sb?.reserveSui || 0) - (sa?.reserveSui || 0);
