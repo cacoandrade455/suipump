@@ -991,6 +991,7 @@ function HomePage({ onLaunch, lang = 'en' }) {
   const { tokens, loading, error } = useTokenList();
 
   // Fetch curve states directly for accurate sorting
+  const client = useSuiClient();
   const [curveStates, setCurveStates] = React.useState({});
   React.useEffect(() => {
     if (!tokens || tokens.length === 0) return;
