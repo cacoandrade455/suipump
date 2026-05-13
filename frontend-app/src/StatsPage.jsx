@@ -11,6 +11,8 @@ import { PACKAGE_ID, DRAIN_SUI_APPROX } from './constants.js';
 import { useTokenList } from './useTokenList.js';
 import { paginateMultipleEvents } from './paginateEvents.js';
 
+const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
+
 const MIST_PER_SUI = 1e9;
 const TOTAL_SUPPLY_WHOLE = 1_000_000_000;
 
@@ -115,6 +117,30 @@ export default function StatsPage({ onBack }) {
   useEffect(() => {
     let cancelled = false;
     async function load() {
+      // Try indexer API first — instant
+      if (INDEXER_URL) {
+        try {
+          const res = await fetch(`${INDEXER_URL}/stats`, { signal: AbortSignal.timeout(5000) });
+          if (res.ok) {
+            const d = await res.json();
+            if (!cancelled) setData({
+              volume:       d.totalVolume,
+              protocolFees: d.protocolFeesSui,
+              tradeCount:   d.totalTrades,
+              tokenCount:   d.tokenCount,
+              graduated:    0,
+              creatorFees:  d.totalVolume * 0.004,
+              lpFees:       d.totalVolume * 0.001,
+              volumeByDay:  {},
+              volumeByCurve: {},
+              topTokens:    [],
+            });
+            setLoading(false);
+            return;
+          }
+        } catch {}
+      }
+      // Fall back to RPC
       try {
         const buyType = `${PACKAGE_ID}::bonding_curve::TokensPurchased`;
         const sellType = `${PACKAGE_ID}::bonding_curve::TokensSold`;

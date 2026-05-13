@@ -67,6 +67,8 @@ function ScrollToTop() {
 
 // ── Live stats hook ──────────────────────────────────────────────────────────
 
+const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
+
 function useStats() {
   const client = useSuiClient();
   const [stats, setStats] = useState({ poolSui: null, tradeCount: null, volume: null });
@@ -77,6 +79,17 @@ function useStats() {
       try {
         const buyType = `${PACKAGE_ID}::bonding_curve::TokensPurchased`;
         const sellType = `${PACKAGE_ID}::bonding_curve::TokensSold`;
+        // Try indexer first
+        if (INDEXER_URL) {
+          try {
+            const res = await fetch(`${INDEXER_URL}/stats`, { signal: AbortSignal.timeout(5000) });
+            if (res.ok) {
+              const data = await res.json();
+              if (!cancelled) setStats({ poolSui: data.s1PoolSui, tradeCount: data.totalTrades, volume: data.totalVolume });
+              return;
+            }
+          } catch {}
+        }
         const eventMap = await paginateMultipleEvents(client, [buyType, sellType], { order: 'descending', maxPages: 100, pageSize: 100 });
         let protocolMist = 0, volumeMist = 0;
         for (const e of eventMap[buyType]) {
