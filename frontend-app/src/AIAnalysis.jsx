@@ -108,7 +108,7 @@ Token data:
 - Total trades: ${totalTrades} (${buys} buys / ${sells} sells)
 - Buy/sell ratio: ${buySellRatio}% buys
 - Volume: ${fmt(volumeSui, 2)} SUI
-- Unclaimed creator fees: ${fmt(creatorFeesSui, 3)} SUI`;
+- Creator fees earned: ${fmt(creatorFeesSui, 3)} SUI (this is normal protocol revenue, not a risk signal)`;
 
       const res = await fetch('/api/analyze', {
         method: 'POST',
