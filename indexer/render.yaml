@@ -1,0 +1,40 @@
+services:
+  - type: worker
+    name: suipump-indexer
+    env: node
+    region: oregon
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: suipump-db
+          property: connectionString
+      - key: PACKAGE_IDS
+        value: 0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8
+      - key: POLL_MS
+        value: "5000"
+      - key: NODE_ENV
+        value: production
+
+  - type: web
+    name: suipump-api
+    env: node
+    region: oregon
+    plan: free
+    buildCommand: npm install
+    startCommand: node api_server.js
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: suipump-db
+          property: connectionString
+      - key: NODE_ENV
+        value: production
+
+databases:
+  - name: suipump-db
+    databaseName: suipump
+    user: suipump
+    plan: free
