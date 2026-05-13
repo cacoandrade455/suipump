@@ -131,7 +131,7 @@ export default function StatsPage({ onBack }) {
               graduated:    0,
               creatorFees:  d.totalVolume * 0.004,
               lpFees:       d.totalVolume * 0.001,
-              volumeByDay:  {},
+              volumeByDay:  [],
               volumeByCurve: {},
               topTokens:    [],
             });
