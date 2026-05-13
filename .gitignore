@@ -19,3 +19,4 @@ Desktop.ini
 
 coin-template/template.hex
 frontend/"scripts/sim_wallets.json" 
+"indexer/.env" 
