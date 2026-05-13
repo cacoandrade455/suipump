@@ -18,4 +18,4 @@ Thumbs.db
 Desktop.ini
 
 coin-template/template.hex
-frontend/
+frontend/"scripts/sim_wallets.json" 
