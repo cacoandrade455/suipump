@@ -998,17 +998,35 @@ function HomePage({ onLaunch, lang = 'en' }) {
     let cancelled = false;
     async function loadCurveStates() {
       try {
-        const results = await Promise.all(
-          tokens.map(t => client.getObject({ id: t.curveId, options: { showContent: true } }).catch(() => null))
-        );
+        const PACKAGE_ID_LOCAL = '0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8';
+        const buyType  = `${PACKAGE_ID_LOCAL}::bonding_curve::TokensPurchased`;
+        const sellType = `${PACKAGE_ID_LOCAL}::bonding_curve::TokensSold`;
+
+        // Fetch curve objects + last trade events in parallel
+        const [objResults, buysRes, sellsRes] = await Promise.all([
+          Promise.all(tokens.map(t => client.getObject({ id: t.curveId, options: { showContent: true } }).catch(() => null))),
+          client.queryEvents({ query: { MoveEventType: buyType  }, limit: 100, order: 'descending' }),
+          client.queryEvents({ query: { MoveEventType: sellType }, limit: 100, order: 'descending' }),
+        ]);
+
         if (cancelled) return;
+
+        // Build lastTradeTime map from most recent 100 buy+sell events
+        const lastTradeTimes = {};
+        for (const evt of [...(buysRes.data || []), ...(sellsRes.data || [])]) {
+          const cid = evt.parsedJson?.curve_id;
+          const ts  = evt.timestampMs ? Number(evt.timestampMs) : 0;
+          if (cid && ts > (lastTradeTimes[cid] || 0)) lastTradeTimes[cid] = ts;
+        }
+
         const map = {};
-        results.forEach((res, i) => {
+        objResults.forEach((res, i) => {
           const fields = res?.data?.content?.fields;
           if (!fields) return;
+          const curveId   = tokens[i].curveId;
           const reserveSui = Number(BigInt(fields.sui_reserve ?? 0)) / 1e9;
-          const progress = Math.min(100, (reserveSui / 35000) * 100);
-          map[tokens[i].curveId] = { reserveSui, progress };
+          const progress   = Math.min(100, (reserveSui / 35000) * 100);
+          map[curveId] = { reserveSui, progress, lastTradeTime: lastTradeTimes[curveId] || 0 };
         });
         setCurveStates(map);
       } catch {}
@@ -1068,7 +1086,7 @@ function HomePage({ onLaunch, lang = 'en' }) {
       case 'newest':     return (b.timestamp || 0) - (a.timestamp || 0);
       case 'oldest':     return (a.timestamp || 0) - (b.timestamp || 0);
       case 'trending':   return (sb?.recentTrades || 0) - (sa?.recentTrades || 0);
-      case 'last_trade': return (sb?.lastTradeTime || 0) - (sa?.lastTradeTime || 0);
+      case 'last_trade': return (curveStates[b.curveId]?.lastTradeTime || 0) - (curveStates[a.curveId]?.lastTradeTime || 0);
       case 'market_cap': return (curveStates[b.curveId]?.reserveSui || 0) - (curveStates[a.curveId]?.reserveSui || 0);
       case 'volume':     return (sb?.volume || 0) - (sa?.volume || 0);
       case 'trades':     return (sb?.trades || 0) - (sa?.trades || 0);
