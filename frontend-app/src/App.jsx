@@ -989,6 +989,33 @@ function HomePage({ onLaunch, lang = 'en' }) {
   const { isWatched, toggle: toggleWatch } = useWatchlist();
   const account = useCurrentAccount();
   const { tokens, loading, error } = useTokenList();
+
+  // Fetch curve states directly for accurate sorting
+  const [curveStates, setCurveStates] = React.useState({});
+  React.useEffect(() => {
+    if (!tokens || tokens.length === 0) return;
+    let cancelled = false;
+    async function loadCurveStates() {
+      try {
+        const results = await Promise.all(
+          tokens.map(t => client.getObject({ id: t.curveId, options: { showContent: true } }).catch(() => null))
+        );
+        if (cancelled) return;
+        const map = {};
+        results.forEach((res, i) => {
+          const fields = res?.data?.content?.fields;
+          if (!fields) return;
+          const reserveSui = Number(BigInt(fields.sui_reserve ?? 0)) / 1e9;
+          const progress = Math.min(100, (reserveSui / 35000) * 100);
+          map[tokens[i].curveId] = { reserveSui, progress };
+        });
+        setCurveStates(map);
+      } catch {}
+    }
+    loadCurveStates();
+    const timer = setInterval(loadCurveStates, 15_000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [tokens, client]);
   const stats = useStats();
   const tokenStats = useTokenStats(tokens);
   const [search, setSearch] = useState('');
@@ -1041,11 +1068,11 @@ function HomePage({ onLaunch, lang = 'en' }) {
       case 'oldest':     return (a.timestamp || 0) - (b.timestamp || 0);
       case 'trending':   return (sb?.recentTrades || 0) - (sa?.recentTrades || 0);
       case 'last_trade': return (sb?.lastTradeTime || 0) - (sa?.lastTradeTime || 0);
-      case 'market_cap': return (sb?.lastPrice || 0) - (sa?.lastPrice || 0);
+      case 'market_cap': return (curveStates[b.curveId]?.reserveSui || 0) - (curveStates[a.curveId]?.reserveSui || 0);
       case 'volume':     return (sb?.volume || 0) - (sa?.volume || 0);
       case 'trades':     return (sb?.trades || 0) - (sa?.trades || 0);
-      case 'reserve':    return (sb?.reserveSui || 0) - (sa?.reserveSui || 0);
-      case 'progress':   return (sb?.reserveSui || 0) - (sa?.reserveSui || 0);
+      case 'reserve':    return (curveStates[b.curveId]?.reserveSui || 0) - (curveStates[a.curveId]?.reserveSui || 0);
+      case 'progress':   return (curveStates[b.curveId]?.progress || 0) - (curveStates[a.curveId]?.progress || 0);
       case 'watchlist':  return (isWatched(b.curveId) ? 1 : 0) - (isWatched(a.curveId) ? 1 : 0);
       default: return 0;
     }
