@@ -81,7 +81,7 @@ export function useTokenStats(tokens) {
         const eventMap = await paginateMultipleEvents(
           client,
           [buyType, sellType, commentType, createdType],
-          { order: 'descending', maxPages: 5 }
+          { order: 'descending', maxPages: 100, pageSize: 100 }
         );
 
         if (cancelled) return;
