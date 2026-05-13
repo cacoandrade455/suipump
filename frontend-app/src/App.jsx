@@ -77,7 +77,7 @@ function useStats() {
       try {
         const buyType = `${PACKAGE_ID}::bonding_curve::TokensPurchased`;
         const sellType = `${PACKAGE_ID}::bonding_curve::TokensSold`;
-        const eventMap = await paginateMultipleEvents(client, [buyType, sellType], { order: 'descending', maxPages: 20 });
+        const eventMap = await paginateMultipleEvents(client, [buyType, sellType], { order: 'descending', maxPages: 100, pageSize: 100 });
         let protocolMist = 0, volumeMist = 0;
         for (const e of eventMap[buyType]) {
           protocolMist += Number(e.parsedJson?.protocol_fee ?? 0);
@@ -1041,7 +1041,7 @@ function HomePage({ onLaunch, lang = 'en' }) {
       case 'oldest':     return (a.timestamp || 0) - (b.timestamp || 0);
       case 'trending':   return (sb?.recentTrades || 0) - (sa?.recentTrades || 0);
       case 'last_trade': return (sb?.lastTradeTime || 0) - (sa?.lastTradeTime || 0);
-      case 'market_cap': return (sb?.reserveSui || 0) - (sa?.reserveSui || 0);
+      case 'market_cap': return (sb?.lastPrice || 0) - (sa?.lastPrice || 0);
       case 'volume':     return (sb?.volume || 0) - (sa?.volume || 0);
       case 'trades':     return (sb?.trades || 0) - (sa?.trades || 0);
       case 'reserve':    return (sb?.reserveSui || 0) - (sa?.reserveSui || 0);
