@@ -9,7 +9,7 @@ function fmt(n, d = 2) {
   return Number(n).toLocaleString(undefined, { maximumFractionDigits: d });
 }
 
-export default function AIAnalysis({ curveId, name, symbol, progress, reserveSui, creatorFeesSui, graduated }) {
+export default function AIAnalysis({ curveId, name, symbol, progress, reserveSui, creatorFeesSui, graduated, tokensSoldWhole }) {
   const client = useSuiClient();
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -55,9 +55,10 @@ export default function AIAnalysis({ curveId, name, symbol, progress, reserveSui
 
       const holders    = Object.values(balances).filter(v => v > 0);
       const holderCount = holders.length;
-      const totalHeld   = holders.reduce((a, b) => a + b, 0);
       const top3        = [...holders].sort((a, b) => b - a).slice(0, 3).reduce((a, b) => a + b, 0);
-      const topHolderPct = totalHeld > 0 ? (top3 / totalHeld) * 100 : 0;
+      // % of total 1B supply (atomic units = 1B * 1e6)
+      const TOTAL_SUPPLY_ATOMIC = 1_000_000_000 * 1e6;
+      const topHolderPct = (top3 / TOTAL_SUPPLY_ATOMIC) * 100;
 
       return { buys, sells, volumeSui, holderCount, topHolderPct };
     } catch {
@@ -103,7 +104,7 @@ Token data:
 - Status: ${graduated ? 'GRADUATED — now trading on Cetus DEX' : 'Active on bonding curve'}
 - Curve progress: ${fmt(progress, 1)}% filled (${fmt(reserveSui, 1)} SUI raised of ~35,000 SUI target)
 - Holders: ${holderCount}
-- Top holder concentration: ${fmt(topHolderPct, 1)}% held by top 3 wallets
+- Top holder concentration: ${fmt(topHolderPct, 1)}% of total 1B supply held by top 3 wallets
 - Total trades: ${totalTrades} (${buys} buys / ${sells} sells)
 - Buy/sell ratio: ${buySellRatio}% buys
 - Volume: ${fmt(volumeSui, 2)} SUI

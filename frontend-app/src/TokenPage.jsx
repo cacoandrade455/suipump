@@ -929,6 +929,7 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
             reserveSui={mistToSui(reserveMist)}
             creatorFeesSui={Number(creatorFeesMist) / 1e9}
             graduated={graduated}
+            tokensSoldWhole={Number(tokensSold) / 10 ** TOKEN_DECIMALS}
           />
 
           {/* Block 4 — Comments */}
