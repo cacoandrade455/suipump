@@ -8,7 +8,7 @@ export const PACKAGE_ID_V4 =
   '0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8';
 
 // ── V5 (set after deploy) ────────────────────────────────────────────────────
-export const PACKAGE_ID_V5 = null; // TODO: set after `sui client publish contracts-v5`
+export const PACKAGE_ID_V5 = '0x785c0604cb6c60a8547501e307d2b0ca7a586ff912c8abff4edfb88db65b7236';
 
 // ── Active package (used for new launches + write txs) ──────────────────────
 export const PACKAGE_ID = PACKAGE_ID_V5 ?? PACKAGE_ID_V4;
