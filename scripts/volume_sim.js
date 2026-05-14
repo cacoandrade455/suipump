@@ -15,6 +15,11 @@ import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { client, loadKeypair, PACKAGE_ID, ADMIN_CAP_ID, fmtSui } from './config.js';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
+
+// ── Package version detection ─────────────────────────────────────────────────
+const PACKAGE_ID_V4  = '0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8';
+const SUI_CLOCK_ID   = '0x0000000000000000000000000000000000000000000000000000000000000006';
+const isV4 = PACKAGE_ID === PACKAGE_ID_V4;
 const WALLETS_FILE = join(__dir, 'sim_wallets.json');
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -32,7 +37,7 @@ const TRADE_SUI        = 50;
 const TRADE_MIST       = BigInt(TRADE_SUI) * 1_000_000_000n;
 const FUND_PER_WALLET  = 700;                    // SUI per sim wallet
 const FUND_MIST        = BigInt(FUND_PER_WALLET) * 1_000_000_000n;
-const RUN_DURATION_MS  = 6 * 60 * 60 * 1_000;   // 6 hours
+const RUN_DURATION_MS  = 1 * 60 * 60 * 1_000;   // 1 hour
 const CYCLE_DELAY_MS   = 30_000;                 // 30s between cycles
 const MAX_STAGGER_MS   = 15_000;                 // random 0-15s stagger per wallet
 const RETRY_DELAY_MS   = 5_000;                  // wait 5s on 429 before retry
@@ -186,10 +191,14 @@ async function buyThenSell(keypair, address, curveId, tokenType, walletNum) {
       const buyTx = new Transaction();
       const curveRef = buyTx.sharedObjectRef({ objectId: curveId, initialSharedVersion: sharedVersion, mutable: true });
       const [payment] = buyTx.splitCoins(buyTx.gas, [buyTx.pure.u64(TRADE_MIST)]);
+      const buyArgs = isV4
+        ? [curveRef, payment, buyTx.pure.u64(0)]
+        : [curveRef, payment, buyTx.pure.u64(0), buyTx.pure.option('address', null), buyTx.object(SUI_CLOCK_ID)];
+
       const [tokens, refund] = buyTx.moveCall({
         target: `${PACKAGE_ID}::bonding_curve::buy`,
         typeArguments: [tokenType],
-        arguments: [curveRef, payment, buyTx.pure.u64(0)],
+        arguments: buyArgs,
       });
       buyTx.transferObjects([tokens, refund], address);
 
