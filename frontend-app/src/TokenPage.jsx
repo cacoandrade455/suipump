@@ -10,7 +10,7 @@ import TradeHistory from './TradeHistory.jsx';
 import HolderList from './HolderList.jsx';
 import Comments from './Comments.jsx';
 import AIAnalysis from './AIAnalysis.jsx';
-import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, MIST_PER_SUI, DRAIN_SUI_APPROX, VIRTUAL_SUI, VIRTUAL_TOKENS } from './constants.js';
+import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, MIST_PER_SUI, DRAIN_SUI_APPROX, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, DRAIN_SUI_V4, DRAIN_SUI_V5 } from './constants.js';
 import { buyQuote, sellQuote } from './curve.js';
 import { t } from './i18n.js';
 
@@ -24,9 +24,9 @@ function mistToSui(mist) {
   return Number(mist) / 1e9;
 }
 
-function priceMistPerToken(suiReserveMist, tokensSold) {
-  const vSui = BigInt(VIRTUAL_SUI) * BigInt(MIST_PER_SUI);
-  const vTok = BigInt(VIRTUAL_TOKENS) * 10n ** BigInt(TOKEN_DECIMALS);
+function priceMistPerToken(suiReserveMist, tokensSold, vSuiSui, vTokTokens) {
+  const vSui = BigInt(vSuiSui) * BigInt(MIST_PER_SUI);
+  const vTok = BigInt(vTokTokens) * 10n ** BigInt(TOKEN_DECIMALS);
   const realSui = BigInt(suiReserveMist);
   const realTok = BigInt(tokensSold);
   const numSui = vSui + realSui;
@@ -950,11 +950,15 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
   // ── derived state ─────────────────────────────────────────────────────────
 
   const pkgId          = getTokenPackageId(tokenType);
+  const isV5Token      = !!(PACKAGE_ID_V5 && pkgId === PACKAGE_ID_V5);
+  const vSui           = isV5Token ? VIRTUAL_SUI_V5    : VIRTUAL_SUI_V4;
+  const vTok           = isV5Token ? VIRTUAL_TOKENS_V5 : VIRTUAL_TOKENS_V4;
+  const drainSui       = isV5Token ? DRAIN_SUI_V5      : DRAIN_SUI_V4;
   const reserveMist    = curveState ? BigInt(curveState.sui_reserve) : 0n;
   const tokensRemaining = curveState ? BigInt(curveState.token_reserve) : 0n;
   const tokensSold     = BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS) - tokensRemaining;
-  const progress       = Math.min(100, (mistToSui(reserveMist) / DRAIN_SUI_APPROX) * 100);
-  const priceMist      = curveState ? priceMistPerToken(reserveMist, tokensSold) : 0n;
+  const progress       = Math.min(100, (mistToSui(reserveMist) / drainSui) * 100);
+  const priceMist      = curveState ? priceMistPerToken(reserveMist, tokensSold, vSui, vTok) : 0n;
   const priceSui       = Number(priceMist) / 1e9;
   const priceUsd       = priceSui * suiUsd;
   const marketCapSui   = priceSui * TOTAL_SUPPLY_WHOLE;
@@ -1018,13 +1022,13 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
     try {
       if (side === 'buy') {
         const suiIn = BigInt(Math.floor(parseFloat(amount) * Number(MIST_PER_SUI)));
-        return buyQuote(reserveMist, tokensRemaining, suiIn);
+        return buyQuote(reserveMist, tokensRemaining, suiIn, vSui, vTok);
       } else {
         const tokIn = BigInt(Math.floor(parseFloat(amount) * 10 ** TOKEN_DECIMALS));
-        return sellQuote(reserveMist, tokensRemaining, tokIn);
+        return sellQuote(reserveMist, tokensRemaining, tokIn, vSui, vTok);
       }
     } catch { return null; }
-  }, [amount, side, curveState, reserveMist, tokensRemaining]);
+  }, [amount, side, curveState, reserveMist, tokensRemaining, vSui, vTok]);
 
   const executeTrade = useCallback(async () => {
     if (!account || !curveState || !curveId || !tokenType) return;
@@ -1050,7 +1054,7 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
       if (side === 'buy') {
         const suiInMist = BigInt(Math.floor(amtFloat * Number(MIST_PER_SUI)));
         const [payment] = tx.splitCoins(tx.gas, [tx.pure.u64(suiInMist)]);
-        const quote = buyQuote(reserveMist, tokensRemaining, suiInMist);
+        const quote = buyQuote(reserveMist, tokensRemaining, suiInMist, vSui, vTok);
         const minOut = quote?.tokensOut != null
           ? BigInt(Math.floor(Number(quote.tokensOut) * (1 - slippageNum / 100)))
           : 0n;
@@ -1077,7 +1081,7 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
           tx.mergeCoins(coinObjs[0], coinObjs.slice(1));
           [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(tokInAtomic)]);
         }
-        const quote = sellQuote(reserveMist, tokensRemaining, tokInAtomic);
+        const quote = sellQuote(reserveMist, tokensRemaining, tokInAtomic, vSui, vTok);
         const minOut = quote?.suiOut != null
           ? BigInt(Math.floor(Number(quote.suiOut) * (1 - slippageNum / 100)))
           : 0n;
@@ -1110,7 +1114,7 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
       setTxMsg(err.message || 'Transaction failed');
       setTimeout(() => { setTxStatus(null); setTxMsg(''); }, 4000);
     }
-  }, [account, curveState, curveId, tokenType, side, amount, slippage, client, signAndExecute, reserveMist, tokensRemaining, pkgId]);
+  }, [account, curveState, curveId, tokenType, side, amount, slippage, client, signAndExecute, reserveMist, tokensRemaining, pkgId, vSui, vTok]);
 
   const quote = quoteTrade();
 
@@ -1242,7 +1246,7 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
               </div>
               <div className="flex items-center justify-between text-[10px] font-mono text-white/25 mt-1">
                 <span>{fmt(mistToSui(reserveMist))} {t(lang, 'suiRaised')}</span>
-                <span>{fmt(DRAIN_SUI_APPROX)} {t(lang, 'suiTarget')}</span>
+                <span>{fmt(drainSui)} {t(lang, 'suiTarget')}</span>
               </div>
             </div>
 
