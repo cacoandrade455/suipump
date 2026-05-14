@@ -973,6 +973,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
     Promise.all([
       checkPkg(PACKAGE_ID_V4),
       ...(PACKAGE_ID_V5 ? [checkPkg(PACKAGE_ID_V5)] : []),
+      ...(PACKAGE_ID_V6 ? [checkPkg(PACKAGE_ID_V6)] : []),
     ]).then(results => {
       if (!cancelled) setIsCreator(results.some(Boolean));
     }).catch(() => {});
