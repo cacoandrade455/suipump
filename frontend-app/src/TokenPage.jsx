@@ -213,58 +213,25 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
       : tx.object(curveId);
   };
 
-  // Queue social links / description update via queue_metadata_update
-  const handleQueueLinks = async () => {
-    if (!account || busy) return;
-    setBusy(true);
-    try {
-      const capId    = await getCapId();
-      const tx       = new Transaction();
-      const curveRef = await getCurveRef(tx);
-
-      const newDesc = encodeDescription(links.desc, {
-        twitter: links.twitter, telegram: links.telegram,
-        website: links.website, dex: links.dex,
-      });
-
-      // queue_metadata_update(cap, curve, name, symbol, description, icon_url, clock)
-      // Only updating description — pass none for name/symbol/icon
-      tx.moveCall({
-        target: `${pkgId}::bonding_curve::queue_metadata_update`,
-        typeArguments: [tokenType],
-        arguments: [
-          tx.object(capId),
-          curveRef,
-          tx.pure(new Uint8Array([0])),     // Option::none<String> for name
-          tx.pure(new Uint8Array([0])),     // Option::none<String> for symbol
-          // Option::some<String> for description
-          (() => {
-            const enc = new TextEncoder().encode(newDesc);
-            const lenBytes = [];
-            let n = enc.length;
-            do { let b = n & 0x7f; n >>>= 7; if (n !== 0) b |= 0x80; lenBytes.push(b); } while (n !== 0);
-            const out = new Uint8Array(1 + lenBytes.length + enc.length);
-            out[0] = 1;
-            out.set(lenBytes, 1);
-            out.set(enc, 1 + lenBytes.length);
-            return tx.pure(out);
-          })(),
-          tx.pure(new Uint8Array([0])),     // Option::none<String> for icon_url
-          tx.object(SUI_CLOCK_ID),
-        ],
-      });
-
-      signAndExecutePanel(
-        { transaction: tx },
-        {
-          onSuccess: () => { showMsg('Update queued! Executes in 24h ⏳'); setBusy(false); },
-          onError: (err) => { showMsg(err.message || 'Failed', true); setBusy(false); },
-        }
-      );
-    } catch (err) {
-      showMsg(err.message || 'Failed', true);
-      setBusy(false);
+  // Queue social links / description update
+  // V6 (testnet): localStorage override — no on-chain call needed
+  // V4/V5: would call queue_metadata_update (not implemented for testnet, use localStorage)
+  const handleQueueLinks = () => {
+    if (!links.desc && !links.twitter && !links.telegram && !links.website) {
+      showMsg('Fill in at least one field', true); return;
     }
+    const key = `suipump_links_${curveId}`;
+    const override = {
+      updatedAt: Date.now(),
+      desc:      links.desc.trim()     || null,
+      twitter:   links.twitter.trim()  || null,
+      telegram:  links.telegram.trim() || null,
+      website:   links.website.trim()  || null,
+      dex:       links.dex             || 'cetus',
+    };
+    localStorage.setItem(key, JSON.stringify(override));
+    showMsg('Links updated! ✅');
+    setTimeout(() => window.location.reload(), 1200);
   };
 
   // Queue full metadata update (name/symbol/desc/icon)
@@ -329,7 +296,7 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
       {tab === 'links' && (
         <div className="space-y-2.5">
           <div className="text-[9px] font-mono text-white/25">
-            {'Update social links — queued on-chain with 24h timelock'}
+            {'Update your social links — saved instantly'}
           </div>
           <textarea
             value={links.desc}
@@ -383,7 +350,7 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
                 : 'bg-lime-400/10 border border-lime-400/30 text-lime-400 hover:bg-lime-400/20'
             }`}
           >
-            {busy ? 'QUEUEING…' : 'QUEUE LINKS UPDATE (24H)'}
+            {busy ? 'SAVING…' : 'UPDATE LINKS'}
           </button>
         </div>
       )}
@@ -923,18 +890,27 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   const graduated      = curveState?.graduated ?? false;
   const creatorFeesMist = curveState ? BigInt(curveState.creator_fees ?? 0) : 0n;
 
-  // Apply localStorage metadata overrides (testnet only — v7 will be on-chain)
+  // Apply localStorage overrides (testnet only — v7 will be on-chain)
   const _metaOverride = (() => {
     try { return JSON.parse(localStorage.getItem(`suipump_meta_${curveId}`) || '{}'); }
+    catch { return {}; }
+  })();
+  const _linksOverride = (() => {
+    try { return JSON.parse(localStorage.getItem(`suipump_links_${curveId}`) || '{}'); }
     catch { return {}; }
   })();
 
   const name   = _metaOverride.name   || curveCreatedData?.name   || metadata?.name   || '';
   const symbol = _metaOverride.symbol || curveCreatedData?.symbol || metadata?.symbol || '';
 
-  const _rawDesc = (_metaOverride.description || metadata?.description || '').trim();
+  const _rawDesc = (_metaOverride.description || _linksOverride.desc || metadata?.description || '').trim();
   const rawDesc  = isPlaceholderDesc(_rawDesc) ? '' : _rawDesc;
-  const { desc, twitter, telegram, website, dex } = parseDescription(rawDesc);
+  const _parsed  = parseDescription(rawDesc);
+  const desc     = _parsed.desc;
+  const twitter  = _linksOverride.twitter  || _parsed.twitter;
+  const telegram = _linksOverride.telegram || _parsed.telegram;
+  const website  = _linksOverride.website  || _parsed.website;
+  const dex      = _linksOverride.dex      || _parsed.dex;
 
   // Override iconUrl from localStorage if set
   const _overrideIcon = _metaOverride.iconUrl || null;
