@@ -1235,12 +1235,14 @@ function TokenPageWrapper({ lang }) {
         const obj = await client.getObject({ id: curveId, options: { showContent: true, showType: true } });
         if (cancelled) return;
         const typeStr = obj.data?.type ?? '';
-        const match = typeStr.match(/Curve<(.+)>$/);
-        if (match) {
-          const fullTokenType = match[1];
+        // typeStr = "0xPKG::bonding_curve::Curve<0xTEMPLATE::module::TOKEN>"
+        // Extract bonding curve package ID from the outer type (before ::bonding_curve)
+        const outerPkgMatch = typeStr.match(/^(0x[0-9a-fA-F]+)::bonding_curve::Curve/);
+        const innerMatch = typeStr.match(/Curve<(.+)>$/);
+        if (innerMatch) {
+          const fullTokenType = innerMatch[1];
           setTokenType(fullTokenType);
-          const pkgMatch = fullTokenType.match(/^(0x[0-9a-fA-F]+)::/);
-          if (pkgMatch) setPackageId(pkgMatch[1]);
+          if (outerPkgMatch) setPackageId(outerPkgMatch[1]);
         } else {
           setError('Could not determine token type');
         }
