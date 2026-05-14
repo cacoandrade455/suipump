@@ -3,9 +3,8 @@
 //
 // Flow:
 //   1. Reads the curve object to confirm it's graduated
-//   2. Reads the graduation_target from the encoded description metadata
-//   3. Claims the pool SUI + LP tokens via claim_graduation_funds()
-//   4. Routes to either graduateToCetus() or graduateToDeepBook()
+//   2. Reads graduation_target from on-chain field (v5/v6) or description (v4)
+//   3. Routes to either graduateToCetus() or graduateToDeepBook()
 //
 // Usage:
 //   node graduate.js <CURVE_ID>
@@ -21,13 +20,17 @@
 import { Transaction } from '@mysten/sui/transactions';
 import { client, loadKeypair, PACKAGE_ID, ADMIN_CAP_ID, fmtSui } from './config.js';
 
-// ── Mainnet DEX constants ─────────────────────────────────────────────────────
-// These are mainnet addresses. For testnet DeepBook, the SDK resolves them
-// automatically via env: 'testnet'. Cetus has no testnet deployment.
+// ── Known package IDs ─────────────────────────────────────────────────────────
+const PACKAGE_ID_V4 = '0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8';
+const PACKAGE_ID_V5 = '0x785c0604cb6c60a8547501e307d2b0ca7a586ff912c8abff4edfb88db65b7236';
+const PACKAGE_ID_V6 = '0x21d5b1284d5f1d4d14214654f414ffca20c757ee9f9db7701d3ffaaac62cd768';
 
+// graduation_target values (v5/v6)
+const GRAD_TARGET_CETUS    = 0;
+const GRAD_TARGET_DEEPBOOK = 1;
+
+// ── Mainnet DEX constants ─────────────────────────────────────────────────────
 const CETUS = {
-  // Cetus CLMM package and shared objects (mainnet)
-  // Source: https://github.com/CetusProtocol/cetus-clmm-interface
   CLMM_PACKAGE:   '0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb',
   GLOBAL_CONFIG:  '0xdaa46292632c3c4d8f31f23ea0f9b36a28ff3677e9684980e4438403a67a3d8f',
   POOLS_REGISTRY: '0xf699e7f2276f5c9a75944b37a0c5b5d9ddfd2471bf6242483b03ab2887d198d0',
@@ -35,8 +38,7 @@ const CETUS = {
 };
 
 // ── Arg parsing ───────────────────────────────────────────────────────────────
-
-const args = process.argv.slice(2);
+const args    = process.argv.slice(2);
 const curveId = args[0];
 
 if (!curveId || !curveId.startsWith('0x')) {
@@ -51,6 +53,7 @@ const dexOverride = (() => {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+// v4: dex stored in description via || delimiter
 function parseDexFromDescription(description) {
   if (!description) return 'cetus';
   const idx = description.indexOf('||');
@@ -63,13 +66,31 @@ function parseDexFromDescription(description) {
   }
 }
 
+// Resolve DEX from curve fields — v5/v6 have graduation_target on-chain
+function resolveDex(fields, descriptionDex) {
+  // v5/v6: graduation_target is a u8 field directly on the curve struct
+  if (fields.graduation_target !== undefined && fields.graduation_target !== null) {
+    const target = Number(fields.graduation_target);
+    return target === GRAD_TARGET_DEEPBOOK ? 'deepbook' : 'cetus';
+  }
+  // v4: fall back to description parsing
+  return descriptionDex || 'cetus';
+}
+
+// Determine which package this curve belongs to from its type string
+function resolvePackageId(typeStr) {
+  if (typeStr?.includes(PACKAGE_ID_V6)) return PACKAGE_ID_V6;
+  if (typeStr?.includes(PACKAGE_ID_V5)) return PACKAGE_ID_V5;
+  if (typeStr?.includes(PACKAGE_ID_V4)) return PACKAGE_ID_V4;
+  return PACKAGE_ID; // active package fallback
+}
+
 async function getSharedVersion(objectId) {
   const obj = await client.getObject({ id: objectId, options: { showOwner: true } });
   return obj.data?.owner?.Shared?.initial_shared_version;
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
-
 const keypair = loadKeypair();
 const address = keypair.toSuiAddress();
 
@@ -91,8 +112,10 @@ if (curveRes.error || !curveRes.data?.content?.fields) {
   process.exit(1);
 }
 
-const fields = curveRes.data.content.fields;
-const tokenType = curveRes.data.type?.match(/Curve<(.+)>$/)?.[1];
+const fields    = curveRes.data.content.fields;
+const typeStr   = curveRes.data.type ?? '';
+const tokenType = typeStr.match(/Curve<(.+)>$/)?.[1];
+const pkgId     = resolvePackageId(typeStr);
 
 if (!tokenType) {
   console.error('❌ Could not parse token type from curve');
@@ -101,8 +124,15 @@ if (!tokenType) {
 
 console.log(`  token:     ${fields.name} ($${fields.symbol})`);
 console.log(`  type:      ${tokenType}`);
+console.log(`  package:   ${pkgId}`);
 console.log(`  graduated: ${fields.graduated}`);
 console.log(`  pool SUI:  ${fmtSui(fields.sui_reserve)}`);
+
+// Show graduation_target if v5/v6
+if (fields.graduation_target !== undefined) {
+  const targetLabel = Number(fields.graduation_target) === GRAD_TARGET_DEEPBOOK ? 'DeepBook' : 'Cetus';
+  console.log(`  target:    ${targetLabel} (on-chain field)`);
+}
 console.log();
 
 if (!fields.graduated) {
@@ -116,184 +146,84 @@ if (poolSuiAmount === 0n) {
   process.exit(1);
 }
 
-// Step 2: Read coin metadata to get description → dex choice
+// Step 2: Resolve DEX — on-chain field takes priority over description
 let dex = dexOverride;
 if (!dex) {
+  let descDex = 'cetus';
   try {
     const meta = await client.getCoinMetadata({ coinType: tokenType });
-    dex = parseDexFromDescription(meta?.description || '');
-  } catch {
-    dex = 'cetus';
-  }
+    descDex = parseDexFromDescription(meta?.description || '');
+  } catch {}
+  dex = resolveDex(fields, descDex);
 }
 
-console.log(`  dex target: ${dex.toUpperCase()}${dexOverride ? ' (overridden)' : ' (from metadata)'}`);
+const source = dexOverride ? 'overridden via CLI' :
+  (fields.graduation_target !== undefined ? 'on-chain graduation_target' : 'description metadata');
+
+console.log(`  dex target: ${dex.toUpperCase()} (${source})`);
 console.log();
 
-// Step 3: Route to the correct graduation function
+// Step 3: Route
 if (dex === 'deepbook') {
-  await graduateToDeepBook({ curveId, tokenType, fields, poolSuiAmount, address, keypair });
+  await graduateToDeepBook({ curveId, tokenType, fields, poolSuiAmount, address, keypair, pkgId });
 } else {
-  await graduateToCetus({ curveId, tokenType, fields, poolSuiAmount, address, keypair });
+  await graduateToCetus({ curveId, tokenType, fields, poolSuiAmount, address, keypair, pkgId });
 }
 
-// ── Cetus graduation ──────────────────────────────────────────────────────────
-//
-// Architecture (50/50 LP split per handoff session 18):
-//   - Pool SUI split in half: ~half to creator LP, ~half to protocol LP
-//   - 200M LP tokens split in half: 100M to each position
-//   - Creator LP NFT transferred to curve.creator
-//   - Protocol LP NFT held by admin wallet
-//
-// PTB outline (mainnet only — Cetus has no testnet):
-//   Tx 1: claim_graduation_funds(AdminCap, curve) → poolSuiCoin
-//         Claim LP tokens from creator wallet (they were transferred in graduate())
-//   Tx 2: open_position(clmm_pool, price_lower, price_upper) → position_nft_creator
-//         add_liquidity(position_nft_creator, sui_half, token_half_creator)
-//         open_position(clmm_pool, ...) → position_nft_protocol
-//         add_liquidity(position_nft_protocol, sui_half, token_half_protocol)
-//         transfer position_nft_creator → curve.creator
-//         keep position_nft_protocol in admin wallet
-
-async function graduateToCetus({ curveId, tokenType, fields, poolSuiAmount, address, keypair }) {
+// ── Cetus graduation (stub — mainnet only) ────────────────────────────────────
+async function graduateToCetus({ curveId, tokenType, fields, poolSuiAmount, address, keypair, pkgId }) {
   console.log('  🌊 Graduating to Cetus CLMM…');
+  console.log('  ⚠ STUB — implement before mainnet launch');
   console.log();
-
-  // TODO: Uncomment and fill in when building for mainnet
-  // Requires:
-  //   npm install @cetusprotocol/cetus-sui-clmm-sdk
-  //   Cetus CLMM interface: { git = "https://github.com/CetusProtocol/cetus-clmm-interface", subdir = "sui/clmm", rev = "mainnet-v1.49.0" }
-
-  console.log('  ⚠ STUB — Cetus graduation not yet implemented');
-  console.log('  This function will:');
-  console.log('    1. Call claim_graduation_funds() to pull pool SUI from curve');
+  console.log('  Will:');
+  console.log('    1. claim_graduation_funds() → pool SUI');
   console.log('    2. Collect 200M LP tokens from creator wallet');
-  console.log('    3. Split SUI 50/50 and tokens 50/50');
-  console.log('    4. Open two Cetus CLMM positions (full range)');
-  console.log('    5. Add liquidity to both positions');
-  console.log('    6. Transfer creator LP NFT → curve.creator');
-  console.log('    7. Keep protocol LP NFT in admin wallet');
+  console.log('    3. Split 50/50 SUI + tokens');
+  console.log('    4. Open two Cetus CLMM full-range positions');
+  console.log('    5. Transfer creator LP NFT → curve.creator');
   console.log();
-  console.log('  Cetus constants needed:');
-  console.log(`    CLMM_PACKAGE:   ${CETUS.CLMM_PACKAGE}`);
-  console.log(`    GLOBAL_CONFIG:  ${CETUS.GLOBAL_CONFIG}`);
-  console.log(`    POOLS_REGISTRY: ${CETUS.POOLS_REGISTRY}`);
-  console.log();
-  console.log('  ❌ Skipping — implement before mainnet launch');
+  console.log(`  Package to use: ${pkgId}`);
 
-  // ── When ready, implementation goes here ──────────────────────────────────
-  //
+  // ── Uncomment when implementing ───────────────────────────────────────────
   // const tx = new Transaction();
-  //
-  // // Claim pool SUI from curve
   // const curveSharedVersion = await getSharedVersion(curveId);
   // const curveRef = tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: curveSharedVersion, mutable: true });
   // const poolSuiCoin = tx.moveCall({
-  //   target: `${PACKAGE_ID}::bonding_curve::claim_graduation_funds`,
+  //   target: `${pkgId}::bonding_curve::claim_graduation_funds`,
   //   typeArguments: [tokenType],
   //   arguments: [tx.object(ADMIN_CAP_ID), curveRef],
   // });
-  //
-  // // Split SUI and tokens 50/50
-  // const halfSui = poolSuiAmount / 2n;
-  // const [suiForCreator] = tx.splitCoins(poolSuiCoin, [tx.pure.u64(halfSui)]);
-  // // suiForProtocol = remainder of poolSuiCoin
-  //
-  // // Collect LP tokens from creator wallet
-  // // ... (query owned Coin<T> objects for curve.creator address)
-  //
-  // // Open Cetus positions and add liquidity
-  // // ... (Cetus CLMM PTB calls)
-  //
-  // const result = await client.signAndExecuteTransaction({ signer: keypair, transaction: tx, options: { showEffects: true } });
-  // console.log(`  ✓ Graduated to Cetus! digest: ${result.digest}`);
+  // ... Cetus CLMM PTB calls
 }
 
-// ── DeepBook graduation ───────────────────────────────────────────────────────
-//
-// Architecture:
-//   - Create a BalanceManager (owned by admin, transferable to protocol multisig)
-//   - Deposit token + SUI into BalanceManager
-//   - Create a new DeepBook pool for TOKEN/SUI pair
-//   - Place limit orders spanning a wide price range (market making)
-//   - Transfer BalanceManager ownership to curve.creator (or split per 50/50 design)
-//
-// Key difference from Cetus: no LP NFT, no passive fee accrual.
-// Creator gets BalanceManager ownership — they can withdraw/manage orders.
-//
-// Uses @mysten/deepbook-v3 SDK which handles testnet/mainnet addresses
-// automatically via env parameter.
-
-async function graduateToDeepBook({ curveId, tokenType, fields, poolSuiAmount, address, keypair }) {
+// ── DeepBook graduation (stub) ────────────────────────────────────────────────
+async function graduateToDeepBook({ curveId, tokenType, fields, poolSuiAmount, address, keypair, pkgId }) {
   console.log('  ⚡ Graduating to DeepBook…');
+  console.log('  ⚠ STUB — implement before mainnet launch');
   console.log();
-
-  // TODO: Uncomment and fill in when building
-  // Requires:
-  //   npm install @mysten/deepbook-v3
-  //
-  // The DeepBookClient handles testnet vs mainnet package IDs automatically:
-  //   const dbClient = new DeepBookClient({ address, env: 'testnet', client });
-  //   const dbClient = new DeepBookClient({ address, env: 'mainnet', client });
-
-  console.log('  ⚠ STUB — DeepBook graduation not yet implemented');
-  console.log('  This function will:');
-  console.log('    1. Call claim_graduation_funds() to pull pool SUI from curve');
+  console.log('  Will:');
+  console.log('    1. claim_graduation_funds() → pool SUI');
   console.log('    2. Collect 200M LP tokens from creator wallet');
-  console.log('    3. Create a BalanceManager for the token pair');
-  console.log('    4. Deposit TOKEN + SUI into the BalanceManager');
-  console.log('    5. Create a new DeepBook pool for TOKEN/SUI');
-  console.log('       (requires DEEP tokens for pool creation fee — see note below)');
-  console.log('    6. Place limit orders across a wide price range');
-  console.log('    7. Transfer BalanceManager ownership to curve.creator');
+  console.log('    3. Mid-PTB SUI → DEEP swap for pool creation fee');
+  console.log('    4. Create BalanceManager');
+  console.log('    5. Create DeepBook TOKEN/SUI pool');
+  console.log('    6. Deposit TOKEN + SUI into BalanceManager');
+  console.log('    7. Transfer BalanceManager → curve.creator');
   console.log();
-  console.log('  ⚠ DEEP token requirement:');
-  console.log('    Pool creation on DeepBook requires DEEP tokens for fees.');
-  console.log('    Planned solution: mid-PTB swap (SUI → DEEP on DeepBook DEEP/SUI pool)');
-  console.log('    before calling createPool, so creator never needs to hold DEEP.');
-  console.log();
-  console.log('  Testnet: use env: "testnet" in DeepBookClient constructor');
-  console.log('  Mainnet: use env: "mainnet" in DeepBookClient constructor');
-  console.log('  Same code works for both — SDK resolves addresses automatically.');
-  console.log();
-  console.log('  ❌ Skipping — implement before mainnet launch');
+  console.log(`  Package to use: ${pkgId}`);
+  console.log('  Use env: "testnet" or "mainnet" in DeepBookClient constructor');
 
-  // ── When ready, implementation goes here ──────────────────────────────────
-  //
+  // ── Uncomment when implementing ───────────────────────────────────────────
   // import { DeepBookClient } from '@mysten/deepbook-v3';
-  //
-  // const env = 'testnet'; // or 'mainnet'
+  // const env = 'testnet';
   // const dbClient = new DeepBookClient({ address, env, client });
-  //
   // const tx = new Transaction();
-  //
-  // // Claim pool SUI from curve
   // const curveSharedVersion = await getSharedVersion(curveId);
   // const curveRef = tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: curveSharedVersion, mutable: true });
   // const poolSuiCoin = tx.moveCall({
-  //   target: `${PACKAGE_ID}::bonding_curve::claim_graduation_funds`,
+  //   target: `${pkgId}::bonding_curve::claim_graduation_funds`,
   //   typeArguments: [tokenType],
   //   arguments: [tx.object(ADMIN_CAP_ID), curveRef],
   // });
-  //
-  // // Step 1: Swap some SUI → DEEP to pay pool creation fee (mid-PTB)
-  // // ... (DeepBook swap call on DEEP/SUI pool)
-  //
-  // // Step 2: Create BalanceManager
-  // // const balanceManager = dbClient.createBalanceManager(tx);
-  //
-  // // Step 3: Deposit TOKEN + SUI
-  // // dbClient.depositIntoManager(tx, balanceManager, poolSuiCoin, tokenCoin);
-  //
-  // // Step 4: Create pool
-  // // dbClient.createPool(tx, { baseCoin: tokenType, quoteCoin: '0x2::sui::SUI', ... });
-  //
-  // // Step 5: Place orders across price range
-  // // ... (limit order placements)
-  //
-  // // Step 6: Transfer BalanceManager to creator
-  // // tx.transferObjects([balanceManager], fields.creator);
-  //
-  // const result = await client.signAndExecuteTransaction({ signer: keypair, transaction: tx, options: { showEffects: true } });
-  // console.log(`  ✓ Graduated to DeepBook! digest: ${result.digest}`);
+  // ... DeepBook PTB calls
 }
