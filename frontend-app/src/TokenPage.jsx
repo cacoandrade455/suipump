@@ -116,10 +116,11 @@ function isPlaceholderDesc(desc) {
 
 // Determine which package a token belongs to by checking its type string
 function getTokenPackageId(tokenType) {
-  if (!tokenType) return PACKAGE_ID;
+  if (!tokenType) return null; // null = unknown, caller must guard
   if (PACKAGE_ID_V5 && tokenType.startsWith(PACKAGE_ID_V5)) return PACKAGE_ID_V5;
   if (tokenType.startsWith(PACKAGE_ID_V4)) return PACKAGE_ID_V4;
-  return PACKAGE_ID;
+  // Unknown package — treat as v4 (no extra clock/referral args, safer)
+  return PACKAGE_ID_V4;
 }
 
 const SLIPPAGE_PRESETS = ['0.5', '1', '2', '5'];
@@ -129,8 +130,8 @@ const SLIPPAGE_PRESETS = ['0.5', '1', '2', '5'];
 function CreatorToolsPanel({ curveId, tokenType, account, curveState, currentDesc, currentTwitter, currentTelegram, currentWebsite, currentDex, lang }) {
   const client = useSuiClient();
   const { mutate: signAndExecutePanel } = useSignAndExecuteTransaction();
-  const pkgId = getTokenPackageId(tokenType);
-  const isV5Token = PACKAGE_ID_V5 && pkgId === PACKAGE_ID_V5;
+  const pkgId = getTokenPackageId(tokenType) ?? PACKAGE_ID_V4;
+  const isV5Token = !!(PACKAGE_ID_V5 && pkgId === PACKAGE_ID_V5);
 
   const [tab, setTab] = useState('links'); // 'links' | 'metadata'
   const [msg, setMsg] = useState('');
@@ -521,7 +522,7 @@ function TradePanelContent({
   const [showSlippage, setShowSlippage] = useState(false);
   const [customSlippage, setCustomSlippage] = useState('');
   const isPending = txStatus === 'pending';
-  const pkgId = getTokenPackageId(panelTokenType);
+  const pkgId = getTokenPackageId(panelTokenType) ?? PACKAGE_ID_V4;
 
   const slippageNum = parseFloat(slippage) || 0;
   const isCustom = !SLIPPAGE_PRESETS.includes(slippage);
@@ -1029,6 +1030,8 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
     if (!account || !curveState || !curveId || !tokenType) return;
     const amtFloat = parseFloat(amount);
     if (!amtFloat || amtFloat <= 0) return;
+    // Must know which package this token belongs to before firing tx
+    if (!pkgId) return;
 
     setTxStatus('pending');
     setTxMsg('');
@@ -1042,7 +1045,7 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
         : tx.object(curveId);
 
       const slippageNum = parseFloat(slippage) || 0;
-      const isV5 = PACKAGE_ID_V5 && pkgId === PACKAGE_ID_V5;
+      const isV5 = !!(PACKAGE_ID_V5 && pkgId === PACKAGE_ID_V5);
 
       if (side === 'buy') {
         const suiInMist = BigInt(Math.floor(amtFloat * Number(MIST_PER_SUI)));
