@@ -16,7 +16,7 @@ import PortfolioPage from './PortfolioPage.jsx';
 import RoadmapPage from './RoadmapPage.jsx';
 import StatsPage from './StatsPage.jsx';
 import { LANGUAGES, translations, t } from './i18n.js';
-import { PACKAGE_ID, DRAIN_SUI_APPROX, TOKEN_DECIMALS } from './constants.js';
+import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, DRAIN_SUI_APPROX, DRAIN_SUI_V4, DRAIN_SUI_V5, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, TOKEN_DECIMALS } from './constants.js';
 import { mistToSui, priceMistPerToken } from './curve.js';
 import { paginateEvents, paginateMultipleEvents } from './paginateEvents.js';
 import LiveFeedSidebar from './LiveFeedSidebar.jsx';
@@ -182,14 +182,19 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch
   const reserveMist = curveState ? BigInt(curveState.sui_reserve) : 0n;
   const tokensRemaining = curveState ? BigInt(curveState.token_reserve) : 0n;
   const tokensSold = BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS) - tokensRemaining;
-  const progress = Math.min(100, (mistToSui(reserveMist) / DRAIN_SUI_APPROX) * 100);
-  const priceMist = curveState ? priceMistPerToken(reserveMist, tokensSold) : 0n;
+  // Per-token virtual reserves — v5 tokens use different constants
+  const isV5Card = !!(PACKAGE_ID_V5 && token.packageId === PACKAGE_ID_V5);
+  const cardVSui   = isV5Card ? VIRTUAL_SUI_V5    : VIRTUAL_SUI_V4;
+  const cardVTok   = isV5Card ? VIRTUAL_TOKENS_V5 : VIRTUAL_TOKENS_V4;
+  const cardDrain  = isV5Card ? DRAIN_SUI_V5      : DRAIN_SUI_V4;
+  const progress = Math.min(100, (mistToSui(reserveMist) / cardDrain) * 100);
+  const priceMist = curveState ? priceMistPerToken(reserveMist, tokensSold, cardVSui, cardVTok) : 0n;
   const graduated = curveState?.graduated ?? false;
   const pricePerWhole = Number(priceMist) / 1e9;
   const marketCapSui = pricePerWhole * TOTAL_SUPPLY_WHOLE;
   const isTrending = stats?.recentTrades >= 3;
   const isNew = token.timestamp && (Date.now() - token.timestamp) < 30 * 60 * 1000;
-  const suiUntilGrad = Math.max(0, DRAIN_SUI_APPROX - mistToSui(reserveMist));
+  const suiUntilGrad = Math.max(0, cardDrain - mistToSui(reserveMist));
 
   // Social links  -  twitter/telegram parsed from description via || delimiter
   const description = curveState?.description || '';
@@ -938,7 +943,10 @@ function CrownBanner({ token, stats, suiUsd }) {
   const tokensRemaining = curveState ? BigInt(curveState.token_reserve) : 0n;
   const tokensSold = BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS) - tokensRemaining;
   const progress = Math.min(100, (mistToSui(reserveMist) / DRAIN_SUI_APPROX) * 100);
-  const priceMist = curveState ? priceMistPerToken(reserveMist, tokensSold) : 0n;
+  const isV5Card2 = !!(PACKAGE_ID_V5 && token?.packageId === PACKAGE_ID_V5);
+  const card2VSui = isV5Card2 ? VIRTUAL_SUI_V5 : VIRTUAL_SUI_V4;
+  const card2VTok = isV5Card2 ? VIRTUAL_TOKENS_V5 : VIRTUAL_TOKENS_V4;
+  const priceMist = curveState ? priceMistPerToken(reserveMist, tokensSold, card2VSui, card2VTok) : 0n;
   const mcapSui = (Number(priceMist) / 1e9) * TOTAL_SUPPLY_WHOLE;
 
   return (
@@ -1038,7 +1046,10 @@ function HomePage({ onLaunch, lang = 'en' }) {
           if (!fields) return;
           const curveId   = tokens[i].curveId;
           const reserveSui = Number(BigInt(fields.sui_reserve ?? 0)) / 1e9;
-          const progress   = Math.min(100, (reserveSui / 35000) * 100);
+          // Use per-token drain threshold for progress
+          const tokenPkgId  = tokens.find(t => t.curveId === curveId)?.packageId;
+          const tokenDrain  = (PACKAGE_ID_V5 && tokenPkgId === PACKAGE_ID_V5) ? DRAIN_SUI_V5 : DRAIN_SUI_V4;
+          const progress   = Math.min(100, (reserveSui / tokenDrain) * 100);
           map[curveId] = { reserveSui, progress, lastTradeTime: lastTradeTimes[curveId] || 0 };
         });
         setCurveStates(map);
