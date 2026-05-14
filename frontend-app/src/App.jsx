@@ -16,7 +16,7 @@ import PortfolioPage from './PortfolioPage.jsx';
 import RoadmapPage from './RoadmapPage.jsx';
 import StatsPage from './StatsPage.jsx';
 import { LANGUAGES, translations, t } from './i18n.js';
-import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, DRAIN_SUI_APPROX, DRAIN_SUI_V4, DRAIN_SUI_V5, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, TOKEN_DECIMALS } from './constants.js';
+import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, DRAIN_SUI_APPROX, DRAIN_SUI_V4, DRAIN_SUI_V5, DRAIN_SUI_V6, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_SUI_V6, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, VIRTUAL_TOKENS_V6, TOKEN_DECIMALS, isNewCurve } from './constants.js';
 import { mistToSui, priceMistPerToken } from './curve.js';
 import { paginateEvents, paginateMultipleEvents } from './paginateEvents.js';
 import LiveFeedSidebar from './LiveFeedSidebar.jsx';
@@ -183,10 +183,10 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch
   const tokensRemaining = curveState ? BigInt(curveState.token_reserve) : 0n;
   const tokensSold = BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS) - tokensRemaining;
   // Per-token virtual reserves — v5 tokens use different constants
-  const isV5Card = !!(PACKAGE_ID_V5 && token.packageId === PACKAGE_ID_V5);
-  const cardVSui   = isV5Card ? VIRTUAL_SUI_V5    : VIRTUAL_SUI_V4;
-  const cardVTok   = isV5Card ? VIRTUAL_TOKENS_V5 : VIRTUAL_TOKENS_V4;
-  const cardDrain  = isV5Card ? DRAIN_SUI_V5      : DRAIN_SUI_V4;
+  const isNewCurveCard = isNewCurve(token.packageId);
+  const cardVSui   = isNewCurveCard ? VIRTUAL_SUI_V5    : VIRTUAL_SUI_V4;
+  const cardVTok   = isNewCurveCard ? VIRTUAL_TOKENS_V5 : VIRTUAL_TOKENS_V4;
+  const cardDrain  = isNewCurveCard ? DRAIN_SUI_V5      : DRAIN_SUI_V4;
   const progress = Math.min(100, (mistToSui(reserveMist) / cardDrain) * 100);
   const priceMist = curveState ? priceMistPerToken(reserveMist, tokensSold, cardVSui, cardVTok) : 0n;
   const graduated = curveState?.graduated ?? false;
@@ -943,9 +943,9 @@ function CrownBanner({ token, stats, suiUsd }) {
   const tokensRemaining = curveState ? BigInt(curveState.token_reserve) : 0n;
   const tokensSold = BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS) - tokensRemaining;
   const progress = Math.min(100, (mistToSui(reserveMist) / DRAIN_SUI_APPROX) * 100);
-  const isV5Card2 = !!(PACKAGE_ID_V5 && token?.packageId === PACKAGE_ID_V5);
-  const card2VSui = isV5Card2 ? VIRTUAL_SUI_V5 : VIRTUAL_SUI_V4;
-  const card2VTok = isV5Card2 ? VIRTUAL_TOKENS_V5 : VIRTUAL_TOKENS_V4;
+  const isNewCurveCard2 = isNewCurve(token?.packageId);
+  const card2VSui = isNewCurveCard2 ? VIRTUAL_SUI_V5 : VIRTUAL_SUI_V4;
+  const card2VTok = isNewCurveCard2 ? VIRTUAL_TOKENS_V5 : VIRTUAL_TOKENS_V4;
   const priceMist = curveState ? priceMistPerToken(reserveMist, tokensSold, card2VSui, card2VTok) : 0n;
   const mcapSui = (Number(priceMist) / 1e9) * TOTAL_SUPPLY_WHOLE;
 
@@ -1048,7 +1048,7 @@ function HomePage({ onLaunch, lang = 'en' }) {
           const reserveSui = Number(BigInt(fields.sui_reserve ?? 0)) / 1e9;
           // Use per-token drain threshold for progress
           const tokenPkgId  = tokens.find(t => t.curveId === curveId)?.packageId;
-          const tokenDrain  = (PACKAGE_ID_V5 && tokenPkgId === PACKAGE_ID_V5) ? DRAIN_SUI_V5 : DRAIN_SUI_V4;
+          const tokenDrain  = isNewCurve(tokenPkgId) ? DRAIN_SUI_V5 : DRAIN_SUI_V4;
           const progress   = Math.min(100, (reserveSui / tokenDrain) * 100);
           map[curveId] = { reserveSui, progress, lastTradeTime: lastTradeTimes[curveId] || 0 };
         });
