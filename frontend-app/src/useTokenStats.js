@@ -1,12 +1,13 @@
-// useTokenStats.js  v16-holdercount
+// useTokenStats.js  v17-dual-package
 // Per-token stats computed from on-chain events + holder count via coin query.
+// Queries events from ALL package IDs (v4 + v5) via paginateMultipleEvents.
 // Returns map: { [curveId]: { volume, trades, reserveSui, pctChange, recentTrades,
 //   lastTradeTime, lastPrice, firstPrice, volume24h, commentCount, devBuyMist,
 //   sparkline24h, holderCount } }
 
 import { useState, useEffect, useRef } from 'react';
 import { useSuiClient } from '@mysten/dapp-kit';
-import { PACKAGE_ID } from './constants.js';
+import { ALL_PACKAGE_IDS } from './constants.js';
 import { paginateMultipleEvents } from './paginateEvents.js';
 
 const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
@@ -16,13 +17,10 @@ const ONE_HOUR_MS  = 60 * 60 * 1000;
 const ONE_DAY_MS   = 24 * 60 * 60 * 1000;
 
 // Count unique non-zero holders for a given coin type.
-// Uses getAllCoins with cursor pagination. Returns a number.
 async function fetchHolderCount(client, coinType) {
   const holders = new Set();
   let cursor = null;
-  let pages = 0;
-  // Safety cap: max 20 pages (each page ~50 objects) = 1000 coin objects
-  // More than enough for testnet; revisit with indexer on mainnet
+  let pages  = 0;
   while (pages < 20) {
     let result;
     try {
@@ -31,15 +29,8 @@ async function fetchHolderCount(client, coinType) {
       break;
     }
     for (const coin of result.data) {
-      // Only count wallets with a non-zero balance
       if (coin.balance && coin.balance !== '0') {
-        holders.add(coin.previousTransaction
-          ? coin.coinObjectId // unique object per owner address isn't exposed; use owner
-          : coin.coinObjectId
-        );
-        // getOwner not directly on coin objects from getAllCoins —
-        // we count unique coinObjectIds as a lower bound, then dedupe by
-        // querying owner field if present
+        holders.add(coin.coinObjectId);
         if (coin.owner) {
           const ownerAddr =
             typeof coin.owner === 'string'
@@ -58,12 +49,11 @@ async function fetchHolderCount(client, coinType) {
 
 export function useTokenStats(tokens) {
   const client = useSuiClient();
-  const [stats, setStats] = useState({});
-  // holderCounts stored separately so they merge without clobbering event stats
-  const holderCountsRef = useRef({});
-  const prevTokenIds = useRef('');
+  const [stats, setStats]         = useState({});
+  const holderCountsRef           = useRef({});
+  const prevTokenIds              = useRef('');
 
-  // ── Main stats loop (events) — runs every 30s ───────────────────────────────
+  // ── Main stats loop — runs every 30s ────────────────────────────────────────
   useEffect(() => {
     if (!tokens || tokens.length === 0) return;
 
@@ -74,10 +64,13 @@ export function useTokenStats(tokens) {
     let cancelled = false;
 
     async function load() {
-      // Try indexer API first — returns all token stats in one call
+      // Try indexer first — single call covers all packages
       if (INDEXER_URL) {
         try {
-          const res = await fetch(`${INDEXER_URL}/tokens/stats`, { signal: AbortSignal.timeout(5000) });
+          const res = await fetch(
+            `${INDEXER_URL}/tokens/stats`,
+            { signal: AbortSignal.timeout(5000) }
+          );
           if (res.ok) {
             const indexerStats = await res.json();
             if (!cancelled) {
@@ -109,25 +102,30 @@ export function useTokenStats(tokens) {
           }
         } catch {}
       }
-      // Fall back to RPC pagination
+
+      // Fall back to RPC — query all event types across ALL package IDs
       try {
-        const buyType     = `${PACKAGE_ID}::bonding_curve::TokensPurchased`;
-        const sellType    = `${PACKAGE_ID}::bonding_curve::TokensSold`;
-        const commentType = `${PACKAGE_ID}::bonding_curve::CommentPosted`;
-        const createdType = `${PACKAGE_ID}::bonding_curve::CurveCreated`;
+        // Build event type list for every package version
+        const eventTypes = ALL_PACKAGE_IDS.flatMap(pkgId => [
+          `${pkgId}::bonding_curve::TokensPurchased`,
+          `${pkgId}::bonding_curve::TokensSold`,
+          `${pkgId}::bonding_curve::CommentPosted`,
+          `${pkgId}::bonding_curve::CurveCreated`,
+        ]);
 
         const eventMap = await paginateMultipleEvents(
           client,
-          [buyType, sellType, commentType, createdType],
+          eventTypes,
           { order: 'descending', maxPages: 100, pageSize: 100 }
         );
 
         if (cancelled) return;
 
-        const buysData     = eventMap[buyType]     || [];
-        const sellsData    = eventMap[sellType]    || [];
-        const commentsData = eventMap[commentType] || [];
-        const createdData  = eventMap[createdType] || [];
+        // Merge events across all package versions by type suffix
+        const buysData     = ALL_PACKAGE_IDS.flatMap(p => eventMap[`${p}::bonding_curve::TokensPurchased`]  || []);
+        const sellsData    = ALL_PACKAGE_IDS.flatMap(p => eventMap[`${p}::bonding_curve::TokensSold`]       || []);
+        const commentsData = ALL_PACKAGE_IDS.flatMap(p => eventMap[`${p}::bonding_curve::CommentPosted`]    || []);
+        const createdData  = ALL_PACKAGE_IDS.flatMap(p => eventMap[`${p}::bonding_curve::CurveCreated`]     || []);
 
         const now = Date.now();
         const map = {};
@@ -142,8 +140,6 @@ export function useTokenStats(tokens) {
               commentCount: 0,
               devBuyMist: 0,
               sparkline24h: [],
-              // holderCount seeded from last known value so card shows stale
-              // data rather than blank while the slow pass runs
               holderCount: holderCountsRef.current[curveId] ?? null,
             };
           }
@@ -154,11 +150,11 @@ export function useTokenStats(tokens) {
         for (const evt of buysData) {
           const j = evt.parsedJson;
           if (!j?.curve_id) continue;
-          const s = ensure(j.curve_id);
-          const suiIn = Number(j.sui_in ?? 0) / MIST_PER_SUI;
-          const ts = evt.timestampMs ? Number(evt.timestampMs) : 0;
-          s.volume  += suiIn;
-          s.trades  += 1;
+          const s      = ensure(j.curve_id);
+          const suiIn  = Number(j.sui_in ?? 0) / MIST_PER_SUI;
+          const ts     = evt.timestampMs ? Number(evt.timestampMs) : 0;
+          s.volume    += suiIn;
+          s.trades    += 1;
           if (ts && now - ts < ONE_HOUR_MS) s.recentTrades += 1;
           if (ts && now - ts < ONE_DAY_MS)  s.volume24h    += suiIn;
           if (ts && s.lastTradeTime === null) s.lastTradeTime = ts;
@@ -177,11 +173,11 @@ export function useTokenStats(tokens) {
         for (const evt of sellsData) {
           const j = evt.parsedJson;
           if (!j?.curve_id) continue;
-          const s = ensure(j.curve_id);
-          const suiOut = Number(j.sui_out ?? 0) / MIST_PER_SUI;
-          const ts = evt.timestampMs ? Number(evt.timestampMs) : 0;
-          s.volume  += suiOut;
-          s.trades  += 1;
+          const s       = ensure(j.curve_id);
+          const suiOut  = Number(j.sui_out ?? 0) / MIST_PER_SUI;
+          const ts      = evt.timestampMs ? Number(evt.timestampMs) : 0;
+          s.volume     += suiOut;
+          s.trades     += 1;
           if (ts && now - ts < ONE_HOUR_MS) s.recentTrades += 1;
           if (ts && now - ts < ONE_DAY_MS)  s.volume24h    += suiOut;
           if (ts && s.lastTradeTime === null) s.lastTradeTime = ts;
@@ -206,7 +202,6 @@ export function useTokenStats(tokens) {
             if (ts > latestTs) latestTs = ts;
           }
           s.lastTradeTime = latestTs || null;
-          // Sort sparkline oldest→newest
           s.sparkline24h.sort((a, b) => a.t - b.t);
         }
 
@@ -214,18 +209,15 @@ export function useTokenStats(tokens) {
         for (const evt of commentsData) {
           const j = evt.parsedJson;
           if (!j?.curve_id) continue;
-          const s = ensure(j.curve_id);
-          s.commentCount += 1;
+          ensure(j.curve_id).commentCount += 1;
         }
 
-        // ── Dev buy — from CurveCreated event ─────────────────────────────
+        // ── Dev buy ───────────────────────────────────────────────────────
         for (const evt of createdData) {
           const j = evt.parsedJson;
           if (!j?.curve_id) continue;
           const s = ensure(j.curve_id);
-          if (j.dev_buy_sui_in) {
-            s.devBuyMist = Number(j.dev_buy_sui_in);
-          }
+          if (j.dev_buy_sui_in) s.devBuyMist = Number(j.dev_buy_sui_in);
         }
 
         // ── % change ──────────────────────────────────────────────────────
@@ -248,28 +240,21 @@ export function useTokenStats(tokens) {
     return () => { cancelled = true; clearInterval(interval); };
   }, [tokens, client]);
 
-  // ── Holder count loop — runs every 60s, staggered 5s after mount ────────────
-  // Runs independently so it never blocks event stats from rendering.
-  // Results are merged into stats state via a functional update.
+  // ── Holder count loop — runs every 60s ──────────────────────────────────────
   useEffect(() => {
     if (!tokens || tokens.length === 0) return;
-
-    // Only tokens that have a tokenType can be queried
     const queryable = tokens.filter(t => t.tokenType);
     if (queryable.length === 0) return;
 
     let cancelled = false;
 
     async function loadHolders() {
-      // Process tokens one at a time to avoid hammering the RPC
       for (const token of queryable) {
         if (cancelled) return;
         try {
           const count = await fetchHolderCount(client, token.tokenType);
           if (cancelled) return;
-          // Cache in ref so next event-stats pass seeds from it
           holderCountsRef.current[token.curveId] = count;
-          // Merge into stats state without overwriting other fields
           setStats(prev => {
             if (!prev[token.curveId]) return prev;
             return {
@@ -278,15 +263,13 @@ export function useTokenStats(tokens) {
             };
           });
         } catch {
-          // Non-fatal — leave holderCount as whatever it was
+          // Non-fatal
         }
-        // Small delay between tokens to be polite to the RPC
         await new Promise(r => setTimeout(r, 300));
       }
     }
 
-    // Stagger 5s after mount so event stats render first
-    const initial = setTimeout(loadHolders, 5_000);
+    const initial  = setTimeout(loadHolders, 5_000);
     const interval = setInterval(loadHolders, 60_000);
     return () => { cancelled = true; clearTimeout(initial); clearInterval(interval); };
   }, [tokens, client]);
