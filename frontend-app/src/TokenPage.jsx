@@ -520,6 +520,7 @@ function TradePanelContent({
   account, onExecute, priceSui, priceUsd, suiUsd, symbol, graduated,
   suiBalance, tokenBalance,
   isCreator, creatorFeesMist, curveId: panelCurveId, tokenType: panelTokenType,
+  packageIdHint: panelPkgHint,
   curveState,
 }) {
   const { mutate: signAndExecutePanel } = useSignAndExecuteTransaction();
@@ -529,7 +530,7 @@ function TradePanelContent({
   const [showSlippage, setShowSlippage] = useState(false);
   const [customSlippage, setCustomSlippage] = useState('');
   const isPending = txStatus === 'pending';
-  const pkgId = getTokenPackageId(panelTokenType) ?? PACKAGE_ID_V4;
+  const pkgId = resolvePackageId(panelTokenType, panelPkgHint);
 
   const slippageNum = parseFloat(slippage) || 0;
   const isCustom = !SLIPPAGE_PRESETS.includes(slippage);
@@ -1311,6 +1312,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
             suiBalance={suiBalance} tokenBalance={tokenBalance}
             isCreator={isCreator} creatorFeesMist={creatorFeesMist}
             curveId={curveId} tokenType={tokenType}
+            packageIdHint={pkgId}
             curveState={curveState}
           />
 
