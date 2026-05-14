@@ -132,15 +132,20 @@ function getTokenPackageId(tokenType) {
   if (!tokenType) return null;
   if (PACKAGE_ID_V5 && tokenType.startsWith(PACKAGE_ID_V5)) return PACKAGE_ID_V5;
   if (tokenType.startsWith(PACKAGE_ID_V4)) return PACKAGE_ID_V4;
-  return PACKAGE_ID_V4;
+  return null; // unrecognized — let resolvePackageId use the hint
 }
 
-// Derive package ID — use tokenType if available, fall back to packageIdHint prop
+// Derive package ID — tokenType wins if recognized, else use packageIdHint from App
 function resolvePackageId(tokenType, packageIdHint) {
   const fromType = getTokenPackageId(tokenType);
   if (fromType) return fromType;
-  if (packageIdHint) return packageIdHint;
-  return PACKAGE_ID; // last resort — active package
+  // packageIdHint is extracted from the curve object type in App.jsx — always accurate
+  if (packageIdHint) {
+    if (PACKAGE_ID_V5 && packageIdHint === PACKAGE_ID_V5) return PACKAGE_ID_V5;
+    if (packageIdHint === PACKAGE_ID_V4) return PACKAGE_ID_V4;
+    return packageIdHint; // future versions
+  }
+  return PACKAGE_ID_V4; // safe fallback — v4 never needs extra args
 }
 
 const SLIPPAGE_PRESETS = ['0.5', '1', '2', '5'];
@@ -1078,7 +1083,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
           : 0n;
 
         const buyArgs = isV5
-          ? [curveRef, payment, tx.pure.u64(minOut), tx.pure(bcsOptionNone()), tx.object(SUI_CLOCK_ID)]
+          ? [curveRef, payment, tx.pure.u64(minOut), tx.pure.option('address', null), tx.object(SUI_CLOCK_ID)]
           : [curveRef, payment, tx.pure.u64(minOut)];
 
         const [tokens, refund] = tx.moveCall({
