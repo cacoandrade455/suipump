@@ -5,7 +5,7 @@
 
 import { useState, useEffect } from 'react';
 import { useSuiClient } from '@mysten/dapp-kit';
-import { ALL_PACKAGE_IDS, PACKAGE_ID_V4, PACKAGE_ID_V5 } from './constants.js';
+import { ALL_PACKAGE_IDS, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, isV5OrLater } from './constants.js';
 import { paginateEvents } from './paginateEvents.js';
 
 export function useTokenList() {
@@ -49,7 +49,7 @@ export function useTokenList() {
 
         const list = allEvents.map((evt) => {
           const j = evt.parsedJson;
-          const isV5 = evt._pkgId === PACKAGE_ID_V5;
+          const isV5 = isV5OrLater(evt._pkgId);
           return {
             curveId:           j.curve_id,
             creator:           j.creator,

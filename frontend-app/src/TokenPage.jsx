@@ -10,7 +10,7 @@ import TradeHistory from './TradeHistory.jsx';
 import HolderList from './HolderList.jsx';
 import Comments from './Comments.jsx';
 import AIAnalysis from './AIAnalysis.jsx';
-import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, MIST_PER_SUI, DRAIN_SUI_APPROX, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, DRAIN_SUI_V4, DRAIN_SUI_V5 } from './constants.js';
+import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, MIST_PER_SUI, DRAIN_SUI_APPROX, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_SUI_V6, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, VIRTUAL_TOKENS_V6, DRAIN_SUI_V4, DRAIN_SUI_V5, DRAIN_SUI_V6, isNewCurve, isV5OrLater, supportsMetadataUpdate } from './constants.js';
 import { buyQuote, sellQuote } from './curve.js';
 import { t } from './i18n.js';
 
@@ -130,22 +130,23 @@ function isPlaceholderDesc(desc) {
 // Determine which package a token belongs to by checking its type string
 function getTokenPackageId(tokenType) {
   if (!tokenType) return null;
+  if (PACKAGE_ID_V6 && tokenType.startsWith(PACKAGE_ID_V6)) return PACKAGE_ID_V6;
   if (PACKAGE_ID_V5 && tokenType.startsWith(PACKAGE_ID_V5)) return PACKAGE_ID_V5;
   if (tokenType.startsWith(PACKAGE_ID_V4)) return PACKAGE_ID_V4;
-  return null; // unrecognized — let resolvePackageId use the hint
+  return null;
 }
 
 // Derive package ID — tokenType wins if recognized, else use packageIdHint from App
 function resolvePackageId(tokenType, packageIdHint) {
   const fromType = getTokenPackageId(tokenType);
   if (fromType) return fromType;
-  // packageIdHint is extracted from the curve object type in App.jsx — always accurate
   if (packageIdHint) {
+    if (PACKAGE_ID_V6 && packageIdHint === PACKAGE_ID_V6) return PACKAGE_ID_V6;
     if (PACKAGE_ID_V5 && packageIdHint === PACKAGE_ID_V5) return PACKAGE_ID_V5;
     if (packageIdHint === PACKAGE_ID_V4) return PACKAGE_ID_V4;
-    return packageIdHint; // future versions
+    return packageIdHint;
   }
-  return PACKAGE_ID_V4; // safe fallback — v4 never needs extra args
+  return PACKAGE_ID_V4;
 }
 
 const SLIPPAGE_PRESETS = ['0.5', '1', '2', '5'];
@@ -156,7 +157,8 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
   const client = useSuiClient();
   const { mutate: signAndExecutePanel } = useSignAndExecuteTransaction();
   const pkgId = resolvePackageId(tokenType, packageIdHint);
-  const isV5Token = !!(PACKAGE_ID_V5 && pkgId === PACKAGE_ID_V5);
+  const isV5Token = isV5OrLater(pkgId);
+  const isV6Token = !!(PACKAGE_ID_V6 && pkgId === PACKAGE_ID_V6);
 
   const [tab, setTab] = useState('links'); // 'links' | 'metadata'
   const [msg, setMsg] = useState('');
@@ -180,6 +182,154 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
   });
 
   // Pending metadata unlock time from on-chain curve state
+  // v6 has no pending_metadata — timelock removed
+  const pendingUnlocksAt = null;
+  const timelockExpired = false;
+  const timelockRemaining = 0;
+
+  const showMsg = (m, isError = false) => {
+    setMsg(m);
+    setTimeout(() => setMsg(''), 4000);
+  };
+
+  // Get CreatorCap for this curve
+  const getCapId = async () => {
+    const ownedObjs = await client.getOwnedObjects({
+      owner: account.address,
+      filter: { StructType: `${pkgId}::bonding_curve::CreatorCap` },
+      options: { showContent: true },
+    });
+    const capObj = ownedObjs.data?.find(o => o.data?.content?.fields?.curve_id === curveId)
+      ?? ownedObjs.data?.[0];
+    if (!capObj) throw new Error('CreatorCap not found in wallet');
+    return capObj.data?.objectId;
+  };
+
+  const getCurveRef = async (tx) => {
+    const objForRef = await client.getObject({ id: curveId, options: { showOwner: true } });
+    const initialSharedVersion = objForRef.data?.owner?.Shared?.initial_shared_version;
+    return initialSharedVersion
+      ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion, mutable: true })
+      : tx.object(curveId);
+  };
+
+  // Queue social links / description update via queue_metadata_update
+  const handleQueueLinks = async () => {
+    if (!account || busy) return;
+    setBusy(true);
+    try {
+      const capId    = await getCapId();
+      const tx       = new Transaction();
+      const curveRef = await getCurveRef(tx);
+
+      const newDesc = encodeDescription(links.desc, {
+        twitter: links.twitter, telegram: links.telegram,
+        website: links.website, dex: links.dex,
+      });
+
+      // queue_metadata_update(cap, curve, name, symbol, description, icon_url, clock)
+      // Only updating description — pass none for name/symbol/icon
+      tx.moveCall({
+        target: `${pkgId}::bonding_curve::queue_metadata_update`,
+        typeArguments: [tokenType],
+        arguments: [
+          tx.object(capId),
+          curveRef,
+          tx.pure(new Uint8Array([0])),     // Option::none<String> for name
+          tx.pure(new Uint8Array([0])),     // Option::none<String> for symbol
+          // Option::some<String> for description
+          (() => {
+            const enc = new TextEncoder().encode(newDesc);
+            const lenBytes = [];
+            let n = enc.length;
+            do { let b = n & 0x7f; n >>>= 7; if (n !== 0) b |= 0x80; lenBytes.push(b); } while (n !== 0);
+            const out = new Uint8Array(1 + lenBytes.length + enc.length);
+            out[0] = 1;
+            out.set(lenBytes, 1);
+            out.set(enc, 1 + lenBytes.length);
+            return tx.pure(out);
+          })(),
+          tx.pure(new Uint8Array([0])),     // Option::none<String> for icon_url
+          tx.object(SUI_CLOCK_ID),
+        ],
+      });
+
+      signAndExecutePanel(
+        { transaction: tx },
+        {
+          onSuccess: () => { showMsg('Update queued! Executes in 24h ⏳'); setBusy(false); },
+          onError: (err) => { showMsg(err.message || 'Failed', true); setBusy(false); },
+        }
+      );
+    } catch (err) {
+      showMsg(err.message || 'Failed', true);
+      setBusy(false);
+    }
+  };
+
+  // Queue full metadata update (name/symbol/desc/icon)
+  // V6: instant one-time metadata update within 24h of launch
+  const handleUpdateMetadata = async () => {
+    if (!account || busy) return;
+    if (!meta.name && !meta.symbol && !meta.description && !meta.iconUrl) {
+      showMsg('Fill in at least one field', true); return;
+    }
+    setBusy(true);
+    try {
+      const capId    = await getCapId();
+      const tx       = new Transaction();
+      const curveRef = await getCurveRef(tx);
+
+      // Get CoinMetadata object
+      const coinMeta = await client.getCoinMetadata({ coinType: tokenType });
+      if (!coinMeta?.id) throw new Error('CoinMetadata object not found');
+      const metaObj = await client.getObject({ id: coinMeta.id, options: { showOwner: true } });
+      const metaInitialVersion = metaObj.data?.owner?.Shared?.initial_shared_version;
+      const metaRef = metaInitialVersion
+        ? tx.sharedObjectRef({ objectId: coinMeta.id, initialSharedVersion: metaInitialVersion, mutable: true })
+        : tx.object(coinMeta.id);
+
+      // BCS Option<String>: 0x00=none, 0x01+uleb128(len)+bytes=some
+      const optionStr = (val) => {
+        if (!val || val.trim() === '') return tx.pure(new Uint8Array([0]));
+        const enc = new TextEncoder().encode(val.trim());
+        const lenBytes = [];
+        let n = enc.length;
+        do { let b = n & 0x7f; n >>>= 7; if (n !== 0) b |= 0x80; lenBytes.push(b); } while (n !== 0);
+        const out = new Uint8Array(1 + lenBytes.length + enc.length);
+        out[0] = 1; out.set(lenBytes, 1); out.set(enc, 1 + lenBytes.length);
+        return tx.pure(out);
+      };
+
+      tx.moveCall({
+        target: `${pkgId}::bonding_curve::update_metadata`,
+        typeArguments: [tokenType],
+        arguments: [
+          tx.object(capId),
+          curveRef,
+          metaRef,
+          optionStr(meta.name),
+          optionStr(meta.symbol),
+          optionStr(meta.description),
+          optionStr(meta.iconUrl),
+          tx.object(SUI_CLOCK_ID),
+        ],
+      });
+
+      signAndExecutePanel(
+        { transaction: tx },
+        {
+          onSuccess: () => { showMsg('Metadata updated! ✅'); setBusy(false); },
+          onError: (err) => { showMsg(err.message || 'Failed', true); setBusy(false); },
+        }
+      );
+    } catch (err) {
+      showMsg(err.message || 'Failed', true);
+      setBusy(false);
+    }
+  };
+
+    // Pending metadata unlock time from on-chain curve state
   const pendingUnlocksAt = curveState?.pending_metadata
     ? Number(curveState.pending_metadata?.fields?.unlocks_at ?? 0)
     : null;
@@ -387,7 +537,7 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
           <span className="text-[9px] font-mono tracking-widest text-lime-400/70">CREATOR TOOLS</span>
         </div>
         <div className="flex gap-1">
-          {['links', ...(isV5Token ? ['metadata'] : [])].map(t => (
+          {['links', ...(isV6Token ? ['metadata'] : [])].map(t => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -407,7 +557,7 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
       {tab === 'links' && (
         <div className="space-y-2.5">
           <div className="text-[9px] font-mono text-white/25">
-            {isV5Token ? 'Changes go live after 24h timelock' : 'Update social links (queued on-chain)'}
+            {'Update social links — queued on-chain with 24h timelock'}
           </div>
           <textarea
             value={links.desc}
@@ -461,60 +611,71 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
                 : 'bg-lime-400/10 border border-lime-400/30 text-lime-400 hover:bg-lime-400/20'
             }`}
           >
-            {busy ? 'QUEUEING…' : isV5Token ? 'QUEUE UPDATE (24H TIMELOCK)' : 'UPDATE LINKS'}
+            {busy ? 'QUEUEING…' : 'QUEUE LINKS UPDATE (24H)'}
           </button>
         </div>
       )}
 
       {/* Metadata Tab (v5 only) */}
-      {tab === 'metadata' && isV5Token && (
-        <div className="space-y-2.5">
-          <div className="text-[9px] font-mono text-white/25">
-            Queue on-chain name/symbol/icon update · 24h timelock before it applies
+      {tab === 'metadata' && isV6Token && (() => {
+        const windowClosesAt = curveState?.created_at_ms
+          ? Number(curveState.created_at_ms) + 24 * 60 * 60 * 1000 : 0;
+        const nowMs = Date.now();
+        const windowOpen = windowClosesAt > 0 && nowMs < windowClosesAt;
+        const hoursLeft = windowOpen ? Math.ceil((windowClosesAt - nowMs) / (1000 * 60 * 60)) : 0;
+        const alreadyUpdated = curveState?.metadata_updated === true;
+
+        return (
+          <div className="space-y-2.5">
+            {alreadyUpdated ? (
+              <div className="rounded-lg bg-white/5 border border-white/10 px-3 py-3 text-[9px] font-mono text-white/40 text-center">
+                ✅ Metadata already updated — one-time change used
+              </div>
+            ) : !windowOpen ? (
+              <div className="rounded-lg bg-white/5 border border-white/10 px-3 py-3 text-[9px] font-mono text-white/40 text-center">
+                🔒 24h update window has closed
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center justify-between">
+                  <div className="text-[9px] font-mono text-white/25">
+                    Instant · one-time only · {hoursLeft}h remaining
+                  </div>
+                  <div className="flex items-center gap-1 text-[9px] font-mono text-lime-400/60">
+                    <Clock size={9} />
+                    {hoursLeft}h left
+                  </div>
+                </div>
+                {[
+                  { key: 'name',        placeholder: 'New token name (optional)' },
+                  { key: 'symbol',      placeholder: 'NEW SYMBOL (optional)' },
+                  { key: 'description', placeholder: 'New description (optional)' },
+                  { key: 'iconUrl',     placeholder: 'https://i.imgur.com/... (optional)' },
+                ].map(({ key, placeholder }) => (
+                  <input
+                    key={key}
+                    value={meta[key]}
+                    onChange={e => setMeta(m => ({ ...m, [key]: e.target.value }))}
+                    placeholder={placeholder}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 transition-colors"
+                  />
+                ))}
+                <button
+                  onClick={handleUpdateMetadata}
+                  disabled={busy}
+                  className={`w-full py-2 rounded-lg text-[10px] font-mono font-bold transition-colors ${
+                    busy
+                      ? 'bg-white/5 text-white/20 cursor-not-allowed'
+                      : 'bg-lime-400 text-black hover:bg-lime-300'
+                  }`}
+                >
+                  {busy ? 'UPDATING…' : 'UPDATE NOW (INSTANT)'}
+                </button>
+              </>
+            )}
           </div>
-          {[
-            { key: 'name',        placeholder: 'New token name (optional)' },
-            { key: 'symbol',      placeholder: 'NEW SYMBOL (optional)' },
-            { key: 'description', placeholder: 'New description (optional)' },
-            { key: 'iconUrl',     placeholder: 'https://i.imgur.com/... (optional)' },
-          ].map(({ key, placeholder }) => (
-            <input
-              key={key}
-              value={meta[key]}
-              onChange={e => setMeta(m => ({ ...m, [key]: e.target.value }))}
-              placeholder={placeholder}
-              className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 transition-colors"
-            />
-          ))}
-          {/* Pending indicator */}
-          {pendingUnlocksAt && !timelockExpired && (
-            <div className="flex items-center gap-1.5 rounded-lg bg-white/5 border border-white/10 px-3 py-2">
-              <Clock size={10} className="text-white/40" />
-              <span className="text-[9px] font-mono text-white/40">Update queued — unlocks in ~{timelockRemaining}h</span>
-            </div>
-          )}
-          {pendingUnlocksAt && timelockExpired && (
-            <button
-              onClick={handleApplyMetadata}
-              disabled={busy}
-              className="w-full py-2 rounded-lg bg-lime-400/10 border border-lime-400/30 text-lime-400 text-[10px] font-mono hover:bg-lime-400/20 transition-colors"
-            >
-              {busy ? 'APPLYING…' : '✅ APPLY PENDING UPDATE NOW'}
-            </button>
-          )}
-          <button
-            onClick={handleQueueMetadata}
-            disabled={busy}
-            className={`w-full py-2 rounded-lg text-[10px] font-mono font-bold transition-colors ${
-              busy
-                ? 'bg-white/5 text-white/20 cursor-not-allowed'
-                : 'bg-lime-400/10 border border-lime-400/30 text-lime-400 hover:bg-lime-400/20'
-            }`}
-          >
-            {busy ? 'QUEUEING…' : 'QUEUE METADATA UPDATE (24H)'}
-          </button>
-        </div>
-      )}
+        );
+      })()}
 
       {msg && (
         <div className={`text-[10px] font-mono text-center ${msg.includes('✅') || msg.includes('⏳') || msg.includes('🎉') ? 'text-lime-400' : 'text-red-400'}`}>
@@ -930,7 +1091,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
     // Fetch CurveCreated event — try all package IDs
     (async () => {
       try {
-        const packageIds = [pkgId, ...(PACKAGE_ID_V5 && pkgId !== PACKAGE_ID_V5 ? [PACKAGE_ID_V5] : []), PACKAGE_ID_V4].filter(Boolean);
+        const packageIds = [pkgId, PACKAGE_ID_V5, PACKAGE_ID_V4].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i);
         let found = null;
         for (const pid of packageIds) {
           if (found) break;
@@ -973,7 +1134,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   // ── derived state ─────────────────────────────────────────────────────────
 
   const pkgId          = resolvePackageId(tokenType, packageIdHint);
-  const isV5Token      = !!(PACKAGE_ID_V5 && pkgId === PACKAGE_ID_V5);
+  const isV5Token      = isV5OrLater(pkgId);
   const vSui           = isV5Token ? VIRTUAL_SUI_V5    : VIRTUAL_SUI_V4;
   const vTok           = isV5Token ? VIRTUAL_TOKENS_V5 : VIRTUAL_TOKENS_V4;
   const drainSui       = isV5Token ? DRAIN_SUI_V5      : DRAIN_SUI_V4;
@@ -1072,7 +1233,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
         : tx.object(curveId);
 
       const slippageNum = parseFloat(slippage) || 0;
-      const isV5 = !!(PACKAGE_ID_V5 && pkgId === PACKAGE_ID_V5);
+      const isV5 = isV5OrLater(pkgId);
 
       if (side === 'buy') {
         const suiInMist = BigInt(Math.floor(amtFloat * Number(MIST_PER_SUI)));

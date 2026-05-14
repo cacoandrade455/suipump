@@ -7,7 +7,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { useSuiClient } from '@mysten/dapp-kit';
-import { ALL_PACKAGE_IDS } from './constants.js';
+import { ALL_PACKAGE_IDS } from './constants.js'; // ALL_PACKAGE_IDS includes v4, v5, v6
 import { paginateMultipleEvents } from './paginateEvents.js';
 
 const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
