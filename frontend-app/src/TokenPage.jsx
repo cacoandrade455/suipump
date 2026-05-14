@@ -268,65 +268,36 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
   };
 
   // Queue full metadata update (name/symbol/desc/icon)
-  // V6: instant one-time metadata update within 24h of launch
-  const handleUpdateMetadata = async () => {
-    if (!account || busy) return;
+  // V6 TESTNET: metadata overrides stored in localStorage only.
+  // On mainnet (v7) this will be replaced with a proper on-chain call.
+  const METADATA_STORE_KEY = `suipump_meta_${curveId}`;
+
+  const handleUpdateMetadata = () => {
     if (!meta.name && !meta.symbol && !meta.description && !meta.iconUrl) {
       showMsg('Fill in at least one field', true); return;
     }
-    setBusy(true);
-    try {
-      const capId    = await getCapId();
-      const tx       = new Transaction();
-      const curveRef = await getCurveRef(tx);
-
-      // Get CoinMetadata object
-      const coinMeta = await client.getCoinMetadata({ coinType: tokenType });
-      if (!coinMeta?.id) throw new Error('CoinMetadata object not found');
-      const metaObj = await client.getObject({ id: coinMeta.id, options: { showOwner: true } });
-      const metaInitialVersion = metaObj.data?.owner?.Shared?.initial_shared_version;
-      const metaRef = metaInitialVersion
-        ? tx.sharedObjectRef({ objectId: coinMeta.id, initialSharedVersion: metaInitialVersion, mutable: true })
-        : tx.object(coinMeta.id);
-
-      // BCS Option<String>: 0x00=none, 0x01+uleb128(len)+bytes=some
-      const optionStr = (val) => {
-        if (!val || val.trim() === '') return tx.pure(new Uint8Array([0]));
-        const enc = new TextEncoder().encode(val.trim());
-        const lenBytes = [];
-        let n = enc.length;
-        do { let b = n & 0x7f; n >>>= 7; if (n !== 0) b |= 0x80; lenBytes.push(b); } while (n !== 0);
-        const out = new Uint8Array(1 + lenBytes.length + enc.length);
-        out[0] = 1; out.set(lenBytes, 1); out.set(enc, 1 + lenBytes.length);
-        return tx.pure(out);
-      };
-
-      tx.moveCall({
-        target: `${pkgId}::bonding_curve::update_metadata`,
-        typeArguments: [tokenType],
-        arguments: [
-          tx.object(capId),
-          curveRef,
-          metaRef,
-          optionStr(meta.name),
-          optionStr(meta.symbol),
-          optionStr(meta.description),
-          optionStr(meta.iconUrl),
-          tx.object(SUI_CLOCK_ID),
-        ],
-      });
-
-      signAndExecutePanel(
-        { transaction: tx },
-        {
-          onSuccess: () => { showMsg('Metadata updated! ✅'); setBusy(false); },
-          onError: (err) => { showMsg(err.message || 'Failed', true); setBusy(false); },
-        }
-      );
-    } catch (err) {
-      showMsg(err.message || 'Failed', true);
-      setBusy(false);
+    // Check 24h window
+    const windowClosesAt = curveState?.created_at_ms
+      ? Number(curveState.created_at_ms) + 24 * 60 * 60 * 1000 : 0;
+    if (windowClosesAt > 0 && Date.now() >= windowClosesAt) {
+      showMsg('24h window has closed', true); return;
     }
+    // Read existing override
+    const existing = JSON.parse(localStorage.getItem(METADATA_STORE_KEY) || '{}');
+    if (existing.used) { showMsg('Already updated — one time only', true); return; }
+    // Save override
+    const override = {
+      used: true,
+      updatedAt: Date.now(),
+      name:        meta.name.trim()        || null,
+      symbol:      meta.symbol.trim()      || null,
+      description: meta.description.trim() || null,
+      iconUrl:     meta.iconUrl.trim()     || null,
+    };
+    localStorage.setItem(METADATA_STORE_KEY, JSON.stringify(override));
+    showMsg('Updated! ✅ (testnet local — v7 will be on-chain)');
+    // Force page reload so overrides take effect immediately
+    setTimeout(() => window.location.reload(), 1200);
   };
 
 
@@ -424,7 +395,9 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
         const nowMs = Date.now();
         const windowOpen = windowClosesAt > 0 && nowMs < windowClosesAt;
         const hoursLeft = windowOpen ? Math.ceil((windowClosesAt - nowMs) / (1000 * 60 * 60)) : 0;
-        const alreadyUpdated = curveState?.metadata_updated === true;
+        // Testnet: check localStorage for one-time usage flag
+        const metaOverride = JSON.parse(localStorage.getItem(`suipump_meta_${curveId}`) || '{}');
+        const alreadyUpdated = metaOverride.used === true;
 
         return (
           <div className="space-y-2.5">
@@ -950,12 +923,21 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   const graduated      = curveState?.graduated ?? false;
   const creatorFeesMist = curveState ? BigInt(curveState.creator_fees ?? 0) : 0n;
 
-  const name   = curveCreatedData?.name   || metadata?.name   || '';
-  const symbol = curveCreatedData?.symbol || metadata?.symbol || '';
+  // Apply localStorage metadata overrides (testnet only — v7 will be on-chain)
+  const _metaOverride = (() => {
+    try { return JSON.parse(localStorage.getItem(`suipump_meta_${curveId}`) || '{}'); }
+    catch { return {}; }
+  })();
 
-  const _rawDesc = (metadata?.description || '').trim();
+  const name   = _metaOverride.name   || curveCreatedData?.name   || metadata?.name   || '';
+  const symbol = _metaOverride.symbol || curveCreatedData?.symbol || metadata?.symbol || '';
+
+  const _rawDesc = (_metaOverride.description || metadata?.description || '').trim();
   const rawDesc  = isPlaceholderDesc(_rawDesc) ? '' : _rawDesc;
   const { desc, twitter, telegram, website, dex } = parseDescription(rawDesc);
+
+  // Override iconUrl from localStorage if set
+  const _overrideIcon = _metaOverride.iconUrl || null;
 
   // Creator check — query CreatorCap from both packages
   const [isCreator, setIsCreator] = React.useState(false);
@@ -1137,11 +1119,11 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
             <div className="flex items-start gap-3">
               {/* Icon */}
               <div className="w-12 h-12 rounded-xl overflow-hidden flex-shrink-0 bg-white/5 flex items-center justify-center text-xl">
-                {iconUrl ? (
-                  <img src={iconUrl} alt={symbol} className="w-full h-full object-cover"
+                {(_overrideIcon || iconUrl) ? (
+                  <img src={_overrideIcon || iconUrl} alt={symbol} className="w-full h-full object-cover"
                     onError={e => { e.target.style.display='none'; e.target.nextSibling.style.display='flex'; }} />
                 ) : null}
-                <span style={{ display: iconUrl ? 'none' : 'flex' }} className="text-2xl items-center justify-center w-full h-full">🔥</span>
+                <span style={{ display: (_overrideIcon || iconUrl) ? 'none' : 'flex' }} className="text-2xl items-center justify-center w-full h-full">🔥</span>
               </div>
 
               {/* Name + CA + social */}
