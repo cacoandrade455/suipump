@@ -1224,6 +1224,7 @@ function TokenPageWrapper({ lang }) {
   const navigate = useNavigate();
   const client = useSuiClient();
   const [tokenType, setTokenType] = useState(null);
+  const [packageId, setPackageId] = useState(null);
   const [error, setError] = useState(null);
 
   useEffect(() => {
@@ -1235,8 +1236,14 @@ function TokenPageWrapper({ lang }) {
         if (cancelled) return;
         const typeStr = obj.data?.type ?? '';
         const match = typeStr.match(/Curve<(.+)>$/);
-        if (match) setTokenType(match[1]);
-        else setError('Could not determine token type');
+        if (match) {
+          const fullTokenType = match[1];
+          setTokenType(fullTokenType);
+          const pkgMatch = fullTokenType.match(/^(0x[0-9a-fA-F]+)::/);
+          if (pkgMatch) setPackageId(pkgMatch[1]);
+        } else {
+          setError('Could not determine token type');
+        }
       } catch (err) {
         if (!cancelled) setError(err.message || String(err));
       }
@@ -1252,7 +1259,7 @@ function TokenPageWrapper({ lang }) {
       <div className="h-3 bg-white/5 rounded w-32" />
     </div>
   );
-  return <TokenPage curveId={curveId} tokenType={tokenType} onBack={() => navigate('/')} lang={lang} />;
+  return <TokenPage curveId={curveId} tokenType={tokenType} packageId={packageId} onBack={() => navigate('/')} lang={lang} />;
 }
 
 // ── App root ──────────────────────────────────────────────────────────────────

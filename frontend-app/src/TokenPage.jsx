@@ -116,21 +116,28 @@ function isPlaceholderDesc(desc) {
 
 // Determine which package a token belongs to by checking its type string
 function getTokenPackageId(tokenType) {
-  if (!tokenType) return null; // null = unknown, caller must guard
+  if (!tokenType) return null;
   if (PACKAGE_ID_V5 && tokenType.startsWith(PACKAGE_ID_V5)) return PACKAGE_ID_V5;
   if (tokenType.startsWith(PACKAGE_ID_V4)) return PACKAGE_ID_V4;
-  // Unknown package — treat as v4 (no extra clock/referral args, safer)
   return PACKAGE_ID_V4;
+}
+
+// Derive package ID — use tokenType if available, fall back to packageIdHint prop
+function resolvePackageId(tokenType, packageIdHint) {
+  const fromType = getTokenPackageId(tokenType);
+  if (fromType) return fromType;
+  if (packageIdHint) return packageIdHint;
+  return PACKAGE_ID; // last resort — active package
 }
 
 const SLIPPAGE_PRESETS = ['0.5', '1', '2', '5'];
 
 // ── Creator Tools Panel (v5 only) ─────────────────────────────────────────────
 
-function CreatorToolsPanel({ curveId, tokenType, account, curveState, currentDesc, currentTwitter, currentTelegram, currentWebsite, currentDex, lang }) {
+function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveState, currentDesc, currentTwitter, currentTelegram, currentWebsite, currentDex, lang }) {
   const client = useSuiClient();
   const { mutate: signAndExecutePanel } = useSignAndExecuteTransaction();
-  const pkgId = getTokenPackageId(tokenType) ?? PACKAGE_ID_V4;
+  const pkgId = resolvePackageId(tokenType, packageIdHint);
   const isV5Token = !!(PACKAGE_ID_V5 && pkgId === PACKAGE_ID_V5);
 
   const [tab, setTab] = useState('links'); // 'links' | 'metadata'
@@ -845,7 +852,7 @@ function CommentsBlock({ curveId, lang }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
+export default function TokenPage({ curveId, tokenType, packageId: packageIdHint, onBack, lang = 'en' }) {
   const navigate = useNavigate();
   const account = useCurrentAccount();
   const client = useSuiClient();
@@ -949,7 +956,7 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
 
   // ── derived state ─────────────────────────────────────────────────────────
 
-  const pkgId          = getTokenPackageId(tokenType);
+  const pkgId          = resolvePackageId(tokenType, packageIdHint);
   const isV5Token      = !!(PACKAGE_ID_V5 && pkgId === PACKAGE_ID_V5);
   const vSui           = isV5Token ? VIRTUAL_SUI_V5    : VIRTUAL_SUI_V4;
   const vTok           = isV5Token ? VIRTUAL_TOKENS_V5 : VIRTUAL_TOKENS_V4;
@@ -1312,6 +1319,7 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
             <CreatorToolsPanel
               curveId={curveId}
               tokenType={tokenType}
+              packageIdHint={pkgId}
               account={account}
               curveState={curveState}
               currentDesc={desc}
