@@ -279,7 +279,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
             curve,
             devPayment,
             tx2.pure.u64(0),
-            tx2.pure(bcsOptionNone()), // Option::none<address> for referral
+            tx2.pure.option('address', null), // Option::none<address> for referral
             tx2.object(SUI_CLOCK_ID),
           ];
         } else {
