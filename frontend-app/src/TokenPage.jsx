@@ -1,25 +1,23 @@
-// v16-creator-check
+// v17-creator-tools
 // TokenPage.jsx
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useCurrentAccount, useSignAndExecuteTransaction, useSuiClient } from '@mysten/dapp-kit';
 import { Transaction } from '@mysten/sui/transactions';
-import { ArrowLeft, Copy, Check, Share2, ExternalLink, Settings } from 'lucide-react';
+import { ArrowLeft, Copy, Check, Share2, ExternalLink, Settings, Edit3, Clock } from 'lucide-react';
 import PriceChart from './PriceChart.jsx';
 import TradeHistory from './TradeHistory.jsx';
 import HolderList from './HolderList.jsx';
 import Comments from './Comments.jsx';
 import AIAnalysis from './AIAnalysis.jsx';
-import { PACKAGE_ID, MIST_PER_SUI } from './constants.js';
+import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, MIST_PER_SUI, DRAIN_SUI_APPROX, VIRTUAL_SUI, VIRTUAL_TOKENS } from './constants.js';
 import { buyQuote, sellQuote } from './curve.js';
 import { t } from './i18n.js';
 
 // ── constants ─────────────────────────────────────────────────────────────────
-const TOKEN_DECIMALS = 6;
+const TOKEN_DECIMALS    = 6;
 const TOTAL_SUPPLY_WHOLE = 1_000_000_000;
-const DRAIN_SUI_APPROX = 35_000;
-const VIRTUAL_SUI = 30_000;
-const VIRTUAL_TOKENS = 1_073_000_000;
+const SUI_CLOCK_ID      = '0x6';
 
 function mistToSui(mist) {
   if (mist == null) return 0;
@@ -77,25 +75,35 @@ function parseDescription(raw) {
   try {
     const links = JSON.parse(raw.slice(idx + 2));
     return {
-      desc: descPart,
-      twitter: links.twitter || '',
+      desc:     descPart,
+      twitter:  links.twitter  || '',
       telegram: links.telegram || '',
-      website: links.website || '',
-      dex: links.dex || 'cetus',
+      website:  links.website  || '',
+      dex:      links.dex      || 'cetus',
     };
   } catch {
     const parts = raw.split('||');
     return {
-      desc: parts[0]?.trim() || '',
-      twitter: parts[1]?.trim() || '',
+      desc:     parts[0]?.trim() || '',
+      twitter:  parts[1]?.trim() || '',
       telegram: parts[2]?.trim() || '',
-      website: parts[3]?.trim() || '',
-      dex: 'cetus',
+      website:  parts[3]?.trim() || '',
+      dex:      'cetus',
     };
   }
 }
 
-// Detect placeholder strings left by unpatched bytecode (old on-chain tokens)
+function encodeDescription(desc, links) {
+  const hasLinks = links.telegram || links.twitter || links.website || links.dex;
+  if (!hasLinks) return desc;
+  const obj = {};
+  if (links.telegram) obj.telegram = links.telegram.trim();
+  if (links.twitter)  obj.twitter  = links.twitter.trim();
+  if (links.website)  obj.website  = links.website.trim();
+  if (links.dex)      obj.dex      = links.dex;
+  return `${desc}||${JSON.stringify(obj)}`;
+}
+
 function isPlaceholderIcon(url) {
   if (!url) return true;
   return url.includes('suipump.test');
@@ -106,7 +114,393 @@ function isPlaceholderDesc(desc) {
   return desc.startsWith('Template description placeholder') || desc.startsWith('Template Coin');
 }
 
+// Determine which package a token belongs to by checking its type string
+function getTokenPackageId(tokenType) {
+  if (!tokenType) return PACKAGE_ID;
+  if (PACKAGE_ID_V5 && tokenType.startsWith(PACKAGE_ID_V5)) return PACKAGE_ID_V5;
+  if (tokenType.startsWith(PACKAGE_ID_V4)) return PACKAGE_ID_V4;
+  return PACKAGE_ID;
+}
+
 const SLIPPAGE_PRESETS = ['0.5', '1', '2', '5'];
+
+// ── Creator Tools Panel (v5 only) ─────────────────────────────────────────────
+
+function CreatorToolsPanel({ curveId, tokenType, account, curveState, currentDesc, currentTwitter, currentTelegram, currentWebsite, currentDex, lang }) {
+  const client = useSuiClient();
+  const { mutate: signAndExecutePanel } = useSignAndExecuteTransaction();
+  const pkgId = getTokenPackageId(tokenType);
+  const isV5Token = PACKAGE_ID_V5 && pkgId === PACKAGE_ID_V5;
+
+  const [tab, setTab] = useState('links'); // 'links' | 'metadata'
+  const [msg, setMsg] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  // Social links editor state
+  const [links, setLinks] = useState({
+    desc:     currentDesc     || '',
+    twitter:  currentTwitter  || '',
+    telegram: currentTelegram || '',
+    website:  currentWebsite  || '',
+    dex:      currentDex      || 'cetus',
+  });
+
+  // Metadata update state (v5 only)
+  const [meta, setMeta] = useState({
+    name:        '',
+    symbol:      '',
+    description: '',
+    iconUrl:     '',
+  });
+
+  // Pending metadata unlock time from on-chain curve state
+  const pendingUnlocksAt = curveState?.pending_metadata
+    ? Number(curveState.pending_metadata?.fields?.unlocks_at ?? 0)
+    : null;
+  const now = Date.now();
+  const timelockExpired = pendingUnlocksAt && now >= pendingUnlocksAt;
+  const timelockRemaining = pendingUnlocksAt && !timelockExpired
+    ? Math.ceil((pendingUnlocksAt - now) / (1000 * 60 * 60))
+    : 0;
+
+  const showMsg = (m, isError = false) => {
+    setMsg(m);
+    setTimeout(() => setMsg(''), 4000);
+  };
+
+  // Get CreatorCap for this curve
+  const getCapId = async () => {
+    const ownedObjs = await client.getOwnedObjects({
+      owner: account.address,
+      filter: { StructType: `${pkgId}::bonding_curve::CreatorCap` },
+      options: { showContent: true },
+    });
+    const capObj = ownedObjs.data?.find(o => o.data?.content?.fields?.curve_id === curveId)
+      ?? ownedObjs.data?.[0];
+    if (!capObj) throw new Error('CreatorCap not found in wallet');
+    return capObj.data?.objectId;
+  };
+
+  const getCurveRef = async (tx) => {
+    const objForRef = await client.getObject({ id: curveId, options: { showOwner: true } });
+    const initialSharedVersion = objForRef.data?.owner?.Shared?.initial_shared_version;
+    return initialSharedVersion
+      ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion, mutable: true })
+      : tx.object(curveId);
+  };
+
+  // Queue social links / description update via queue_metadata_update
+  const handleQueueLinks = async () => {
+    if (!account || busy) return;
+    setBusy(true);
+    try {
+      const capId    = await getCapId();
+      const tx       = new Transaction();
+      const curveRef = await getCurveRef(tx);
+
+      const newDesc = encodeDescription(links.desc, {
+        twitter: links.twitter, telegram: links.telegram,
+        website: links.website, dex: links.dex,
+      });
+
+      // queue_metadata_update(cap, curve, name, symbol, description, icon_url, clock)
+      // Only updating description — pass none for name/symbol/icon
+      tx.moveCall({
+        target: `${pkgId}::bonding_curve::queue_metadata_update`,
+        typeArguments: [tokenType],
+        arguments: [
+          tx.object(capId),
+          curveRef,
+          tx.pure(new Uint8Array([0])),     // Option::none<String> for name
+          tx.pure(new Uint8Array([0])),     // Option::none<String> for symbol
+          // Option::some<String> for description
+          (() => {
+            const enc = new TextEncoder().encode(newDesc);
+            const len = enc.length;
+            // BCS: 1 (some) + uleb128(len) + bytes
+            const lenBytes = [];
+            let n = len;
+            do {
+              let byte = n & 0x7f; n >>>= 7;
+              if (n !== 0) byte |= 0x80;
+              lenBytes.push(byte);
+            } while (n !== 0);
+            const out = new Uint8Array(1 + lenBytes.length + len);
+            out[0] = 1; // some
+            out.set(lenBytes, 1);
+            out.set(enc, 1 + lenBytes.length);
+            return tx.pure(out);
+          })(),
+          tx.pure(new Uint8Array([0])),     // Option::none<String> for icon_url
+          tx.object(SUI_CLOCK_ID),
+        ],
+      });
+
+      signAndExecutePanel(
+        { transaction: tx },
+        {
+          onSuccess: () => { showMsg('Update queued! Executes in 24h ⏳'); setBusy(false); },
+          onError: (err) => { showMsg(err.message || 'Failed', true); setBusy(false); },
+        }
+      );
+    } catch (err) {
+      showMsg(err.message || 'Failed', true);
+      setBusy(false);
+    }
+  };
+
+  // Queue full metadata update (name/symbol/desc/icon)
+  const handleQueueMetadata = async () => {
+    if (!account || busy) return;
+    if (!meta.name && !meta.symbol && !meta.description && !meta.iconUrl) {
+      showMsg('Fill in at least one field', true); return;
+    }
+    setBusy(true);
+    try {
+      const capId    = await getCapId();
+      const tx       = new Transaction();
+      const curveRef = await getCurveRef(tx);
+
+      // Helper: BCS Option<String>
+      const optionStr = (val) => {
+        if (!val) return tx.pure(new Uint8Array([0]));
+        const enc = new TextEncoder().encode(val);
+        const lenBytes = [];
+        let n = enc.length;
+        do {
+          let byte = n & 0x7f; n >>>= 7;
+          if (n !== 0) byte |= 0x80;
+          lenBytes.push(byte);
+        } while (n !== 0);
+        const out = new Uint8Array(1 + lenBytes.length + enc.length);
+        out[0] = 1;
+        out.set(lenBytes, 1);
+        out.set(enc, 1 + lenBytes.length);
+        return tx.pure(out);
+      };
+
+      tx.moveCall({
+        target: `${pkgId}::bonding_curve::queue_metadata_update`,
+        typeArguments: [tokenType],
+        arguments: [
+          tx.object(capId),
+          curveRef,
+          optionStr(meta.name),
+          optionStr(meta.symbol),
+          optionStr(meta.description),
+          optionStr(meta.iconUrl),
+          tx.object(SUI_CLOCK_ID),
+        ],
+      });
+
+      signAndExecutePanel(
+        { transaction: tx },
+        {
+          onSuccess: () => { showMsg('Metadata update queued! Executes in 24h ⏳'); setBusy(false); },
+          onError: (err) => { showMsg(err.message || 'Failed', true); setBusy(false); },
+        }
+      );
+    } catch (err) {
+      showMsg(err.message || 'Failed', true);
+      setBusy(false);
+    }
+  };
+
+  // Apply pending metadata update after timelock expires
+  const handleApplyMetadata = async () => {
+    if (!account || busy || !timelockExpired) return;
+    setBusy(true);
+    try {
+      const tx       = new Transaction();
+      const curveRef = await getCurveRef(tx);
+
+      // Need CoinMetadata object for this token type
+      const metaObjs = await client.getOwnedObjects({
+        owner: account.address,
+        filter: { StructType: `0x2::coin::CoinMetadata<${tokenType}>` },
+        options: { showContent: true },
+      });
+      // CoinMetadata is shared — query differently
+      const metaQuery = await client.queryEvents({
+        query: { MoveEventType: `0x2::coin::CoinMetadata` },
+        limit: 1,
+      }).catch(() => null);
+
+      // Try fetching CoinMetadata via getCoinMetadata
+      const coinMeta = await client.getCoinMetadata({ coinType: tokenType });
+      if (!coinMeta?.id) throw new Error('CoinMetadata object not found');
+
+      const metaObj = await client.getObject({ id: coinMeta.id, options: { showOwner: true } });
+      const metaInitialVersion = metaObj.data?.owner?.Shared?.initial_shared_version;
+
+      const metaRef = metaInitialVersion
+        ? tx.sharedObjectRef({ objectId: coinMeta.id, initialSharedVersion: metaInitialVersion, mutable: true })
+        : tx.object(coinMeta.id);
+
+      tx.moveCall({
+        target: `${pkgId}::bonding_curve::apply_metadata_update`,
+        typeArguments: [tokenType],
+        arguments: [curveRef, metaRef, tx.object(SUI_CLOCK_ID)],
+      });
+
+      signAndExecutePanel(
+        { transaction: tx },
+        {
+          onSuccess: () => { showMsg('Metadata applied! ✅'); setBusy(false); },
+          onError: (err) => { showMsg(err.message || 'Failed', true); setBusy(false); },
+        }
+      );
+    } catch (err) {
+      showMsg(err.message || 'Failed', true);
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="bg-white/[0.03] border border-lime-400/20 rounded-xl p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-1.5">
+          <Edit3 size={11} className="text-lime-400/70" />
+          <span className="text-[9px] font-mono tracking-widest text-lime-400/70">CREATOR TOOLS</span>
+        </div>
+        <div className="flex gap-1">
+          {['links', ...(isV5Token ? ['metadata'] : [])].map(t => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={`px-2.5 py-1 rounded-lg text-[9px] font-mono transition-colors ${
+                tab === t
+                  ? 'bg-lime-400/10 text-lime-400 border border-lime-400/30'
+                  : 'text-white/30 hover:text-white/60'
+              }`}
+            >
+              {t.toUpperCase()}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Social Links Tab */}
+      {tab === 'links' && (
+        <div className="space-y-2.5">
+          <div className="text-[9px] font-mono text-white/25">
+            {isV5Token ? 'Changes go live after 24h timelock' : 'Update social links (queued on-chain)'}
+          </div>
+          <textarea
+            value={links.desc}
+            onChange={e => setLinks(l => ({ ...l, desc: e.target.value }))}
+            placeholder="Token description…"
+            rows={2}
+            className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 transition-colors resize-none"
+          />
+          {[
+            { key: 'twitter',  placeholder: 'https://x.com/yourtoken' },
+            { key: 'telegram', placeholder: 'https://t.me/yourtoken' },
+            { key: 'website',  placeholder: 'https://yourtoken.xyz' },
+          ].map(({ key, placeholder }) => (
+            <input
+              key={key}
+              value={links[key]}
+              onChange={e => setLinks(l => ({ ...l, [key]: e.target.value }))}
+              placeholder={placeholder}
+              className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 transition-colors"
+            />
+          ))}
+          {/* Pending timelock indicator */}
+          {pendingUnlocksAt && !timelockExpired && (
+            <div className="flex items-center gap-1.5 rounded-lg bg-white/5 border border-white/10 px-3 py-2">
+              <Clock size={10} className="text-white/40" />
+              <span className="text-[9px] font-mono text-white/40">Update pending — unlocks in ~{timelockRemaining}h</span>
+              <button
+                onClick={handleApplyMetadata}
+                disabled={!timelockExpired || busy}
+                className="ml-auto text-[9px] font-mono text-white/20 cursor-not-allowed"
+              >
+                APPLY
+              </button>
+            </div>
+          )}
+          {pendingUnlocksAt && timelockExpired && (
+            <button
+              onClick={handleApplyMetadata}
+              disabled={busy}
+              className="w-full py-2 rounded-lg bg-lime-400/10 border border-lime-400/30 text-lime-400 text-[10px] font-mono hover:bg-lime-400/20 transition-colors"
+            >
+              {busy ? 'APPLYING…' : '✅ APPLY PENDING UPDATE'}
+            </button>
+          )}
+          <button
+            onClick={isV5Token ? handleQueueLinks : handleQueueLinks}
+            disabled={busy}
+            className={`w-full py-2 rounded-lg text-[10px] font-mono font-bold transition-colors ${
+              busy
+                ? 'bg-white/5 text-white/20 cursor-not-allowed'
+                : 'bg-lime-400/10 border border-lime-400/30 text-lime-400 hover:bg-lime-400/20'
+            }`}
+          >
+            {busy ? 'QUEUEING…' : isV5Token ? 'QUEUE UPDATE (24H TIMELOCK)' : 'UPDATE LINKS'}
+          </button>
+        </div>
+      )}
+
+      {/* Metadata Tab (v5 only) */}
+      {tab === 'metadata' && isV5Token && (
+        <div className="space-y-2.5">
+          <div className="text-[9px] font-mono text-white/25">
+            Queue on-chain name/symbol/icon update · 24h timelock before it applies
+          </div>
+          {[
+            { key: 'name',        placeholder: 'New token name (optional)' },
+            { key: 'symbol',      placeholder: 'NEW SYMBOL (optional)' },
+            { key: 'description', placeholder: 'New description (optional)' },
+            { key: 'iconUrl',     placeholder: 'https://i.imgur.com/... (optional)' },
+          ].map(({ key, placeholder }) => (
+            <input
+              key={key}
+              value={meta[key]}
+              onChange={e => setMeta(m => ({ ...m, [key]: e.target.value }))}
+              placeholder={placeholder}
+              className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 transition-colors"
+            />
+          ))}
+          {/* Pending indicator */}
+          {pendingUnlocksAt && !timelockExpired && (
+            <div className="flex items-center gap-1.5 rounded-lg bg-white/5 border border-white/10 px-3 py-2">
+              <Clock size={10} className="text-white/40" />
+              <span className="text-[9px] font-mono text-white/40">Update queued — unlocks in ~{timelockRemaining}h</span>
+            </div>
+          )}
+          {pendingUnlocksAt && timelockExpired && (
+            <button
+              onClick={handleApplyMetadata}
+              disabled={busy}
+              className="w-full py-2 rounded-lg bg-lime-400/10 border border-lime-400/30 text-lime-400 text-[10px] font-mono hover:bg-lime-400/20 transition-colors"
+            >
+              {busy ? 'APPLYING…' : '✅ APPLY PENDING UPDATE NOW'}
+            </button>
+          )}
+          <button
+            onClick={handleQueueMetadata}
+            disabled={busy}
+            className={`w-full py-2 rounded-lg text-[10px] font-mono font-bold transition-colors ${
+              busy
+                ? 'bg-white/5 text-white/20 cursor-not-allowed'
+                : 'bg-lime-400/10 border border-lime-400/30 text-lime-400 hover:bg-lime-400/20'
+            }`}
+          >
+            {busy ? 'QUEUEING…' : 'QUEUE METADATA UPDATE (24H)'}
+          </button>
+        </div>
+      )}
+
+      {msg && (
+        <div className={`text-[10px] font-mono text-center ${msg.includes('✅') || msg.includes('⏳') || msg.includes('🎉') ? 'text-lime-400' : 'text-red-400'}`}>
+          {msg}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ── Trade Panel ───────────────────────────────────────────────────────────────
 
@@ -118,6 +512,7 @@ function TradePanelContent({
   account, onExecute, priceSui, priceUsd, suiUsd, symbol, graduated,
   suiBalance, tokenBalance,
   isCreator, creatorFeesMist, curveId: panelCurveId, tokenType: panelTokenType,
+  curveState,
 }) {
   const { mutate: signAndExecutePanel } = useSignAndExecuteTransaction();
   const client2 = useSuiClient();
@@ -126,15 +521,12 @@ function TradePanelContent({
   const [showSlippage, setShowSlippage] = useState(false);
   const [customSlippage, setCustomSlippage] = useState('');
   const isPending = txStatus === 'pending';
+  const pkgId = getTokenPackageId(panelTokenType);
 
   const slippageNum = parseFloat(slippage) || 0;
   const isCustom = !SLIPPAGE_PRESETS.includes(slippage);
 
-  const handleSlippagePreset = (v) => {
-    setSlippage(v);
-    setCustomSlippage('');
-  };
-
+  const handleSlippagePreset = (v) => { setSlippage(v); setCustomSlippage(''); };
   const handleCustomSlippage = (v) => {
     const clean = v.replace(/[^0-9.]/g, '');
     setCustomSlippage(clean);
@@ -149,7 +541,7 @@ function TradePanelContent({
     try {
       const ownedObjs = await client2.getOwnedObjects({
         owner: account.address,
-        filter: { StructType: `${PACKAGE_ID}::bonding_curve::CreatorCap` },
+        filter: { StructType: `${pkgId}::bonding_curve::CreatorCap` },
         options: { showContent: true },
       });
       const capObj = ownedObjs.data?.find(o => {
@@ -166,7 +558,7 @@ function TradePanelContent({
         ? tx.sharedObjectRef({ objectId: panelCurveId, initialSharedVersion, mutable: true })
         : tx.object(panelCurveId);
       tx.moveCall({
-        target: `${PACKAGE_ID}::bonding_curve::claim_creator_fees`,
+        target: `${pkgId}::bonding_curve::claim_creator_fees`,
         typeArguments: [panelTokenType],
         arguments: [tx.object(capId), curveRef],
       });
@@ -220,17 +612,12 @@ function TradePanelContent({
               </button>
             ))}
             <input
-              type="number"
-              min="0"
-              max="50"
-              step="0.1"
+              type="number" min="0" max="50" step="0.1"
               value={customSlippage}
               onChange={e => handleCustomSlippage(e.target.value)}
               placeholder="—"
               className={`w-14 py-1.5 text-[10px] font-mono rounded-lg border text-center bg-transparent transition-colors ${
-                isCustom
-                  ? 'border-lime-400/30 text-lime-400'
-                  : 'border-white/10 text-white/40'
+                isCustom ? 'border-lime-400/30 text-lime-400' : 'border-white/10 text-white/40'
               } focus:outline-none focus:border-lime-400/50`}
             />
           </div>
@@ -283,12 +670,8 @@ function TradePanelContent({
       {graduated ? (
         <div className="text-center py-4 text-xs font-mono text-lime-400/70">
           🎓 {t(lang, 'graduationComplete')}
-          <a
-            href="https://app.cetus.zone"
-            target="_blank"
-            rel="noreferrer"
-            className="block mt-2 text-lime-400 hover:text-lime-300 underline"
-          >
+          <a href="https://app.cetus.zone" target="_blank" rel="noreferrer"
+            className="block mt-2 text-lime-400 hover:text-lime-300 underline">
             {t(lang, 'viewOnCetus')} ↗
           </a>
         </div>
@@ -296,20 +679,12 @@ function TradePanelContent({
         <>
           {/* Buy / Sell toggle */}
           <div className="flex rounded-lg overflow-hidden border border-white/10">
-            <button
-              onClick={() => setSide('buy')}
-              className={`flex-1 py-2.5 text-xs font-mono font-bold transition-colors ${
-                side === 'buy' ? 'bg-lime-400 text-black' : 'text-white/50 hover:text-white/80'
-              }`}
-            >
+            <button onClick={() => setSide('buy')}
+              className={`flex-1 py-2.5 text-xs font-mono font-bold transition-colors ${side === 'buy' ? 'bg-lime-400 text-black' : 'text-white/50 hover:text-white/80'}`}>
               {t(lang, 'buy')}
             </button>
-            <button
-              onClick={() => setSide('sell')}
-              className={`flex-1 py-2.5 text-xs font-mono font-bold transition-colors ${
-                side === 'sell' ? 'bg-red-500 text-white' : 'text-white/50 hover:text-white/80'
-              }`}
-            >
+            <button onClick={() => setSide('sell')}
+              className={`flex-1 py-2.5 text-xs font-mono font-bold transition-colors ${side === 'sell' ? 'bg-red-500 text-white' : 'text-white/50 hover:text-white/80'}`}>
               {t(lang, 'sell')}
             </button>
           </div>
@@ -321,10 +696,7 @@ function TradePanelContent({
             </div>
             <div className="flex gap-2">
               <input
-                type="number"
-                min="0"
-                step="any"
-                value={amount}
+                type="number" min="0" step="any" value={amount}
                 onChange={e => setAmount(e.target.value)}
                 placeholder={side === 'buy' ? '0.00' : '0'}
                 className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-sm font-mono text-white placeholder-white/20 focus:outline-none focus:border-lime-400/50 focus:bg-lime-400/5 transition-colors"
@@ -343,15 +715,11 @@ function TradePanelContent({
                 {t(lang, 'max')}
               </button>
             </div>
-            {/* Quick presets */}
             {side === 'buy' ? (
               <div className="flex gap-1.5">
                 {['1', '10', '50', '100'].map(v => (
-                  <button
-                    key={v}
-                    onClick={() => setAmount(v)}
-                    className="flex-1 py-1 text-[9px] font-mono text-white/30 hover:text-lime-400 border border-white/10 rounded-md hover:border-lime-400/30 transition-colors"
-                  >
+                  <button key={v} onClick={() => setAmount(v)}
+                    className="flex-1 py-1 text-[9px] font-mono text-white/30 hover:text-lime-400 border border-white/10 rounded-md hover:border-lime-400/30 transition-colors">
                     {v}
                   </button>
                 ))}
@@ -359,20 +727,15 @@ function TradePanelContent({
             ) : tokenBalance > 0 ? (
               <div className="flex gap-1.5">
                 {[25, 50, 75, 100].map(pct => (
-                  <button
-                    key={pct}
-                    onClick={() => setAmount(((tokenBalance * pct) / 100).toFixed(0))}
-                    className="flex-1 py-1 text-[9px] font-mono text-white/30 hover:text-lime-400 border border-white/10 rounded-md hover:border-lime-400/30 transition-colors"
-                  >
+                  <button key={pct} onClick={() => setAmount(((tokenBalance * pct) / 100).toFixed(0))}
+                    className="flex-1 py-1 text-[9px] font-mono text-white/30 hover:text-lime-400 border border-white/10 rounded-md hover:border-lime-400/30 transition-colors">
                     {pct}%
                   </button>
                 ))}
               </div>
             ) : null}
             <div className="text-[9px] font-mono text-white/20">
-              {side === 'buy'
-                ? `Balance: ${fmt(suiBalance, 3)} SUI`
-                : `Balance: ${fmt(tokenBalance, 0)} $${symbol}`}
+              {side === 'buy' ? `Balance: ${fmt(suiBalance, 3)} SUI` : `Balance: ${fmt(tokenBalance, 0)} $${symbol}`}
             </div>
           </div>
 
@@ -446,28 +809,15 @@ function TradePanelContent({
 
 function TradesHoldersBlock({ curveId, tokenType, suiUsd, lang }) {
   const [tab, setTab] = useState('trades');
-
   return (
     <div className="space-y-0">
       <div className="flex bg-white/[0.03] border border-white/10 rounded-t-xl overflow-hidden">
-        <button
-          onClick={() => setTab('trades')}
-          className={`flex-1 py-3 text-xs font-mono font-bold tracking-wider transition-colors ${
-            tab === 'trades'
-              ? 'text-lime-400 bg-lime-400/5 border-b-2 border-lime-400'
-              : 'text-white/40 hover:text-white/70'
-          }`}
-        >
+        <button onClick={() => setTab('trades')}
+          className={`flex-1 py-3 text-xs font-mono font-bold tracking-wider transition-colors ${tab === 'trades' ? 'text-lime-400 bg-lime-400/5 border-b-2 border-lime-400' : 'text-white/40 hover:text-white/70'}`}>
           TRADES
         </button>
-        <button
-          onClick={() => setTab('holders')}
-          className={`flex-1 py-3 text-xs font-mono font-bold tracking-wider transition-colors ${
-            tab === 'holders'
-              ? 'text-lime-400 bg-lime-400/5 border-b-2 border-lime-400'
-              : 'text-white/40 hover:text-white/70'
-          }`}
-        >
+        <button onClick={() => setTab('holders')}
+          className={`flex-1 py-3 text-xs font-mono font-bold tracking-wider transition-colors ${tab === 'holders' ? 'text-lime-400 bg-lime-400/5 border-b-2 border-lime-400' : 'text-white/40 hover:text-white/70'}`}>
           {t(lang, 'holders')}
         </button>
       </div>
@@ -492,7 +842,7 @@ function CommentsBlock({ curveId, lang }) {
   );
 }
 
-// ── Main component ───────────────────────────────────────────────────────────
+// ── Main component ────────────────────────────────────────────────────────────
 
 export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
   const navigate = useNavigate();
@@ -500,29 +850,24 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
   const client = useSuiClient();
   const { mutate: signAndExecute } = useSignAndExecuteTransaction();
 
-  const [suiUsd, setSuiUsd] = useState(0);
-  const [curveState, setCurveState] = useState(null);
-  const [metadata, setMetadata] = useState(null);
-  const [iconUrl, setIconUrl] = useState(null);
+  const [suiUsd, setSuiUsd]               = useState(0);
+  const [curveState, setCurveState]       = useState(null);
+  const [metadata, setMetadata]           = useState(null);
+  const [iconUrl, setIconUrl]             = useState(null);
   const [curveCreatedData, setCurveCreatedData] = useState(null);
 
-  // balances
-  const [suiBalance, setSuiBalance] = useState(0);
-  const [tokenBalance, setTokenBalance] = useState(0);
+  const [suiBalance, setSuiBalance]       = useState(0);
+  const [tokenBalance, setTokenBalance]   = useState(0);
+  const [side, setSide]                   = useState('buy');
+  const [amount, setAmount]               = useState('');
+  const [slippage, setSlippage]           = useState('1');
+  const [txStatus, setTxStatus]           = useState(null);
+  const [txMsg, setTxMsg]                 = useState('');
+  const [copied, setCopied]               = useState(false);
+  const [shared, setShared]               = useState(false);
+  const [linkCopied, setLinkCopied]       = useState(false);
 
-  // trade panel
-  const [side, setSide] = useState('buy');
-  const [amount, setAmount] = useState('');
-  const [slippage, setSlippage] = useState('1');
-  const [txStatus, setTxStatus] = useState(null);
-  const [txMsg, setTxMsg] = useState('');
-
-  // copy CA / share
-  const [copied, setCopied] = useState(false);
-  const [shared, setShared] = useState(false);
-  const [linkCopied, setLinkCopied] = useState(false);
-
-  // ── data loading ─────────────────────────────────────────────────────────
+  // ── data loading ──────────────────────────────────────────────────────────
 
   useEffect(() => {
     fetchSuiUsd().then(setSuiUsd);
@@ -537,7 +882,7 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
       try {
         const obj = await client.getObject({ id: curveId, options: { showContent: true } });
         if (!cancelled) setCurveState(obj.data?.content?.fields ?? null);
-      } catch { }
+      } catch {}
     }
     load();
     const timer = setInterval(load, 10_000);
@@ -547,41 +892,41 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
   useEffect(() => {
     if (!tokenType) return;
     let cancelled = false;
+    const pkgId = getTokenPackageId(tokenType);
 
-    // Fetch coin metadata — filter placeholder values left by unpatched bytecode
     client.getCoinMetadata({ coinType: tokenType })
       .then(m => {
         if (!cancelled) {
           setMetadata(m);
-          // FIX: only set iconUrl if it's a real URL, not the template placeholder
           const icon = m?.iconUrl;
           if (icon && !isPlaceholderIcon(icon)) setIconUrl(icon);
         }
-      })
-      .catch(() => {});
+      }).catch(() => {});
 
-    // Also fetch name/symbol from CurveCreated event — always correct even if metadata patch failed
+    // Fetch CurveCreated event — try all package IDs
     (async () => {
       try {
+        const packageIds = [pkgId, ...(PACKAGE_ID_V5 && pkgId !== PACKAGE_ID_V5 ? [PACKAGE_ID_V5] : []), PACKAGE_ID_V4].filter(Boolean);
         let found = null;
-        let cursor = null;
-        for (let page = 0; page < 10 && !found; page++) {
-          const res = await client.queryEvents({
-            query: { MoveEventType: `${PACKAGE_ID}::bonding_curve::CurveCreated` },
-            limit: 50,
-            cursor: cursor || undefined,
-          });
-          found = res.data?.find(e => e.parsedJson?.curve_id === curveId);
-          if (!res.hasNextPage) break;
-          cursor = res.nextCursor;
+        for (const pid of packageIds) {
+          if (found) break;
+          let cursor = null;
+          for (let page = 0; page < 10 && !found; page++) {
+            const res = await client.queryEvents({
+              query: { MoveEventType: `${pid}::bonding_curve::CurveCreated` },
+              limit: 50,
+              cursor: cursor || undefined,
+            });
+            found = res.data?.find(e => e.parsedJson?.curve_id === curveId);
+            if (!res.hasNextPage) break;
+            cursor = res.nextCursor;
+          }
         }
-        if (found?.parsedJson && !cancelled) {
-          setCurveCreatedData(found.parsedJson);
-        }
+        if (found?.parsedJson && !cancelled) setCurveCreatedData(found.parsedJson);
       } catch {}
     })();
     return () => { cancelled = true; };
-  }, [tokenType, client]);
+  }, [tokenType, client, curveId]);
 
   useEffect(() => {
     if (!account || !client) return;
@@ -594,7 +939,7 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
           const tok = await client.getBalance({ owner: account.address, coinType: tokenType });
           if (!cancelled) setTokenBalance(Number(tok.totalBalance) / 10 ** TOKEN_DECIMALS);
         }
-      } catch { }
+      } catch {}
     }
     loadBalances();
     const timer = setInterval(loadBalances, 15_000);
@@ -603,45 +948,48 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
 
   // ── derived state ─────────────────────────────────────────────────────────
 
-  const reserveMist = curveState ? BigInt(curveState.sui_reserve) : 0n;
+  const pkgId          = getTokenPackageId(tokenType);
+  const reserveMist    = curveState ? BigInt(curveState.sui_reserve) : 0n;
   const tokensRemaining = curveState ? BigInt(curveState.token_reserve) : 0n;
-  const tokensSold = BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS) - tokensRemaining;
-  const progress = Math.min(100, (mistToSui(reserveMist) / DRAIN_SUI_APPROX) * 100);
-  const priceMist = curveState ? priceMistPerToken(reserveMist, tokensSold) : 0n;
-  const priceSui = Number(priceMist) / 1e9;
-  const priceUsd = priceSui * suiUsd;
-  const marketCapSui = priceSui * TOTAL_SUPPLY_WHOLE;
-  const graduated = curveState?.graduated ?? false;
+  const tokensSold     = BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS) - tokensRemaining;
+  const progress       = Math.min(100, (mistToSui(reserveMist) / DRAIN_SUI_APPROX) * 100);
+  const priceMist      = curveState ? priceMistPerToken(reserveMist, tokensSold) : 0n;
+  const priceSui       = Number(priceMist) / 1e9;
+  const priceUsd       = priceSui * suiUsd;
+  const marketCapSui   = priceSui * TOTAL_SUPPLY_WHOLE;
+  const graduated      = curveState?.graduated ?? false;
   const creatorFeesMist = curveState ? BigInt(curveState.creator_fees ?? 0) : 0n;
 
-  // CurveCreated event has correct name/symbol — use it over metadata
-  // metadata can show "Template Coin" if bytecode patching failed
-  const name = curveCreatedData?.name || metadata?.name || '';
+  const name   = curveCreatedData?.name   || metadata?.name   || '';
   const symbol = curveCreatedData?.symbol || metadata?.symbol || '';
 
-  // FIX: strip placeholder description strings left by unpatched bytecode (old on-chain tokens)
   const _rawDesc = (metadata?.description || '').trim();
-  const rawDesc = isPlaceholderDesc(_rawDesc) ? '' : _rawDesc;
+  const rawDesc  = isPlaceholderDesc(_rawDesc) ? '' : _rawDesc;
   const { desc, twitter, telegram, website, dex } = parseDescription(rawDesc);
 
-  // Check creator by querying owned CreatorCap objects
+  // Creator check — query CreatorCap from both packages
   const [isCreator, setIsCreator] = React.useState(false);
   React.useEffect(() => {
     if (!account?.address || !curveId || !client) { setIsCreator(false); return; }
     let cancelled = false;
-    client.getOwnedObjects({
-      owner: account.address,
-      filter: { StructType: `${PACKAGE_ID}::bonding_curve::CreatorCap` },
-      options: { showContent: true },
-    }).then(res => {
-      if (cancelled) return;
-      const found = res.data?.some(o => o.data?.content?.fields?.curve_id === curveId);
-      setIsCreator(!cancelled && found);
+    const checkPkg = async (pid) => {
+      const res = await client.getOwnedObjects({
+        owner: account.address,
+        filter: { StructType: `${pid}::bonding_curve::CreatorCap` },
+        options: { showContent: true },
+      });
+      return res.data?.some(o => o.data?.content?.fields?.curve_id === curveId);
+    };
+    Promise.all([
+      checkPkg(PACKAGE_ID_V4),
+      ...(PACKAGE_ID_V5 ? [checkPkg(PACKAGE_ID_V5)] : []),
+    ]).then(results => {
+      if (!cancelled) setIsCreator(results.some(Boolean));
     }).catch(() => {});
     return () => { cancelled = true; };
   }, [account?.address, curveId, client]);
 
-  // ── actions ────────────────────────────────────────────────────────────
+  // ── actions ───────────────────────────────────────────────────────────────
 
   const handleCopy = () => {
     if (curveId) { navigator.clipboard.writeText(curveId); setCopied(true); setTimeout(() => setCopied(false), 1500); }
@@ -694,6 +1042,7 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
         : tx.object(curveId);
 
       const slippageNum = parseFloat(slippage) || 0;
+      const isV5 = PACKAGE_ID_V5 && pkgId === PACKAGE_ID_V5;
 
       if (side === 'buy') {
         const suiInMist = BigInt(Math.floor(amtFloat * Number(MIST_PER_SUI)));
@@ -702,10 +1051,15 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
         const minOut = quote?.tokensOut != null
           ? BigInt(Math.floor(Number(quote.tokensOut) * (1 - slippageNum / 100)))
           : 0n;
+
+        const buyArgs = isV5
+          ? [curveRef, payment, tx.pure.u64(minOut), tx.pure(new Uint8Array([0])), tx.object(SUI_CLOCK_ID)]
+          : [curveRef, payment, tx.pure.u64(minOut)];
+
         const [tokens, refund] = tx.moveCall({
-          target: `${PACKAGE_ID}::bonding_curve::buy`,
+          target: `${pkgId}::bonding_curve::buy`,
           typeArguments: [tokenType],
-          arguments: [curveRef, payment, tx.pure.u64(minOut)],
+          arguments: buyArgs,
         });
         tx.transferObjects([tokens, refund], account.address);
       } else {
@@ -725,7 +1079,7 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
           ? BigInt(Math.floor(Number(quote.suiOut) * (1 - slippageNum / 100)))
           : 0n;
         const [suiOut] = tx.moveCall({
-          target: `${PACKAGE_ID}::bonding_curve::sell`,
+          target: `${pkgId}::bonding_curve::sell`,
           typeArguments: [tokenType],
           arguments: [curveRef, tokenCoin, tx.pure.u64(minOut)],
         });
@@ -753,7 +1107,7 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
       setTxMsg(err.message || 'Transaction failed');
       setTimeout(() => { setTxStatus(null); setTxMsg(''); }, 4000);
     }
-  }, [account, curveState, curveId, tokenType, side, amount, slippage, client, signAndExecute, reserveMist, tokensRemaining]);
+  }, [account, curveState, curveId, tokenType, side, amount, slippage, client, signAndExecute, reserveMist, tokensRemaining, pkgId]);
 
   const quote = quoteTrade();
 
@@ -775,12 +1129,8 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
       {graduated && (
         <div className="mb-4 px-4 py-3 bg-lime-400/10 border border-lime-400/30 rounded-xl text-xs font-mono text-lime-400 flex items-center justify-between">
           <span>🎓 {t(lang, 'graduationComplete')}</span>
-          <a
-            href="https://app.cetus.zone"
-            target="_blank"
-            rel="noreferrer"
-            className="flex items-center gap-1 text-lime-400 hover:text-lime-300 underline"
-          >
+          <a href="https://app.cetus.zone" target="_blank" rel="noreferrer"
+            className="flex items-center gap-1 text-lime-400 hover:text-lime-300 underline">
             {t(lang, 'viewOnCetus')} <ExternalLink size={10} />
           </a>
         </div>
@@ -813,24 +1163,18 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
                   <span className="text-white/35 text-[10px] font-mono truncate max-w-[180px]">
                     {curveId ? `${curveId.slice(0, 6)}...${curveId.slice(-4)}` : ''}
                   </span>
-                  <button
-                    onClick={handleCopy}
-                    className="text-white/35 hover:text-lime-400 transition-colors flex items-center gap-1 text-[10px] font-mono"
-                  >
+                  <button onClick={handleCopy}
+                    className="text-white/35 hover:text-lime-400 transition-colors flex items-center gap-1 text-[10px] font-mono">
                     {copied ? <Check size={10} /> : <Copy size={10} />}
                     {copied ? t(lang, 'copied') : t(lang, 'copyCA')}
                   </button>
-                  <button
-                    onClick={handleShare}
-                    className="text-white/35 hover:text-lime-400 transition-colors flex items-center gap-1 text-[10px] font-mono"
-                  >
+                  <button onClick={handleShare}
+                    className="text-white/35 hover:text-lime-400 transition-colors flex items-center gap-1 text-[10px] font-mono">
                     <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
                     {shared ? t(lang, 'share') + '!' : t(lang, 'share')}
                   </button>
-                  <button
-                    onClick={handleCopyLink}
-                    className="text-white/35 hover:text-lime-400 transition-colors flex items-center gap-1 text-[10px] font-mono"
-                  >
+                  <button onClick={handleCopyLink}
+                    className="text-white/35 hover:text-lime-400 transition-colors flex items-center gap-1 text-[10px] font-mono">
                     {linkCopied ? <Check size={10} /> : <Share2 size={10} />}
                     {linkCopied ? 'COPIED!' : 'SHARE LINK'}
                   </button>
@@ -914,13 +1258,13 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
             )}
           </div>
 
-          {/* Block 1 — Chart */}
+          {/* Chart */}
           <PriceChart curveId={curveId} tokenType={tokenType} suiUsd={suiUsd} />
 
-          {/* Block 2 — Trades / Holders toggle */}
+          {/* Trades / Holders */}
           <TradesHoldersBlock curveId={curveId} tokenType={tokenType} suiUsd={suiUsd} lang={lang} />
 
-          {/* Block 3 — AI Analysis */}
+          {/* AI Analysis */}
           <AIAnalysis
             curveId={curveId}
             name={name}
@@ -932,11 +1276,11 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
             tokensSoldWhole={Number(tokensSold) / 10 ** TOKEN_DECIMALS}
           />
 
-          {/* Block 4 — Comments */}
+          {/* Comments */}
           <CommentsBlock curveId={curveId} lang={lang} />
         </div>
 
-        {/* Right column — trade panel */}
+        {/* Right column */}
         <div className="space-y-4">
           <TradePanelContent
             lang={lang}
@@ -953,7 +1297,24 @@ export default function TokenPage({ curveId, tokenType, onBack, lang = 'en' }) {
             suiBalance={suiBalance} tokenBalance={tokenBalance}
             isCreator={isCreator} creatorFeesMist={creatorFeesMist}
             curveId={curveId} tokenType={tokenType}
+            curveState={curveState}
           />
+
+          {/* Creator Tools — visible to creator only */}
+          {isCreator && (
+            <CreatorToolsPanel
+              curveId={curveId}
+              tokenType={tokenType}
+              account={account}
+              curveState={curveState}
+              currentDesc={desc}
+              currentTwitter={twitter}
+              currentTelegram={telegram}
+              currentWebsite={website}
+              currentDex={dex}
+              lang={lang}
+            />
+          )}
         </div>
       </div>
 

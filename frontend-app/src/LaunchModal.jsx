@@ -1,15 +1,18 @@
-// LaunchModal.jsx
+// LaunchModal.jsx — v5 wired
 import React, { useState, useCallback } from 'react';
 import { useCurrentAccount, useSignAndExecuteTransaction, useSuiClient } from '@mysten/dapp-kit';
 import { Transaction } from '@mysten/sui/transactions';
-import { X, Plus, Trash2, ExternalLink, Rocket, CheckCircle } from 'lucide-react';
+import { X, Plus, Trash2, Rocket, CheckCircle } from 'lucide-react';
 import wasmInit, * as bytecodeTemplate from '@mysten/move-bytecode-template';
-import { PACKAGE_ID, MIST_PER_SUI } from './constants.js';
+import { PACKAGE_ID, PACKAGE_ID_V5, MIST_PER_SUI, ANTI_BOT_NONE, ANTI_BOT_15S, ANTI_BOT_30S, GRAD_TARGET_CETUS, GRAD_TARGET_DEEPBOOK } from './constants.js';
 import { t } from './i18n.js';
 
 const LAUNCH_FEE_MIST = 2_000_000_000n;
 const TEMPLATE_URL = '/template.mv';
 const MAX_DESCRIPTION_CHARS = 500;
+
+// SUI clock object ID (same on all networks)
+const SUI_CLOCK_ID = '0x6';
 
 let wasmReady = false;
 async function ensureWasm() {
@@ -57,17 +60,17 @@ function encodeDescription(desc, links) {
   if (!hasLinks) return desc;
   const linksObj = {};
   if (links.telegram) linksObj.telegram = links.telegram.trim();
-  if (links.twitter) linksObj.twitter = links.twitter.trim();
-  if (links.website) linksObj.website = links.website.trim();
-  if (links.dex) linksObj.dex = links.dex;
+  if (links.twitter)  linksObj.twitter  = links.twitter.trim();
+  if (links.website)  linksObj.website  = links.website.trim();
+  if (links.dex)      linksObj.dex      = links.dex;
   return `${desc}||${JSON.stringify(linksObj)}`;
 }
 
 // Placeholder constants — must exactly match coin-template/sources/template.move
-const PLACEHOLDER_NAME   = 'Template Coin';
-const PLACEHOLDER_SYM    = 'TMPL';
-const PLACEHOLDER_DESC   = 'Template description placeholder that is intentionally long to accommodate real token descriptions.';
-const PLACEHOLDER_ICON   = 'https://suipump.test/icon-placeholder.png';
+const PLACEHOLDER_NAME = 'Template Coin';
+const PLACEHOLDER_SYM  = 'TMPL';
+const PLACEHOLDER_DESC = 'Template description placeholder that is intentionally long to accommodate real token descriptions.';
+const PLACEHOLDER_ICON = 'https://suipump.test/icon-placeholder.png';
 
 const STEPS = [
   { id: 'details', labelKey: 'details' },
@@ -114,6 +117,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
     uploading: false, uploadError: null,
     telegram: '', twitter: '', website: '',
     graduationDex: 'cetus',
+    antiBotDelay: ANTI_BOT_NONE, // 0 / 15 / 30
   });
   const [payouts, setPayouts] = useState([{ address: account?.address ?? '', bps: 10000 }]);
   const [devBuy, setDevBuy] = useState('');
@@ -126,7 +130,6 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
 
   const symbolValid = /^[A-Z][A-Z0-9]{0,4}$/.test(form.symbol);
   const nameValid = form.name.trim().length >= 2 && form.name.trim().length <= 64;
-  const descBytes = new TextEncoder().encode(form.description).length;
   const payoutSum = payouts.reduce((s, p) => s + (parseInt(p.bps) || 0), 0);
   const payoutsValid = payouts.length >= 1 && payouts.length <= 10 && payoutSum === 10000
     && payouts.every(p => p.address.startsWith('0x') && p.address.length === 66);
@@ -183,40 +186,15 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
         dex: form.graduationDex,
       });
 
-      // Pad values to exact placeholder byte length.
-      // update_constants requires new value BCS length == existing value BCS length.
-      // Placeholder lengths: NAME=13, SYM=4, DESC=99, ICON=41 bytes.
       const safeName = tokenName.slice(0, PLACEHOLDER_NAME.length).padEnd(PLACEHOLDER_NAME.length, ' ');
       const safeSym  = tokenSymbol.slice(0, PLACEHOLDER_SYM.length).padEnd(PLACEHOLDER_SYM.length, ' ');
       const safeDesc = descWithLinks.slice(0, PLACEHOLDER_DESC.length).padEnd(PLACEHOLDER_DESC.length, ' ');
       const safeIcon = (form.iconUrl || '').slice(0, PLACEHOLDER_ICON.length).padEnd(PLACEHOLDER_ICON.length, ' ');
 
-      // *** FIX: type must be 'Vector(U8)' — the Move template uses vector<u8>, NOT String ***
-      // Using 'String' caused update_constants to silently fail, leaving raw placeholder bytes.
-      let patched = bytecodeTemplate.update_constants(
-        templateBytes,
-        bcsBytes(safeName),
-        bcsBytes(PLACEHOLDER_NAME),
-        'Vector(U8)',
-      );
-      patched = bytecodeTemplate.update_constants(
-        patched,
-        bcsBytes(safeSym),
-        bcsBytes(PLACEHOLDER_SYM),
-        'Vector(U8)',
-      );
-      patched = bytecodeTemplate.update_constants(
-        patched,
-        bcsBytes(safeDesc),
-        bcsBytes(PLACEHOLDER_DESC),
-        'Vector(U8)',
-      );
-      patched = bytecodeTemplate.update_constants(
-        patched,
-        bcsBytes(safeIcon),
-        bcsBytes(PLACEHOLDER_ICON),
-        'Vector(U8)',
-      );
+      let patched = bytecodeTemplate.update_constants(templateBytes, bcsBytes(safeName), bcsBytes(PLACEHOLDER_NAME), 'Vector(U8)');
+      patched = bytecodeTemplate.update_constants(patched, bcsBytes(safeSym),  bcsBytes(PLACEHOLDER_SYM),  'Vector(U8)');
+      patched = bytecodeTemplate.update_constants(patched, bcsBytes(safeDesc), bcsBytes(PLACEHOLDER_DESC), 'Vector(U8)');
+      patched = bytecodeTemplate.update_constants(patched, bcsBytes(safeIcon), bcsBytes(PLACEHOLDER_ICON), 'Vector(U8)');
 
       const tx1 = new Transaction();
       const [upgradeCap] = tx1.publish({ modules: [[...patched]], dependencies: ['0x1', '0x2'] });
@@ -241,32 +219,74 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
 
       setTxStep('tx2');
 
+      // Determine graduation target u8
+      const graduationTarget = form.graduationDex === 'deepbook' ? GRAD_TARGET_DEEPBOOK : GRAD_TARGET_CETUS;
+
       const tx2 = new Transaction();
       const [launchFeeCoin] = tx2.splitCoins(tx2.gas, [tx2.pure.u64(LAUNCH_FEE_MIST)]);
 
       const payoutAddrs = payouts.map(p => p.address);
-      const payoutBps = payouts.map(p => parseInt(p.bps));
-      const [curve, cap] = tx2.moveCall({
-        target: `${PACKAGE_ID}::bonding_curve::create_and_return`,
-        typeArguments: [newTokenType],
-        arguments: [
-          tx2.object(treasuryCapId),
-          launchFeeCoin,
-          tx2.pure.string(tokenName),
-          tx2.pure.string(tokenSymbol),
-          tx2.pure(bcsVectorAddress(payoutAddrs)),
-          tx2.pure(bcsVectorU64(payoutBps)),
-        ],
-      });
+      const payoutBps   = payouts.map(p => parseInt(p.bps));
+
+      let curve, cap;
+
+      if (PACKAGE_ID_V5) {
+        // V5: create_and_return includes description, graduation_target, anti_bot_delay, clock
+        [curve, cap] = tx2.moveCall({
+          target: `${PACKAGE_ID}::bonding_curve::create_and_return`,
+          typeArguments: [newTokenType],
+          arguments: [
+            tx2.object(treasuryCapId),
+            launchFeeCoin,
+            tx2.pure.string(tokenName),
+            tx2.pure.string(tokenSymbol),
+            tx2.pure.string(descWithLinks),
+            tx2.pure(bcsVectorAddress(payoutAddrs)),
+            tx2.pure(bcsVectorU64(payoutBps)),
+            tx2.pure.u8(graduationTarget),
+            tx2.pure.u8(form.antiBotDelay),
+            tx2.object(SUI_CLOCK_ID),
+          ],
+        });
+      } else {
+        // V4: create_and_return without description/clock/v5 params
+        [curve, cap] = tx2.moveCall({
+          target: `${PACKAGE_ID}::bonding_curve::create_and_return`,
+          typeArguments: [newTokenType],
+          arguments: [
+            tx2.object(treasuryCapId),
+            launchFeeCoin,
+            tx2.pure.string(tokenName),
+            tx2.pure.string(tokenSymbol),
+            tx2.pure(bcsVectorAddress(payoutAddrs)),
+            tx2.pure(bcsVectorU64(payoutBps)),
+          ],
+        });
+      }
 
       const devBuyAmount = parseFloat(devBuy);
       if (devBuyAmount > 0) {
         const devBuyMist = BigInt(Math.floor(devBuyAmount * Number(MIST_PER_SUI)));
         const [devPayment] = tx2.splitCoins(tx2.gas, [tx2.pure.u64(devBuyMist)]);
+
+        let buyArgs;
+        if (PACKAGE_ID_V5) {
+          // V5 buy: curve, payment, min_tokens_out, referral (none), clock
+          buyArgs = [
+            curve,
+            devPayment,
+            tx2.pure.u64(0),
+            tx2.pure(new Uint8Array([0])), // Option::none for referral
+            tx2.object(SUI_CLOCK_ID),
+          ];
+        } else {
+          buyArgs = [curve, devPayment, tx2.pure.u64(0)];
+        }
+
         const [tokens, refund] = tx2.moveCall({
           target: `${PACKAGE_ID}::bonding_curve::buy`,
           typeArguments: [newTokenType],
-          arguments: [curve, devPayment, tx2.pure.u64(0)],
+          arguments: buyArgs,
         });
         tx2.transferObjects([tokens, refund], account.address);
       }
@@ -328,7 +348,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
 
         <div className="px-6 py-5 space-y-4 min-h-[320px]">
 
-          {/* Step 0: Token details + social links */}
+          {/* Step 0: Token details */}
           {step === 0 && (
             <div className="space-y-4">
               <TokenPreview name={form.name} symbol={form.symbol} iconUrl={form.iconUrl} />
@@ -387,11 +407,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
                     className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-lime-400/50 transition-colors"
                   />
                   <label className="shrink-0 px-3 py-2.5 bg-white/5 border border-white/10 rounded-xl text-[10px] font-mono text-white/50 hover:text-white hover:border-lime-400/30 transition-colors cursor-pointer">
-                    {form.uploading ? (
-                      <span className="animate-pulse">…</span>
-                    ) : (
-                      t(lang, 'uploadImage')
-                    )}
+                    {form.uploading ? <span className="animate-pulse">…</span> : t(lang, 'uploadImage')}
                     <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
                   </label>
                 </div>
@@ -406,7 +422,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
                 <div className="text-[9px] tracking-widest text-white/20">GRADUATES TO</div>
                 <div className="flex gap-2">
                   {[
-                    { id: 'cetus', label: 'Cetus', sub: 'AMM · LP position' },
+                    { id: 'cetus',    label: 'Cetus',    sub: 'AMM · LP position' },
                     { id: 'deepbook', label: 'DeepBook', sub: 'CLOB · Order book' },
                   ].map(({ id, label, sub }) => (
                     <button
@@ -423,18 +439,50 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
                     </button>
                   ))}
                 </div>
-                <div className="text-[8px] font-mono text-white/15 text-center">
-                  DeepBook graduation coming soon · Selection stored on-chain
-                </div>
+                {!PACKAGE_ID_V5 && (
+                  <div className="text-[8px] font-mono text-white/15 text-center">
+                    DeepBook graduation coming soon · Selection stored on-chain
+                  </div>
+                )}
               </div>
+
+              {/* Anti-bot delay — v5 only */}
+              {PACKAGE_ID_V5 && (
+                <div className="space-y-2 pt-1">
+                  <div className="text-[9px] tracking-widest text-white/20">ANTI-BOT DELAY</div>
+                  <div className="flex gap-2">
+                    {[
+                      { val: ANTI_BOT_NONE, label: 'None',  sub: 'No delay' },
+                      { val: ANTI_BOT_15S,  label: '15s',   sub: 'Block bots 15s' },
+                      { val: ANTI_BOT_30S,  label: '30s',   sub: 'Block bots 30s' },
+                    ].map(({ val, label, sub }) => (
+                      <button
+                        key={val}
+                        onClick={() => setForm(f => ({ ...f, antiBotDelay: val }))}
+                        className={`flex-1 flex flex-col items-center gap-0.5 py-2.5 rounded-xl border text-[10px] font-mono transition-colors ${
+                          form.antiBotDelay === val
+                            ? 'border-lime-400/50 bg-lime-400/10 text-lime-400'
+                            : 'border-white/10 text-white/30 hover:border-white/25 hover:text-white/50'
+                        }`}
+                      >
+                        <span className="font-bold">{label}</span>
+                        <span className="text-[8px] opacity-60">{sub}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="text-[8px] font-mono text-white/15 text-center">
+                    Only your wallet can buy during the delay window
+                  </div>
+                </div>
+              )}
 
               {/* Social links */}
               <div className="space-y-2 pt-1">
                 <div className="text-[9px] tracking-widest text-white/20">SOCIAL LINKS (OPTIONAL)</div>
                 {[
-                  { key: 'twitter', placeholder: 'https://x.com/yourtoken' },
+                  { key: 'twitter',  placeholder: 'https://x.com/yourtoken' },
                   { key: 'telegram', placeholder: 'https://t.me/yourtoken' },
-                  { key: 'website', placeholder: 'https://yourtoken.xyz' },
+                  { key: 'website',  placeholder: 'https://yourtoken.xyz' },
                 ].map(({ key, placeholder }) => (
                   <input
                     key={key}
@@ -469,8 +517,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
                         type="number"
                         value={p.bps}
                         onChange={e => updatePayout(i, 'bps', e.target.value)}
-                        min={1}
-                        max={10000}
+                        min={1} max={10000}
                         className="w-24 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 transition-colors"
                       />
                       <span className="text-[10px] font-mono text-white/30">bps = {((parseInt(p.bps)||0)/100).toFixed(2)}%</span>
@@ -554,6 +601,16 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
                       <span className="text-lime-400">${form.symbol}</span>
                     </div>
                     <div className="flex justify-between">
+                      <span className="text-white/30">Graduates to</span>
+                      <span className="text-white capitalize">{form.graduationDex}</span>
+                    </div>
+                    {PACKAGE_ID_V5 && (
+                      <div className="flex justify-between">
+                        <span className="text-white/30">Anti-bot delay</span>
+                        <span className="text-white">{form.antiBotDelay === 0 ? 'None' : `${form.antiBotDelay}s`}</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between">
                       <span className="text-white/30">Recipients</span>
                       <span className="text-white">{payouts.length}</span>
                     </div>
@@ -609,7 +666,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
                     <>
                       <div className="bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 flex items-center gap-2">
                         <span className="text-[10px] font-mono text-white/40 flex-1 truncate text-left">
-                          suipump.vercel.app/token/{newCurveId.slice(0,8)}…
+                          suipump.org/token/{newCurveId.slice(0,8)}…
                         </span>
                         <button
                           onClick={() => navigator.clipboard.writeText(`${window.location.origin}/token/${newCurveId}`)}
