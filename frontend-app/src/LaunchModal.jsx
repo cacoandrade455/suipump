@@ -8,6 +8,9 @@ import { PACKAGE_ID, PACKAGE_ID_V5, MIST_PER_SUI, ANTI_BOT_NONE, ANTI_BOT_15S, A
 import { t } from './i18n.js';
 
 const LAUNCH_FEE_MIST = 2_000_000_000n;
+
+// BCS Option<address> none
+function bcsOptionNone() { return new Uint8Array([0]); }
 const TEMPLATE_URL = '/template.mv';
 const MAX_DESCRIPTION_CHARS = 500;
 
@@ -276,7 +279,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
             curve,
             devPayment,
             tx2.pure.u64(0),
-            tx2.pure(new Uint8Array([0])), // Option::none for referral
+            tx2.pure(bcsOptionNone()), // Option::none<address> for referral
             tx2.object(SUI_CLOCK_ID),
           ];
         } else {

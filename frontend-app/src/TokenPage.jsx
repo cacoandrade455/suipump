@@ -14,6 +14,19 @@ import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, MIST_PER_SUI, DRAIN_SUI_APPRO
 import { buyQuote, sellQuote } from './curve.js';
 import { t } from './i18n.js';
 
+// BCS helpers
+// Option<address> none = single 0x00 byte (BCS enum variant 0)
+function bcsOptionNone() {
+  return new Uint8Array([0]);
+}
+function bcsOptionSomeAddress(addr) {
+  const hex = addr.replace('0x', '').padStart(64, '0');
+  const bytes = new Uint8Array(33);
+  bytes[0] = 1; // some variant
+  for (let i = 0; i < 32; i++) bytes[i + 1] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  return bytes;
+}
+
 // ── constants ─────────────────────────────────────────────────────────────────
 const TOKEN_DECIMALS    = 6;
 const TOTAL_SUPPLY_WHOLE = 1_000_000_000;
@@ -224,17 +237,11 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
           // Option::some<String> for description
           (() => {
             const enc = new TextEncoder().encode(newDesc);
-            const len = enc.length;
-            // BCS: 1 (some) + uleb128(len) + bytes
             const lenBytes = [];
-            let n = len;
-            do {
-              let byte = n & 0x7f; n >>>= 7;
-              if (n !== 0) byte |= 0x80;
-              lenBytes.push(byte);
-            } while (n !== 0);
-            const out = new Uint8Array(1 + lenBytes.length + len);
-            out[0] = 1; // some
+            let n = enc.length;
+            do { let b = n & 0x7f; n >>>= 7; if (n !== 0) b |= 0x80; lenBytes.push(b); } while (n !== 0);
+            const out = new Uint8Array(1 + lenBytes.length + enc.length);
+            out[0] = 1;
             out.set(lenBytes, 1);
             out.set(enc, 1 + lenBytes.length);
             return tx.pure(out);
@@ -269,19 +276,22 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
       const tx       = new Transaction();
       const curveRef = await getCurveRef(tx);
 
-      // Helper: BCS Option<String>
+      // Helper: BCS Option<String> / Option<AsciiString>
+      // Both are encoded identically: 0x00=none, 0x01+uleb128(len)+bytes=some
       const optionStr = (val) => {
-        if (!val) return tx.pure(new Uint8Array([0]));
-        const enc = new TextEncoder().encode(val);
+        if (!val || val.trim() === '') return tx.pure(new Uint8Array([0]));
+        const enc = new TextEncoder().encode(val.trim());
+        // uleb128 encode length
         const lenBytes = [];
         let n = enc.length;
         do {
-          let byte = n & 0x7f; n >>>= 7;
+          let byte = n & 0x7f;
+          n >>>= 7;
           if (n !== 0) byte |= 0x80;
           lenBytes.push(byte);
         } while (n !== 0);
         const out = new Uint8Array(1 + lenBytes.length + enc.length);
-        out[0] = 1;
+        out[0] = 1; // Option::some variant
         out.set(lenBytes, 1);
         out.set(enc, 1 + lenBytes.length);
         return tx.pure(out);
@@ -1068,7 +1078,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
           : 0n;
 
         const buyArgs = isV5
-          ? [curveRef, payment, tx.pure.u64(minOut), tx.pure(new Uint8Array([0])), tx.object(SUI_CLOCK_ID)]
+          ? [curveRef, payment, tx.pure.u64(minOut), tx.pure(bcsOptionNone()), tx.object(SUI_CLOCK_ID)]
           : [curveRef, payment, tx.pure.u64(minOut)];
 
         const [tokens, refund] = tx.moveCall({
