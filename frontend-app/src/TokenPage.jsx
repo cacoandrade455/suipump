@@ -1016,19 +1016,10 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
       } else {
         const tokInAtomic = BigInt(Math.floor(amtFloat * 10 ** TOKEN_DECIMALS));
         const coins = await client.getCoins({ owner: account.address, coinType: tokenType });
-        if (coins.data.length === 0) throw new Error('No token balance');
         const coinObjs = coins.data.map(c => tx.object(c.coinObjectId));
-
-        // Compute exact on-chain total balance to detect sell-all
-        const totalOnChain = coins.data.reduce((s, c) => s + BigInt(c.balance), 0n);
-        const isSellAll = tokInAtomic >= totalOnChain;
-
         let tokenCoin;
-        if (isSellAll) {
-          // Sell entire balance — merge all coins and pass whole object (no split = no rounding error)
-          if (coinObjs.length > 1) tx.mergeCoins(coinObjs[0], coinObjs.slice(1));
-          tokenCoin = coinObjs[0];
-        } else if (coinObjs.length === 1) {
+        if (coinObjs.length === 0) throw new Error('No token balance');
+        if (coinObjs.length === 1) {
           [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(tokInAtomic)]);
         } else {
           tx.mergeCoins(coinObjs[0], coinObjs.slice(1));
