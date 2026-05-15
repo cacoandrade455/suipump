@@ -633,7 +633,7 @@ function TradePanelContent({
                     const max = Math.max(0, suiBalance - 0.1);
                     setAmount(max > 0 ? max.toFixed(4) : '0');
                   } else {
-                    setAmount(tokenBalance > 0 ? tokenBalance.toFixed(0) : '0');
+                    setAmount(tokenBalance > 1 ? (tokenBalance - 1).toFixed(0) : tokenBalance > 0 ? tokenBalance.toFixed(0) : '0');
                   }
                 }}
                 className="px-3 py-2.5 text-[10px] font-mono text-white/40 hover:text-lime-400 border border-white/10 rounded-lg hover:border-lime-400/30 transition-colors"
@@ -653,7 +653,7 @@ function TradePanelContent({
             ) : tokenBalance > 0 ? (
               <div className="flex gap-1.5">
                 {[25, 50, 75, 100].map(pct => (
-                  <button key={pct} onClick={() => setAmount(((tokenBalance * pct) / 100).toFixed(0))}
+                  <button key={pct} onClick={() => setAmount(pct === 100 && tokenBalance > 1 ? (tokenBalance - 1).toFixed(0) : ((tokenBalance * pct) / 100).toFixed(0))}
                     className="flex-1 py-1 text-[9px] font-mono text-white/30 hover:text-lime-400 border border-white/10 rounded-md hover:border-lime-400/30 transition-colors">
                     {pct}%
                   </button>
