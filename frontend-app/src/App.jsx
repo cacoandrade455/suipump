@@ -328,7 +328,7 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch
                 ? (() => { const mc = marketCapSui * suiUsd; return mc >= 1e6 ? `MC $${(mc/1e6).toFixed(2)}M` : mc >= 1e3 ? `MC $${(mc/1e3).toFixed(1)}k` : `MC $${mc.toFixed(0)}`; })()
                 : `MC ${fmt(marketCapSui, 0)} SUI`}
             </div>
-          ); })}
+          )}
         </div>
       </div>
 
@@ -369,7 +369,7 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch
             <span className="flex items-center gap-0.5">
               <MessageCircle size={8} /> {stats.commentCount}
             </span>
-          ); })}
+          )}
         </div>
         {devBuySui > 0 && (
           <span className="text-white/20">dev {fmt(devBuySui, 2)} SUI</span>
@@ -602,7 +602,7 @@ function NotificationBell({ walletAddress }) {
                 </button>
               ))}
             </div>
-          ); })}
+          )}
         </div>
       )}
     </div>
@@ -1162,7 +1162,7 @@ function HomePage({ onLaunch, lang = 'en' }) {
             </button>
           ) : (
             <ConnectWalletHero lang={lang} />
-          ); })}
+          )}
         </div>
       </div>
 
