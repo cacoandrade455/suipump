@@ -4,7 +4,8 @@
 
 import React, { useState, useEffect } from 'react';
 import { useSuiClient } from '@mysten/dapp-kit';
-import { ALL_PACKAGE_IDS, INDEXER_URL } from './constants.js';
+import { ALL_PACKAGE_IDS } from './constants.js';
+const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
 import { paginateMultipleEvents } from './paginateEvents.js';
 
 const AIRDROP_SHARE = 0.5;
