@@ -69,6 +69,23 @@ function ScrollToTop() {
 
 const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
 
+// Testnet: apply localStorage metadata/links overrides to token display
+// V7 will replace this with proper on-chain metadata updates
+function applyLocalOverrides(token) {
+  try {
+    const metaOverride  = JSON.parse(localStorage.getItem(`suipump_meta_${token.curveId}`)  || '{}');
+    const linksOverride = JSON.parse(localStorage.getItem(`suipump_links_${token.curveId}`) || '{}');
+    return {
+      ...token,
+      name:    metaOverride.name    || token.name,
+      symbol:  metaOverride.symbol  || token.symbol,
+      iconUrl: metaOverride.iconUrl || token.iconUrl || null,
+    };
+  } catch {
+    return token;
+  }
+}
+
 function useStats() {
   const client = useSuiClient();
   const [stats, setStats] = useState({ poolSui: null, tradeCount: null, volume: null });
@@ -295,7 +312,7 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch
             <div className="w-[72px] h-[22px] flex items-center">
               <div className="w-full h-px bg-white/5" />
             </div>
-          )}
+          ); })}
         </div>
         <div className="text-right">
           <div className="text-[11px] font-mono font-bold text-white/80">
@@ -311,7 +328,7 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch
                 ? (() => { const mc = marketCapSui * suiUsd; return mc >= 1e6 ? `MC $${(mc/1e6).toFixed(2)}M` : mc >= 1e3 ? `MC $${(mc/1e3).toFixed(1)}k` : `MC $${mc.toFixed(0)}`; })()
                 : `MC ${fmt(marketCapSui, 0)} SUI`}
             </div>
-          )}
+          ); })}
         </div>
       </div>
 
@@ -352,7 +369,7 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch
             <span className="flex items-center gap-0.5">
               <MessageCircle size={8} /> {stats.commentCount}
             </span>
-          )}
+          ); })}
         </div>
         {devBuySui > 0 && (
           <span className="text-white/20">dev {fmt(devBuySui, 2)} SUI</span>
@@ -585,7 +602,7 @@ function NotificationBell({ walletAddress }) {
                 </button>
               ))}
             </div>
-          )}
+          ); })}
         </div>
       )}
     </div>
@@ -1145,7 +1162,7 @@ function HomePage({ onLaunch, lang = 'en' }) {
             </button>
           ) : (
             <ConnectWalletHero lang={lang} />
-          )}
+          ); })}
         </div>
       </div>
 
@@ -1211,7 +1228,7 @@ function HomePage({ onLaunch, lang = 'en' }) {
 
       {!loading && sorted.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-y-6 gap-x-3">
-          {sorted.map((token) => (
+          {sorted.map((rawToken) => { const token = applyLocalOverrides(rawToken); return (
             <TokenCard
               key={token.curveId}
               token={token}
