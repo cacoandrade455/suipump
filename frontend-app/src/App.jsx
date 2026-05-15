@@ -312,7 +312,7 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch
             <div className="w-[72px] h-[22px] flex items-center">
               <div className="w-full h-px bg-white/5" />
             </div>
-          ); })}
+          )}
         </div>
         <div className="text-right">
           <div className="text-[11px] font-mono font-bold text-white/80">
