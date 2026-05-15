@@ -1238,7 +1238,8 @@ function HomePage({ onLaunch, lang = 'en' }) {
               isWatched={isWatched(token.curveId)}
               onToggleWatch={toggleWatch}
             />
-          ))}
+          );
+          })}
         </div>
       )}
     </div>
