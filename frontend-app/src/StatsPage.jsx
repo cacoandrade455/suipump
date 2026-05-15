@@ -127,6 +127,8 @@ export default function StatsPage({ onBack }) {
               volume:       d.totalVolume,
               protocolFees: d.protocolFeesSui,
               tradeCount:   d.totalTrades,
+              buyCount:     d.totalBuys  ?? null,
+              sellCount:    d.totalSells ?? null,
               tokenCount:   d.tokenCount,
               graduated:    0,
               creatorFees:  d.totalVolume * 0.004,
