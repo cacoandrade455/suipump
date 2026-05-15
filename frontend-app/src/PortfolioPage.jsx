@@ -88,18 +88,15 @@ function HoldingsTab({ account, tokens, client, lang, onTotalValue }) {
 
               let reserveMist = 0n, tokensRemaining = 0n, graduated = false;
 
-              // Use indexer stats if available
-              const idx = tokenStats[token.curveId];
-              if (idx) {
-                reserveMist = BigInt(Math.floor((idx.reserve_sui ?? 0) * MIST_PER_SUI));
-              } else {
-                const curveObj = await client.getObject({ id: token.curveId, options: { showContent: true } });
-                const fields = curveObj.data?.content?.fields;
-                if (fields) {
-                  reserveMist = BigInt(fields.sui_reserve ?? 0);
-                  tokensRemaining = BigInt(fields.token_reserve ?? 0);
-                  graduated = fields.graduated ?? false;
-                }
+              // Always fetch curve object for accurate tokensRemaining (needed for price calc)
+              const curveObj = await client.getObject({ id: token.curveId, options: { showContent: true } });
+              const fields = curveObj.data?.content?.fields;
+              if (fields) {
+                const rawSui = fields.sui_reserve;
+                reserveMist = typeof rawSui === 'object' ? BigInt(rawSui?.value ?? 0) : BigInt(rawSui ?? 0);
+                const rawTok = fields.token_reserve;
+                tokensRemaining = typeof rawTok === 'object' ? BigInt(rawTok?.value ?? 0) : BigInt(rawTok ?? 0);
+                graduated = fields.graduated ?? false;
               }
 
               const tokensSold = BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS) - tokensRemaining;
@@ -365,7 +362,9 @@ function CreatedTab({ account, tokens, client, lang }) {
           const reserveMist  = BigInt(fields.sui_reserve ?? 0);
           const reserveSui   = mistToSui(reserveMist);
           const progress     = Math.min(100, (reserveSui / DRAIN_SUI_APPROX) * 100);
-          const creatorFeesSui = Number(BigInt(fields.creator_fees ?? 0)) / MIST_PER_SUI;
+          const rawFees = fields.creator_fees;
+          const creatorFeesMist = typeof rawFees === 'object' ? Number(rawFees?.value ?? 0) : Number(rawFees ?? 0);
+          const creatorFeesSui = creatorFeesMist / MIST_PER_SUI;
           stats[tk.curveId]  = { progress, reserveSui, creatorFeesSui, graduated: fields.graduated ?? false, tokenType: tk.tokenType, packageId: tk.packageId };
         }
         setCurveStats(stats);
