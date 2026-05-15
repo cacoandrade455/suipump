@@ -102,7 +102,7 @@ app.get('/token/:curveId/stats', async (req, res) => {
 
 app.get('/token/:curveId/trades', async (req, res) => {
   try {
-    const limit = Math.min(parseInt(req.query.limit || '100'), 500);
+    const limit = Math.min(parseInt(req.query.limit || '200'), 1000);
     const trades = await getTradeHistory(req.params.curveId, limit);
     res.json(trades);
   } catch (err) {
