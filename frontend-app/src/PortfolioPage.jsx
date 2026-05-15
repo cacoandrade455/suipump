@@ -416,7 +416,10 @@ function CreatedTab({ account, tokens, client, lang }) {
       const verified = await Promise.all(claimable.map(async (tk) => {
         try {
           const obj = await client.getObject({ id: tk.curveId, options: { showContent: true } });
-          const fees = Number(BigInt(obj.data?.content?.fields?.creator_fees ?? 0));
+          const f = obj.data?.content?.fields;
+          // creator_fees is Balance<SUI> — serialized as { value: "123" } or plain string
+          const raw = f?.creator_fees;
+          const fees = typeof raw === 'object' ? Number(raw?.value ?? 0) : Number(raw ?? 0);
           return fees > 0 ? tk : null;
         } catch { return null; }
       }));
