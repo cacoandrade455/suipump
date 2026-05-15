@@ -421,12 +421,11 @@ function CreatedTab({ account, tokens, client, lang }) {
         const curveRef  = initVer
           ? tx.sharedObjectRef({ objectId: tk.curveId, initialSharedVersion: initVer, mutable: true })
           : tx.object(tk.curveId);
-        const [suiOut] = tx.moveCall({
+        tx.moveCall({
           target: `${pkgId}::bonding_curve::claim_creator_fees`,
           typeArguments: [tk.tokenType],
           arguments: [tx.object(capId), curveRef],
         });
-        tx.transferObjects([suiOut], account.address);
       }
       signAndExecute(
         { transaction: tx },
