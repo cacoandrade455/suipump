@@ -1,0 +1,5 @@
+ 
+# Move build caches 
+contracts-test/build/ 
+contracts-v6/build/ 
+contracts/build/ 
