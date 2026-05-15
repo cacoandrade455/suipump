@@ -398,22 +398,36 @@ function CreatedTab({ account, tokens, client, lang }) {
 
   // Total claimable fees
   const totalClaimableSui = useMemo(() => {
-    return Object.values(curveStats).reduce((s, stat) => s + (stat.creatorFeesSui ?? 0), 0);
+    return Object.values(curveStats).reduce((s, stat) => s + (stat.creatorFeesSui >= 0.001 ? stat.creatorFeesSui : 0), 0);
   }, [curveStats]);
 
   // Claim all fees in one PTB
   const handleClaimAll = async () => {
     const claimable = createdTokens.filter(tk => {
       const s = curveStats[tk.curveId];
-      return s && s.creatorFeesSui > 0 && capMap[tk.curveId];
+      return s && s.creatorFeesSui >= 0.001 && capMap[tk.curveId];
     });
     if (!claimable.length) return;
 
     setClaimingAll(true);
     setClaimMsg('');
     try {
+      // Verify on-chain fees before building PTB — avoids ENoFees abort
+      const verified = await Promise.all(claimable.map(async (tk) => {
+        try {
+          const obj = await client.getObject({ id: tk.curveId, options: { showContent: true } });
+          const fees = Number(BigInt(obj.data?.content?.fields?.creator_fees ?? 0));
+          return fees > 0 ? tk : null;
+        } catch { return null; }
+      }));
+      const actualClaimable = verified.filter(Boolean);
+      if (!actualClaimable.length) {
+        setClaimMsg('No fees available on-chain');
+        setClaimingAll(false);
+        return;
+      }
       const tx = new Transaction();
-      for (const tk of claimable) {
+      for (const tk of actualClaimable) {
         const pkgId   = tk.packageId;
         const capId   = capMap[tk.curveId];
         const objForRef = await client.getObject({ id: tk.curveId, options: { showOwner: true } });
@@ -431,13 +445,13 @@ function CreatedTab({ account, tokens, client, lang }) {
         { transaction: tx },
         {
           onSuccess: () => {
-            setClaimMsg(`✅ Claimed fees from ${claimable.length} token${claimable.length !== 1 ? 's' : ''}`);
+            setClaimMsg(`✅ Claimed fees from ${actualClaimable.length} token${actualClaimable.length !== 1 ? 's' : ''}`);
             setClaimingAll(false);
             setTimeout(() => setClaimMsg(''), 4000);
             // Refresh stats
             setCurveStats(prev => {
               const next = { ...prev };
-              for (const tk of claimable) next[tk.curveId] = { ...next[tk.curveId], creatorFeesSui: 0 };
+              for (const tk of actualClaimable) next[tk.curveId] = { ...next[tk.curveId], creatorFeesSui: 0 };
               return next;
             });
           },
