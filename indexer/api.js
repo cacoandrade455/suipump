@@ -44,9 +44,18 @@ app.get('/stats', async (req, res) => {
     const protocolFeesSui = stats.totalVolume * 0.005;
     const s1PoolSui       = protocolFeesSui * 0.5;
 
+    // Also sum buys/sells from token_stats for the frontend breakdown
+    const buySellRes = await pool.query(
+      'SELECT COALESCE(SUM(buys),0) AS total_buys, COALESCE(SUM(sells),0) AS total_sells FROM token_stats'
+    );
+    const totalBuys  = Number(buySellRes.rows[0].total_buys);
+    const totalSells = Number(buySellRes.rows[0].total_sells);
+
     res.json({
       totalVolume:    stats.totalVolume,
       totalTrades:    stats.totalTrades,
+      totalBuys,
+      totalSells,
       tokenCount:     stats.tokenCount,
       protocolFeesSui,
       s1PoolSui,
