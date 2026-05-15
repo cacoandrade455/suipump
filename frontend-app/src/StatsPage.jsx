@@ -7,7 +7,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useSuiClient } from '@mysten/dapp-kit';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, TrendingUp, Flame, Gift, Coins, Trophy, Zap, BarChart3 } from 'lucide-react';
-import { PACKAGE_ID, DRAIN_SUI_APPROX } from './constants.js';
+import { PACKAGE_ID, ALL_PACKAGE_IDS, DRAIN_SUI_APPROX } from './constants.js';
 import { useTokenList } from './useTokenList.js';
 import { paginateMultipleEvents } from './paginateEvents.js';
 
@@ -142,19 +142,23 @@ export default function StatsPage({ onBack }) {
       }
       // Fall back to RPC
       try {
-        const buyType = `${PACKAGE_ID}::bonding_curve::TokensPurchased`;
-        const sellType = `${PACKAGE_ID}::bonding_curve::TokensSold`;
-        const gradType = `${PACKAGE_ID}::bonding_curve::Graduated`;
+        // Query all package versions for complete buy/sell counts
+        const buyTypes  = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensPurchased`);
+        const sellTypes = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensSold`);
+        const gradTypes = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::Graduated`);
+        const buyType  = buyTypes[0];
+        const sellType = sellTypes[0];
+        const gradType = gradTypes[0];
 
         const [eventMap, gradEvents] = await Promise.all([
-          paginateMultipleEvents(client, [buyType, sellType], { order: 'descending', maxPages: 100 }),
-          paginateMultipleEvents(client, [gradType], { order: 'descending', maxPages: 100 }),
+          paginateMultipleEvents(client, [...buyTypes, ...sellTypes], { order: 'descending', maxPages: 100 }),
+          paginateMultipleEvents(client, gradTypes, { order: 'descending', maxPages: 100 }),
         ]);
 
         if (cancelled) return;
 
-        const buys = eventMap[buyType];
-        const sells = eventMap[sellType];
+        const buys  = buyTypes.flatMap(t => eventMap[t] || []);
+        const sells = sellTypes.flatMap(t => eventMap[t] || []);
         const grads = gradEvents[gradType];
 
         let volumeMist = 0, protocolMist = 0, creatorMist = 0, lpMist = 0;
