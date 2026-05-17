@@ -749,7 +749,7 @@ function TradesHoldersBlock({ curveId, tokenType, suiUsd, lang, creator }) {
       </div>
       <div className="[&>div]:rounded-t-none [&>div]:border-t-0">
         {tab === 'trades'
-          ? <TradeHistory curveId={curveId} suiUsd={suiUsd} />
+          ? <TradeHistory curveId={curveId} suiUsd={suiUsd} creator={creator} />
           : <HolderList curveId={curveId} tokenType={tokenType} suiUsd={suiUsd} creator={creator} />
         }
       </div>

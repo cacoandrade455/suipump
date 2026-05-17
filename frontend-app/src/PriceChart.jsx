@@ -6,7 +6,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useSuiClient } from '@mysten/dapp-kit';
 import { createChart, CandlestickSeries, AreaSeries } from 'lightweight-charts';
-import { ALL_PACKAGE_IDS } from './constants.js';
+import { PACKAGE_ID } from './constants.js';
 import { paginateMultipleEvents } from './paginateEvents.js';
 
 const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
@@ -120,13 +120,13 @@ export default function PriceChart({ curveId, refreshKey }) {
             }
           } catch {}
         }
-        // Fall back to RPC pagination — query all package versions (v4/v5/v6)
-        const buyTypes  = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensPurchased`);
-        const sellTypes = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensSold`);
-        const eventMap = await paginateMultipleEvents(client, [...buyTypes, ...sellTypes], { order: 'ascending', maxPages: 20 });
+        // Fall back to RPC pagination
+        const buyType  = `${PACKAGE_ID}::bonding_curve::TokensPurchased`;
+        const sellType = `${PACKAGE_ID}::bonding_curve::TokensSold`;
+        const eventMap = await paginateMultipleEvents(client, [buyType, sellType], { order: 'ascending', maxPages: 20 });
         const all = [
-          ...buyTypes.flatMap(bt  => (eventMap[bt]  || []).map(e => ({ ...e, kind: 'buy'  }))),
-          ...sellTypes.flatMap(st => (eventMap[st] || []).map(e => ({ ...e, kind: 'sell' }))),
+          ...eventMap[buyType].map(e => ({ ...e, kind: 'buy' })),
+          ...eventMap[sellType].map(e => ({ ...e, kind: 'sell' })),
         ]
           .filter(e => e.parsedJson?.curve_id === curveId)
           .sort((a, b) => Number(a.timestampMs) - Number(b.timestampMs));
@@ -225,7 +225,17 @@ export default function PriceChart({ curveId, refreshKey }) {
 
   // ── Build candle data and apply to chart ────────────────────────────────────
   const candles = useMemo(() => {
-    const mul = view === 'MCAP' ? TOTAL_SUPPLY_WHOLE : 1;
+    // PRICE view: render in USD when a SUI/USD rate is available, so the
+    // candle data, the axis scale, and the axis labels are all the SAME unit.
+    // (Previously data was in SUI but the formatter multiplied by suiUsd,
+    // so the axis labels disagreed with the candle positions.)
+    // MCAP view: multiply price-per-token (SUI) by total supply for market cap.
+    let mul;
+    if (view === 'MCAP') {
+      mul = TOTAL_SUPPLY_WHOLE * (suiUsd > 0 ? suiUsd : 1);
+    } else {
+      mul = suiUsd > 0 ? suiUsd : 1;
+    }
     const built = buildCandles(rawTrades, INTERVALS[intervalIdx].seconds);
     return built.map(c => ({
       time:  c.time,
@@ -234,7 +244,7 @@ export default function PriceChart({ curveId, refreshKey }) {
       low:   c.low   * mul,
       close: c.close * mul,
     }));
-  }, [rawTrades, intervalIdx, view]);
+  }, [rawTrades, intervalIdx, view, suiUsd]);
 
   useEffect(() => {
     if (!seriesRef.current || !chartRef.current) return;
@@ -262,17 +272,25 @@ export default function PriceChart({ curveId, refreshKey }) {
       });
     }
 
-    // Custom price formatter for tiny values
+    // Custom price formatter. Candle data is ALREADY in USD when suiUsd > 0
+    // (converted in the candles useMemo), so the formatter must NOT multiply
+    // by suiUsd again — it only formats the value it is given.
     seriesRef.current.applyOptions({
       priceFormat: {
         type: 'custom',
         formatter: (price) => {
           if (suiUsd > 0) {
-            const usd = price * suiUsd;
-            if (usd >= 1)     return `$${usd.toFixed(4)}`;
-            if (usd >= 1e-4) return `$${usd.toFixed(6)}`;
-            return `$${usd.toPrecision(4)}`;
+            // value is USD already
+            if (view === 'MCAP') {
+              if (price >= 1e6) return `$${(price/1e6).toFixed(2)}M`;
+              if (price >= 1e3) return `$${(price/1e3).toFixed(1)}k`;
+              return `$${price.toFixed(0)}`;
+            }
+            if (price >= 1)    return `$${price.toFixed(4)}`;
+            if (price >= 1e-4) return `$${price.toFixed(6)}`;
+            return `$${price.toPrecision(4)}`;
           }
+          // No USD rate — value is in SUI (or token count for MCAP)
           if (view === 'MCAP') {
             if (price >= 1e6) return `${(price/1e6).toFixed(2)}M`;
             if (price >= 1e3) return `${(price/1e3).toFixed(1)}k`;
@@ -294,9 +312,12 @@ export default function PriceChart({ curveId, refreshKey }) {
   const isUp        = latestPrice != null && firstPrice != null && latestPrice >= firstPrice;
   const accentColor = isUp ? '#84CC16' : '#EF4444';
 
+  // NOTE: when suiUsd > 0, candle values (and thus latestPrice/firstPrice)
+  // are already in USD. fmtUsd therefore formats the value directly, and
+  // fmtSui divides back out to recover the SUI figure for the sub-label.
   const fmtUsd = (v) => {
     if (!suiUsd || v == null) return null;
-    const usd = v * suiUsd;
+    const usd = v; // already USD
     if (usd >= 1e6)  return `$${(usd/1e6).toFixed(3)}M`;
     if (usd >= 1e3)  return `$${(usd/1e3).toFixed(2)}k`;
     if (usd >= 1)    return `$${usd.toFixed(4)}`;
@@ -306,14 +327,16 @@ export default function PriceChart({ curveId, refreshKey }) {
 
   const fmtSui = (v) => {
     if (v == null) return '-';
+    // Recover SUI value: candle data is USD when a rate exists.
+    const s = suiUsd > 0 ? v / suiUsd : v;
     if (view === 'MCAP') {
-      if (v >= 1e6) return `${(v/1e6).toFixed(2)}M`;
-      if (v >= 1e3) return `${(v/1e3).toFixed(1)}k`;
-      return v.toFixed(1);
+      if (s >= 1e6) return `${(s/1e6).toFixed(2)}M`;
+      if (s >= 1e3) return `${(s/1e3).toFixed(1)}k`;
+      return s.toFixed(1);
     }
-    if (v < 1e-7)  return v.toExponential(2);
-    if (v < 0.001) return v.toFixed(7);
-    return v.toFixed(5);
+    if (s < 1e-7)  return s.toExponential(2);
+    if (s < 0.001) return s.toFixed(7);
+    return s.toFixed(5);
   };
 
   return (
