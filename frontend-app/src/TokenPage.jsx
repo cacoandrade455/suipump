@@ -1219,6 +1219,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
           {/* AI Analysis */}
           <AIAnalysis
             curveId={curveId}
+            tokenType={tokenType}
             name={name}
             symbol={symbol}
             progress={progress}
