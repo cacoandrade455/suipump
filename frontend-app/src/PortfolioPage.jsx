@@ -747,21 +747,51 @@ export default function PortfolioPage({ onBack, lang = 'en' }) {
 
             {/* PFP edit form */}
             {editingPfp && isOwnWallet && (
-              <div className="flex gap-2 mb-3">
-                <input
-                  value={pfpInput}
-                  onChange={e => setPfpInput(e.target.value)}
-                  placeholder="Paste Imgur image URL…"
-                  className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-[11px] font-mono text-white placeholder-white/20 focus:outline-none focus:border-lime-400/50"
-                />
-                <button onClick={savePfp}
-                  className="px-3 py-1.5 bg-lime-400 text-black text-[10px] font-mono font-bold rounded-lg hover:bg-lime-300 transition-colors">
-                  SAVE
-                </button>
-                <button onClick={() => setEditingPfp(false)}
-                  className="px-3 py-1.5 bg-white/5 text-white/40 text-[10px] font-mono rounded-lg hover:bg-white/10 transition-colors">
-                  ✕
-                </button>
+              <div className="space-y-2 mb-3">
+                {/* File upload */}
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <span className="text-[9px] font-mono text-white/30 shrink-0">UPLOAD</span>
+                  <label className="flex-1 flex items-center justify-center gap-2 bg-white/5 border border-white/10 border-dashed rounded-lg px-3 py-2 text-[10px] font-mono text-white/40 hover:border-lime-400/40 hover:text-lime-400 transition-colors cursor-pointer">
+                    <span>Choose file…</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={e => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        const reader = new FileReader();
+                        reader.onload = ev => {
+                          const dataUrl = ev.target.result;
+                          if (viewAddress) {
+                            setPfp(viewAddress, dataUrl);
+                            setPfpUrl(dataUrl);
+                          }
+                          setEditingPfp(false);
+                        };
+                        reader.readAsDataURL(file);
+                      }}
+                    />
+                  </label>
+                </label>
+                {/* URL input */}
+                <div className="flex gap-2 items-center">
+                  <span className="text-[9px] font-mono text-white/30 shrink-0">URL</span>
+                  <input
+                    value={pfpInput}
+                    onChange={e => setPfpInput(e.target.value)}
+                    placeholder="Paste image URL…"
+                    className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-[11px] font-mono text-white placeholder-white/20 focus:outline-none focus:border-lime-400/50"
+                  />
+                  <button onClick={savePfp}
+                    className="px-3 py-1.5 bg-lime-400 text-black text-[10px] font-mono font-bold rounded-lg hover:bg-lime-300 transition-colors">
+                    SAVE
+                  </button>
+                  <button onClick={() => setEditingPfp(false)}
+                    className="px-2 py-1.5 bg-white/5 text-white/40 text-[10px] font-mono rounded-lg hover:bg-white/10 transition-colors">
+                    ✕
+                  </button>
+                </div>
               </div>
             )}
 
