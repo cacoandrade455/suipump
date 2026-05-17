@@ -12,6 +12,7 @@
 // SUI in/out is captured in an event), so that path stays event-based.
 
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useSuiClient } from '@mysten/dapp-kit';
 import { Users, BarChart2 } from 'lucide-react';
 import { ALL_PACKAGE_IDS } from './constants.js';
@@ -216,6 +217,7 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = n
 }
 
 function HoldersView({ holders, creator }) {
+  const navigate = useNavigate();
   if (!holders.length) {
     return <div className="py-10 text-center text-white/35 text-xs font-mono">No holders yet</div>;
   }
@@ -230,9 +232,10 @@ function HoldersView({ holders, creator }) {
       </div>
 
       {holders.map((h, i) => (
-        <div
+        <button
           key={h.addr}
-          className="grid grid-cols-[28px_1fr_auto_auto] gap-3 px-4 py-2.5 border-b border-white/5 last:border-0 hover:bg-white/[0.02] transition-colors items-center"
+          onClick={() => navigate(`/portfolio/${h.addr}`)}
+          className="w-full grid grid-cols-[28px_1fr_auto_auto] gap-3 px-4 py-2.5 border-b border-white/5 last:border-0 hover:bg-white/[0.04] transition-colors items-center text-left group"
         >
           <span className="text-xs font-mono text-white/35">{i + 1}</span>
           <div className="flex items-center gap-2 min-w-0">
@@ -240,7 +243,7 @@ function HoldersView({ holders, creator }) {
               className="w-5 h-5 rounded-full flex-shrink-0"
               style={{ backgroundColor: walletColor(h.addr) }}
             />
-            <span className="text-xs font-mono text-white/70 truncate">{shortAddr(h.addr)}</span>
+            <span className="text-xs font-mono text-white/70 truncate group-hover:text-lime-400 transition-colors">{shortAddr(h.addr)}</span>
             {creator && h.addr === creator && (
               <span className="text-[9px] font-mono font-bold text-lime-400 bg-lime-400/10 border border-lime-400/30 rounded px-1.5 py-0.5 flex-shrink-0">
                 DEV
@@ -249,13 +252,14 @@ function HoldersView({ holders, creator }) {
           </div>
           <span className="text-xs font-mono text-white/70 text-right">{fmt(h.balance, 0)}</span>
           <span className="text-xs font-mono text-lime-400/80 text-right w-16">{h.pct.toFixed(2)}%</span>
-        </div>
+        </button>
       ))}
     </div>
   );
 }
 
 function TradersView({ traders, suiUsd }) {
+  const navigate = useNavigate();
   if (!traders.length) {
     return <div className="py-10 text-center text-white/35 text-xs font-mono">No trades yet</div>;
   }
@@ -275,9 +279,10 @@ function TradersView({ traders, suiUsd }) {
         const volUsd = tr.volume * suiUsd;
         const isPos  = tr.pnl >= 0;
         return (
-          <div
+          <button
             key={tr.addr}
-            className="grid grid-cols-[28px_1fr_auto_auto_auto] gap-2 px-4 py-2.5 border-b border-white/5 last:border-0 hover:bg-white/[0.02] transition-colors items-center"
+            onClick={() => navigate(`/portfolio/${tr.addr}`)}
+            className="w-full grid grid-cols-[28px_1fr_auto_auto_auto] gap-2 px-4 py-2.5 border-b border-white/5 last:border-0 hover:bg-white/[0.04] transition-colors items-center text-left group"
           >
             <span className="text-xs font-mono text-white/35">{i + 1}</span>
             <div className="flex items-center gap-2 min-w-0">
@@ -285,7 +290,7 @@ function TradersView({ traders, suiUsd }) {
                 className="w-5 h-5 rounded-full flex-shrink-0"
                 style={{ backgroundColor: walletColor(tr.addr) }}
               />
-              <span className="text-xs font-mono text-white/70 truncate">{shortAddr(tr.addr)}</span>
+              <span className="text-xs font-mono text-white/70 truncate group-hover:text-lime-400 transition-colors">{shortAddr(tr.addr)}</span>
             </div>
             <div className="text-right">
               <div className="text-xs font-mono text-white/80">
@@ -307,7 +312,7 @@ function TradersView({ traders, suiUsd }) {
                   : fmt(Math.abs(tr.pnl)) + ' SUI'}
               </div>
             </div>
-          </div>
+          </button>
         );
       })}
     </div>
