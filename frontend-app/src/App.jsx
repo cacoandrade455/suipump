@@ -1181,13 +1181,7 @@ function HomePage({ onLaunch, lang = 'en' }) {
       <div className="relative mb-2">
         <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/35 pointer-events-none" />
         <input
-          value={search} onChange={e => {
-            const v = e.target.value;
-            setSearch(v);
-            if (v.trim().startsWith('0x') && v.trim().length >= 62) {
-              navigate(`/portfolio/${v.trim()}`);
-            }
-          }}
+          value={search} onChange={e => setSearch(e.target.value)}
           placeholder={t(lang, 'searchPlaceholder')}
           className="w-full bg-white/5 border border-white/10 rounded-xl pl-9 pr-4 py-2.5 text-white text-xs font-mono focus:outline-none focus:border-lime-400/40 transition-colors placeholder-white/20"
         />
@@ -1201,6 +1195,19 @@ function HomePage({ onLaunch, lang = 'en' }) {
             }`}>{opt.label}</button>
         ))}
       </div>
+
+      {/* Portfolio redirect banner for wallet address search */}
+      {search.trim().startsWith('0x') && search.trim().length >= 62 && (
+        <div className="mb-3 flex items-center justify-between bg-lime-400/5 border border-lime-400/20 rounded-xl px-4 py-2.5">
+          <span className="text-xs font-mono text-white/50">Wallet address detected</span>
+          <button
+            onClick={() => navigate(`/portfolio/${search.trim()}`)}
+            className="text-xs font-mono font-bold text-lime-400 hover:text-lime-300 transition-colors"
+          >
+            View Portfolio →
+          </button>
+        </div>
+      )}
 
       <div className="mb-3 flex items-center justify-between">
         <div className="text-xs font-mono text-white/30 tracking-widest">
