@@ -1,9 +1,9 @@
-// v16-holdercount
+// v17-network-banner
 // App.jsx  -  react-router-dom based routing
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, useNavigate, useParams, Link, useLocation } from 'react-router-dom';
 import { ConnectButton, useCurrentAccount, useSuiClient, useDisconnectWallet, useAccounts, ConnectModal } from '@mysten/dapp-kit';
-import { Flame, Rocket, Plus, Gift, TrendingUp, Coins, Users, Trophy, Wallet, Search, Menu, X, Map, Copy, Crown, BarChart3, Github, MessageCircle, Bell, Star, Zap, Activity, ChevronRight } from 'lucide-react';
+import { Flame, Rocket, Plus, Gift, TrendingUp, Coins, Users, Trophy, Wallet, Search, Menu, X, Map, Copy, Crown, BarChart3, Github, MessageCircle, Bell, Star, Zap, Activity, ChevronRight, AlertTriangle } from 'lucide-react';
 
 import { useTokenList } from './useTokenList.js';
 import { useTokenStats } from './useTokenStats.js';
@@ -57,6 +57,41 @@ function timeAgoShort(ts) {
   if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
   if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
   return `${Math.floor(diff / 86_400_000)}d ago`;
+}
+
+// ── Network detection banner ─────────────────────────────────────────────────
+
+function NetworkBanner() {
+  const account = useCurrentAccount();
+  const [dismissed, setDismissed] = useState(
+    () => { try { return sessionStorage.getItem('suipump_net_banner') === '1'; } catch { return false; } }
+  );
+
+  if (dismissed || !account) return null;
+
+  const chains = account.chains ?? [];
+  const onTestnet = chains.length === 0 || chains.some(c => c === 'sui:testnet' || c === 'sui:unknown');
+  if (onTestnet) return null;
+
+  const chainLabel = chains[0]?.replace('sui:', '') ?? 'unknown';
+
+  return (
+    <div className="w-full bg-red-950/60 border-b border-red-500/30 px-4 py-2.5 flex items-center justify-between gap-3 sticky top-[57px] z-30">
+      <div className="flex items-center gap-2.5 min-w-0">
+        <AlertTriangle size={13} className="text-red-400 shrink-0" />
+        <p className="text-[11px] font-mono text-red-300 leading-snug">
+          Your wallet is on <span className="font-bold text-red-200 uppercase">{chainLabel}</span> — SuiPump runs on <span className="font-bold text-red-200">testnet</span>. Switch networks in your wallet to trade.
+        </p>
+      </div>
+      <button
+        onClick={() => { try { sessionStorage.setItem('suipump_net_banner', '1'); } catch {} setDismissed(true); }}
+        className="shrink-0 text-red-400/60 hover:text-red-300 transition-colors"
+        aria-label="Dismiss"
+      >
+        <X size={13} />
+      </button>
+    </div>
+  );
 }
 
 function ScrollToTop() {
@@ -1367,6 +1402,7 @@ export default function App() {
       }} />
       <ScrollToTop />
       <Header onLaunch={() => setShowLaunch(true)} lang={lang} setLang={handleLang} onToggleFeed={() => setShowFeed(o => !o)} showFeed={showFeed} />
+      <NetworkBanner />
       <main className="max-w-6xl mx-auto px-4 py-6">
         <Routes>
           <Route path="/" element={<HomePage onLaunch={() => setShowLaunch(true)} lang={lang} />} />
