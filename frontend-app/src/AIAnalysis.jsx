@@ -3,6 +3,10 @@ import React, { useState } from 'react';
 import { useSuiClient } from '@mysten/dapp-kit';
 import { Sparkles, AlertTriangle, TrendingUp, Minus } from 'lucide-react';
 import { ALL_PACKAGE_IDS } from './constants.js';
+import { paginateMultipleEvents } from './paginateEvents.js';
+
+const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
+const TOKEN_SCALE = 1e6;
 
 function fmt(n, d = 2) {
   if (n == null) return '-';
@@ -16,57 +20,66 @@ export default function AIAnalysis({ curveId, name, symbol, progress, reserveSui
   const [error, setError] = useState(null);
   const [done, setDone] = useState(false);
 
+  // Fetches trade + holder stats from the SAME source HolderList uses
+  // (indexer first, RPC fallback) so the AI's numbers match the holder list.
   async function fetchTradeStats() {
     try {
-      // Query events across ALL package versions (v4/v5/v6) — a token may
-      // live on any package, so querying a single PACKAGE_ID misses most tokens.
-      const queries = [];
-      for (const pkg of ALL_PACKAGE_IDS) {
-        queries.push(
-          client.queryEvents({ query: { MoveEventType: `${pkg}::bonding_curve::TokensPurchased` }, limit: 50 }).catch(() => ({ data: [] })),
-          client.queryEvents({ query: { MoveEventType: `${pkg}::bonding_curve::TokensSold`      }, limit: 50 }).catch(() => ({ data: [] })),
-        );
+      let buys = [], sells = [];
+
+      // ── Indexer path (complete data, up to 500 trades) ──────────────────
+      if (INDEXER_URL) {
+        try {
+          const res = await fetch(`${INDEXER_URL}/token/${curveId}/trades?limit=500`, { signal: AbortSignal.timeout(5000) });
+          if (res.ok) {
+            const rows = await res.json();
+            buys  = rows.filter(r => r.event_type.includes('TokensPurchased'))
+                        .map(r => ({ parsedJson: { ...r.data, curve_id: curveId } }));
+            sells = rows.filter(r => r.event_type.includes('TokensSold'))
+                        .map(r => ({ parsedJson: { ...r.data, curve_id: curveId } }));
+          }
+        } catch {}
       }
-      const results = await Promise.all(queries);
 
-      const buyEvents  = [];
-      const sellEvents = [];
-      results.forEach((res, idx) => {
-        const rows = (res?.data || []).filter(e => e.parsedJson?.curve_id === curveId);
-        // even index = TokensPurchased, odd index = TokensSold
-        if (idx % 2 === 0) buyEvents.push(...rows);
-        else               sellEvents.push(...rows);
-      });
+      // ── RPC fallback — all package versions (v4/v5/v6) ──────────────────
+      if (buys.length === 0 && sells.length === 0) {
+        const buyTypes  = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensPurchased`);
+        const sellTypes = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensSold`);
+        const eventMap  = await paginateMultipleEvents(client, [...buyTypes, ...sellTypes], { order: 'descending', maxPages: 20 });
+        buys  = buyTypes.flatMap(bt  => (eventMap[bt]  || []).filter(e => e.parsedJson?.curve_id === curveId));
+        sells = sellTypes.flatMap(st => (eventMap[st] || []).filter(e => e.parsedJson?.curve_id === curveId));
+      }
 
-      const buys  = buyEvents.length;
-      const sells = sellEvents.length;
+      const buyCount  = buys.length;
+      const sellCount = sells.length;
 
       // Volume from buy sui_in + sell sui_out
       const volumeSui =
-        buyEvents.reduce((acc, e)  => acc + Number(e.parsedJson?.sui_in  ?? 0), 0) / 1e9 +
-        sellEvents.reduce((acc, e) => acc + Number(e.parsedJson?.sui_out ?? 0), 0) / 1e9;
+        buys.reduce((acc, e)  => acc + Number(e.parsedJson?.sui_in  ?? 0), 0) / 1e9 +
+        sells.reduce((acc, e) => acc + Number(e.parsedJson?.sui_out ?? 0), 0) / 1e9;
 
-      // Approximate holder balances from events
-      const balances = {};
-      buyEvents.forEach(e => {
-        const addr   = e.parsedJson?.buyer;
-        const tokens = Number(e.parsedJson?.tokens_out ?? 0);
-        if (addr) balances[addr] = (balances[addr] || 0) + tokens;
-      });
-      sellEvents.forEach(e => {
-        const addr   = e.parsedJson?.seller;
-        const tokens = Number(e.parsedJson?.tokens_in ?? 0);
-        if (addr) balances[addr] = (balances[addr] || 0) - tokens;
-      });
+      // Reconstruct holder balances — identical method to HolderList
+      const balanceMap = new Map();
+      for (const e of buys) {
+        const addr = e.parsedJson?.buyer;
+        const tok  = BigInt(e.parsedJson?.tokens_out ?? 0);
+        if (addr) balanceMap.set(addr, (balanceMap.get(addr) ?? 0n) + tok);
+      }
+      for (const e of sells) {
+        const addr = e.parsedJson?.seller;
+        const tok  = BigInt(e.parsedJson?.tokens_in ?? 0);
+        if (addr) balanceMap.set(addr, (balanceMap.get(addr) ?? 0n) - tok);
+      }
 
-      const holders    = Object.values(balances).filter(v => v > 0);
-      const holderCount = holders.length;
-      const top3        = [...holders].sort((a, b) => b - a).slice(0, 3).reduce((a, b) => a + b, 0);
-      // % of total 1B supply (atomic units = 1B * 1e6)
-      const TOTAL_SUPPLY_ATOMIC = 1_000_000_000 * 1e6;
-      const topHolderPct = (top3 / TOTAL_SUPPLY_ATOMIC) * 100;
+      const holderBalances = [...balanceMap.values()].filter(v => v > 0n);
+      const holderCount    = holderBalances.length;
 
-      return { buys, sells, volumeSui, holderCount, topHolderPct };
+      // Top-3 concentration as % of total 1B supply
+      const TOTAL_SUPPLY_ATOMIC = 1_000_000_000 * TOKEN_SCALE;
+      const top3 = [...holderBalances].sort((a, b) => (b > a ? 1 : b < a ? -1 : 0)).slice(0, 3)
+        .reduce((a, b) => a + b, 0n);
+      const topHolderPct = (Number(top3) / TOTAL_SUPPLY_ATOMIC) * 100;
+
+      return { buys: buyCount, sells: sellCount, volumeSui, holderCount, topHolderPct };
     } catch {
       return { buys: 0, sells: 0, volumeSui: 0, holderCount: 0, topHolderPct: 0 };
     }
