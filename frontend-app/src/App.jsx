@@ -1036,25 +1036,33 @@ function HomePage({ onLaunch, lang = 'en' }) {
     let cancelled = false;
     async function loadCurveStates() {
       try {
-        const PACKAGE_ID_LOCAL = '0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8';
-        const buyType  = `${PACKAGE_ID_LOCAL}::bonding_curve::TokensPurchased`;
-        const sellType = `${PACKAGE_ID_LOCAL}::bonding_curve::TokensSold`;
+        // Query last-trade events across ALL package versions (v4/v5/v6),
+        // not just one — otherwise newer-package tokens get stale sort data.
+        const ALL_PKGS = [PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6].filter(Boolean);
+        const eventQueries = [];
+        for (const pkg of ALL_PKGS) {
+          eventQueries.push(
+            client.queryEvents({ query: { MoveEventType: `${pkg}::bonding_curve::TokensPurchased` }, limit: 100, order: 'descending' }).catch(() => ({ data: [] })),
+            client.queryEvents({ query: { MoveEventType: `${pkg}::bonding_curve::TokensSold`      }, limit: 100, order: 'descending' }).catch(() => ({ data: [] })),
+          );
+        }
 
         // Fetch curve objects + last trade events in parallel
-        const [objResults, buysRes, sellsRes] = await Promise.all([
+        const [objResults, ...eventResults] = await Promise.all([
           Promise.all(tokens.map(t => client.getObject({ id: t.curveId, options: { showContent: true } }).catch(() => null))),
-          client.queryEvents({ query: { MoveEventType: buyType  }, limit: 100, order: 'descending' }),
-          client.queryEvents({ query: { MoveEventType: sellType }, limit: 100, order: 'descending' }),
+          ...eventQueries,
         ]);
 
         if (cancelled) return;
 
-        // Build lastTradeTime map from most recent 100 buy+sell events
+        // Build lastTradeTime map from most recent buy+sell events across all packages
         const lastTradeTimes = {};
-        for (const evt of [...(buysRes.data || []), ...(sellsRes.data || [])]) {
-          const cid = evt.parsedJson?.curve_id;
-          const ts  = evt.timestampMs ? Number(evt.timestampMs) : 0;
-          if (cid && ts > (lastTradeTimes[cid] || 0)) lastTradeTimes[cid] = ts;
+        for (const res of eventResults) {
+          for (const evt of (res?.data || [])) {
+            const cid = evt.parsedJson?.curve_id;
+            const ts  = evt.timestampMs ? Number(evt.timestampMs) : 0;
+            if (cid && ts > (lastTradeTimes[cid] || 0)) lastTradeTimes[cid] = ts;
+          }
         }
 
         const map = {};
