@@ -2,7 +2,7 @@
 // PortfolioPage.jsx
 import React, { useState, useEffect, useMemo } from 'react';
 import { useCurrentAccount, useSuiClient, useSignAndExecuteTransaction } from '@mysten/dapp-kit';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Wallet, TrendingUp, Plus } from 'lucide-react';
 import { useTokenList } from './useTokenList.js';
 import { priceMistPerToken, mistToSui } from './curve.js';
@@ -604,13 +604,38 @@ function PnlShareButton({ tk, unrealizedPnl, currentPrice, mascotDataUrl }) {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
+// ── PFP storage key ──────────────────────────────────────────────────────────
+function pfpKey(addr) { return `suipump_pfp_${addr}`; }
+function getPfp(addr) { try { return localStorage.getItem(pfpKey(addr)) || ''; } catch { return ''; } }
+function setPfp(addr, url) { try { localStorage.setItem(pfpKey(addr), url); } catch {} }
+
 export default function PortfolioPage({ onBack, lang = 'en' }) {
   const account    = useCurrentAccount();
   const client     = useSuiClient();
   const { tokens } = useTokenList();
+  const navigate   = useNavigate();
+  const { walletAddress } = useParams();
+
+  // walletAddress from URL params takes priority; fall back to connected wallet
+  const viewAddress = walletAddress || account?.address;
+  const isOwnWallet = !walletAddress || (account?.address && walletAddress.toLowerCase() === account.address.toLowerCase());
+
+  // Fake account object so tabs work with any address
+  const viewAccount = viewAddress ? { address: viewAddress } : null;
+
   const [tab, setTab]               = useState('holdings');
   const [suiUsd, setSuiUsd]         = useState(0);
   const [totalValueSui, setTotalValueSui] = useState(0);
+  const [pfpUrl, setPfpUrl]         = useState('');
+  const [editingPfp, setEditingPfp] = useState(false);
+  const [pfpInput, setPfpInput]     = useState('');
+
+  // Load PFP from localStorage
+  useEffect(() => {
+    if (viewAddress) {
+      setPfpUrl(getPfp(viewAddress));
+    }
+  }, [viewAddress]);
 
   React.useEffect(() => {
     async function fetchPrice() {
@@ -631,11 +656,36 @@ export default function PortfolioPage({ onBack, lang = 'en' }) {
     return () => clearInterval(timer);
   }, []);
 
+  function savePfp() {
+    const url = pfpInput.trim();
+    if (url && viewAddress) {
+      setPfp(viewAddress, url);
+      setPfpUrl(url);
+    }
+    setEditingPfp(false);
+    setPfpInput('');
+  }
+
   const TABS = [
     { id: 'holdings', label: t(lang, 'holdings'), icon: <Wallet size={11} /> },
     { id: 'traded',   label: t(lang, 'traded'),   icon: <TrendingUp size={11} /> },
     { id: 'created',  label: t(lang, 'created'),  icon: <Plus size={11} /> },
   ];
+
+  if (!viewAddress) {
+    return (
+      <div>
+        <button onClick={onBack} className="flex items-center gap-2 text-xs font-mono text-white/40 hover:text-white mb-6 transition-colors">
+          <ArrowLeft size={12} /> {t(lang, 'backToHome')}
+        </button>
+        <div className="max-w-2xl mx-auto">
+          <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-8 text-center">
+            <div className="text-sm font-mono text-white/30">{t(lang, 'connectToView')}</div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -644,32 +694,86 @@ export default function PortfolioPage({ onBack, lang = 'en' }) {
       </button>
 
       <div className="max-w-2xl mx-auto space-y-4">
+
+        {/* Viewing someone else banner */}
+        {!isOwnWallet && (
+          <div className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-2.5 flex items-center justify-between">
+            <span className="text-[10px] font-mono text-white/40">Viewing wallet</span>
+            {account && (
+              <button
+                onClick={() => navigate('/portfolio')}
+                className="text-[10px] font-mono text-lime-400 hover:text-lime-300 transition-colors"
+              >
+                View my portfolio →
+              </button>
+            )}
+          </div>
+        )}
+
         {/* Header */}
         <div className="rounded-3xl border border-white/10 bg-gradient-to-br from-lime-950/20 via-black to-black p-6 relative overflow-hidden">
           <div className="absolute top-0 left-1/2 -translate-x-1/2 w-64 h-16 bg-lime-400/10 blur-3xl rounded-full pointer-events-none" />
           <div className="relative">
-            <div className="flex items-center gap-3 mb-2">
-              <Wallet className="text-lime-400" size={20} />
-              <h1 className="text-xl font-bold text-white" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
-                {t(lang, 'portfolioTitle')}
-              </h1>
-            </div>
-            {account ? (
-              <>
-                <div className="text-[10px] font-mono text-white/35 break-all mb-3">{account.address}</div>
-                {totalValueSui > 0 && (
-                  <div className="flex items-baseline gap-2">
-                    {suiUsd > 0 && (
-                      <span className="text-2xl font-bold text-white" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
-                        ${(totalValueSui * suiUsd).toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                      </span>
-                    )}
-                    <span className="text-sm font-mono text-white/40">{totalValueSui.toFixed(4)} SUI</span>
-                  </div>
+            <div className="flex items-center gap-4 mb-3">
+              {/* PFP */}
+              <div className="relative group/pfp shrink-0">
+                <div className="w-14 h-14 rounded-full border-2 border-white/10 overflow-hidden bg-lime-950/30 flex items-center justify-center">
+                  {pfpUrl
+                    ? <img src={pfpUrl} alt="pfp" className="w-full h-full object-cover"
+                        onError={() => setPfpUrl('')} />
+                    : <span className="text-2xl">🔥</span>
+                  }
+                </div>
+                {isOwnWallet && (
+                  <button
+                    onClick={() => { setEditingPfp(true); setPfpInput(pfpUrl); }}
+                    className="absolute inset-0 rounded-full bg-black/60 opacity-0 group-hover/pfp:opacity-100 transition-opacity flex items-center justify-center"
+                  >
+                    <span className="text-[9px] font-mono text-white">EDIT</span>
+                  </button>
                 )}
-              </>
-            ) : (
-              <div className="text-sm font-mono text-white/30">{t(lang, 'connectToView')}</div>
+              </div>
+
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-3 mb-1">
+                  <Wallet className="text-lime-400 shrink-0" size={16} />
+                  <h1 className="text-lg font-bold text-white truncate" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
+                    {t(lang, 'portfolioTitle')}
+                  </h1>
+                </div>
+                <div className="text-[10px] font-mono text-white/35 break-all">{viewAddress}</div>
+              </div>
+            </div>
+
+            {/* PFP edit form */}
+            {editingPfp && isOwnWallet && (
+              <div className="flex gap-2 mb-3">
+                <input
+                  value={pfpInput}
+                  onChange={e => setPfpInput(e.target.value)}
+                  placeholder="Paste Imgur image URL…"
+                  className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-[11px] font-mono text-white placeholder-white/20 focus:outline-none focus:border-lime-400/50"
+                />
+                <button onClick={savePfp}
+                  className="px-3 py-1.5 bg-lime-400 text-black text-[10px] font-mono font-bold rounded-lg hover:bg-lime-300 transition-colors">
+                  SAVE
+                </button>
+                <button onClick={() => setEditingPfp(false)}
+                  className="px-3 py-1.5 bg-white/5 text-white/40 text-[10px] font-mono rounded-lg hover:bg-white/10 transition-colors">
+                  ✕
+                </button>
+              </div>
+            )}
+
+            {totalValueSui > 0 && (
+              <div className="flex items-baseline gap-2">
+                {suiUsd > 0 && (
+                  <span className="text-2xl font-bold text-white" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
+                    ${(totalValueSui * suiUsd).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                  </span>
+                )}
+                <span className="text-sm font-mono text-white/40">{totalValueSui.toFixed(4)} SUI</span>
+              </div>
             )}
           </div>
         </div>
@@ -690,9 +794,9 @@ export default function PortfolioPage({ onBack, lang = 'en' }) {
 
         {/* Content */}
         <div className="rounded-2xl border border-white/10 bg-white/[0.03] overflow-hidden">
-          {tab === 'holdings' && <HoldingsTab account={account} tokens={tokens} client={client} lang={lang} onTotalValue={setTotalValueSui} />}
-          {tab === 'traded'   && <TradedTab   account={account} tokens={tokens} client={client} lang={lang} />}
-          {tab === 'created'  && <CreatedTab  account={account} tokens={tokens} client={client} lang={lang} />}
+          {tab === 'holdings' && <HoldingsTab account={viewAccount} tokens={tokens} client={client} lang={lang} onTotalValue={setTotalValueSui} />}
+          {tab === 'traded'   && <TradedTab   account={viewAccount} tokens={tokens} client={client} lang={lang} />}
+          {tab === 'created'  && <CreatedTab  account={viewAccount} tokens={tokens} client={client} lang={lang} />}
         </div>
 
         <div className="text-[9px] font-mono text-white/15 text-center">
