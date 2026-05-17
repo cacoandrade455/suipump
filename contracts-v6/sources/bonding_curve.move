@@ -366,6 +366,25 @@ module suipump::bonding_curve {
     }
 
     // ---------- Pricing math ----------
+    //
+    // quote_out: constant-product AMM swap output.
+    //   out = (y * dx) / (x + dx)
+    //
+    // u128 overflow safety proof (for auditors):
+    //   All three inputs are u64, so each is < 2^64 (~1.84e19).
+    //   The only multiplication is `y_u128 * dx_u128`.
+    //   A u128 holds values up to 2^128 - 1 (~3.40e38).
+    //   Worst case y * dx < 2^64 * 2^64 = 2^128, which is within u128 range
+    //   (equality is unreachable since both operands are strictly < 2^64).
+    //   In practice values are far smaller: token reserves are bounded by
+    //   VIRTUAL_TOKEN_RESERVE (~1.073e15) and SUI reserves by the graduation
+    //   threshold plus virtual reserve, so the real product is < ~1e34.
+    //   The addition `x_u128 + dx_u128` is two u64s in u128 space: max
+    //   < 2^65, no overflow. The divisor is always > 0 because callers
+    //   only invoke quote_out with dx > 0 (zero-amount trades are rejected
+    //   upstream via EZeroAmount), so x + dx >= dx > 0.
+    //   The final `as u64` cast is safe: out <= y (since dx/(x+dx) < 1),
+    //   and y originates from a u64 reserve value.
     fun quote_out(dx: u64, x_reserve: u64, y_reserve: u64): u64 {
         let dx_u128 = dx as u128;
         let x_u128  = x_reserve as u128;
