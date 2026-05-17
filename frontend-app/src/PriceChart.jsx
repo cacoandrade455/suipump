@@ -6,7 +6,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useSuiClient } from '@mysten/dapp-kit';
 import { createChart, CandlestickSeries, AreaSeries } from 'lightweight-charts';
-import { PACKAGE_ID } from './constants.js';
+import { ALL_PACKAGE_IDS } from './constants.js';
 import { paginateMultipleEvents } from './paginateEvents.js';
 
 const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
@@ -120,13 +120,13 @@ export default function PriceChart({ curveId, refreshKey }) {
             }
           } catch {}
         }
-        // Fall back to RPC pagination
-        const buyType  = `${PACKAGE_ID}::bonding_curve::TokensPurchased`;
-        const sellType = `${PACKAGE_ID}::bonding_curve::TokensSold`;
-        const eventMap = await paginateMultipleEvents(client, [buyType, sellType], { order: 'ascending', maxPages: 20 });
+        // Fall back to RPC pagination — query all package versions (v4/v5/v6)
+        const buyTypes  = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensPurchased`);
+        const sellTypes = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensSold`);
+        const eventMap = await paginateMultipleEvents(client, [...buyTypes, ...sellTypes], { order: 'ascending', maxPages: 20 });
         const all = [
-          ...eventMap[buyType].map(e => ({ ...e, kind: 'buy' })),
-          ...eventMap[sellType].map(e => ({ ...e, kind: 'sell' })),
+          ...buyTypes.flatMap(bt  => (eventMap[bt]  || []).map(e => ({ ...e, kind: 'buy'  }))),
+          ...sellTypes.flatMap(st => (eventMap[st] || []).map(e => ({ ...e, kind: 'sell' }))),
         ]
           .filter(e => e.parsedJson?.curve_id === curveId)
           .sort((a, b) => Number(a.timestampMs) - Number(b.timestampMs));
