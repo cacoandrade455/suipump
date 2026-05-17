@@ -14,7 +14,6 @@ import express from 'express';
 import cors from 'cors';
 import {
   getGlobalStats,
-  getAllTokenStats,
   getTokenStats,
   getTradeHistory,
   getAllCurves,
@@ -69,18 +68,10 @@ app.get('/stats', async (req, res) => {
 
 app.get('/tokens', async (req, res) => {
   try {
-    const [curves, statsMap] = await Promise.all([getAllCurves(), getAllTokenStats()]);
-    const tokens = curves.map(c => ({
-      curveId:       c.curve_id,
-      creator:       c.creator,
-      name:          c.name,
-      symbol:        c.symbol,
-      tokenType:     c.token_type,
-      packageId:     c.package_id,
-      createdAt:     c.created_at,
-      stats:         statsMap[c.curve_id] ?? null,
-    }));
-    res.json(tokens);
+    // getAllCurves() already returns camelCase columns + joined stats.
+    // Pass through directly so field names stay consistent with the frontend.
+    const curves = await getAllCurves();
+    res.json(curves);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
