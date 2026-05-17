@@ -3,9 +3,11 @@ import React, { useState, useEffect } from 'react';
 import { useSuiClient } from '@mysten/dapp-kit';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, TrendingUp, Trophy, Zap } from 'lucide-react';
-import { PACKAGE_ID } from './constants.js';
+import { ALL_PACKAGE_IDS } from './constants.js';
 import { useTokenList } from './useTokenList.js';
 import { paginateMultipleEvents } from './paginateEvents.js';
+
+const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
 import { t } from './i18n.js';
 
 const MIST_PER_SUI = 1e9;
@@ -43,64 +45,92 @@ export default function LeaderboardPage({ onBack, lang = 'en' }) {
   useEffect(() => {
     let cancelled = false;
 
+    // Indexer path — pre-aggregated, fast, all packages.
+    async function loadFromIndexer() {
+      const [tokRes, trdRes] = await Promise.all([
+        fetch(`${INDEXER_URL}/leaderboard/volume?limit=100`,  { signal: AbortSignal.timeout(5000) }),
+        fetch(`${INDEXER_URL}/leaderboard/traders?limit=20`, { signal: AbortSignal.timeout(5000) }),
+      ]);
+      if (!tokRes.ok || !trdRes.ok) throw new Error('indexer not ok');
+
+      const tokRows = await tokRes.json();
+      const trdRows = await trdRes.json();
+
+      const sortedTokens = tokRows.map(r => ({
+        curveId: r.curve_id,
+        volume:  Number(r.volume_sui ?? 0),
+        trades:  Number(r.trades ?? 0),
+      }));
+      const sortedTraders = trdRows.map(r => ({
+        addr:   r.wallet,
+        volume: Number(r.volume_sui ?? 0),
+        trades: Number(r.trades ?? 0),
+      }));
+      return { sortedTokens, sortedTraders };
+    }
+
+    // RPC fallback — query all package versions (v4/v5/v6).
+    async function loadFromRpc() {
+      const buyTypes  = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensPurchased`);
+      const sellTypes = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensSold`);
+      const eventMap = await paginateMultipleEvents(
+        client, [...buyTypes, ...sellTypes], { order: 'descending', maxPages: 20 }
+      );
+
+      const buysData  = buyTypes.flatMap(bt  => eventMap[bt]  || []);
+      const sellsData = sellTypes.flatMap(st => eventMap[st] || []);
+
+      const volumeByCurve = {}, tradesByCurve = {};
+      const volumeByTrader = {}, tradesByTrader = {};
+
+      for (const e of buysData) {
+        const j = e.parsedJson || {};
+        const sui = Number(j.sui_in ?? 0) / MIST_PER_SUI;
+        if (j.curve_id) {
+          volumeByCurve[j.curve_id] = (volumeByCurve[j.curve_id] || 0) + sui;
+          tradesByCurve[j.curve_id] = (tradesByCurve[j.curve_id] || 0) + 1;
+        }
+        if (j.buyer) {
+          volumeByTrader[j.buyer] = (volumeByTrader[j.buyer] || 0) + sui;
+          tradesByTrader[j.buyer] = (tradesByTrader[j.buyer] || 0) + 1;
+        }
+      }
+      for (const e of sellsData) {
+        const j = e.parsedJson || {};
+        const sui = Number(j.sui_out ?? 0) / MIST_PER_SUI;
+        if (j.curve_id) {
+          volumeByCurve[j.curve_id] = (volumeByCurve[j.curve_id] || 0) + sui;
+          tradesByCurve[j.curve_id] = (tradesByCurve[j.curve_id] || 0) + 1;
+        }
+        if (j.seller) {
+          volumeByTrader[j.seller] = (volumeByTrader[j.seller] || 0) + sui;
+          tradesByTrader[j.seller] = (tradesByTrader[j.seller] || 0) + 1;
+        }
+      }
+
+      const sortedTokens = Object.entries(volumeByCurve)
+        .map(([curveId, volume]) => ({ curveId, volume, trades: tradesByCurve[curveId] || 0 }))
+        .sort((a, b) => b.volume - a.volume);
+      const sortedTraders = Object.entries(volumeByTrader)
+        .map(([addr, volume]) => ({ addr, volume, trades: tradesByTrader[addr] || 0 }))
+        .sort((a, b) => b.volume - a.volume)
+        .slice(0, 20);
+
+      return { sortedTokens, sortedTraders };
+    }
+
     async function load() {
       try {
-        const buyType = `${PACKAGE_ID}::bonding_curve::TokensPurchased`;
-        const sellType = `${PACKAGE_ID}::bonding_curve::TokensSold`;
-
-        const eventMap = await paginateMultipleEvents(
-          client,
-          [buyType, sellType],
-          { order: 'descending', maxPages: 20 }
-        );
-
-        if (cancelled) return;
-
-        const buysData = eventMap[buyType];
-        const sellsData = eventMap[sellType];
-
-        const volumeByCurve = {};
-        const tradesByCurve = {};
-        for (const e of buysData) {
-          const id = e.parsedJson?.curve_id;
-          if (!id) continue;
-          volumeByCurve[id] = (volumeByCurve[id] || 0) + Number(e.parsedJson.sui_in) / MIST_PER_SUI;
-          tradesByCurve[id] = (tradesByCurve[id] || 0) + 1;
+        let data;
+        if (INDEXER_URL) {
+          try { data = await loadFromIndexer(); }
+          catch { data = await loadFromRpc(); }
+        } else {
+          data = await loadFromRpc();
         }
-        for (const e of sellsData) {
-          const id = e.parsedJson?.curve_id;
-          if (!id) continue;
-          volumeByCurve[id] = (volumeByCurve[id] || 0) + Number(e.parsedJson.sui_out) / MIST_PER_SUI;
-          tradesByCurve[id] = (tradesByCurve[id] || 0) + 1;
-        }
-
-        const volumeByTrader = {};
-        const tradesByTrader = {};
-        for (const e of buysData) {
-          const addr = e.parsedJson?.buyer;
-          if (!addr) continue;
-          volumeByTrader[addr] = (volumeByTrader[addr] || 0) + Number(e.parsedJson.sui_in) / MIST_PER_SUI;
-          tradesByTrader[addr] = (tradesByTrader[addr] || 0) + 1;
-        }
-        for (const e of sellsData) {
-          const addr = e.parsedJson?.seller;
-          if (!addr) continue;
-          volumeByTrader[addr] = (volumeByTrader[addr] || 0) + Number(e.parsedJson.sui_out) / MIST_PER_SUI;
-          tradesByTrader[addr] = (tradesByTrader[addr] || 0) + 1;
-        }
-
-        const sortedTokens = Object.entries(volumeByCurve)
-          .map(([curveId, volume]) => ({ curveId, volume, trades: tradesByCurve[curveId] || 0 }))
-          .sort((a, b) => b.volume - a.volume);
-
-        const sortedTraders = Object.entries(volumeByTrader)
-          .map(([addr, volume]) => ({ addr, volume, trades: tradesByTrader[addr] || 0 }))
-          .sort((a, b) => b.volume - a.volume)
-          .slice(0, 20);
-
         if (!cancelled) {
-          setTokenVolumes(sortedTokens);
-          setTopTraders(sortedTraders);
+          setTokenVolumes(data.sortedTokens);
+          setTopTraders(data.sortedTraders);
           setLoading(false);
         }
       } catch {
