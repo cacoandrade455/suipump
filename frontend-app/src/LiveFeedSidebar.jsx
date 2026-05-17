@@ -3,8 +3,10 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useSuiClient } from '@mysten/dapp-kit';
 import { useNavigate } from 'react-router-dom';
 import { Zap, X } from 'lucide-react';
-import { PACKAGE_ID } from './constants.js';
+import { ALL_PACKAGE_IDS } from './constants.js';
 import { paginateMultipleEvents } from './paginateEvents.js';
+
+const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
 
 const MIST_PER_SUI = 1e9;
 const MAX_FEED = 40;
@@ -37,60 +39,94 @@ export default function LiveFeedSidebar({ tokens, onClose }) {
   useEffect(() => {
     let cancelled = false;
 
+    // Push a normalized trade item into the feed if not already seen.
+    function pushItem(newItems, { id, type, curveId, wallet, suiAmt, ts }) {
+      if (!id || seenRef.current.has(id)) return;
+      if (suiAmt < 0.01) return;
+      seenRef.current.add(id);
+      const token = tokenMap.current[curveId];
+      newItems.push({
+        id, type, curveId,
+        name:   token?.name   || '???',
+        symbol: token?.symbol || '???',
+        wallet, suiAmt, ts,
+      });
+    }
+
+    async function pollIndexer() {
+      const res = await fetch(`${INDEXER_URL}/trades/recent?limit=50`, {
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!res.ok) throw new Error('indexer not ok');
+      const rows = await res.json();
+      const newItems = [];
+      for (const r of rows) {
+        const isBuy = r.event_type?.includes('TokensPurchased');
+        const d = r.data || {};
+        pushItem(newItems, {
+          id:      d.tx_digest ? `${d.tx_digest}_${isBuy ? 'b' : 's'}` : `${r.curve_id}_${r.timestamp_ms}`,
+          type:    isBuy ? 'buy' : 'sell',
+          curveId: r.curve_id,
+          wallet:  isBuy ? d.buyer : d.seller,
+          suiAmt:  Number(isBuy ? d.sui_in : d.sui_out ?? 0) / MIST_PER_SUI,
+          ts:      r.timestamp_ms ? Number(r.timestamp_ms) : Date.now(),
+        });
+      }
+      return newItems;
+    }
+
+    async function pollRpc() {
+      // RPC fallback — query all package versions (v4/v5/v6)
+      const buyTypes  = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensPurchased`);
+      const sellTypes = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensSold`);
+      const eventMap = await paginateMultipleEvents(
+        client, [...buyTypes, ...sellTypes], { order: 'descending', maxPages: 3 }
+      );
+      const newItems = [];
+      for (const bt of buyTypes) {
+        for (const evt of (eventMap[bt] || [])) {
+          const j = evt.parsedJson || {};
+          pushItem(newItems, {
+            id:      `${evt.id?.txDigest}_${evt.id?.eventSeq}`,
+            type:    'buy',
+            curveId: j.curve_id,
+            wallet:  j.buyer,
+            suiAmt:  Number(j.sui_in ?? 0) / MIST_PER_SUI,
+            ts:      evt.timestampMs ? Number(evt.timestampMs) : Date.now(),
+          });
+        }
+      }
+      for (const st of sellTypes) {
+        for (const evt of (eventMap[st] || [])) {
+          const j = evt.parsedJson || {};
+          pushItem(newItems, {
+            id:      `${evt.id?.txDigest}_${evt.id?.eventSeq}`,
+            type:    'sell',
+            curveId: j.curve_id,
+            wallet:  j.seller,
+            suiAmt:  Number(j.sui_out ?? 0) / MIST_PER_SUI,
+            ts:      evt.timestampMs ? Number(evt.timestampMs) : Date.now(),
+          });
+        }
+      }
+      return newItems;
+    }
+
     async function poll() {
       try {
-        const buyType  = `${PACKAGE_ID}::bonding_curve::TokensPurchased`;
-        const sellType = `${PACKAGE_ID}::bonding_curve::TokensSold`;
-
-        const eventMap = await paginateMultipleEvents(
-          client,
-          [buyType, sellType],
-          { order: 'descending', maxPages: 3 }
-        );
+        let newItems = [];
+        // Indexer first — fast and pre-aggregated across all packages.
+        if (INDEXER_URL) {
+          try {
+            newItems = await pollIndexer();
+          } catch {
+            newItems = await pollRpc();
+          }
+        } else {
+          newItems = await pollRpc();
+        }
 
         if (cancelled) return;
-
-        const newItems = [];
-
-        for (const evt of eventMap[buyType]) {
-          const id = `${evt.id?.txDigest}_${evt.id?.eventSeq}`;
-          if (seenRef.current.has(id)) continue;
-          seenRef.current.add(id);
-          const j = evt.parsedJson;
-          const suiAmt = Number(j.sui_in ?? 0) / MIST_PER_SUI;
-          if (suiAmt < 0.01) continue;
-          const token = tokenMap.current[j.curve_id];
-          newItems.push({
-            id,
-            type: 'buy',
-            curveId: j.curve_id,
-            name: token?.name || '???',
-            symbol: token?.symbol || '???',
-            wallet: j.buyer,
-            suiAmt,
-            ts: evt.timestampMs ? Number(evt.timestampMs) : Date.now(),
-          });
-        }
-
-        for (const evt of eventMap[sellType]) {
-          const id = `${evt.id?.txDigest}_${evt.id?.eventSeq}`;
-          if (seenRef.current.has(id)) continue;
-          seenRef.current.add(id);
-          const j = evt.parsedJson;
-          const suiAmt = Number(j.sui_out ?? 0) / MIST_PER_SUI;
-          if (suiAmt < 0.01) continue;
-          const token = tokenMap.current[j.curve_id];
-          newItems.push({
-            id,
-            type: 'sell',
-            curveId: j.curve_id,
-            name: token?.name || '???',
-            symbol: token?.symbol || '???',
-            wallet: j.seller,
-            suiAmt,
-            ts: evt.timestampMs ? Number(evt.timestampMs) : Date.now(),
-          });
-        }
 
         if (newItems.length > 0) {
           newItems.sort((a, b) => b.ts - a.ts);
