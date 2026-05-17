@@ -1115,6 +1115,7 @@ function HomePage({ onLaunch, lang = 'en' }) {
     if (tok.name?.toLowerCase().includes(q)) return true;
     if (tok.symbol?.toLowerCase().includes(q)) return true;
     if (q.startsWith('0x') && tok.curveId?.toLowerCase().includes(q)) return true;
+    if (q.startsWith('0x') && tok.creator?.toLowerCase().includes(q)) return true;
     return false;
   });
 
