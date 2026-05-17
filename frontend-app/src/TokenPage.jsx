@@ -1213,9 +1213,6 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
           {/* Chart */}
           <PriceChart curveId={curveId} tokenType={tokenType} suiUsd={suiUsd} />
 
-          {/* Trades / Holders */}
-          <TradesHoldersBlock curveId={curveId} tokenType={tokenType} suiUsd={suiUsd} lang={lang} creator={creatorAddr} />
-
           {/* AI Analysis */}
           <AIAnalysis
             curveId={curveId}
@@ -1229,12 +1226,37 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
             tokensSoldWhole={Number(tokensSold) / 10 ** TOKEN_DECIMALS}
           />
 
+          {/* Buy/Sell panel — mobile only (desktop shows in right column) */}
+          <div className="lg:hidden">
+            <TradePanelContent
+              lang={lang}
+              side={side} setSide={setSide}
+              amount={amount} setAmount={setAmount}
+              slippage={slippage} setSlippage={setSlippage}
+              quote={quote}
+              txStatus={txStatus} txMsg={txMsg}
+              account={account}
+              onExecute={executeTrade}
+              priceSui={priceSui} priceUsd={priceUsd} suiUsd={suiUsd}
+              symbol={symbol}
+              graduated={graduated}
+              suiBalance={suiBalance} tokenBalance={tokenBalance}
+              isCreator={isCreator} creatorFeesMist={creatorFeesMist}
+              curveId={curveId} tokenType={tokenType}
+              packageIdHint={pkgId}
+              curveState={curveState}
+            />
+          </div>
+
+          {/* Trades / Holders */}
+          <TradesHoldersBlock curveId={curveId} tokenType={tokenType} suiUsd={suiUsd} lang={lang} creator={creatorAddr} />
+
           {/* Comments */}
           <CommentsBlock curveId={curveId} lang={lang} />
         </div>
 
-        {/* Right column */}
-        <div className="space-y-4">
+        {/* Right column — hidden on mobile, shown on desktop */}
+        <div className="hidden lg:block space-y-4">
           <TradePanelContent
             lang={lang}
             side={side} setSide={setSide}
