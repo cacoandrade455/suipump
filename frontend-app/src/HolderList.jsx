@@ -32,7 +32,7 @@ function walletColor(addr) {
   return `hsl(${hue}, 70%, 55%)`;
 }
 
-export default function HolderList({ curveId, tokenType, suiUsd = 0 }) {
+export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = null }) {
   const client = useSuiClient();
   const [tab, setTab] = useState('holders');
   const [holders, setHolders] = useState([]);
@@ -180,7 +180,7 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0 }) {
       {loading ? (
         <div className="py-10 text-center text-white/35 text-xs font-mono">Loading…</div>
       ) : tab === 'holders' ? (
-        <HoldersView holders={holders} />
+        <HoldersView holders={holders} creator={creator} />
       ) : (
         <TradersView traders={traders} suiUsd={suiUsd} />
       )}
@@ -188,7 +188,7 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0 }) {
   );
 }
 
-function HoldersView({ holders }) {
+function HoldersView({ holders, creator }) {
   if (!holders.length) {
     return <div className="py-10 text-center text-white/35 text-xs font-mono">No holders yet</div>;
   }
@@ -214,6 +214,11 @@ function HoldersView({ holders }) {
               style={{ backgroundColor: walletColor(h.addr) }}
             />
             <span className="text-xs font-mono text-white/70 truncate">{shortAddr(h.addr)}</span>
+            {creator && h.addr === creator && (
+              <span className="text-[9px] font-mono font-bold text-lime-400 bg-lime-400/10 border border-lime-400/30 rounded px-1.5 py-0.5 flex-shrink-0">
+                DEV
+              </span>
+            )}
           </div>
           <span className="text-xs font-mono text-white/70 text-right">{fmt(h.balance, 0)}</span>
           <span className="text-xs font-mono text-lime-400/80 text-right w-16">{h.pct.toFixed(2)}%</span>

@@ -733,7 +733,7 @@ function TradePanelContent({
 
 // ── Trades / Holders toggle block ─────────────────────────────────────────────
 
-function TradesHoldersBlock({ curveId, tokenType, suiUsd, lang }) {
+function TradesHoldersBlock({ curveId, tokenType, suiUsd, lang, creator }) {
   const [tab, setTab] = useState('trades');
   return (
     <div className="space-y-0">
@@ -750,7 +750,7 @@ function TradesHoldersBlock({ curveId, tokenType, suiUsd, lang }) {
       <div className="[&>div]:rounded-t-none [&>div]:border-t-0">
         {tab === 'trades'
           ? <TradeHistory curveId={curveId} suiUsd={suiUsd} />
-          : <HolderList curveId={curveId} tokenType={tokenType} suiUsd={suiUsd} />
+          : <HolderList curveId={curveId} tokenType={tokenType} suiUsd={suiUsd} creator={creator} />
         }
       </div>
     </div>
@@ -889,6 +889,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   const marketCapSui   = priceSui * TOTAL_SUPPLY_WHOLE;
   const graduated      = curveState?.graduated ?? false;
   const creatorFeesMist = curveState ? BigInt(curveState.creator_fees ?? 0) : 0n;
+  const creatorAddr     = curveState?.creator ?? null;
 
   // Apply localStorage overrides (testnet only — v7 will be on-chain)
   const _metaOverride = (() => {
@@ -1213,7 +1214,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
           <PriceChart curveId={curveId} tokenType={tokenType} suiUsd={suiUsd} />
 
           {/* Trades / Holders */}
-          <TradesHoldersBlock curveId={curveId} tokenType={tokenType} suiUsd={suiUsd} lang={lang} />
+          <TradesHoldersBlock curveId={curveId} tokenType={tokenType} suiUsd={suiUsd} lang={lang} creator={creatorAddr} />
 
           {/* AI Analysis */}
           <AIAnalysis
