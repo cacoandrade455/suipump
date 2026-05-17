@@ -2,7 +2,7 @@
 import React, { useState } from 'react';
 import { useSuiClient } from '@mysten/dapp-kit';
 import { Sparkles, AlertTriangle, TrendingUp, Minus } from 'lucide-react';
-import { PACKAGE_ID } from './constants.js';
+import { ALL_PACKAGE_IDS } from './constants.js';
 
 function fmt(n, d = 2) {
   if (n == null) return '-';
@@ -18,19 +18,25 @@ export default function AIAnalysis({ curveId, name, symbol, progress, reserveSui
 
   async function fetchTradeStats() {
     try {
-      const [buysRes, sellsRes] = await Promise.all([
-        client.queryEvents({
-          query: { MoveEventType: `${PACKAGE_ID}::bonding_curve::TokensPurchased` },
-          limit: 50,
-        }),
-        client.queryEvents({
-          query: { MoveEventType: `${PACKAGE_ID}::bonding_curve::TokensSold` },
-          limit: 50,
-        }),
-      ]);
+      // Query events across ALL package versions (v4/v5/v6) — a token may
+      // live on any package, so querying a single PACKAGE_ID misses most tokens.
+      const queries = [];
+      for (const pkg of ALL_PACKAGE_IDS) {
+        queries.push(
+          client.queryEvents({ query: { MoveEventType: `${pkg}::bonding_curve::TokensPurchased` }, limit: 50 }).catch(() => ({ data: [] })),
+          client.queryEvents({ query: { MoveEventType: `${pkg}::bonding_curve::TokensSold`      }, limit: 50 }).catch(() => ({ data: [] })),
+        );
+      }
+      const results = await Promise.all(queries);
 
-      const buyEvents  = (buysRes.data  || []).filter(e => e.parsedJson?.curve_id === curveId);
-      const sellEvents = (sellsRes.data || []).filter(e => e.parsedJson?.curve_id === curveId);
+      const buyEvents  = [];
+      const sellEvents = [];
+      results.forEach((res, idx) => {
+        const rows = (res?.data || []).filter(e => e.parsedJson?.curve_id === curveId);
+        // even index = TokensPurchased, odd index = TokensSold
+        if (idx % 2 === 0) buyEvents.push(...rows);
+        else               sellEvents.push(...rows);
+      });
 
       const buys  = buyEvents.length;
       const sells = sellEvents.length;
@@ -98,6 +104,11 @@ export default function AIAnalysis({ curveId, name, symbol, progress, reserveSui
       const prompt = `You are a DeFi token analyst on SuiPump, a bonding curve token launchpad on the Sui blockchain.
 
 Analyze this token and write exactly 3 sentences covering: (1) holder concentration risk, (2) trading momentum, (3) one specific thing to watch. Then on a new line write ONLY the risk rating in this exact format: "Risk: Low" or "Risk: Medium" or "Risk: High". No fluff, no intro, be direct and specific.
+
+IMPORTANT framing rules:
+- If the token has zero or very few trades and holders, do NOT describe it as "fairly distributed" or "no concentration risk" — a token with no activity is not well-distributed, it is simply untested. Frame it as "too early to assess distribution" instead.
+- Lack of trading activity is itself the primary risk for an early-stage token; say so plainly.
+- Never present an absence of data as a positive signal.
 
 Token data:
 - Name: ${name} ($${symbol})
