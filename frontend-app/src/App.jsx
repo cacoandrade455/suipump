@@ -191,16 +191,15 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch
     let cancelled = false;
     async function loadIcon() {
       try {
-        // Get tokenType from token prop or derive from curve object type
         let tokenType = token.tokenType;
         if (!tokenType && token.curveId) {
           const obj = await client.getObject({ id: token.curveId, options: { showType: true } });
-          const match = obj.data?.type?.match(/Curve<(.+)>$/);
-          tokenType = match ? match[1] : null;
+          const m = obj.data?.type?.match(/Curve<(.+)>$/);
+          tokenType = m ? m[1] : null;
         }
         if (!tokenType) return;
-        const m = await client.getCoinMetadata({ coinType: tokenType });
-        if (!cancelled && m?.iconUrl) setIconUrl(m.iconUrl);
+        const meta = await client.getCoinMetadata({ coinType: tokenType });
+        if (!cancelled && meta?.iconUrl) setIconUrl(meta.iconUrl);
       } catch {}
     }
     loadIcon();
@@ -244,7 +243,7 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch
 
   return (
     <button
-      onClick={() => token.tokenType && navigate(`/token/${token.curveId}`)}
+      onClick={() => navigate(`/token/${token.curveId}`)}
       className={`text-left rounded-2xl border bg-white/[0.03] hover:bg-white/[0.06] transition-all duration-200 p-4 w-full group relative ${
         isCrown
           ? 'border-lime-400/50 shadow-lg shadow-lime-400/10'
@@ -957,13 +956,23 @@ function CrownBanner({ token, stats, suiUsd }) {
   }, [token?.curveId, client]);
 
   useEffect(() => {
-    if (!token?.tokenType) return;
     let cancelled = false;
-    client.getCoinMetadata({ coinType: token.tokenType })
-      .then(m => { if (!cancelled && m?.iconUrl) setIconUrl(m.iconUrl); })
-      .catch(() => {});
+    async function loadIcon() {
+      try {
+        let tokenType = token?.tokenType;
+        if (!tokenType && token?.curveId) {
+          const obj = await client.getObject({ id: token.curveId, options: { showType: true } });
+          const m = obj.data?.type?.match(/Curve<(.+)>$/);
+          tokenType = m ? m[1] : null;
+        }
+        if (!tokenType) return;
+        const meta = await client.getCoinMetadata({ coinType: tokenType });
+        if (!cancelled && meta?.iconUrl) setIconUrl(meta.iconUrl);
+      } catch {}
+    }
+    loadIcon();
     return () => { cancelled = true; };
-  }, [token?.tokenType, client]);
+  }, [token?.tokenType, token?.curveId, client]);
 
   if (!token) return null;
 
