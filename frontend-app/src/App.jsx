@@ -1109,9 +1109,6 @@ function HomePage({ onLaunch, lang = 'en' }) {
     return () => clearInterval(timer);
   }, []);
 
-  // If search looks like a wallet address (0x + 64 chars), redirect to portfolio
-  const isWalletSearch = search.trim().startsWith('0x') && search.trim().length >= 60;
-
   const filtered = tokens.filter(tok => {
     if (!search.trim()) return true;
     const q = search.toLowerCase().trim();
@@ -1186,7 +1183,6 @@ function HomePage({ onLaunch, lang = 'en' }) {
           value={search} onChange={e => {
             const v = e.target.value;
             setSearch(v);
-            // If it looks like a full wallet address, navigate to portfolio
             if (v.trim().startsWith('0x') && v.trim().length >= 62) {
               navigate(`/portfolio/${v.trim()}`);
             }
@@ -1366,6 +1362,7 @@ export default function App() {
           <Route path="/whitepaper" element={<WhitepaperPage onBack={() => navigate('/')} lang={lang} />} />
           <Route path="/leaderboard" element={<LeaderboardPage onBack={() => navigate('/')} lang={lang} />} />
           <Route path="/portfolio" element={<PortfolioPage onBack={() => navigate('/')} lang={lang} />} />
+          <Route path="/portfolio/:walletAddress" element={<PortfolioPage onBack={() => navigate('/')} lang={lang} />} />
           <Route path="/roadmap" element={<RoadmapPage onBack={() => navigate('/')} lang={lang} />} />
           <Route path="*" element={<NotFoundPage onBack={() => navigate('/')} />} />
         </Routes>
