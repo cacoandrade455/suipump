@@ -18,7 +18,7 @@ function timeAgo(ts) {
   return `${Math.floor(diff / 86_400_000)}d ago`;
 }
 
-export default function TradeHistory({ curveId, symbol, refreshKey }) {
+export default function TradeHistory({ curveId, symbol, refreshKey, creator = null }) {
   const client = useSuiClient();
   const [trades, setTrades] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -114,6 +114,11 @@ export default function TradeHistory({ curveId, symbol, refreshKey }) {
               <span className="text-white/40 hidden sm:inline">
                 {t.who ? `${t.who.slice(0, 6)}…${t.who.slice(-4)}` : ''}
               </span>
+              {creator && t.who === creator && (
+                <span className="text-[8px] font-mono font-bold text-lime-400 bg-lime-400/10 border border-lime-400/30 rounded px-1 py-0.5">
+                  DEV
+                </span>
+              )}
             </div>
             <div className="flex items-center gap-4">
               <span className="text-white/60">{t.sui.toFixed(4)} SUI</span>
