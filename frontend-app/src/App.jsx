@@ -188,13 +188,24 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch
   }, [token.curveId, client]);
 
   useEffect(() => {
-    if (!token.tokenType) return;
     let cancelled = false;
-    client.getCoinMetadata({ coinType: token.tokenType })
-      .then(m => { if (!cancelled && m?.iconUrl) setIconUrl(m.iconUrl); })
-      .catch(() => {});
+    async function loadIcon() {
+      try {
+        // Get tokenType from token prop or derive from curve object type
+        let tokenType = token.tokenType;
+        if (!tokenType && token.curveId) {
+          const obj = await client.getObject({ id: token.curveId, options: { showType: true } });
+          const match = obj.data?.type?.match(/Curve<(.+)>$/);
+          tokenType = match ? match[1] : null;
+        }
+        if (!tokenType) return;
+        const m = await client.getCoinMetadata({ coinType: tokenType });
+        if (!cancelled && m?.iconUrl) setIconUrl(m.iconUrl);
+      } catch {}
+    }
+    loadIcon();
     return () => { cancelled = true; };
-  }, [token.tokenType, client]);
+  }, [token.tokenType, token.curveId, client]);
 
   const reserveMist = curveState ? BigInt(curveState.sui_reserve) : 0n;
   const tokensRemaining = curveState ? BigInt(curveState.token_reserve) : 0n;
@@ -1026,7 +1037,6 @@ function CrownBanner({ token, stats, suiUsd }) {
 function HomePage({ onLaunch, lang = 'en' }) {
   const { isWatched, toggle: toggleWatch } = useWatchlist();
   const account = useCurrentAccount();
-  const navigate = useNavigate();
   const { tokens, loading, error } = useTokenList();
 
   // Fetch curve states directly for accurate sorting
@@ -1116,7 +1126,6 @@ function HomePage({ onLaunch, lang = 'en' }) {
     if (tok.name?.toLowerCase().includes(q)) return true;
     if (tok.symbol?.toLowerCase().includes(q)) return true;
     if (q.startsWith('0x') && tok.curveId?.toLowerCase().includes(q)) return true;
-    if (q.startsWith('0x') && tok.creator?.toLowerCase().includes(q)) return true;
     return false;
   });
 
@@ -1196,19 +1205,6 @@ function HomePage({ onLaunch, lang = 'en' }) {
             }`}>{opt.label}</button>
         ))}
       </div>
-
-      {/* Portfolio redirect banner for wallet address search */}
-      {search.trim().startsWith('0x') && search.trim().length >= 62 && (
-        <div className="mb-3 flex items-center justify-between bg-lime-400/5 border border-lime-400/20 rounded-xl px-4 py-2.5">
-          <span className="text-xs font-mono text-white/50">Wallet address detected</span>
-          <button
-            onClick={() => navigate(`/portfolio/${search.trim()}`)}
-            className="text-xs font-mono font-bold text-lime-400 hover:text-lime-300 transition-colors"
-          >
-            View Portfolio →
-          </button>
-        </div>
-      )}
 
       <div className="mb-3 flex items-center justify-between">
         <div className="text-xs font-mono text-white/30 tracking-widest">
@@ -1371,7 +1367,6 @@ export default function App() {
           <Route path="/whitepaper" element={<WhitepaperPage onBack={() => navigate('/')} lang={lang} />} />
           <Route path="/leaderboard" element={<LeaderboardPage onBack={() => navigate('/')} lang={lang} />} />
           <Route path="/portfolio" element={<PortfolioPage onBack={() => navigate('/')} lang={lang} />} />
-          <Route path="/portfolio/:walletAddress" element={<PortfolioPage onBack={() => navigate('/')} lang={lang} />} />
           <Route path="/roadmap" element={<RoadmapPage onBack={() => navigate('/')} lang={lang} />} />
           <Route path="*" element={<NotFoundPage onBack={() => navigate('/')} />} />
         </Routes>
