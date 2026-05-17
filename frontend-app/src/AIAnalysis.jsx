@@ -13,7 +13,7 @@ function fmt(n, d = 2) {
   return Number(n).toLocaleString(undefined, { maximumFractionDigits: d });
 }
 
-export default function AIAnalysis({ curveId, name, symbol, progress, reserveSui, creatorFeesSui, graduated, tokensSoldWhole }) {
+export default function AIAnalysis({ curveId, tokenType, name, symbol, progress, reserveSui, creatorFeesSui, graduated, tokensSoldWhole }) {
   const client = useSuiClient();
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -52,30 +52,40 @@ export default function AIAnalysis({ curveId, name, symbol, progress, reserveSui
       const buyCount  = buys.length;
       const sellCount = sells.length;
 
-      // Volume from buy sui_in + sell sui_out
+      // Volume from buy sui_in + sell sui_out (event-derived = exact)
       const volumeSui =
         buys.reduce((acc, e)  => acc + Number(e.parsedJson?.sui_in  ?? 0), 0) / 1e9 +
         sells.reduce((acc, e) => acc + Number(e.parsedJson?.sui_out ?? 0), 0) / 1e9;
 
-      // Reconstruct holder balances — identical method to HolderList
-      const balanceMap = new Map();
-      for (const e of buys) {
-        const addr = e.parsedJson?.buyer;
-        const tok  = BigInt(e.parsedJson?.tokens_out ?? 0);
-        if (addr) balanceMap.set(addr, (balanceMap.get(addr) ?? 0n) + tok);
-      }
-      for (const e of sells) {
-        const addr = e.parsedJson?.seller;
-        const tok  = BigInt(e.parsedJson?.tokens_in ?? 0);
-        if (addr) balanceMap.set(addr, (balanceMap.get(addr) ?? 0n) - tok);
+      // Holder balances — REAL on-chain balances, not netted trade events.
+      // Netting events is wrong: a wallet that sold tokens acquired before
+      // the queried window nets negative while still holding a real balance.
+      // We collect every address that ever traded (candidates), then query
+      // each one's actual current balance. Identical method to HolderList.
+      const candidates = new Set();
+      for (const e of buys)  { const a = e.parsedJson?.buyer;  if (a) candidates.add(a); }
+      for (const e of sells) { const a = e.parsedJson?.seller; if (a) candidates.add(a); }
+
+      let holderRaws = [];
+      if (tokenType && candidates.size > 0) {
+        const balances = await Promise.all(
+          [...candidates].map(async (addr) => {
+            try {
+              const bal = await client.getBalance({ owner: addr, coinType: tokenType });
+              return BigInt(bal.totalBalance ?? '0');
+            } catch {
+              return 0n;
+            }
+          })
+        );
+        holderRaws = balances.filter(v => v > 0n);
       }
 
-      const holderBalances = [...balanceMap.values()].filter(v => v > 0n);
-      const holderCount    = holderBalances.length;
+      const holderCount = holderRaws.length;
 
       // Top-3 concentration as % of total 1B supply
       const TOTAL_SUPPLY_ATOMIC = 1_000_000_000 * TOKEN_SCALE;
-      const top3 = [...holderBalances].sort((a, b) => (b > a ? 1 : b < a ? -1 : 0)).slice(0, 3)
+      const top3 = [...holderRaws].sort((a, b) => (b > a ? 1 : b < a ? -1 : 0)).slice(0, 3)
         .reduce((a, b) => a + b, 0n);
       const topHolderPct = (Number(top3) / TOTAL_SUPPLY_ATOMIC) * 100;
 
