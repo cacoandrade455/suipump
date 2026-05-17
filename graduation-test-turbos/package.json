@@ -1,0 +1,15 @@
+{
+  "name": "suipump-graduation-turbos",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "graduate": "node graduate_turbos_full.js"
+  },
+  "dependencies": {
+    "@mysten/sui": "^1.45.2",
+    "@mysten/move-bytecode-template": "^0.3.2",
+    "turbos-clmm-sdk": "latest",
+    "bn.js": "^5.2.1",
+    "decimal.js": "^10.4.3"
+  }
+}
