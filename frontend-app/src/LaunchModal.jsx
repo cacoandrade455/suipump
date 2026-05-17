@@ -223,7 +223,11 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
       setTxStep('tx2');
 
       // Determine graduation target u8
-      const graduationTarget = form.graduationDex === 'deepbook' ? GRAD_TARGET_DEEPBOOK : GRAD_TARGET_CETUS;
+      const graduationTarget = form.graduationDex === 'deepbook'
+        ? GRAD_TARGET_DEEPBOOK
+        : form.graduationDex === 'turbos'
+          ? 2  // GRAD_TARGET_TURBOS
+          : GRAD_TARGET_CETUS;
 
       const tx2 = new Transaction();
       const [launchFeeCoin] = tx2.splitCoins(tx2.gas, [tx2.pure.u64(LAUNCH_FEE_MIST)]);
@@ -427,6 +431,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
                   {[
                     { id: 'cetus',    label: 'Cetus',    sub: 'AMM · LP position' },
                     { id: 'deepbook', label: 'DeepBook', sub: 'CLOB · Order book' },
+                    { id: 'turbos',   label: 'Turbos',   sub: 'CLMM · Concentrated' },
                   ].map(({ id, label, sub }) => (
                     <button
                       key={id}
@@ -444,7 +449,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
                 </div>
                 {!PACKAGE_ID_V5 && (
                   <div className="text-[8px] font-mono text-white/15 text-center">
-                    DeepBook graduation coming soon · Selection stored on-chain
+                    Cetus · DeepBook · Turbos — selection stored on-chain
                   </div>
                 )}
               </div>
