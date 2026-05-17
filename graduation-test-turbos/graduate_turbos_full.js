@@ -195,20 +195,105 @@ await sleep(3000);
 console.log('  [5/5] Adding protocol liquidity…');
 
 // Find the pool ID from object changes
+// Must match Pool<coinTypeA, coinTypeB, fee> — not tick/position objects
 const poolObj = poolResult.objectChanges?.find(c =>
-  c.type === 'created' && c.objectType?.toLowerCase().includes('pool')
+  c.type === 'created' &&
+  c.objectType?.includes('::pool::Pool<')
 );
 const poolId = poolObj?.objectId;
+if (poolId) console.log(`  Pool object type: ${poolObj?.objectType?.slice(0, 80)}`);
 
 if (!poolId) {
   console.log('  ⚠ Could not find pool ID from object changes — protocol LP skipped');
 } else {
-  // Note: Turbos SDK addLiquidity requires pool to be in their registry.
-  // Custom tokens are not registered, so we skip the protocol half via SDK.
-  // Protocol liquidity can be added manually via direct MoveCall in production.
-  // For now the creator gets full LP — protocol takes revenue via trade fees.
-  console.log('  ✓ Protocol liquidity deferred (custom token not in Turbos registry)');
-  console.log('  Creator received full LP position at pool creation.');
+  // Add protocol half via direct MoveCall — bypasses SDK registry check
+  if (!poolId) {
+    console.log('  ⚠ Could not find pool ID — protocol LP skipped');
+  } else {
+    console.log(`  Adding protocol liquidity via direct MoveCall to pool ${poolId.slice(0,16)}…`);
+    // Wait for pool to be indexed on-chain — retry up to 5x with 3s intervals
+    let poolSharedVersion = null;
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      await sleep(3000);
+      console.log(`  Waiting for pool indexing… attempt ${attempt}/5`);
+      try {
+        const poolObj = await client.getObject({ id: poolId, options: { showOwner: true } });
+        poolSharedVersion = poolObj.data?.owner?.Shared?.initial_shared_version;
+        if (poolSharedVersion) { console.log(`  ✓ Pool indexed`); break; }
+      } catch {}
+    }
+    if (!poolSharedVersion) {
+      console.log('  ⚠ Pool not indexed after 15s — skipping protocol LP');
+    }
+    try {
+      if (!poolSharedVersion) throw new Error('Pool not indexed');
+      const protocolTx = new Transaction();
+
+      // Re-fetch LP coins and SUI after pool creation
+      const lpCoins2  = await client.getCoins({ owner: address, coinType: tokenType });
+      const suiCoins2 = await client.getCoins({ owner: address, coinType: SUI_TYPE });
+
+      const lpBal2  = lpCoins2.data.reduce((s, c) => s + BigInt(c.balance), 0n);
+      const suiBal2 = suiCoins2.data.reduce((s, c) => s + BigInt(c.balance), 0n);
+
+      // Use remaining LP and SUI (what's left after creator half)
+      const protocolLp  = lpBal2;
+      const protocolSui = halfSui; // use same amount as creator half
+
+      if (protocolLp === 0n || suiBal2 < protocolSui) {
+        console.log(`  ⚠ Insufficient funds for protocol LP — LP: ${Number(protocolLp)/1e6}, SUI: ${Number(suiBal2)/1e9}`);
+      } else {
+        // Merge LP coins
+        const lpObjs2 = lpCoins2.data.map(c => protocolTx.object(c.coinObjectId));
+        if (lpObjs2.length > 1) protocolTx.mergeCoins(lpObjs2[0], lpObjs2.slice(1));
+
+        // Split SUI
+        const [suiForProtocol] = protocolTx.splitCoins(protocolTx.gas, [protocolTx.pure.u64(protocolSui)]);
+
+        // Direct moveCall to position_manager::mint
+        protocolTx.moveCall({
+          target: `${contract.PackageId}::position_manager::mint`,
+          typeArguments: [tokenType, SUI_TYPE, fee.type],
+          arguments: [
+            protocolTx.sharedObjectRef({ objectId: poolId, initialSharedVersion: poolSharedVersion, mutable: true }), // pool
+            protocolTx.object(contract.Positions),                  // positions
+            protocolTx.makeMoveVec({ elements: lpObjs2.slice(0, 1) }), // coinA vec
+            protocolTx.makeMoveVec({ elements: [suiForProtocol] }), // coinB vec
+            protocolTx.pure.u32(Math.abs(tickLower)),               // tick_lower_index
+            protocolTx.pure.bool(tickLower < 0),                    // tick_lower_is_negative
+            protocolTx.pure.u32(Math.abs(tickUpper)),               // tick_upper_index
+            protocolTx.pure.bool(tickUpper < 0),                    // tick_upper_is_negative
+            protocolTx.pure.u64(protocolLp.toString()),             // amount_desired_a
+            protocolTx.pure.u64(protocolSui.toString()),            // amount_desired_b
+            protocolTx.pure.u64(0),                                 // amount_min_a
+            protocolTx.pure.u64(0),                                 // amount_min_b
+            protocolTx.pure.address(address),                       // recipient
+            protocolTx.pure.u64(Date.now() + 60_000),               // deadline
+            protocolTx.object('0x6'),                               // clock
+            protocolTx.object(contract.Versioned),                  // versioned
+          ],
+        });
+
+        const protocolResult = await client.signAndExecuteTransaction({
+          signer: keypair,
+          transaction: protocolTx,
+          options: { showEffects: true, showObjectChanges: true },
+        });
+
+        if (protocolResult.effects.status.status !== 'success') {
+          console.log(`  ⚠ Protocol LP failed: ${protocolResult.effects.status.error}`);
+        } else {
+          const protocolNft = protocolResult.objectChanges?.find(c =>
+            c.type === 'created' && c.objectType?.toLowerCase().includes('position')
+          );
+          console.log(`  ✓ Protocol LP added: ${protocolResult.digest}`);
+          console.log(`  Protocol LP NFT: ${protocolNft?.objectId ?? 'see object changes'}`);
+        }
+      }
+    } catch (e) {
+      console.log(`  ⚠ Protocol LP error: ${e.message?.slice(0, 80)}`);
+    }
+  }
 }
 
 console.log();
