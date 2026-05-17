@@ -1,9 +1,20 @@
-// v16-holderfix
+// v17-holderfix-onchain
 // HolderList.jsx — Top Holders + Top Traders toggle, USD primary
+//
+// HOLDERS: real on-chain balances. We collect every address that ever traded
+// (the candidate set), then query each one's ACTUAL current balance via
+// getBalance(). Netting trade events is NOT reliable — a wallet that sold
+// tokens acquired before the queried window, or sold more than it bought
+// within the window, nets negative even while holding a real positive
+// balance. On-chain balance is the only source of truth.
+//
+// TRADERS: volume and PnL ARE correctly derived from trade events (every
+// SUI in/out is captured in an event), so that path stays event-based.
+
 import React, { useState, useEffect } from 'react';
 import { useSuiClient } from '@mysten/dapp-kit';
 import { Users, BarChart2 } from 'lucide-react';
-import { PACKAGE_ID } from './constants.js';
+import { ALL_PACKAGE_IDS } from './constants.js';
 import { paginateMultipleEvents } from './paginateEvents.js';
 
 const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
@@ -32,6 +43,38 @@ function walletColor(addr) {
   return `hsl(${hue}, 70%, 55%)`;
 }
 
+// Fetch raw buy/sell events for a curve — indexer first, RPC fallback.
+async function fetchTradeEvents(client, curveId) {
+  let buys = [], sells = [];
+
+  if (INDEXER_URL) {
+    try {
+      const res = await fetch(`${INDEXER_URL}/token/${curveId}/trades?limit=500`, {
+        signal: AbortSignal.timeout(5000),
+      });
+      if (res.ok) {
+        const rows = await res.json();
+        buys  = rows.filter(r => r.event_type.includes('TokensPurchased'))
+                    .map(r => ({ parsedJson: { ...r.data, curve_id: curveId } }));
+        sells = rows.filter(r => r.event_type.includes('TokensSold'))
+                    .map(r => ({ parsedJson: { ...r.data, curve_id: curveId } }));
+      }
+    } catch { /* fall through to RPC */ }
+  }
+
+  if (buys.length === 0 && sells.length === 0) {
+    const buyTypes  = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensPurchased`);
+    const sellTypes = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensSold`);
+    const eventMap  = await paginateMultipleEvents(
+      client, [...buyTypes, ...sellTypes], { order: 'descending', maxPages: 20 }
+    );
+    buys  = buyTypes.flatMap(bt  => (eventMap[bt]  || []).filter(e => e.parsedJson?.curve_id === curveId));
+    sells = sellTypes.flatMap(st => (eventMap[st] || []).filter(e => e.parsedJson?.curve_id === curveId));
+  }
+
+  return { buys, sells };
+}
+
 export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = null }) {
   const client = useSuiClient();
   const [tab, setTab] = useState('holders');
@@ -46,57 +89,41 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = n
     async function load() {
       setLoading(true);
       try {
-        const buyType  = `${PACKAGE_ID}::bonding_curve::TokensPurchased`;
-        const sellType = `${PACKAGE_ID}::bonding_curve::TokensSold`;
+        const { buys, sells } = await fetchTradeEvents(client, curveId);
 
-        let buys = [], sells = [];
+        // ── TOP HOLDERS — real on-chain balances ─────────────────────
+        // Candidate set: every address that ever bought or sold.
+        const candidates = new Set();
+        for (const e of buys)  { const a = e.parsedJson?.buyer;  if (a) candidates.add(a); }
+        for (const e of sells) { const a = e.parsedJson?.seller; if (a) candidates.add(a); }
 
-        // Try indexer for trade data
-        if (INDEXER_URL) {
-          try {
-            const res = await fetch(`${INDEXER_URL}/token/${curveId}/trades?limit=500`, { signal: AbortSignal.timeout(5000) });
-            if (res.ok) {
-              const rows = await res.json();
-              buys  = rows.filter(r => r.event_type.includes('TokensPurchased')).map(r => ({ parsedJson: { ...r.data, buyer: r.data.buyer, curve_id: curveId } }));
-              sells = rows.filter(r => r.event_type.includes('TokensSold')).map(r => ({ parsedJson: { ...r.data, seller: r.data.seller, curve_id: curveId } }));
-            }
-          } catch {}
+        let holderList = [];
+        if (tokenType && candidates.size > 0) {
+          // Query each candidate's ACTUAL current balance on-chain.
+          const balances = await Promise.all(
+            [...candidates].map(async (addr) => {
+              try {
+                const bal = await client.getBalance({ owner: addr, coinType: tokenType });
+                return { addr, raw: BigInt(bal.totalBalance ?? '0') };
+              } catch {
+                return { addr, raw: 0n };
+              }
+            })
+          );
+
+          holderList = balances
+            .filter(b => b.raw > 0n)
+            .map(b => ({
+              addr: b.addr,
+              balance: Number(b.raw) / TOKEN_SCALE,
+              // % of TOTAL SUPPLY (1B whole tokens)
+              pct: (Number(b.raw) / TOKEN_SCALE / TOTAL_SUPPLY) * 100,
+            }))
+            .sort((a, b) => b.balance - a.balance)
+            .slice(0, 20);
         }
 
-        // Fall back to RPC if indexer failed
-        if (buys.length === 0 && sells.length === 0) {
-          const eventMap = await paginateMultipleEvents(client, [buyType, sellType], { order: 'descending', maxPages: 20 });
-          buys  = (eventMap[buyType]  || []).filter(e => e.parsedJson?.curve_id === curveId);
-          sells = (eventMap[sellType] || []).filter(e => e.parsedJson?.curve_id === curveId);
-        }
-
-        // ── TOP HOLDERS ──────────────────────────────────────────────
-        const balanceMap = new Map(); // addr → raw token balance (atomic)
-        for (const e of buys) {
-          const j = e.parsedJson;
-          const addr = j?.buyer;
-          const tokens = BigInt(j?.tokens_out ?? 0);
-          if (addr) balanceMap.set(addr, (balanceMap.get(addr) ?? 0n) + tokens);
-        }
-        for (const e of sells) {
-          const j = e.parsedJson;
-          const addr = j?.seller;
-          const tokens = BigInt(j?.tokens_in ?? 0);
-          if (addr) balanceMap.set(addr, (balanceMap.get(addr) ?? 0n) - tokens);
-        }
-
-        const holderList = [...balanceMap.entries()]
-          .filter(([, bal]) => bal > 0n)
-          .map(([addr, bal]) => ({
-            addr,
-            balance: Number(bal) / TOKEN_SCALE,
-            // % of TOTAL SUPPLY (1B whole tokens), not just circulating
-            pct: (Number(bal) / TOKEN_SCALE / TOTAL_SUPPLY) * 100,
-          }))
-          .sort((a, b) => b.balance - a.balance)
-          .slice(0, 20);
-
-        // ── TOP TRADERS ──────────────────────────────────────────────
+        // ── TOP TRADERS — event-derived (volume/PnL are exact from events) ──
         const traderMap = new Map();
         for (const e of buys) {
           const j = e.parsedJson;
@@ -104,11 +131,11 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = n
           if (!addr) continue;
           const suiIn     = Number(BigInt(j?.sui_in     ?? 0)) / 1e9;
           const tokensOut = Number(BigInt(j?.tokens_out ?? 0)) / TOKEN_SCALE;
-          const t = traderMap.get(addr) ?? { suiSpent: 0, suiReceived: 0, buyCount: 0, sellCount: 0, tokensIn: 0, tokensOut: 0 };
-          t.suiSpent  += suiIn;
-          t.tokensOut += tokensOut;
-          t.buyCount  += 1;
-          traderMap.set(addr, t);
+          const tr = traderMap.get(addr) ?? { suiSpent: 0, suiReceived: 0, buyCount: 0, sellCount: 0, tokensIn: 0, tokensOut: 0 };
+          tr.suiSpent  += suiIn;
+          tr.tokensOut += tokensOut;
+          tr.buyCount  += 1;
+          traderMap.set(addr, tr);
         }
         for (const e of sells) {
           const j = e.parsedJson;
@@ -116,20 +143,20 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = n
           if (!addr) continue;
           const suiOut   = Number(BigInt(j?.sui_out   ?? 0)) / 1e9;
           const tokensIn = Number(BigInt(j?.tokens_in ?? 0)) / TOKEN_SCALE;
-          const t = traderMap.get(addr) ?? { suiSpent: 0, suiReceived: 0, buyCount: 0, sellCount: 0, tokensIn: 0, tokensOut: 0 };
-          t.suiReceived += suiOut;
-          t.tokensIn    += tokensIn;
-          t.sellCount   += 1;
-          traderMap.set(addr, t);
+          const tr = traderMap.get(addr) ?? { suiSpent: 0, suiReceived: 0, buyCount: 0, sellCount: 0, tokensIn: 0, tokensOut: 0 };
+          tr.suiReceived += suiOut;
+          tr.tokensIn    += tokensIn;
+          tr.sellCount   += 1;
+          traderMap.set(addr, tr);
         }
 
         const traderList = [...traderMap.entries()]
-          .map(([addr, t]) => ({
+          .map(([addr, tr]) => ({
             addr,
-            volume:    t.suiSpent + t.suiReceived,
-            pnl:       t.suiReceived - t.suiSpent,
-            buyCount:  t.buyCount,
-            sellCount: t.sellCount,
+            volume:    tr.suiSpent + tr.suiReceived,
+            pnl:       tr.suiReceived - tr.suiSpent,
+            buyCount:  tr.buyCount,
+            sellCount: tr.sellCount,
           }))
           .sort((a, b) => b.volume - a.volume)
           .slice(0, 20);
@@ -148,7 +175,7 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = n
     load();
     const interval = setInterval(load, 30_000);
     return () => { cancelled = true; clearInterval(interval); };
-  }, [curveId, client]);
+  }, [curveId, client, tokenType]);
 
   return (
     <div className="bg-white/[0.03] border border-white/10 rounded-xl overflow-hidden">
@@ -243,41 +270,41 @@ function TradersView({ traders, suiUsd }) {
         <span className="text-right w-16">PnL</span>
       </div>
 
-      {traders.map((t, i) => {
-        const pnlUsd = t.pnl * suiUsd;
-        const volUsd = t.volume * suiUsd;
-        const isPos  = t.pnl >= 0;
+      {traders.map((tr, i) => {
+        const pnlUsd = tr.pnl * suiUsd;
+        const volUsd = tr.volume * suiUsd;
+        const isPos  = tr.pnl >= 0;
         return (
           <div
-            key={t.addr}
+            key={tr.addr}
             className="grid grid-cols-[28px_1fr_auto_auto_auto] gap-2 px-4 py-2.5 border-b border-white/5 last:border-0 hover:bg-white/[0.02] transition-colors items-center"
           >
             <span className="text-xs font-mono text-white/35">{i + 1}</span>
             <div className="flex items-center gap-2 min-w-0">
               <div
                 className="w-5 h-5 rounded-full flex-shrink-0"
-                style={{ backgroundColor: walletColor(t.addr) }}
+                style={{ backgroundColor: walletColor(tr.addr) }}
               />
-              <span className="text-xs font-mono text-white/70 truncate">{shortAddr(t.addr)}</span>
+              <span className="text-xs font-mono text-white/70 truncate">{shortAddr(tr.addr)}</span>
             </div>
             <div className="text-right">
               <div className="text-xs font-mono text-white/80">
                 {suiUsd > 0
                   ? '$' + (volUsd >= 1000 ? (volUsd / 1000).toFixed(1) + 'k' : volUsd.toFixed(0))
-                  : fmt(t.volume) + ' SUI'}
+                  : fmt(tr.volume) + ' SUI'}
               </div>
             </div>
             <div className="text-right">
-              <span className="text-[10px] font-mono text-lime-400/70">{t.buyCount}</span>
+              <span className="text-[10px] font-mono text-lime-400/70">{tr.buyCount}</span>
               <span className="text-[10px] font-mono text-white/30">/</span>
-              <span className="text-[10px] font-mono text-red-400/70">{t.sellCount}</span>
+              <span className="text-[10px] font-mono text-red-400/70">{tr.sellCount}</span>
             </div>
             <div className="text-right w-16">
               <div className={`text-xs font-mono font-bold ${isPos ? 'text-lime-400' : 'text-red-400'}`}>
                 {isPos ? '+' : ''}
                 {suiUsd > 0
                   ? '$' + Math.abs(pnlUsd).toFixed(Math.abs(pnlUsd) < 1 ? 3 : 1)
-                  : fmt(Math.abs(t.pnl)) + ' SUI'}
+                  : fmt(Math.abs(tr.pnl)) + ' SUI'}
               </div>
             </div>
           </div>
