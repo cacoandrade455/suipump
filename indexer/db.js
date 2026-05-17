@@ -49,20 +49,33 @@ export async function initSchema() {
       updated_at      BIGINT
     );
 
-    CREATE INDEX IF NOT EXISTS idx_token_stats_volume    ON token_stats (volume_sui DESC);
-    CREATE INDEX IF NOT EXISTS idx_token_stats_trades    ON token_stats (trades DESC);
+    CREATE INDEX IF NOT EXISTS idx_token_stats_volume     ON token_stats (volume_sui DESC);
+    CREATE INDEX IF NOT EXISTS idx_token_stats_trades     ON token_stats (trades DESC);
     CREATE INDEX IF NOT EXISTS idx_token_stats_last_trade ON token_stats (last_trade_time DESC);
 
     -- Curve registry (from CurveCreated events)
+    -- graduation_target: 0=Cetus, 1=DeepBook (v5/v6 only, NULL for v4)
+    -- anti_bot_delay: 0/15/30 seconds (v5/v6 only, NULL for v4)
     CREATE TABLE IF NOT EXISTS curves (
-      curve_id    TEXT PRIMARY KEY,
-      creator     TEXT,
-      name        TEXT,
-      symbol      TEXT,
-      token_type  TEXT,
-      package_id  TEXT,
-      created_at  BIGINT
+      curve_id          TEXT PRIMARY KEY,
+      creator           TEXT,
+      name              TEXT,
+      symbol            TEXT,
+      description       TEXT,
+      icon_url          TEXT,
+      token_type        TEXT,
+      package_id        TEXT,
+      created_at        BIGINT,
+      graduation_target SMALLINT,
+      anti_bot_delay    SMALLINT
     );
+
+    -- Migration: add columns if they don't exist (safe to run on existing DB)
+    ALTER TABLE curves ADD COLUMN IF NOT EXISTS graduation_target SMALLINT;
+    ALTER TABLE curves ADD COLUMN IF NOT EXISTS anti_bot_delay    SMALLINT;
+    ALTER TABLE curves ADD COLUMN IF NOT EXISTS description       TEXT;
+    ALTER TABLE curves ADD COLUMN IF NOT EXISTS icon_url          TEXT;
+    ALTER TABLE curves ADD COLUMN IF NOT EXISTS token_type        TEXT;
   `);
   console.log('✓ Schema initialized');
 }
@@ -105,21 +118,49 @@ export async function insertEvent(eventType, evt) {
       ]
     );
   } catch (err) {
-    // Ignore duplicate key errors
     if (!err.message?.includes('unique')) console.error('insertEvent error:', err.message);
   }
 }
 
 // ── Curve insert ──────────────────────────────────────────────────────────────
+// v4 CurveCreated: { curve_id, creator, name, symbol }
+// v5/v6 CurveCreated: { curve_id, creator, name, symbol, graduation_target, anti_bot_delay }
 
 export async function upsertCurve(evt, packageId) {
   const j = evt.parsedJson;
   if (!j?.curve_id) return;
+
+  // graduation_target and anti_bot_delay are v5/v6 only — null for v4
+  const graduationTarget = j.graduation_target !== undefined
+    ? Number(j.graduation_target)
+    : null;
+  const antiBotDelay = j.anti_bot_delay !== undefined
+    ? Number(j.anti_bot_delay)
+    : null;
+
+  // icon_url and description — parse from event fields
+  // Description may contain social links encoded as "desc||{json}"
+  const iconUrl     = j.icon_url     ?? null;
+  const description = j.description  ?? null;
+  // token_type is not in the CurveCreated event — stored separately when known
+  // We'll leave it null here; it gets populated via enrichment if needed
+
   await pool.query(
-    `INSERT INTO curves (curve_id, creator, name, symbol, package_id, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6)
-     ON CONFLICT (curve_id) DO NOTHING`,
-    [j.curve_id, j.creator, j.name, j.symbol, packageId, evt.timestampMs ? Number(evt.timestampMs) : null]
+    `INSERT INTO curves
+       (curve_id, creator, name, symbol, description, icon_url, package_id, created_at,
+        graduation_target, anti_bot_delay)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+     ON CONFLICT (curve_id) DO UPDATE SET
+       graduation_target = COALESCE($9,  curves.graduation_target),
+       anti_bot_delay    = COALESCE($10, curves.anti_bot_delay),
+       description       = COALESCE($5,  curves.description),
+       icon_url          = COALESCE($6,  curves.icon_url)`,
+    [
+      j.curve_id, j.creator, j.name, j.symbol,
+      description, iconUrl, packageId,
+      evt.timestampMs ? Number(evt.timestampMs) : null,
+      graduationTarget, antiBotDelay,
+    ]
   );
 }
 
@@ -127,7 +168,7 @@ export async function upsertCurve(evt, packageId) {
 
 export async function recomputeStats(curveId) {
   const now = Date.now();
-  const oneDayAgo = now - 24 * 60 * 60 * 1000;
+  const oneDayAgo  = now - 24 * 60 * 60 * 1000;
   const oneHourAgo = now - 60 * 60 * 1000;
   const MIST = 1e9;
 
@@ -156,12 +197,12 @@ export async function recomputeStats(curveId) {
   let recentTrades = 0;
 
   for (const row of buysRes.rows) {
-    const d = row.data;
+    const d  = row.data;
     const ts = row.timestamp_ms ? Number(row.timestamp_ms) : 0;
     const suiIn = Number(d.sui_in ?? 0) / MIST;
     volumeSui += suiIn;
     buys++;
-    if (ts > oneDayAgo) { volume24h += suiIn; }
+    if (ts > oneDayAgo)  volume24h += suiIn;
     if (ts > oneHourAgo) recentTrades++;
     if (!lastTradeTime || ts > lastTradeTime) lastTradeTime = ts;
     const tokensOut = Number(d.tokens_out ?? 0) / 1e6;
@@ -173,12 +214,12 @@ export async function recomputeStats(curveId) {
   }
 
   for (const row of sellsRes.rows) {
-    const d = row.data;
+    const d  = row.data;
     const ts = row.timestamp_ms ? Number(row.timestamp_ms) : 0;
     const suiOut = Number(d.sui_out ?? 0) / MIST;
     volumeSui += suiOut;
     sells++;
-    if (ts > oneDayAgo) { volume24h += suiOut; }
+    if (ts > oneDayAgo)  volume24h += suiOut;
     if (ts > oneHourAgo) recentTrades++;
     if (!lastTradeTime || ts > lastTradeTime) lastTradeTime = ts;
     const tokensIn = Number(d.tokens_in ?? 0) / 1e6;
@@ -230,9 +271,9 @@ export async function getTokenStats(curveId) {
 export async function getGlobalStats() {
   const res = await pool.query(`
     SELECT
-      COALESCE(SUM(volume_sui), 0)  AS total_volume,
-      COALESCE(SUM(trades), 0)      AS total_trades,
-      COUNT(*)                       AS token_count
+      COALESCE(SUM(volume_sui), 0) AS total_volume,
+      COALESCE(SUM(trades), 0)     AS total_trades,
+      COUNT(*)                      AS token_count
     FROM token_stats
   `);
   const curvesRes = await pool.query('SELECT COUNT(*) as cnt FROM curves');
@@ -246,7 +287,8 @@ export async function getGlobalStats() {
 export async function getTradeHistory(curveId, limit = 100) {
   const res = await pool.query(
     `SELECT data, timestamp_ms, event_type FROM events
-     WHERE curve_id = $1 AND (event_type LIKE '%TokensPurchased' OR event_type LIKE '%TokensSold')
+     WHERE curve_id = $1
+       AND (event_type LIKE '%TokensPurchased' OR event_type LIKE '%TokensSold')
      ORDER BY timestamp_ms DESC
      LIMIT $2`,
     [curveId, limit]
@@ -255,6 +297,23 @@ export async function getTradeHistory(curveId, limit = 100) {
 }
 
 export async function getAllCurves() {
-  const res = await pool.query('SELECT * FROM curves ORDER BY created_at DESC');
+  const res = await pool.query(`
+    SELECT
+      c.curve_id        AS "curveId",
+      c.creator,
+      c.name,
+      c.symbol,
+      c.description,
+      c.icon_url        AS "iconUrl",
+      c.token_type      AS "tokenType",
+      c.package_id      AS "packageId",
+      c.created_at      AS "createdAt",
+      c.graduation_target AS "graduationTarget",
+      c.anti_bot_delay  AS "antiBotDelay",
+      row_to_json(s.*)  AS stats
+    FROM curves c
+    LEFT JOIN token_stats s ON s.curve_id = c.curve_id
+    ORDER BY c.created_at DESC
+  `);
   return res.rows;
 }
