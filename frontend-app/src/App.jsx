@@ -1026,6 +1026,7 @@ function CrownBanner({ token, stats, suiUsd }) {
 function HomePage({ onLaunch, lang = 'en' }) {
   const { isWatched, toggle: toggleWatch } = useWatchlist();
   const account = useCurrentAccount();
+  const navigate = useNavigate();
   const { tokens, loading, error } = useTokenList();
 
   // Fetch curve states directly for accurate sorting
