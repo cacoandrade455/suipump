@@ -76,7 +76,7 @@ export default function LiveFeedSidebar({ tokens, onClose }) {
     }
 
     async function pollRpc() {
-      // RPC fallback — query all package versions (v4/v5/v6)
+      // RPC fallback — query all package versions (v4/v5/v6/v7)
       const buyTypes  = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensPurchased`);
       const sellTypes = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensSold`);
       const eventMap = await paginateMultipleEvents(
@@ -138,7 +138,7 @@ export default function LiveFeedSidebar({ tokens, onClose }) {
     poll();
     const interval = setInterval(poll, 8_000);
     return () => { cancelled = true; clearInterval(interval); };
-  }, [client]);
+  }, [client, tokens]);
 
   function timeAgo(ts) {
     const diff = Date.now() - ts;
