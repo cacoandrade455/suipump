@@ -16,7 +16,7 @@ import PortfolioPage from './PortfolioPage.jsx';
 import RoadmapPage from './RoadmapPage.jsx';
 import StatsPage from './StatsPage.jsx';
 import { LANGUAGES, translations, t } from './i18n.js';
-import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, DRAIN_SUI_APPROX, DRAIN_SUI_V4, DRAIN_SUI_V5, DRAIN_SUI_V6, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_SUI_V6, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, VIRTUAL_TOKENS_V6, TOKEN_DECIMALS, isNewCurve } from './constants.js';
+import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, ALL_PACKAGE_IDS, DRAIN_SUI_APPROX, DRAIN_SUI_V4, DRAIN_SUI_V5, DRAIN_SUI_V6, DRAIN_SUI_V7, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_SUI_V6, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, VIRTUAL_TOKENS_V6, TOKEN_DECIMALS, isNewCurve, curveShapeFor } from './constants.js';
 import { mistToSui, priceMistPerToken } from './curve.js';
 import { paginateEvents, paginateMultipleEvents } from './paginateEvents.js';
 import LiveFeedSidebar from './LiveFeedSidebar.jsx';
@@ -130,7 +130,7 @@ function useStats() {
     async function load() {
       try {
         // RPC fallback aggregates trade events across all package versions
-        const ALL_PKGS = [PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6].filter(Boolean);
+        const ALL_PKGS = ALL_PACKAGE_IDS;
         const buyTypes  = ALL_PKGS.map(p => `${p}::bonding_curve::TokensPurchased`);
         const sellTypes = ALL_PKGS.map(p => `${p}::bonding_curve::TokensSold`);
         // Try indexer first
@@ -248,11 +248,11 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch
   const reserveMist = curveState ? BigInt(curveState.sui_reserve) : 0n;
   const tokensRemaining = curveState ? BigInt(curveState.token_reserve) : 0n;
   const tokensSold = BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS) - tokensRemaining;
-  // Per-token virtual reserves — v5 tokens use different constants
-  const isNewCurveCard = isNewCurve(token.packageId);
-  const cardVSui   = isNewCurveCard ? VIRTUAL_SUI_V5    : VIRTUAL_SUI_V4;
-  const cardVTok   = isNewCurveCard ? VIRTUAL_TOKENS_V5 : VIRTUAL_TOKENS_V4;
-  const cardDrain  = isNewCurveCard ? DRAIN_SUI_V5      : DRAIN_SUI_V4;
+  // Per-token virtual reserves — V4/V5/V6/V7 each use different constants
+  const cardShape  = curveShapeFor(token.packageId);
+  const cardVSui   = cardShape.virtualSui;
+  const cardVTok   = cardShape.virtualTokens;
+  const cardDrain  = cardShape.drainSui;
   const progress = Math.min(100, (mistToSui(reserveMist) / cardDrain) * 100);
   const priceMist = curveState ? priceMistPerToken(reserveMist, tokensSold, cardVSui, cardVTok) : 0n;
   const graduated = curveState?.graduated ?? false;
@@ -495,9 +495,9 @@ function useNotifications(walletAddress) {
 
     async function load() {
       try {
-        // Watch all package versions — creators may have tokens on V4/V5/V6.
+        // Watch all package versions — creators may have tokens on V4/V5/V6/V7.
         // Event names match the Move contract exactly: CurveCreated, Comment, Graduated.
-        const ALL_PKGS = [PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6].filter(Boolean);
+        const ALL_PKGS = ALL_PACKAGE_IDS;
         const createdTypes = ALL_PKGS.map(p => `${p}::bonding_curve::CurveCreated`);
         const commentTypes = ALL_PKGS.map(p => `${p}::bonding_curve::Comment`);
         const gradTypes    = ALL_PKGS.map(p => `${p}::bonding_curve::Graduated`);
@@ -1031,10 +1031,11 @@ function CrownBanner({ token, stats, suiUsd }) {
   const reserveMist = curveState ? BigInt(curveState.sui_reserve) : 0n;
   const tokensRemaining = curveState ? BigInt(curveState.token_reserve) : 0n;
   const tokensSold = BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS) - tokensRemaining;
-  const progress = Math.min(100, (mistToSui(reserveMist) / DRAIN_SUI_APPROX) * 100);
-  const isNewCurveCard2 = isNewCurve(token?.packageId);
-  const card2VSui = isNewCurveCard2 ? VIRTUAL_SUI_V5 : VIRTUAL_SUI_V4;
-  const card2VTok = isNewCurveCard2 ? VIRTUAL_TOKENS_V5 : VIRTUAL_TOKENS_V4;
+  // Per-token curve shape — V4/V5/V6/V7 each differ
+  const card2Shape = curveShapeFor(token?.packageId);
+  const progress = Math.min(100, (mistToSui(reserveMist) / card2Shape.drainSui) * 100);
+  const card2VSui = card2Shape.virtualSui;
+  const card2VTok = card2Shape.virtualTokens;
   const priceMist = curveState ? priceMistPerToken(reserveMist, tokensSold, card2VSui, card2VTok) : 0n;
   const mcapSui = (Number(priceMist) / 1e9) * TOTAL_SUPPLY_WHOLE;
 
@@ -1108,9 +1109,9 @@ function HomePage({ onLaunch, lang = 'en' }) {
     let cancelled = false;
     async function loadCurveStates() {
       try {
-        // Query last-trade events across ALL package versions (v4/v5/v6),
+        // Query last-trade events across ALL package versions (v4/v5/v6/v7),
         // not just one — otherwise newer-package tokens get stale sort data.
-        const ALL_PKGS = [PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6].filter(Boolean);
+        const ALL_PKGS = ALL_PACKAGE_IDS;
         const eventQueries = [];
         for (const pkg of ALL_PKGS) {
           eventQueries.push(
@@ -1143,9 +1144,9 @@ function HomePage({ onLaunch, lang = 'en' }) {
           if (!fields) return;
           const curveId   = tokens[i].curveId;
           const reserveSui = Number(BigInt(fields.sui_reserve ?? 0)) / 1e9;
-          // Use per-token drain threshold for progress
+          // Use per-token drain threshold for progress (V4/V5/V6/V7 each differ)
           const tokenPkgId  = tokens.find(t => t.curveId === curveId)?.packageId;
-          const tokenDrain  = isNewCurve(tokenPkgId) ? DRAIN_SUI_V5 : DRAIN_SUI_V4;
+          const tokenDrain  = curveShapeFor(tokenPkgId).drainSui;
           const progress   = Math.min(100, (reserveSui / tokenDrain) * 100);
           map[curveId] = { reserveSui, progress, lastTradeTime: lastTradeTimes[curveId] || 0 };
         });
