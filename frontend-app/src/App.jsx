@@ -1,4 +1,4 @@
-// v17-network-banner
+// v18-icon-perf
 // App.jsx  -  react-router-dom based routing
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, useNavigate, useParams, Link, useLocation } from 'react-router-dom';
@@ -207,7 +207,7 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch
   const client = useSuiClient();
   const navigate = useNavigate();
   const [curveState, setCurveState] = useState(null);
-  const [iconUrl, setIconUrl] = useState(null);
+  const [iconUrl, setIconUrl] = useState(token.iconUrl || null);
 
   useEffect(() => {
     let cancelled = false;
@@ -222,7 +222,9 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch
     return () => { cancelled = true; clearInterval(timer); };
   }, [token.curveId, client]);
 
+  // Only fetch icon from RPC if indexer didn't provide one
   useEffect(() => {
+    if (iconUrl) return; // already have it from indexer
     let cancelled = false;
     async function loadIcon() {
       try {
@@ -239,7 +241,7 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch
     }
     loadIcon();
     return () => { cancelled = true; };
-  }, [token.tokenType, token.curveId, client]);
+  }, [token.tokenType, token.curveId, client, iconUrl]);
 
   const reserveMist = curveState ? BigInt(curveState.sui_reserve) : 0n;
   const tokensRemaining = curveState ? BigInt(curveState.token_reserve) : 0n;
@@ -979,7 +981,7 @@ function CrownBanner({ token, stats, suiUsd }) {
   const client = useSuiClient();
   const navigate = useNavigate();
   const [curveState, setCurveState] = useState(null);
-  const [iconUrl, setIconUrl] = useState(null);
+  const [iconUrl, setIconUrl] = useState(token?.iconUrl || null);
 
   useEffect(() => {
     if (!token) return;
@@ -990,7 +992,9 @@ function CrownBanner({ token, stats, suiUsd }) {
     return () => { cancelled = true; };
   }, [token?.curveId, client]);
 
+  // Only fetch icon from RPC if indexer didn't provide one
   useEffect(() => {
+    if (iconUrl) return; // already have it from indexer
     let cancelled = false;
     async function loadIcon() {
       try {
@@ -1007,7 +1011,7 @@ function CrownBanner({ token, stats, suiUsd }) {
     }
     loadIcon();
     return () => { cancelled = true; };
-  }, [token?.tokenType, token?.curveId, client]);
+  }, [token?.tokenType, token?.curveId, client, iconUrl]);
 
   if (!token) return null;
 
