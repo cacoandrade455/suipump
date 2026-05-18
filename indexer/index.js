@@ -12,7 +12,19 @@ import { SuiClient, getFullnodeUrl } from '@mysten/sui/client';
 import { pool, initSchema, getCursor, saveCursor, insertEvent, upsertCurve, recomputeStats, enrichCurveMetadata, backfillMissingIcons } from './db.js';
 import { startApi } from './api.js';
 
-const PACKAGE_IDS = (process.env.PACKAGE_IDS || '0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8').split(',');
+// All deployed SuiPump package versions. The indexer MUST cover every version
+// or tokens/trades/volume from older or newer packages silently disappear.
+// PACKAGE_IDS env var (Render) overrides this; the default below is the
+// complete V4-V7 set so a missing/incomplete env var still indexes everything.
+const ALL_PACKAGE_IDS = [
+  '0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8', // V4
+  '0x785c0604cb6c60a8547501e307d2b0ca7a586ff912c8abff4edfb88db65b7236', // V5
+  '0x21d5b1284d5f1d4d14214654f414ffca20c757ee9f9db7701d3ffaaac62cd768', // V6
+  '0xfb8f3f3e4e8d53130ac140906eebea6b6740bfaf0c971aec607fbc723be951f0', // V7
+];
+const PACKAGE_IDS = process.env.PACKAGE_IDS
+  ? process.env.PACKAGE_IDS.split(',').map(s => s.trim()).filter(Boolean)
+  : ALL_PACKAGE_IDS;
 const RPC_URL     = process.env.SUI_RPC_URL || getFullnodeUrl('testnet');
 const POLL_MS     = parseInt(process.env.POLL_MS || '5000');
 const PAGE_SIZE   = 100;
