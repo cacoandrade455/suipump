@@ -576,10 +576,20 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
       const metadataId = coinMeta?.id;
       if (!metadataId) throw new Error('CoinMetadata object not found');
 
+      // CoinMetadata is a shared object — to pass it as &mut it MUST go in as a
+      // sharedObjectRef with mutable:true. A plain tx.object() can't be borrowed
+      // mutably and fails with InvalidObjectByMutRef. (Owned metadata is rare,
+      // but handle it too.)
+      const metaObj = await client.getObject({ id: metadataId, options: { showOwner: true } });
+      const metaSharedVersion = metaObj.data?.owner?.Shared?.initial_shared_version;
+
       const capId = await getCapId();
 
       const tx = new Transaction();
       const curveRef = await getCurveRef(tx);
+      const metadataRef = metaSharedVersion
+        ? tx.sharedObjectRef({ objectId: metadataId, initialSharedVersion: metaSharedVersion, mutable: true })
+        : tx.object(metadataId);
 
       // Option args: pure.option('string'/'ascii', value|null).
       // name + description are String; symbol + icon_url are ascii String.
@@ -594,7 +604,7 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
         arguments: [
           tx.object(capId),
           curveRef,
-          tx.object(metadataId),
+          metadataRef,
           nameArg, symbolArg, descArg, iconArg,
           tx.object(SUI_CLOCK_ID),
         ],
