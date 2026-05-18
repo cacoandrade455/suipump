@@ -10,7 +10,7 @@ import TradeHistory from './TradeHistory.jsx';
 import HolderList from './HolderList.jsx';
 import Comments from './Comments.jsx';
 import AIAnalysis from './AIAnalysis.jsx';
-import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, MIST_PER_SUI, DRAIN_SUI_APPROX, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_SUI_V6, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, VIRTUAL_TOKENS_V6, DRAIN_SUI_V4, DRAIN_SUI_V5, DRAIN_SUI_V6, isNewCurve, isV5OrLater, supportsMetadataUpdate } from './constants.js';
+import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, MIST_PER_SUI, DRAIN_SUI_APPROX, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_SUI_V6, VIRTUAL_SUI_V7, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, VIRTUAL_TOKENS_V6, VIRTUAL_TOKENS_V7, DRAIN_SUI_V4, DRAIN_SUI_V5, DRAIN_SUI_V6, DRAIN_SUI_V7, isNewCurve, isV5OrLater, isV7OrLater, supportsMetadataUpdate } from './constants.js';
 import { buyQuote, sellQuote } from './curve.js';
 import { t } from './i18n.js';
 
@@ -130,6 +130,7 @@ function isPlaceholderDesc(desc) {
 // Determine which package a token belongs to by checking its type string
 function getTokenPackageId(tokenType) {
   if (!tokenType) return null;
+  if (PACKAGE_ID_V7 && tokenType.startsWith(PACKAGE_ID_V7)) return PACKAGE_ID_V7;
   if (PACKAGE_ID_V6 && tokenType.startsWith(PACKAGE_ID_V6)) return PACKAGE_ID_V6;
   if (PACKAGE_ID_V5 && tokenType.startsWith(PACKAGE_ID_V5)) return PACKAGE_ID_V5;
   if (tokenType.startsWith(PACKAGE_ID_V4)) return PACKAGE_ID_V4;
@@ -141,6 +142,7 @@ function resolvePackageId(tokenType, packageIdHint) {
   const fromType = getTokenPackageId(tokenType);
   if (fromType) return fromType;
   if (packageIdHint) {
+    if (PACKAGE_ID_V7 && packageIdHint === PACKAGE_ID_V7) return PACKAGE_ID_V7;
     if (PACKAGE_ID_V6 && packageIdHint === PACKAGE_ID_V6) return PACKAGE_ID_V6;
     if (PACKAGE_ID_V5 && packageIdHint === PACKAGE_ID_V5) return PACKAGE_ID_V5;
     if (packageIdHint === PACKAGE_ID_V4) return PACKAGE_ID_V4;
@@ -152,6 +154,312 @@ function resolvePackageId(tokenType, packageIdHint) {
 const SLIPPAGE_PRESETS = ['0.5', '1', '2', '5'];
 
 // ── Creator Tools Panel (v5 only) ─────────────────────────────────────────────
+
+// ── Vesting panel (V7+) ───────────────────────────────────────────────────────
+// Shows on-chain VestingLocks for this token, lets the beneficiary claim
+// vested tokens, and lets a holder lock more of their own tokens retroactively.
+
+const VEST_MODE_LABEL = { 0: 'Cliff', 1: 'Linear', 2: 'Monthly' };
+const VEST_DURATIONS_MS = {
+  '7d':   7   * 24 * 60 * 60 * 1000,
+  '30d':  30  * 24 * 60 * 60 * 1000,
+  '180d': 180 * 24 * 60 * 60 * 1000,
+  '365d': 365 * 24 * 60 * 60 * 1000,
+};
+const MONTH_MS = 30 * 24 * 60 * 60 * 1000;
+
+// Mirror of the contract's vested_amount — keeps the UI honest.
+function vestedAmount(total, startMs, durationMs, mode, nowMs) {
+  if (nowMs <= startMs) return 0;
+  const elapsed = nowMs - startMs;
+  if (elapsed >= durationMs) return total;
+  if (mode === 0) return 0;                                  // cliff
+  if (mode === 1) return Math.floor(total * elapsed / durationMs); // linear
+  const totalMonths   = Math.floor(durationMs / MONTH_MS);   // monthly
+  const elapsedMonths = Math.floor(elapsed / MONTH_MS);
+  return Math.floor(total * elapsedMonths / totalMonths);
+}
+
+function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, lang }) {
+  const client = useSuiClient();
+  const { mutate: signAndExecute } = useSignAndExecuteTransaction();
+
+  const [locks, setLocks] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [busy, setBusy] = React.useState(false);
+  const [msg, setMsg] = React.useState('');
+
+  // Retroactive-lock form
+  const [showLockForm, setShowLockForm] = React.useState(false);
+  const [lockAmount, setLockAmount] = React.useState('');
+  const [lockMode, setLockMode] = React.useState(0);
+  const [lockDuration, setLockDuration] = React.useState('30d');
+
+  const isV7 = isV7OrLater(packageId);
+
+  // Load VestingLock objects for this curve, owned/claimable by this wallet.
+  const loadLocks = useCallback(async () => {
+    if (!isV7 || !curveId || !account) { setLoading(false); return; }
+    try {
+      const lockType = `${packageId}::bonding_curve::VestingLock<${tokenType}>`;
+      // VestingLock is shared; find via TokensLocked events for this curve.
+      const ev = await client.queryEvents({
+        query: { MoveEventType: `${packageId}::bonding_curve::TokensLocked` },
+        limit: 200, order: 'descending',
+      }).catch(() => ({ data: [] }));
+
+      const mine = ev.data
+        .filter(e => e.parsedJson?.curve_id === curveId &&
+                     e.parsedJson?.beneficiary === account.address)
+        .map(e => e.parsedJson?.lock_id)
+        .filter(Boolean);
+
+      const out = [];
+      for (const lockId of mine) {
+        const obj = await client.getObject({
+          id: lockId, options: { showContent: true },
+        }).catch(() => null);
+        const f = obj?.data?.content?.fields;
+        if (!f) continue;
+        out.push({
+          id: lockId,
+          total:      Number(f.total_amount),
+          claimed:    Number(f.claimed),
+          remaining:  Number(f.locked),
+          startMs:    Number(f.start_ms),
+          durationMs: Number(f.duration_ms),
+          mode:       Number(f.mode),
+        });
+      }
+      setLocks(out);
+    } catch {
+      // leave locks as-is
+    } finally {
+      setLoading(false);
+    }
+  }, [isV7, curveId, account, client, packageId, tokenType]);
+
+  useEffect(() => { loadLocks(); }, [loadLocks]);
+
+  const handleClaim = async (lockId) => {
+    if (!account || busy) return;
+    setBusy(true); setMsg('');
+    try {
+      const objForRef = await client.getObject({ id: lockId, options: { showOwner: true } });
+      const isv = objForRef.data?.owner?.Shared?.initial_shared_version;
+      const tx = new Transaction();
+      const lockRef = isv
+        ? tx.sharedObjectRef({ objectId: lockId, initialSharedVersion: isv, mutable: true })
+        : tx.object(lockId);
+      const [claimed] = tx.moveCall({
+        target: `${packageId}::bonding_curve::claim_vested`,
+        typeArguments: [tokenType],
+        arguments: [lockRef, tx.object(SUI_CLOCK_ID)],
+      });
+      tx.transferObjects([claimed], account.address);
+      signAndExecute({ transaction: tx }, {
+        onSuccess: () => { setMsg('Claimed ✓'); setBusy(false); setTimeout(() => { setMsg(''); loadLocks(); }, 1500); },
+        onError: (e) => { setMsg(e.message || 'Claim failed'); setBusy(false); },
+      });
+    } catch (e) {
+      setMsg(e.message || 'Claim failed'); setBusy(false);
+    }
+  };
+
+  const handleLock = async () => {
+    if (!account || busy) return;
+    const amt = parseFloat(lockAmount);
+    if (!amt || amt <= 0) { setMsg('Enter an amount'); return; }
+    if (amt > tokenBalance) { setMsg('Amount exceeds your balance'); return; }
+    setBusy(true); setMsg('');
+    try {
+      const atomic = BigInt(Math.floor(amt * 10 ** TOKEN_DECIMALS));
+      const coins = await client.getCoins({ owner: account.address, coinType: tokenType });
+      if (coins.data.length === 0) throw new Error('No token balance');
+
+      const objForRef = await client.getObject({ id: curveId, options: { showOwner: true } });
+      const isv = objForRef.data?.owner?.Shared?.initial_shared_version;
+      const tx = new Transaction();
+      const curveRef = isv
+        ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: isv, mutable: false })
+        : tx.object(curveId);
+
+      const coinObjs = coins.data.map(c => tx.object(c.coinObjectId));
+      let tokenCoin;
+      if (coinObjs.length === 1) {
+        [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(atomic)]);
+      } else {
+        tx.mergeCoins(coinObjs[0], coinObjs.slice(1));
+        [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(atomic)]);
+      }
+      const durationMs = VEST_DURATIONS_MS[lockDuration] ?? VEST_DURATIONS_MS['30d'];
+      tx.moveCall({
+        target: `${packageId}::bonding_curve::lock_tokens`,
+        typeArguments: [tokenType],
+        arguments: [
+          curveRef, tokenCoin,
+          tx.pure.u8(lockMode),
+          tx.pure.u64(durationMs),
+          tx.object(SUI_CLOCK_ID),
+        ],
+      });
+      signAndExecute({ transaction: tx }, {
+        onSuccess: () => {
+          setMsg('Locked ✓'); setBusy(false); setLockAmount(''); setShowLockForm(false);
+          setTimeout(() => { setMsg(''); loadLocks(); }, 1500);
+        },
+        onError: (e) => { setMsg(e.message || 'Lock failed'); setBusy(false); },
+      });
+    } catch (e) {
+      setMsg(e.message || 'Lock failed'); setBusy(false);
+    }
+  };
+
+  // Don't render for non-V7 tokens, or when there's nothing to show/do.
+  if (!isV7) return null;
+  if (loading) return null;
+  if (locks.length === 0 && !account) return null;
+
+  const now = Date.now();
+
+  return (
+    <div className="bg-white/[0.03] border border-white/10 rounded-xl overflow-hidden">
+      <div className="px-4 py-3 border-b border-white/10 flex items-center justify-between">
+        <span className="text-[10px] font-mono text-white/35 tracking-widest">VESTING LOCKS</span>
+        {account && (
+          <button
+            onClick={() => setShowLockForm(o => !o)}
+            className="text-[10px] font-mono text-lime-400 hover:text-lime-300 transition-colors"
+          >
+            {showLockForm ? 'Cancel' : '+ Lock tokens'}
+          </button>
+        )}
+      </div>
+
+      {/* Retroactive lock form */}
+      {showLockForm && (
+        <div className="px-4 py-3 border-b border-white/10 space-y-3">
+          <p className="text-[9px] font-mono text-white/25 leading-relaxed">
+            Lock tokens you already hold. Terms are immutable once set — you
+            cannot shorten or cancel the lock.
+          </p>
+          <div>
+            <div className="text-[9px] tracking-widest text-white/30 mb-1.5">AMOUNT</div>
+            <input
+              type="number" value={lockAmount}
+              onChange={e => { setLockAmount(e.target.value); setMsg(''); }}
+              placeholder={`0 — you hold ${tokenBalance}`}
+              min="0"
+              className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-lime-400/50"
+            />
+          </div>
+          <div>
+            <div className="text-[9px] tracking-widest text-white/30 mb-1.5">MODE</div>
+            <div className="grid grid-cols-3 gap-1.5">
+              {[{ v: 0, l: 'Cliff' }, { v: 1, l: 'Linear' }, { v: 2, l: 'Monthly' }].map(({ v, l }) => {
+                const disabled = v === 2 && lockDuration === '7d';
+                return (
+                  <button
+                    key={v} disabled={disabled}
+                    onClick={() => setLockMode(v)}
+                    className={`py-2 rounded-lg text-[10px] font-mono transition-colors ${
+                      disabled ? 'bg-white/5 text-white/15 cursor-not-allowed'
+                      : lockMode === v ? 'bg-lime-400 text-black'
+                      : 'bg-white/5 text-white/40 hover:text-white/70'
+                    }`}
+                  >{l}</button>
+                );
+              })}
+            </div>
+          </div>
+          <div>
+            <div className="text-[9px] tracking-widest text-white/30 mb-1.5">DURATION</div>
+            <div className="grid grid-cols-4 gap-1.5">
+              {['7d', '30d', '180d', '365d'].map(d => (
+                <button
+                  key={d}
+                  onClick={() => {
+                    setLockDuration(d);
+                    if (d === '7d' && lockMode === 2) setLockMode(0);
+                  }}
+                  className={`py-2 rounded-lg text-[10px] font-mono transition-colors ${
+                    lockDuration === d ? 'bg-lime-400 text-black'
+                    : 'bg-white/5 text-white/40 hover:text-white/70'
+                  }`}
+                >{d}</button>
+              ))}
+            </div>
+          </div>
+          <button
+            onClick={handleLock}
+            disabled={busy || !lockAmount}
+            className={`w-full py-2.5 rounded-lg text-[11px] font-mono transition-colors ${
+              busy || !lockAmount
+                ? 'bg-white/5 text-white/25 cursor-not-allowed'
+                : 'bg-lime-400 hover:bg-lime-300 text-black'
+            }`}
+          >
+            {busy ? 'Locking…' : 'Lock tokens'}
+          </button>
+        </div>
+      )}
+
+      {/* Existing locks */}
+      {locks.length === 0 ? (
+        <div className="py-6 text-center text-white/35 text-xs font-mono">
+          No locks for this token.
+        </div>
+      ) : (
+        <div className="divide-y divide-white/5">
+          {locks.map(lk => {
+            const vested    = vestedAmount(lk.total, lk.startMs, lk.durationMs, lk.mode, now);
+            const claimable = Math.max(0, vested - lk.claimed);
+            const pct       = lk.total > 0 ? (vested / lk.total) * 100 : 0;
+            const whole     = (n) => (n / 10 ** TOKEN_DECIMALS).toLocaleString();
+            return (
+              <div key={lk.id} className="px-4 py-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-mono text-white/50">
+                    {VEST_MODE_LABEL[lk.mode]} · {Math.round(lk.durationMs / 86400000)}d
+                  </span>
+                  <span className="text-[10px] font-mono text-white/40">
+                    {whole(lk.remaining)} locked
+                  </span>
+                </div>
+                {/* Progress bar */}
+                <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
+                  <div className="h-full bg-lime-400" style={{ width: `${Math.min(100, pct)}%` }} />
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-[9px] font-mono text-white/30">
+                    {pct.toFixed(1)}% vested · {whole(lk.claimed)} claimed
+                  </span>
+                  <button
+                    onClick={() => handleClaim(lk.id)}
+                    disabled={busy || claimable <= 0}
+                    className={`text-[10px] font-mono px-2.5 py-1 rounded transition-colors ${
+                      busy || claimable <= 0
+                        ? 'bg-white/5 text-white/20 cursor-not-allowed'
+                        : 'bg-lime-400 hover:bg-lime-300 text-black'
+                    }`}
+                  >
+                    {claimable > 0 ? `Claim ${whole(claimable)}` : 'Nothing vested'}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {msg && (
+        <div className="px-4 py-2 border-t border-white/10 text-[10px] font-mono text-lime-400">
+          {msg}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveState, currentDesc, currentTwitter, currentTelegram, currentWebsite, currentDex, lang }) {
   const client = useSuiClient();
@@ -759,11 +1067,11 @@ function TradesHoldersBlock({ curveId, tokenType, suiUsd, lang, creator }) {
 
 // ── Comments wrapper ──────────────────────────────────────────────────────────
 
-function CommentsBlock({ curveId, lang }) {
+function CommentsBlock({ curveId, packageId, lang }) {
   return (
     <div>
       <div className="text-[10px] font-mono text-white/35 tracking-widest mb-2">{t(lang, 'comments')}</div>
-      <Comments curveId={curveId} />
+      <Comments curveId={curveId} packageId={packageId} />
     </div>
   );
 }
@@ -876,9 +1184,17 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
 
   const pkgId          = resolvePackageId(tokenType, packageIdHint);
   const isV5Token      = isV5OrLater(pkgId);
-  const vSui           = isV5Token ? VIRTUAL_SUI_V5    : VIRTUAL_SUI_V4;
-  const vTok           = isV5Token ? VIRTUAL_TOKENS_V5 : VIRTUAL_TOKENS_V4;
-  const drainSui       = isV5Token ? DRAIN_SUI_V5      : DRAIN_SUI_V4;
+  // Per-version curve shape: V4=30k, V5/V6=9k, V7=3.5k virtual SUI.
+  // Using the wrong shape would mis-price every quote and chart point.
+  const vSui           = pkgId === PACKAGE_ID_V7 ? VIRTUAL_SUI_V7
+                       : (pkgId === PACKAGE_ID_V6 || pkgId === PACKAGE_ID_V5) ? VIRTUAL_SUI_V5
+                       : VIRTUAL_SUI_V4;
+  const vTok           = pkgId === PACKAGE_ID_V7 ? VIRTUAL_TOKENS_V7
+                       : (pkgId === PACKAGE_ID_V6 || pkgId === PACKAGE_ID_V5) ? VIRTUAL_TOKENS_V5
+                       : VIRTUAL_TOKENS_V4;
+  const drainSui       = pkgId === PACKAGE_ID_V7 ? DRAIN_SUI_V7
+                       : (pkgId === PACKAGE_ID_V6 || pkgId === PACKAGE_ID_V5) ? DRAIN_SUI_V5
+                       : DRAIN_SUI_V4;
   const reserveMist    = curveState ? BigInt(curveState.sui_reserve) : 0n;
   const tokensRemaining = curveState ? BigInt(curveState.token_reserve) : 0n;
   const tokensSold     = BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS) - tokensRemaining;
@@ -1030,10 +1346,14 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
         const minOut = quote?.suiOut != null
           ? BigInt(Math.floor(Number(quote.suiOut) * (1 - slippageNum / 100)))
           : 0n;
+        // V7 sell takes a referral arg; V4/V5/V6 sell does not.
+        const sellArgs = isV7OrLater(pkgId)
+          ? [curveRef, tokenCoin, tx.pure.u64(minOut), tx.pure.option('address', null)]
+          : [curveRef, tokenCoin, tx.pure.u64(minOut)];
         const [suiOut] = tx.moveCall({
           target: `${pkgId}::bonding_curve::sell`,
           typeArguments: [tokenType],
-          arguments: [curveRef, tokenCoin, tx.pure.u64(minOut)],
+          arguments: sellArgs,
         });
         tx.transferObjects([suiOut], account.address);
       }
@@ -1252,7 +1572,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
           <TradesHoldersBlock curveId={curveId} tokenType={tokenType} suiUsd={suiUsd} lang={lang} creator={creatorAddr} />
 
           {/* Comments */}
-          <CommentsBlock curveId={curveId} lang={lang} />
+          <CommentsBlock curveId={curveId} packageId={pkgId} lang={lang} />
         </div>
 
         {/* Right column — hidden on mobile, shown on desktop */}
@@ -1274,6 +1594,16 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
             curveId={curveId} tokenType={tokenType}
             packageIdHint={pkgId}
             curveState={curveState}
+          />
+
+          {/* Vesting locks — V7+; visible to anyone holding/locking tokens */}
+          <VestingPanel
+            curveId={curveId}
+            tokenType={tokenType}
+            packageId={pkgId}
+            account={account}
+            tokenBalance={tokenBalance}
+            lang={lang}
           />
 
           {/* Creator Tools — visible to creator only */}

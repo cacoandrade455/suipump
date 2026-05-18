@@ -4,8 +4,19 @@ import { useCurrentAccount, useSignAndExecuteTransaction, useSuiClient } from '@
 import { Transaction } from '@mysten/sui/transactions';
 import { X, Plus, Trash2, Rocket, CheckCircle } from 'lucide-react';
 import wasmInit, * as bytecodeTemplate from '@mysten/move-bytecode-template';
-import { PACKAGE_ID, PACKAGE_ID_V5, MIST_PER_SUI, ANTI_BOT_NONE, ANTI_BOT_15S, ANTI_BOT_30S, GRAD_TARGET_CETUS, GRAD_TARGET_DEEPBOOK } from './constants.js';
+import { PACKAGE_ID, PACKAGE_ID_V5, PACKAGE_ID_V7, MIST_PER_SUI, ANTI_BOT_NONE, ANTI_BOT_15S, ANTI_BOT_30S, GRAD_TARGET_CETUS, GRAD_TARGET_DEEPBOOK, GRAD_TARGET_TURBOS, isV7OrLater } from './constants.js';
 import { t } from './i18n.js';
+
+// Vesting modes / durations — must match bonding_curve.move v7
+const VEST_MODE_CLIFF   = 0;
+const VEST_MODE_LINEAR  = 1;
+const VEST_MODE_MONTHLY = 2;
+const VEST_DURATIONS = {
+  '7d':   7   * 24 * 60 * 60 * 1000,
+  '30d':  30  * 24 * 60 * 60 * 1000,
+  '180d': 180 * 24 * 60 * 60 * 1000,
+  '365d': 365 * 24 * 60 * 60 * 1000,
+};
 
 const LAUNCH_FEE_MIST = 2_000_000_000n;
 
@@ -124,6 +135,10 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
   });
   const [payouts, setPayouts] = useState([{ address: account?.address ?? '', bps: 10000 }]);
   const [devBuy, setDevBuy] = useState('');
+  // Optional dev-buy vesting lock (V7+ only)
+  const [lockDevBuy, setLockDevBuy] = useState(false);
+  const [lockMode, setLockMode] = useState(VEST_MODE_CLIFF);   // 0 cliff / 1 linear / 2 monthly
+  const [lockDuration, setLockDuration] = useState('30d');     // 7d / 30d / 180d / 365d
   const [launching, setLaunching] = useState(false);
   const [txStep, setTxStep] = useState(null);
   const [tx1Digest, setTx1Digest] = useState(null);
@@ -226,7 +241,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
       const graduationTarget = form.graduationDex === 'deepbook'
         ? GRAD_TARGET_DEEPBOOK
         : form.graduationDex === 'turbos'
-          ? 2  // GRAD_TARGET_TURBOS
+          ? GRAD_TARGET_TURBOS
           : GRAD_TARGET_CETUS;
 
       const tx2 = new Transaction();
@@ -278,7 +293,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
 
         let buyArgs;
         if (PACKAGE_ID_V5) {
-          // V5 buy: curve, payment, min_tokens_out, referral (none), clock
+          // V5+ buy: curve, payment, min_tokens_out, referral (none), clock
           buyArgs = [
             curve,
             devPayment,
@@ -295,7 +310,27 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
           typeArguments: [newTokenType],
           arguments: buyArgs,
         });
-        tx2.transferObjects([tokens, refund], account.address);
+
+        // Optional: route the dev-buy tokens into an immutable VestingLock.
+        // V7+ only. lock_tokens(&Curve, Coin<T>, mode, duration_ms, clock).
+        // The refund (if any) always goes back to the creator.
+        if (lockDevBuy && isV7OrLater(PACKAGE_ID)) {
+          const durationMs = VEST_DURATIONS[lockDuration] ?? VEST_DURATIONS['30d'];
+          tx2.moveCall({
+            target: `${PACKAGE_ID}::bonding_curve::lock_tokens`,
+            typeArguments: [newTokenType],
+            arguments: [
+              curve,
+              tokens,
+              tx2.pure.u8(lockMode),
+              tx2.pure.u64(durationMs),
+              tx2.object(SUI_CLOCK_ID),
+            ],
+          });
+          tx2.transferObjects([refund], account.address);
+        } else {
+          tx2.transferObjects([tokens, refund], account.address);
+        }
       }
 
       tx2.moveCall({ target: `${PACKAGE_ID}::bonding_curve::share_curve`, typeArguments: [newTokenType], arguments: [curve] });
@@ -571,6 +606,92 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
               {parseFloat(devBuy) > 5 && (
                 <div className="rounded-xl border border-yellow-500/20 bg-yellow-950/20 p-3 text-[10px] font-mono text-yellow-400">
                   {t(lang, 'devBuyWarning')}
+                </div>
+              )}
+
+              {/* Optional dev-buy vesting lock — V7+ only */}
+              {parseFloat(devBuy) > 0 && isV7OrLater(PACKAGE_ID) && (
+                <div className="rounded-2xl border border-white/5 bg-white/[0.02] p-4 space-y-3">
+                  <label className="flex items-center gap-2.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={lockDevBuy}
+                      onChange={e => setLockDevBuy(e.target.checked)}
+                      className="accent-lime-400 w-3.5 h-3.5"
+                    />
+                    <span className="text-[11px] font-mono text-white/70">
+                      Lock my dev-buy tokens (anti-rug)
+                    </span>
+                  </label>
+                  <p className="text-[9px] font-mono text-white/25 leading-relaxed">
+                    Your dev-buy tokens go into an on-chain vesting lock. The terms
+                    are immutable — you cannot shorten or cancel the lock once set.
+                  </p>
+
+                  {lockDevBuy && (
+                    <div className="space-y-3 pt-1">
+                      {/* Mode */}
+                      <div>
+                        <div className="text-[9px] tracking-widest text-white/30 mb-1.5">VESTING MODE</div>
+                        <div className="grid grid-cols-3 gap-1.5">
+                          {[
+                            { v: VEST_MODE_CLIFF,   label: 'Cliff' },
+                            { v: VEST_MODE_LINEAR,  label: 'Linear' },
+                            { v: VEST_MODE_MONTHLY, label: 'Monthly' },
+                          ].map(({ v, label }) => {
+                            // Monthly requires >= 30d
+                            const disabled = v === VEST_MODE_MONTHLY && lockDuration === '7d';
+                            return (
+                              <button
+                                key={v}
+                                disabled={disabled}
+                                onClick={() => setLockMode(v)}
+                                className={`py-2 rounded-lg text-[10px] font-mono transition-colors ${
+                                  disabled
+                                    ? 'bg-white/5 text-white/15 cursor-not-allowed'
+                                    : lockMode === v
+                                      ? 'bg-lime-400 text-black'
+                                      : 'bg-white/5 text-white/40 hover:text-white/70'
+                                }`}
+                              >
+                                {label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                      {/* Duration */}
+                      <div>
+                        <div className="text-[9px] tracking-widest text-white/30 mb-1.5">DURATION</div>
+                        <div className="grid grid-cols-4 gap-1.5">
+                          {['7d', '30d', '180d', '365d'].map(d => (
+                            <button
+                              key={d}
+                              onClick={() => {
+                                setLockDuration(d);
+                                // Monthly is invalid for 7d — fall back to cliff
+                                if (d === '7d' && lockMode === VEST_MODE_MONTHLY) {
+                                  setLockMode(VEST_MODE_CLIFF);
+                                }
+                              }}
+                              className={`py-2 rounded-lg text-[10px] font-mono transition-colors ${
+                                lockDuration === d
+                                  ? 'bg-lime-400 text-black'
+                                  : 'bg-white/5 text-white/40 hover:text-white/70'
+                              }`}
+                            >
+                              {d}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <p className="text-[9px] font-mono text-lime-400/70 leading-relaxed">
+                        {lockMode === VEST_MODE_CLIFF   && `100% unlocks at the end of ${lockDuration}.`}
+                        {lockMode === VEST_MODE_LINEAR  && `Tokens unlock continuously over ${lockDuration}.`}
+                        {lockMode === VEST_MODE_MONTHLY && `Tokens unlock in equal monthly steps over ${lockDuration}.`}
+                      </p>
+                    </div>
+                  )}
                 </div>
               )}
               <div className="rounded-2xl border border-white/5 bg-white/[0.02] p-4 space-y-2">

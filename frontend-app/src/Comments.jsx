@@ -3,7 +3,9 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useCurrentAccount, useSuiClient, useSignAndExecuteTransaction } from '@mysten/dapp-kit';
 import { Transaction } from '@mysten/sui/transactions';
 import { Send, Reply, ChevronDown, ChevronUp } from 'lucide-react';
-import { PACKAGE_ID } from './constants.js';
+import {
+  ALL_PACKAGE_IDS, PACKAGE_ID_V7, COMMENT_FEE_MIST, isV7OrLater,
+} from './constants.js';
 import { paginateEvents } from './paginateEvents.js';
 
 function walletColor(addr) {
@@ -199,7 +201,7 @@ function CommentItem({ comment, replies, account, curveId, onReplyPosted }) {
 
 // ── Main component ───────────────────────────────────────────────────────────
 
-export default function Comments({ curveId }) {
+export default function Comments({ curveId, packageId }) {
   const account = useCurrentAccount();
   const client = useSuiClient();
   const { mutate: signAndExecute } = useSignAndExecuteTransaction();
@@ -219,16 +221,24 @@ export default function Comments({ curveId }) {
 
     async function load() {
       try {
-        const eventType = `${PACKAGE_ID}::bonding_curve::CommentPosted`;
-        const events = await paginateEvents(client, { MoveEventType: eventType }, { order: 'ascending' });
-        const filtered = events
+        // Contract emits `Comment` (not `CommentPosted`). Query all versions.
+        const allEvents = [];
+        for (const pkg of ALL_PACKAGE_IDS) {
+          const eventType = `${pkg}::bonding_curve::Comment`;
+          const events = await paginateEvents(
+            client, { MoveEventType: eventType }, { order: 'ascending' }
+          ).catch(() => []);
+          allEvents.push(...events);
+        }
+        const filtered = allEvents
           .filter(e => e.parsedJson?.curve_id === curveId)
           .map(e => ({
             id: e.id?.txDigest + '_' + e.id?.eventSeq,
             author: e.parsedJson?.author,
             text: e.parsedJson?.text,
             timestamp: e.timestampMs ? Number(e.timestampMs) : null,
-          }));
+          }))
+          .sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
         if (!cancelled) {
           setComments(filtered);
           setLoading(false);
@@ -263,13 +273,31 @@ export default function Comments({ curveId }) {
 
     try {
       const tx = new Transaction();
-      tx.moveCall({
-        target: `${PACKAGE_ID}::bonding_curve::post_comment`,
-        arguments: [
-          tx.pure.address(curveId),
-          tx.pure.string(trimmed),
-        ],
-      });
+      const pkg = packageId || PACKAGE_ID_V7;
+
+      if (isV7OrLater(pkg)) {
+        // V7: post_comment(&mut Curve, payment: Coin<SUI>, text)
+        // Curve is a shared object — must use sharedObjectRef, not tx.object.
+        const objForRef = await client.getObject({ id: curveId, options: { showOwner: true } });
+        const initialSharedVersion = objForRef.data?.owner?.Shared?.initial_shared_version;
+        const curveRef = initialSharedVersion
+          ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion, mutable: true })
+          : tx.object(curveId);
+        const [feeCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(COMMENT_FEE_MIST)]);
+        tx.moveCall({
+          target: `${pkg}::bonding_curve::post_comment`,
+          arguments: [curveRef, feeCoin, tx.pure.string(trimmed)],
+        });
+      } else {
+        // V4/V5/V6: post_comment(curve_id: ID, text) — no fee, no curve object
+        tx.moveCall({
+          target: `${pkg}::bonding_curve::post_comment`,
+          arguments: [
+            tx.pure.address(curveId),
+            tx.pure.string(trimmed),
+          ],
+        });
+      }
 
       signAndExecute(
         { transaction: tx },
