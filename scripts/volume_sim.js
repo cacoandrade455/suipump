@@ -16,11 +16,26 @@ import { client, loadKeypair, PACKAGE_ID, ADMIN_CAP_ID, fmtSui } from './config.
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 
-// ── Package version detection ─────────────────────────────────────────────────
+// ── Package versions ──────────────────────────────────────────────────────────
 const PACKAGE_ID_V4  = '0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8';
+const PACKAGE_ID_V5  = '0x785c0604cb6c60a8547501e307d2b0ca7a586ff912c8abff4edfb88db65b7236';
+const PACKAGE_ID_V6  = '0x21d5b1284d5f1d4d14214654f414ffca20c757ee9f9db7701d3ffaaac62cd768';
+const PACKAGE_ID_V7  = '0xfb8f3f3e4e8d53130ac140906eebea6b6740bfaf0c971aec607fbc723be951f0';
 const SUI_CLOCK_ID   = '0x0000000000000000000000000000000000000000000000000000000000000006';
-const isV4 = PACKAGE_ID === PACKAGE_ID_V4;
-const WALLETS_FILE = join(__dir, 'sim_wallets.json');
+const WALLETS_FILE   = join(__dir, 'sim_wallets.json');
+
+// Resolve which package a curve belongs to, from its type string.
+function resolvePackageId(typeStr) {
+  if (typeStr?.includes(PACKAGE_ID_V7)) return PACKAGE_ID_V7;
+  if (typeStr?.includes(PACKAGE_ID_V6)) return PACKAGE_ID_V6;
+  if (typeStr?.includes(PACKAGE_ID_V5)) return PACKAGE_ID_V5;
+  if (typeStr?.includes(PACKAGE_ID_V4)) return PACKAGE_ID_V4;
+  return PACKAGE_ID; // active package fallback
+}
+
+// V4 buy/sell take no referral/clock; V5+ buy adds them; V7+ sell adds referral.
+const isV4Pkg = (pkg) => pkg === PACKAGE_ID_V4;
+const isV7Pkg = (pkg) => pkg === PACKAGE_ID_V7;
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -58,7 +73,11 @@ async function getSharedVersion(objectId) {
 
 async function getCurveTokenType(curveId) {
   const obj = await client.getObject({ id: curveId, options: { showType: true } });
-  return obj.data?.type?.match(/Curve<(.+)>$/)?.[1];
+  const typeStr = obj.data?.type ?? '';
+  return {
+    tokenType: typeStr.match(/Curve<(.+)>$/)?.[1],
+    packageId: resolvePackageId(typeStr),
+  };
 }
 
 // ── Wallet management ─────────────────────────────────────────────────────────
@@ -181,8 +200,10 @@ async function sweepWallets(wallets) {
 
 // ── Single trade with retry on 429 ───────────────────────────────────────────
 
-async function buyThenSell(keypair, address, curveId, tokenType, walletNum) {
+async function buyThenSell(keypair, address, curveId, tokenType, packageId, walletNum) {
   const sharedVersion = await getSharedVersion(curveId);
+  const isV4 = isV4Pkg(packageId);
+  const isV7 = isV7Pkg(packageId);
 
   // BUY with retry
   let buyResult;
@@ -191,12 +212,14 @@ async function buyThenSell(keypair, address, curveId, tokenType, walletNum) {
       const buyTx = new Transaction();
       const curveRef = buyTx.sharedObjectRef({ objectId: curveId, initialSharedVersion: sharedVersion, mutable: true });
       const [payment] = buyTx.splitCoins(buyTx.gas, [buyTx.pure.u64(TRADE_MIST)]);
+      // V4 buy: (curve, payment, min_out)
+      // V5+ buy: (curve, payment, min_out, referral, clock)
       const buyArgs = isV4
         ? [curveRef, payment, buyTx.pure.u64(0)]
         : [curveRef, payment, buyTx.pure.u64(0), buyTx.pure.option('address', null), buyTx.object(SUI_CLOCK_ID)];
 
       const [tokens, refund] = buyTx.moveCall({
-        target: `${PACKAGE_ID}::bonding_curve::buy`,
+        target: `${packageId}::bonding_curve::buy`,
         typeArguments: [tokenType],
         arguments: buyArgs,
       });
@@ -237,10 +260,16 @@ async function buyThenSell(keypair, address, curveId, tokenType, walletNum) {
       if (coinObjs.length > 1) sellTx.mergeCoins(coinObjs[0], coinObjs.slice(1));
       const [tokenToSell] = sellTx.splitCoins(coinObjs[0], [sellTx.pure.u64(totalTokens)]);
 
+      // V4/V5/V6 sell: (curve, coin, min_out)
+      // V7+ sell: (curve, coin, min_out, referral)
+      const sellArgs = isV7
+        ? [curveRef2, tokenToSell, sellTx.pure.u64(0), sellTx.pure.option('address', null)]
+        : [curveRef2, tokenToSell, sellTx.pure.u64(0)];
+
       const [suiOut] = sellTx.moveCall({
-        target: `${PACKAGE_ID}::bonding_curve::sell`,
+        target: `${packageId}::bonding_curve::sell`,
         typeArguments: [tokenType],
-        arguments: [curveRef2, tokenToSell, sellTx.pure.u64(0)],
+        arguments: sellArgs,
       });
       sellTx.transferObjects([suiOut], address);
 
@@ -376,12 +405,14 @@ while (Date.now() - startTime < RUN_DURATION_MS) {
     await sleep(randInt(0, MAX_STAGGER_MS));
 
     const curveId = CURVES[(cycle + i) % CURVES.length];
-    const tokenType = tokenTypes[curveId];
-    if (!tokenType) return;
+    const info = tokenTypes[curveId];
+    if (!info || !info.tokenType) return;
 
     const kp = walletKeypair(w);
     try {
-      const { buyDigest, sellDigest } = await buyThenSell(kp, w.address, curveId, tokenType, i + 1);
+      const { buyDigest, sellDigest } = await buyThenSell(
+        kp, w.address, curveId, info.tokenType, info.packageId, i + 1
+      );
       console.log(`    W${String(i + 1).padStart(2, '0')} ✓ buy ${buyDigest.slice(0, 10)}… sell ${sellDigest.slice(0, 10)}…`);
       totalTrades += 2;
       totalVolume += TRADE_SUI;
