@@ -475,6 +475,13 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
   // V7+ has a real on-chain update_metadata; V6 and earlier do not.
   const metadataPkg = PACKAGE_ID_V7;
 
+  // INTERIM (pre-V8): the on-chain update_metadata path is broken because the
+  // V7 coin template freezes CoinMetadata at launch, so it can never be passed
+  // by &mut. The metadata tab is hidden until the V8 contract ships (template
+  // shares metadata + graduate() takes &mut). Flip this to true once V8 is
+  // deployed and constants.js points the active package at V8.
+  const METADATA_UPDATE_ENABLED = false;
+
   const [tab, setTab] = useState('links'); // 'links' | 'metadata'
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
@@ -636,7 +643,7 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
           <span className="text-[9px] font-mono tracking-widest text-lime-400/70">CREATOR TOOLS</span>
         </div>
         <div className="flex gap-1">
-          {['links', ...((isV6Token || isV7Token) ? ['metadata'] : [])].map(t => (
+          {['links', ...((METADATA_UPDATE_ENABLED && (isV6Token || isV7Token)) ? ['metadata'] : [])].map(t => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -715,8 +722,8 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
         </div>
       )}
 
-      {/* Metadata Tab (v5 only) */}
-      {tab === 'metadata' && (isV6Token || isV7Token) && (() => {
+      {/* Metadata Tab — hidden pre-V8 (see METADATA_UPDATE_ENABLED) */}
+      {METADATA_UPDATE_ENABLED && tab === 'metadata' && (isV6Token || isV7Token) && (() => {
         const windowClosesAt = curveState?.created_at_ms
           ? Number(curveState.created_at_ms) + 24 * 60 * 60 * 1000 : 0;
         const nowMs = Date.now();
