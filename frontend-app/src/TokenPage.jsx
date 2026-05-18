@@ -1144,7 +1144,11 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
     // Fetch CurveCreated event — try all package IDs
     (async () => {
       try {
-        const packageIds = [pkgId, PACKAGE_ID_V5, PACKAGE_ID_V4].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i);
+        // Search every package version — a curve's CurveCreated event lives
+        // on whichever SuiPump package launched it.
+        const packageIds = [PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7]
+          .filter(Boolean)
+          .filter((v, i, a) => a.indexOf(v) === i);
         let found = null;
         for (const pid of packageIds) {
           if (found) break;
@@ -1253,6 +1257,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
       checkPkg(PACKAGE_ID_V4),
       ...(PACKAGE_ID_V5 ? [checkPkg(PACKAGE_ID_V5)] : []),
       ...(PACKAGE_ID_V6 ? [checkPkg(PACKAGE_ID_V6)] : []),
+      ...(PACKAGE_ID_V7 ? [checkPkg(PACKAGE_ID_V7)] : []),
     ]).then(results => {
       if (!cancelled) setIsCreator(results.some(Boolean));
     }).catch(() => {});
