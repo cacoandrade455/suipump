@@ -9,7 +9,7 @@
 
 import 'dotenv/config';
 import { SuiClient, getFullnodeUrl } from '@mysten/sui/client';
-import { pool, initSchema, getCursor, saveCursor, insertEvent, upsertCurve, recomputeStats } from './db.js';
+import { pool, initSchema, getCursor, saveCursor, insertEvent, upsertCurve, recomputeStats, enrichCurveMetadata, backfillMissingIcons } from './db.js';
 import { startApi } from './api.js';
 
 const PACKAGE_IDS = (process.env.PACKAGE_IDS || '0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8').split(',');
@@ -51,6 +51,9 @@ async function syncEventType(eventType, packageId) {
       // Handle CurveCreated specially
       if (eventType.includes('CurveCreated')) {
         await upsertCurve(evt, packageId);
+        // Fetch icon_url + token_type from on-chain metadata
+        const curveId2 = evt.parsedJson?.curve_id;
+        if (curveId2) await enrichCurveMetadata(curveId2, client);
       }
 
       // Trigger stats recompute for trade/comment events
@@ -119,6 +122,10 @@ async function main() {
   console.log('  Backfilling historical events…');
   await syncAll();
   console.log('  ✓ Backfill complete');
+  console.log();
+
+  // Fill missing icons for existing tokens
+  await backfillMissingIcons(client);
   console.log();
 
   // Poll for new events
