@@ -207,7 +207,7 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch
   const client = useSuiClient();
   const navigate = useNavigate();
   const [curveState, setCurveState] = useState(null);
-  const [iconUrl, setIconUrl] = useState(null);
+  const [iconUrl, setIconUrl] = useState(token.iconUrl || null);
 
   useEffect(() => {
     let cancelled = false;
@@ -979,7 +979,7 @@ function CrownBanner({ token, stats, suiUsd }) {
   const client = useSuiClient();
   const navigate = useNavigate();
   const [curveState, setCurveState] = useState(null);
-  const [iconUrl, setIconUrl] = useState(null);
+  const [iconUrl, setIconUrl] = useState(token?.iconUrl || null);
 
   useEffect(() => {
     if (!token) return;
