@@ -256,6 +256,52 @@ export async function recomputeStats(curveId) {
 
 // ── Query helpers for API ─────────────────────────────────────────────────────
 
+// ── Enrich curve with icon_url + token_type from on-chain metadata ────────────
+// Called once per curve — either at ingestion or during startup sweep.
+export async function enrichCurveMetadata(curveId, suiClient) {
+  try {
+    // 1. Get token type from curve object
+    const obj = await suiClient.getObject({ id: curveId, options: { showType: true } });
+    const typeStr = obj.data?.type ?? '';
+    const match = typeStr.match(/Curve<(.+)>$/);
+    const tokenType = match ? match[1] : null;
+    if (!tokenType) return;
+
+    // 2. Get icon from coin metadata
+    const meta = await suiClient.getCoinMetadata({ coinType: tokenType });
+    const iconUrl = meta?.iconUrl ?? null;
+    const description = meta?.description ?? null;
+
+    // 3. Store both
+    await pool.query(
+      `UPDATE curves SET
+         token_type  = COALESCE($2, curves.token_type),
+         icon_url    = COALESCE($3, curves.icon_url),
+         description = COALESCE($4, curves.description)
+       WHERE curve_id = $1`,
+      [curveId, tokenType, iconUrl, description]
+    );
+  } catch (err) {
+    // Non-fatal — icon is cosmetic
+    console.error(`  enrich ${curveId.slice(0, 12)}… failed:`, err.message);
+  }
+}
+
+// ── Startup sweep: fill icon_url for all curves missing it ────────────────────
+export async function backfillMissingIcons(suiClient) {
+  const res = await pool.query(
+    `SELECT curve_id FROM curves WHERE icon_url IS NULL OR token_type IS NULL`
+  );
+  if (res.rows.length === 0) return;
+  console.log(`  Backfilling icons for ${res.rows.length} tokens…`);
+  for (const row of res.rows) {
+    await enrichCurveMetadata(row.curve_id, suiClient);
+    // Small delay to be polite to RPC
+    await new Promise(r => setTimeout(r, 300));
+  }
+  console.log(`  ✓ Icon backfill complete`);
+}
+
 export async function getAllTokenStats() {
   const res = await pool.query('SELECT * FROM token_stats');
   const map = {};
