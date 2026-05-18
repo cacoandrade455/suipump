@@ -129,8 +129,10 @@ function useStats() {
     let cancelled = false;
     async function load() {
       try {
-        const buyType = `${PACKAGE_ID}::bonding_curve::TokensPurchased`;
-        const sellType = `${PACKAGE_ID}::bonding_curve::TokensSold`;
+        // RPC fallback aggregates trade events across all package versions
+        const ALL_PKGS = [PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6].filter(Boolean);
+        const buyTypes  = ALL_PKGS.map(p => `${p}::bonding_curve::TokensPurchased`);
+        const sellTypes = ALL_PKGS.map(p => `${p}::bonding_curve::TokensSold`);
         // Try indexer first
         if (INDEXER_URL) {
           try {
@@ -142,19 +144,21 @@ function useStats() {
             }
           } catch {}
         }
-        const eventMap = await paginateMultipleEvents(client, [buyType, sellType], { order: 'descending', maxPages: 100, pageSize: 100 });
+        const eventMap = await paginateMultipleEvents(client, [...buyTypes, ...sellTypes], { order: 'descending', maxPages: 100, pageSize: 100 });
+        const allBuys  = buyTypes.flatMap(t => eventMap[t] ?? []);
+        const allSells = sellTypes.flatMap(t => eventMap[t] ?? []);
         let protocolMist = 0, volumeMist = 0;
-        for (const e of eventMap[buyType]) {
+        for (const e of allBuys) {
           protocolMist += Number(e.parsedJson?.protocol_fee ?? 0);
           volumeMist += Number(e.parsedJson?.sui_in ?? 0);
         }
-        for (const e of eventMap[sellType]) {
+        for (const e of allSells) {
           protocolMist += Number(e.parsedJson?.protocol_fee ?? 0);
           volumeMist += Number(e.parsedJson?.sui_out ?? 0);
         }
         if (!cancelled) setStats({
           poolSui: (protocolMist * 0.5) / MIST_PER_SUI,
-          tradeCount: eventMap[buyType].length + eventMap[sellType].length,
+          tradeCount: allBuys.length + allSells.length,
           volume: volumeMist / MIST_PER_SUI,
         });
       } catch { }
@@ -207,7 +211,7 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch
   const client = useSuiClient();
   const navigate = useNavigate();
   const [curveState, setCurveState] = useState(null);
-  const [iconUrl, setIconUrl] = useState(token.iconUrl || null);
+  const [iconUrl, setIconUrl] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -491,20 +495,33 @@ function useNotifications(walletAddress) {
 
     async function load() {
       try {
-        const createdType = `${PACKAGE_ID}::bonding_curve::CurveCreated`;
-        const commentType = `${PACKAGE_ID}::bonding_curve::CommentPosted`;
-        const gradType = `${PACKAGE_ID}::bonding_curve::CurveGraduated`;
+        // Watch all package versions — creators may have tokens on V4/V5/V6.
+        // Event names match the Move contract exactly: CurveCreated, Comment, Graduated.
+        const ALL_PKGS = [PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6].filter(Boolean);
+        const createdTypes = ALL_PKGS.map(p => `${p}::bonding_curve::CurveCreated`);
+        const commentTypes = ALL_PKGS.map(p => `${p}::bonding_curve::Comment`);
+        const gradTypes    = ALL_PKGS.map(p => `${p}::bonding_curve::Graduated`);
 
-        const eventMap = await paginateMultipleEvents(client, [createdType, commentType, gradType], { order: 'descending', maxPages: 5 });
+        const eventMap = await paginateMultipleEvents(
+          client,
+          [...createdTypes, ...commentTypes, ...gradTypes],
+          { order: 'descending', maxPages: 5 }
+        );
+
+        // Merge events of the same kind across all packages
+        const mergeAcross = (types) => types.flatMap(t => eventMap[t] ?? []);
+        const allCreated  = mergeAcross(createdTypes);
+        const allComments = mergeAcross(commentTypes);
+        const allGrads    = mergeAcross(gradTypes);
 
         const myCurveIds = new Set(
-          eventMap[createdType]
+          allCreated
             .filter(e => e.parsedJson?.creator === walletAddress)
             .map(e => e.parsedJson?.curve_id)
             .filter(Boolean)
         );
 
-        const comments = eventMap[commentType]
+        const comments = allComments
           .filter(e => myCurveIds.has(e.parsedJson?.curve_id) && e.parsedJson?.author !== walletAddress)
           .map(e => ({
             id: e.id?.txDigest + '_' + e.id?.eventSeq,
@@ -515,7 +532,7 @@ function useNotifications(walletAddress) {
             timestamp: e.timestampMs ? Number(e.timestampMs) : 0,
           }));
 
-        const graduations = eventMap[gradType]
+        const graduations = allGrads
           .filter(e => myCurveIds.has(e.parsedJson?.curve_id))
           .map(e => ({
             id: e.id?.txDigest + '_' + e.id?.eventSeq,
@@ -979,7 +996,7 @@ function CrownBanner({ token, stats, suiUsd }) {
   const client = useSuiClient();
   const navigate = useNavigate();
   const [curveState, setCurveState] = useState(null);
-  const [iconUrl, setIconUrl] = useState(token?.iconUrl || null);
+  const [iconUrl, setIconUrl] = useState(null);
 
   useEffect(() => {
     if (!token) return;
