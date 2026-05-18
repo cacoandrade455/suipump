@@ -471,6 +471,9 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
   const pkgId = resolvePackageId(tokenType, packageIdHint);
   const isV5Token = isV5OrLater(pkgId);
   const isV6Token = !!(PACKAGE_ID_V6 && pkgId === PACKAGE_ID_V6);
+  const isV7Token = isV7OrLater(pkgId);
+  // V7+ has a real on-chain update_metadata; V6 and earlier do not.
+  const metadataPkg = PACKAGE_ID_V7;
 
   const [tab, setTab] = useState('links'); // 'links' | 'metadata'
   const [msg, setMsg] = useState('');
@@ -546,37 +549,72 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
     setTimeout(() => window.location.reload(), 1200);
   };
 
-  // Queue full metadata update (name/symbol/desc/icon)
-  // V6 TESTNET: metadata overrides stored in localStorage only.
-  // On mainnet (v7) this will be replaced with a proper on-chain call.
-  const METADATA_STORE_KEY = `suipump_meta_${curveId}`;
-
-  const handleUpdateMetadata = () => {
+  // Update token metadata on-chain — V7 update_metadata.
+  // Instant, one-time, only within 24h of launch. The contract enforces all
+  // of this; the UI mirrors it. Permanently changes the real CoinMetadata.
+  const handleUpdateMetadata = async () => {
     if (!meta.name && !meta.symbol && !meta.description && !meta.iconUrl) {
       showMsg('Fill in at least one field', true); return;
     }
-    // Check 24h window
+    if (!isV7Token || !metadataPkg) {
+      showMsg('On-chain metadata update is V7 only', true); return;
+    }
+    // 24h window — contract also enforces this; check here for a clean message.
     const windowClosesAt = curveState?.created_at_ms
       ? Number(curveState.created_at_ms) + 24 * 60 * 60 * 1000 : 0;
     if (windowClosesAt > 0 && Date.now() >= windowClosesAt) {
       showMsg('24h window has closed', true); return;
     }
-    // Read existing override
-    const existing = JSON.parse(localStorage.getItem(METADATA_STORE_KEY) || '{}');
-    if (existing.used) { showMsg('Already updated — one time only', true); return; }
-    // Save override
-    const override = {
-      used: true,
-      updatedAt: Date.now(),
-      name:        meta.name.trim()        || null,
-      symbol:      meta.symbol.trim()      || null,
-      description: meta.description.trim() || null,
-      iconUrl:     meta.iconUrl.trim()     || null,
-    };
-    localStorage.setItem(METADATA_STORE_KEY, JSON.stringify(override));
-    showMsg('Updated! ✅ (testnet local — v7 will be on-chain)');
-    // Force page reload so overrides take effect immediately
-    setTimeout(() => window.location.reload(), 1200);
+    if (curveState?.metadata_updated === true) {
+      showMsg('Already updated — one time only', true); return;
+    }
+
+    setBusy(true); setMsg('');
+    try {
+      // The CoinMetadata object — update_metadata takes it by &mut.
+      const coinMeta = await client.getCoinMetadata({ coinType: tokenType });
+      const metadataId = coinMeta?.id;
+      if (!metadataId) throw new Error('CoinMetadata object not found');
+
+      const capId = await getCapId();
+
+      const tx = new Transaction();
+      const curveRef = await getCurveRef(tx);
+
+      // Option args: pure.option('string'/'ascii', value|null).
+      // name + description are String; symbol + icon_url are ascii String.
+      const nameArg = tx.pure.option('string', meta.name.trim() || null);
+      const symbolArg = tx.pure.option('string', meta.symbol.trim() || null);
+      const descArg = tx.pure.option('string', meta.description.trim() || null);
+      const iconArg = tx.pure.option('string', meta.iconUrl.trim() || null);
+
+      tx.moveCall({
+        target: `${metadataPkg}::bonding_curve::update_metadata`,
+        typeArguments: [tokenType],
+        arguments: [
+          tx.object(capId),
+          curveRef,
+          tx.object(metadataId),
+          nameArg, symbolArg, descArg, iconArg,
+          tx.object(SUI_CLOCK_ID),
+        ],
+      });
+
+      signAndExecutePanel({ transaction: tx }, {
+        onSuccess: () => {
+          showMsg('Metadata updated on-chain ✅');
+          setBusy(false);
+          setTimeout(() => window.location.reload(), 1400);
+        },
+        onError: (e) => {
+          showMsg(e.message || 'Update failed', true);
+          setBusy(false);
+        },
+      });
+    } catch (e) {
+      showMsg(e.message || 'Update failed', true);
+      setBusy(false);
+    }
   };
 
 
@@ -588,7 +626,7 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
           <span className="text-[9px] font-mono tracking-widest text-lime-400/70">CREATOR TOOLS</span>
         </div>
         <div className="flex gap-1">
-          {['links', ...(isV6Token ? ['metadata'] : [])].map(t => (
+          {['links', ...((isV6Token || isV7Token) ? ['metadata'] : [])].map(t => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -668,15 +706,17 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
       )}
 
       {/* Metadata Tab (v5 only) */}
-      {tab === 'metadata' && isV6Token && (() => {
+      {tab === 'metadata' && (isV6Token || isV7Token) && (() => {
         const windowClosesAt = curveState?.created_at_ms
           ? Number(curveState.created_at_ms) + 24 * 60 * 60 * 1000 : 0;
         const nowMs = Date.now();
         const windowOpen = windowClosesAt > 0 && nowMs < windowClosesAt;
         const hoursLeft = windowOpen ? Math.ceil((windowClosesAt - nowMs) / (1000 * 60 * 60)) : 0;
-        // Testnet: check localStorage for one-time usage flag
-        const metaOverride = JSON.parse(localStorage.getItem(`suipump_meta_${curveId}`) || '{}');
-        const alreadyUpdated = metaOverride.used === true;
+        // V7: one-time flag is the on-chain curve.metadata_updated field.
+        // V6: no on-chain field — fall back to the localStorage marker.
+        const alreadyUpdated = isV7Token
+          ? curveState?.metadata_updated === true
+          : JSON.parse(localStorage.getItem(`suipump_meta_${curveId}`) || '{}').used === true;
 
         return (
           <div className="space-y-2.5">
@@ -692,7 +732,7 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
               <>
                 <div className="flex items-center justify-between">
                   <div className="text-[9px] font-mono text-white/25">
-                    Instant · one-time only · {hoursLeft}h remaining
+                    {isV7Token ? 'On-chain · one-time only' : 'Instant · one-time only'} · {hoursLeft}h remaining
                   </div>
                   <div className="flex items-center gap-1 text-[9px] font-mono text-lime-400/60">
                     <Clock size={9} />
@@ -722,7 +762,7 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
                       : 'bg-lime-400 text-black hover:bg-lime-300'
                   }`}
                 >
-                  {busy ? 'UPDATING…' : 'UPDATE NOW (INSTANT)'}
+                  {busy ? 'UPDATING…' : (isV7Token ? 'UPDATE ON-CHAIN' : 'UPDATE NOW (INSTANT)')}
                 </button>
               </>
             )}
