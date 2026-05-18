@@ -196,15 +196,19 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
   const [lockDuration, setLockDuration] = React.useState('30d');
 
   const isV7 = isV7OrLater(packageId);
+  // The vesting module (lock_tokens / claim_vested / TokensLocked) lives in the
+  // SuiPump V7 package — NOT the token's own coin-template package. `packageId`
+  // here is the token's package and must NOT be used to address vesting calls.
+  const vestingPkg = PACKAGE_ID_V7;
 
   // Load VestingLock objects for this curve, owned/claimable by this wallet.
   const loadLocks = useCallback(async () => {
-    if (!isV7 || !curveId || !account) { setLoading(false); return; }
+    if (!isV7 || !curveId || !account || !vestingPkg) { setLoading(false); return; }
     try {
-      const lockType = `${packageId}::bonding_curve::VestingLock<${tokenType}>`;
       // VestingLock is shared; find via TokensLocked events for this curve.
+      // TokensLocked is always emitted by the SuiPump V7 package.
       const ev = await client.queryEvents({
-        query: { MoveEventType: `${packageId}::bonding_curve::TokensLocked` },
+        query: { MoveEventType: `${vestingPkg}::bonding_curve::TokensLocked` },
         limit: 200, order: 'descending',
       }).catch(() => ({ data: [] }));
 
@@ -237,7 +241,7 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
     } finally {
       setLoading(false);
     }
-  }, [isV7, curveId, account, client, packageId, tokenType]);
+  }, [isV7, curveId, account, client, vestingPkg, tokenType]);
 
   useEffect(() => { loadLocks(); }, [loadLocks]);
 
@@ -252,7 +256,7 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
         ? tx.sharedObjectRef({ objectId: lockId, initialSharedVersion: isv, mutable: true })
         : tx.object(lockId);
       const [claimed] = tx.moveCall({
-        target: `${packageId}::bonding_curve::claim_vested`,
+        target: `${vestingPkg}::bonding_curve::claim_vested`,
         typeArguments: [tokenType],
         arguments: [lockRef, tx.object(SUI_CLOCK_ID)],
       });
@@ -294,7 +298,7 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
       }
       const durationMs = VEST_DURATIONS_MS[lockDuration] ?? VEST_DURATIONS_MS['30d'];
       tx.moveCall({
-        target: `${packageId}::bonding_curve::lock_tokens`,
+        target: `${vestingPkg}::bonding_curve::lock_tokens`,
         typeArguments: [tokenType],
         arguments: [
           curveRef, tokenCoin,
