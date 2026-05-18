@@ -21,9 +21,20 @@ import {
 } from './config.js';
 
 const PACKAGE_ID_V4    = '0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8';
+const PACKAGE_ID_V7    = '0xfb8f3f3e4e8d53130ac140906eebea6b6740bfaf0c971aec607fbc723be951f0';
 const SUI_CLOCK_ID     = '0x0000000000000000000000000000000000000000000000000000000000000006';
 const LAUNCH_FEE_MIST  = 2_000_000_000n;
 const isV4             = PACKAGE_ID === PACKAGE_ID_V4;
+const isV7             = PACKAGE_ID === PACKAGE_ID_V7;
+
+// Vesting (V7+) — must match bonding_curve.move
+const VEST_MODE = { cliff: 0, linear: 1, monthly: 2 };
+const VEST_DURATIONS_MS = {
+  '7d':   7n   * 24n * 60n * 60n * 1000n,
+  '30d':  30n  * 24n * 60n * 60n * 1000n,
+  '180d': 180n * 24n * 60n * 60n * 1000n,
+  '365d': 365n * 24n * 60n * 60n * 1000n,
+};
 
 // ---------- CLI args ----------
 const args = process.argv.slice(2);
@@ -42,8 +53,11 @@ if (args.includes('--help')) {
   --buy        SUI amount          (default: 0, no dev-buy)
   --payout     address:bps,...     (default: 100% to your wallet)
                e.g. --payout 0xABC:7000,0xDEF:3000
-  --dex        cetus|deepbook      (default: cetus) [v5/v6 only]
-  --antibot    0|15|30             (default: 0)     [v5/v6 only]
+  --dex        cetus|deepbook|turbos  (default: cetus) [v5+ only]
+  --antibot    0|15|30             (default: 0)     [v5+ only]
+  --lock-mode  cliff|linear|monthly   lock the dev-buy tokens [v7 only]
+  --lock-dur   7d|30d|180d|365d       lock duration         [v7 only]
+               (monthly mode requires 30d or longer)
 
   Costs: ~0.06 SUI gas (Tx1) + ~0.01 SUI gas (Tx2) + 2 SUI launch fee + dev-buy
 `);
@@ -58,6 +72,8 @@ const devBuySui    = parseFloat(get('--buy', '0'));
 const payoutArg    = get('--payout',  null);
 const dexArg       = get('--dex',     'cetus');
 const antibotArg   = parseInt(get('--antibot', '0'));
+const lockModeArg  = get('--lock-mode', null);   // cliff | linear | monthly
+const lockDurArg   = get('--lock-dur',  '30d');  // 7d | 30d | 180d | 365d
 
 // Validate
 if (!/^[A-Z][A-Z0-9_]{0,4}$/.test(tokenSymbol)) {
@@ -68,8 +84,40 @@ if (![0, 15, 30].includes(antibotArg)) {
   console.error('--antibot must be 0, 15, or 30');
   process.exit(1);
 }
+if (!['cetus', 'deepbook', 'turbos'].includes(dexArg)) {
+  console.error('--dex must be cetus, deepbook, or turbos');
+  process.exit(1);
+}
 
-const graduationTarget = dexArg === 'deepbook' ? 1 : 0; // 0=Cetus, 1=DeepBook
+// Dev-buy lock validation (V7+ only)
+let lockEnabled = false, lockMode = 0, lockDurationMs = 0n;
+if (lockModeArg) {
+  if (!isV7) {
+    console.error('--lock-mode requires the V7 package (vesting is V7+ only).');
+    process.exit(1);
+  }
+  if (devBuySui <= 0) {
+    console.error('--lock-mode set but --buy is 0 — there is nothing to lock.');
+    process.exit(1);
+  }
+  if (!(lockModeArg in VEST_MODE)) {
+    console.error('--lock-mode must be cliff, linear, or monthly');
+    process.exit(1);
+  }
+  if (!(lockDurArg in VEST_DURATIONS_MS)) {
+    console.error('--lock-dur must be 7d, 30d, 180d, or 365d');
+    process.exit(1);
+  }
+  if (lockModeArg === 'monthly' && lockDurArg === '7d') {
+    console.error('monthly vesting requires a duration of 30d or longer');
+    process.exit(1);
+  }
+  lockEnabled    = true;
+  lockMode       = VEST_MODE[lockModeArg];
+  lockDurationMs = VEST_DURATIONS_MS[lockDurArg];
+}
+
+const graduationTarget = dexArg === 'deepbook' ? 1 : dexArg === 'turbos' ? 2 : 0; // 0=Cetus 1=DeepBook 2=Turbos
 const antiBotDelay     = antibotArg;
 const moduleName       = tokenSymbol.toLowerCase();
 const keypair          = loadKeypair();
@@ -149,9 +197,12 @@ console.log(`  symbol:     ${tokenSymbol}`);
 console.log(`  module:     ${moduleName}`);
 console.log(`  dex:        ${dexArg} (graduation_target=${graduationTarget})`);
 console.log(`  anti-bot:   ${antiBotDelay}s`);
-console.log(`  package:    ${PACKAGE_ID} (${isV4 ? 'v4' : 'v5/v6'})`);
+console.log(`  package:    ${PACKAGE_ID} (${isV4 ? 'v4' : isV7 ? 'v7' : 'v5/v6'})`);
 console.log(`  payouts:    ${payoutAddrs.map((a, i) => `${a.slice(0,8)}... ${payoutBps[i] / 100}%`).join(', ')}`);
 console.log(`  dev-buy:    ${devBuySui > 0 ? devBuySui + ' SUI' : 'none'}`);
+if (lockEnabled) {
+  console.log(`  dev lock:   ${lockModeArg} / ${lockDurArg} (immutable)`);
+}
 console.log();
 
 // ---------- Tx 1: Patch bytecode + publish ----------
@@ -272,8 +323,26 @@ if (devBuySui > 0) {
     typeArguments: [newTokenType],
     arguments: buyArgs,
   });
-  tx2.transferObjects([refund], address);
-  tx2.transferObjects([tokens], address);
+
+  if (lockEnabled) {
+    // V7: route the dev-buy tokens into an immutable VestingLock.
+    // lock_tokens(&Curve, Coin<T>, mode, duration_ms, clock)
+    tx2.moveCall({
+      target: `${PACKAGE_ID}::bonding_curve::lock_tokens`,
+      typeArguments: [newTokenType],
+      arguments: [
+        curve,
+        tokens,
+        tx2.pure.u8(lockMode),
+        tx2.pure.u64(lockDurationMs),
+        tx2.object(SUI_CLOCK_ID),
+      ],
+    });
+    tx2.transferObjects([refund], address);
+  } else {
+    tx2.transferObjects([refund], address);
+    tx2.transferObjects([tokens], address);
+  }
 }
 
 tx2.moveCall({
