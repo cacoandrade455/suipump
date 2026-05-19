@@ -477,7 +477,6 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
   const isV6Token = !!(PACKAGE_ID_V6 && pkgId === PACKAGE_ID_V6);
   const isV7Token = isV7OrLater(pkgId);
   // V8+ tokens have shared (not frozen) CoinMetadata — update_metadata works
-  const isV8Token = isV8OrLater(pkgId);
   // V8+ tokens have shared (not frozen) CoinMetadata — update_metadata works
   const isV8Token = isV8OrLater(pkgId);
   // V7+ has a real on-chain update_metadata; V6 and earlier do not.
