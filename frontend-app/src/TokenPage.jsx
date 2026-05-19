@@ -131,7 +131,6 @@ function isPlaceholderDesc(desc) {
 function getTokenPackageId(tokenType) {
   if (!tokenType) return null;
   if (PACKAGE_ID_V8 && tokenType.startsWith(PACKAGE_ID_V8)) return PACKAGE_ID_V8;
-  if (PACKAGE_ID_V8 && tokenType.startsWith(PACKAGE_ID_V8)) return PACKAGE_ID_V8;
   if (PACKAGE_ID_V7 && tokenType.startsWith(PACKAGE_ID_V7)) return PACKAGE_ID_V7;
   if (PACKAGE_ID_V6 && tokenType.startsWith(PACKAGE_ID_V6)) return PACKAGE_ID_V6;
   if (PACKAGE_ID_V5 && tokenType.startsWith(PACKAGE_ID_V5)) return PACKAGE_ID_V5;
@@ -144,7 +143,6 @@ function resolvePackageId(tokenType, packageIdHint) {
   const fromType = getTokenPackageId(tokenType);
   if (fromType) return fromType;
   if (packageIdHint) {
-    if (PACKAGE_ID_V8 && packageIdHint === PACKAGE_ID_V8) return PACKAGE_ID_V8;
     if (PACKAGE_ID_V8 && packageIdHint === PACKAGE_ID_V8) return PACKAGE_ID_V8;
     if (PACKAGE_ID_V7 && packageIdHint === PACKAGE_ID_V7) return PACKAGE_ID_V7;
     if (PACKAGE_ID_V6 && packageIdHint === PACKAGE_ID_V6) return PACKAGE_ID_V6;
@@ -730,7 +728,7 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
       )}
 
       {/* Metadata Tab — hidden pre-V8 (see METADATA_UPDATE_ENABLED) */}
-      {METADATA_UPDATE_ENABLED && tab === 'metadata' && (isV6Token || isV7Token) && (() => {
+      {METADATA_UPDATE_ENABLED && tab === 'metadata' && (isV6Token || isV7Token || isV8Token) && (() => {
         const windowClosesAt = curveState?.created_at_ms
           ? Number(curveState.created_at_ms) + 24 * 60 * 60 * 1000 : 0;
         const nowMs = Date.now();
@@ -1210,7 +1208,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
       try {
         // Search every package version — a curve's CurveCreated event lives
         // on whichever SuiPump package launched it.
-        const packageIds = [PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7]
+        const packageIds = [PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, PACKAGE_ID_V8]
           .filter(Boolean)
           .filter((v, i, a) => a.indexOf(v) === i);
         let found = null;
@@ -1258,13 +1256,13 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   const isV5Token      = isV5OrLater(pkgId);
   // Per-version curve shape: V4=30k, V5/V6=9k, V7=3.5k virtual SUI.
   // Using the wrong shape would mis-price every quote and chart point.
-  const vSui           = pkgId === PACKAGE_ID_V7 ? VIRTUAL_SUI_V7
+  const vSui           = (pkgId === PACKAGE_ID_V8 || pkgId === PACKAGE_ID_V7) ? VIRTUAL_SUI_V7
                        : (pkgId === PACKAGE_ID_V6 || pkgId === PACKAGE_ID_V5) ? VIRTUAL_SUI_V5
                        : VIRTUAL_SUI_V4;
-  const vTok           = pkgId === PACKAGE_ID_V7 ? VIRTUAL_TOKENS_V7
+  const vTok           = (pkgId === PACKAGE_ID_V8 || pkgId === PACKAGE_ID_V7) ? VIRTUAL_TOKENS_V7
                        : (pkgId === PACKAGE_ID_V6 || pkgId === PACKAGE_ID_V5) ? VIRTUAL_TOKENS_V5
                        : VIRTUAL_TOKENS_V4;
-  const drainSui       = pkgId === PACKAGE_ID_V7 ? DRAIN_SUI_V7
+  const drainSui       = (pkgId === PACKAGE_ID_V8 || pkgId === PACKAGE_ID_V7) ? DRAIN_SUI_V7
                        : (pkgId === PACKAGE_ID_V6 || pkgId === PACKAGE_ID_V5) ? DRAIN_SUI_V5
                        : DRAIN_SUI_V4;
   const reserveMist    = curveState ? BigInt(curveState.sui_reserve) : 0n;
@@ -1322,6 +1320,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
       ...(PACKAGE_ID_V5 ? [checkPkg(PACKAGE_ID_V5)] : []),
       ...(PACKAGE_ID_V6 ? [checkPkg(PACKAGE_ID_V6)] : []),
       ...(PACKAGE_ID_V7 ? [checkPkg(PACKAGE_ID_V7)] : []),
+      ...(PACKAGE_ID_V8 ? [checkPkg(PACKAGE_ID_V8)] : []),
     ]).then(results => {
       if (!cancelled) setIsCreator(results.some(Boolean));
     }).catch(() => {});
