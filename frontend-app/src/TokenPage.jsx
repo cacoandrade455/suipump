@@ -507,6 +507,8 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
     description: '',
     iconUrl:     '',
   });
+  const [iconUploading, setIconUploading] = useState(false);
+  const [iconUploadError, setIconUploadError] = useState(null);
 
   // Pending metadata unlock time from on-chain curve state
   // v6 has no pending_metadata — timelock removed
@@ -765,7 +767,6 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
                   { key: 'name',        placeholder: 'New token name (optional)' },
                   { key: 'symbol',      placeholder: 'NEW SYMBOL (optional)' },
                   { key: 'description', placeholder: 'New description (optional)' },
-                  { key: 'iconUrl',     placeholder: 'https://i.imgur.com/... (optional)' },
                 ].map(({ key, placeholder }) => (
                   <input
                     key={key}
@@ -775,6 +776,52 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
                     className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 transition-colors"
                   />
                 ))}
+                {/* Icon upload */}
+                <div className="space-y-1.5">
+                  <div className="flex gap-2 items-center">
+                    <label className="flex-1 flex items-center gap-2 bg-white/5 border border-white/10 rounded-xl px-3 py-2 cursor-pointer hover:border-lime-400/40 transition-colors">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-white/40 shrink-0"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                      <span className="text-xs font-mono text-white/40 truncate">
+                        {iconUploading ? 'Uploading…' : meta.iconUrl ? 'Image uploaded ✓' : 'Upload icon image'}
+                      </span>
+                      <input
+                        type="file" accept="image/*" className="hidden"
+                        onChange={async (e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          setIconUploading(true);
+                          setIconUploadError(null);
+                          try {
+                            const fd = new FormData();
+                            fd.append('image', file);
+                            const res = await fetch('https://api.imgur.com/3/image', {
+                              method: 'POST',
+                              headers: { Authorization: 'Client-ID 546c25a59c58ad7' },
+                              body: fd,
+                            });
+                            const json = await res.json();
+                            if (!json.success) throw new Error(json.data?.error || 'Upload failed');
+                            setMeta(m => ({ ...m, iconUrl: json.data.link }));
+                          } catch (err) {
+                            setIconUploadError(err.message);
+                          } finally {
+                            setIconUploading(false);
+                          }
+                        }}
+                      />
+                    </label>
+                    {meta.iconUrl && (
+                      <img src={meta.iconUrl} alt="preview" className="w-9 h-9 rounded-lg object-cover border border-white/10" />
+                    )}
+                  </div>
+                  {iconUploadError && <div className="text-[9px] font-mono text-red-400">{iconUploadError}</div>}
+                  <input
+                    value={meta.iconUrl}
+                    onChange={e => setMeta(m => ({ ...m, iconUrl: e.target.value }))}
+                    placeholder="or paste URL (https://i.imgur.com/...) (optional)"
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 transition-colors"
+                  />
+                </div>
                 <button
                   onClick={handleUpdateMetadata}
                   disabled={busy}
