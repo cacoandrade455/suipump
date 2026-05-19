@@ -1,4 +1,4 @@
-// Shared deployment info + helpers.
+// config.js — Shared deployment info + helpers.
 
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -7,10 +7,11 @@ import { fromB64 } from '@mysten/sui/utils';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { SuiClient, getFullnodeUrl } from '@mysten/sui/client';
 
-export const PACKAGE_ID  = '0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8';
-export const ADMIN_CAP_ID = '0xfc80d407147af9445d7042a6a538524b5a483cc995fdbf0c795ce7eab506b6f9';
-export const CURVE_ID    = '0xf7c137e90c5a5c9e716c91fdd3561d55e6ba3c11c37a9741b0bfde03dc9d812f';
-export const TOKEN_TYPE  = `${PACKAGE_ID}::token_template::TOKEN_TEMPLATE`;
+// ── V8 (active) ───────────────────────────────────────────────────────────────
+export const PACKAGE_ID   = '0x145a1e79b83cc17680dbfe4f96839cd359c7db380ac15463ecb6dc30f9849b69';
+export const ADMIN_CAP_ID = '0xdb22e067d9cf53cfab37bc6d4b626ff98c770bc59b8a192d007aca449e8f7103';
+export const CURVE_ID     = '0xf7c137e90c5a5c9e716c91fdd3561d55e6ba3c11c37a9741b0bfde03dc9d812f';
+export const TOKEN_TYPE   = `${PACKAGE_ID}::token_template::TOKEN_TEMPLATE`;
 
 export const client = new SuiClient({ url: getFullnodeUrl('testnet') });
 
