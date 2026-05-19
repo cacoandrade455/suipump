@@ -66,6 +66,8 @@ module suipump::bonding_curve {
     const EMetadataNameTooLong:      u64 = 24;
     const EMetadataSymbolTooLong:    u64 = 25;
     const EWrongCommentFee:          u64 = 26;
+    const ECommentEmpty:             u64 = 17;
+    const ECommentTooLong:           u64 = 16;
     const ESelfReferral:             u64 = 27;
     const EPaused:                   u64 = 28;
     const EPoolAlreadyRecorded:      u64 = 29;
@@ -339,9 +341,16 @@ module suipump::bonding_curve {
         let mut i = 0;
         let mut sum = 0u64;
         while (i < n) {
+            // Check for duplicate addresses
+            let addr_i = *vector::borrow(&addresses, i);
+            let mut j = 0;
+            while (j < i) {
+                assert!(*vector::borrow(&addresses, j) != addr_i, EBadPayouts);
+                j = j + 1;
+            };
             sum = sum + *vector::borrow(&bps_values, i);
             vector::push_back(&mut payouts, Payout {
-                recipient: *vector::borrow(&addresses, i),
+                recipient: addr_i,
                 bps:       *vector::borrow(&bps_values, i),
             });
             i = i + 1;
@@ -809,8 +818,8 @@ module suipump::bonding_curve {
     ) {
         assert!(coin::value(&payment) == COMMENT_FEE_MIST, EWrongCommentFee);
         let bytes = std::string::as_bytes(&text);
-        assert!(std::vector::length(bytes) > 0,                    0);  // ECommentEmpty
-        assert!(std::vector::length(bytes) <= MAX_COMMENT_BYTES,   0);  // ECommentTooLong
+        assert!(std::vector::length(bytes) > 0,                    ECommentEmpty);
+        assert!(std::vector::length(bytes) <= MAX_COMMENT_BYTES,   ECommentTooLong);
         balance::join(&mut curve.protocol_fees, coin::into_balance(payment));
         event::emit(Comment {
             curve_id: object::id(curve),
@@ -1100,4 +1109,20 @@ module suipump::bonding_curve {
     #[test_only] public fun e_not_lock_beneficiary(): u64     { ENotLockBeneficiary }
     #[test_only] public fun e_nothing_vested(): u64           { ENothingVested }
     #[test_only] public fun e_zero_lock_amount(): u64         { EZeroLockAmount }
+
+    // ---------- Compatibility accessors for test suite ----------
+    #[test_only] public fun protocol_fees_pending<T>(c: &Curve<T>): u64 { balance::value(&c.protocol_fees) }
+    #[test_only] public fun creator_fees_pending<T>(c: &Curve<T>): u64  { balance::value(&c.creator_fees) }
+    #[test_only] public fun airdrop_fees_pending<T>(c: &Curve<T>): u64  { balance::value(&c.airdrop_fees) }
+    #[test_only] public fun is_graduated<T>(c: &Curve<T>): bool          { c.graduated }
+    #[test_only] public fun is_paused<T>(c: &Curve<T>): bool             { c.paused }
+    #[test_only] public fun creator_cap_curve_id(cap: &CreatorCap): ID   { cap.curve_id }
+    #[test_only] public fun creator_lp_nft_id<T>(c: &Curve<T>): Option<ID> { c.creator_lp_nft_id }
+    #[test_only] public fun curve_supply(): u64                           { CURVE_SUPPLY }
+    #[test_only] public fun metadata_window_closes_at<T>(c: &Curve<T>): u64 {
+        c.created_at_ms + METADATA_WINDOW_MS
+    }
+    #[test_only] public fun init_for_testing(ctx: &mut TxContext) {
+        transfer::public_transfer(AdminCap { id: object::new(ctx) }, tx_context::sender(ctx));
+    }
 }

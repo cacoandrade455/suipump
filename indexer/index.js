@@ -11,17 +11,22 @@ import 'dotenv/config';
 import { SuiClient, getFullnodeUrl } from '@mysten/sui/client';
 import {
   pool, initSchema, getCursor, saveCursor, insertEvent,
-  upsertCurve, recomputeStats, enrichCurveMetadata,
-  refreshCurveMetadata, backfillMissingIcons,
+  upsertCurve, recomputeStats, enrichCurveMetadata, backfillMissingIcons,
 } from './db.js';
 import { startApi } from './api.js';
 
+// All deployed SuiPump package versions. The indexer MUST cover every version
+// or tokens/trades/volume from older or newer packages silently disappear.
+// PACKAGE_IDS env var (Render) overrides this; the default below is the
+// complete V4-V8 set so a missing/incomplete env var still indexes everything.
 const ALL_PACKAGE_IDS = [
   '0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8', // V4
   '0x785c0604cb6c60a8547501e307d2b0ca7a586ff912c8abff4edfb88db65b7236', // V5
   '0x21d5b1284d5f1d4d14214654f414ffca20c757ee9f9db7701d3ffaaac62cd768', // V6
   '0xfb8f3f3e4e8d53130ac140906eebea6b6740bfaf0c971aec607fbc723be951f0', // V7
-  ...(process.env.PACKAGE_ID_V8 ? [process.env.PACKAGE_ID_V8] : []),   // V8
+  // V8: add the real package ID here once contracts-v8 is published.
+  // Also update the PACKAGE_IDS env var on Render.
+  ...(process.env.PACKAGE_ID_V8 ? [process.env.PACKAGE_ID_V8] : []),
 ];
 
 const PACKAGE_IDS = process.env.PACKAGE_IDS
@@ -33,6 +38,7 @@ const PAGE_SIZE = 100;
 
 const client = new SuiClient({ url: RPC_URL });
 
+// Event types to index (one entry per package ID)
 function getEventTypes(packageId) {
   return [
     `${packageId}::bonding_curve::TokensPurchased`,
@@ -40,9 +46,10 @@ function getEventTypes(packageId) {
     `${packageId}::bonding_curve::CurveCreated`,
     `${packageId}::bonding_curve::Comment`,
     `${packageId}::bonding_curve::Graduated`,
-    `${packageId}::bonding_curve::MetadataUpdated`,  // V8: re-fetch metadata on update
   ];
 }
+
+// ── Backfill + poll for one event type ───────────────────────────────────────
 
 async function syncEventType(eventType, packageId) {
   let cursor = await getCursor(eventType);
@@ -60,21 +67,13 @@ async function syncEventType(eventType, packageId) {
     for (const evt of res.data) {
       await insertEvent(eventType, evt);
 
-      const curveId = evt.parsedJson?.curve_id;
-
       if (eventType.includes('CurveCreated')) {
         await upsertCurve(evt, packageId);
-        if (curveId) await enrichCurveMetadata(curveId, client);
+        const curveId2 = evt.parsedJson?.curve_id;
+        if (curveId2) await enrichCurveMetadata(curveId2, client);
       }
 
-      // MetadataUpdated — re-fetch CoinMetadata from chain and overwrite DB
-      if (eventType.includes('MetadataUpdated')) {
-        if (curveId) {
-          await refreshCurveMetadata(curveId, client);
-          console.log(`  metadata refreshed: ${curveId.slice(0, 12)}…`);
-        }
-      }
-
+      const curveId = evt.parsedJson?.curve_id;
       if (
         curveId &&
         (eventType.includes('TokensPurchased') ||
@@ -101,6 +100,8 @@ async function syncEventType(eventType, packageId) {
   return newEvents;
 }
 
+// ── Full sync across all event types and package IDs ─────────────────────────
+
 async function syncAll() {
   for (const packageId of PACKAGE_IDS) {
     const eventTypes = getEventTypes(packageId);
@@ -117,7 +118,11 @@ async function syncAll() {
   }
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
   console.log('━'.repeat(50));
