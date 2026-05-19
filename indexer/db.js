@@ -27,13 +27,11 @@ export async function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_events_event_type ON events (event_type);
     CREATE INDEX IF NOT EXISTS idx_events_timestamp  ON events (timestamp_ms DESC);
 
-    -- Cursor tracking so indexer knows where to resume after restart
     CREATE TABLE IF NOT EXISTS cursors (
       event_type  TEXT PRIMARY KEY,
       cursor_data JSONB
     );
 
-    -- Pre-computed per-token stats (rebuilt on each new event)
     CREATE TABLE IF NOT EXISTS token_stats (
       curve_id        TEXT PRIMARY KEY,
       volume_sui      DOUBLE PRECISION DEFAULT 0,
@@ -53,9 +51,6 @@ export async function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_token_stats_trades     ON token_stats (trades DESC);
     CREATE INDEX IF NOT EXISTS idx_token_stats_last_trade ON token_stats (last_trade_time DESC);
 
-    -- Curve registry (from CurveCreated events)
-    -- graduation_target: 0=Cetus, 1=DeepBook (v5/v6 only, NULL for v4)
-    -- anti_bot_delay: 0/15/30 seconds (v5/v6 only, NULL for v4)
     CREATE TABLE IF NOT EXISTS curves (
       curve_id          TEXT PRIMARY KEY,
       creator           TEXT,
@@ -70,7 +65,6 @@ export async function initSchema() {
       anti_bot_delay    SMALLINT
     );
 
-    -- Migration: add columns if they don't exist (safe to run on existing DB)
     ALTER TABLE curves ADD COLUMN IF NOT EXISTS graduation_target SMALLINT;
     ALTER TABLE curves ADD COLUMN IF NOT EXISTS anti_bot_delay    SMALLINT;
     ALTER TABLE curves ADD COLUMN IF NOT EXISTS description       TEXT;
@@ -123,27 +117,15 @@ export async function insertEvent(eventType, evt) {
 }
 
 // ── Curve insert ──────────────────────────────────────────────────────────────
-// v4 CurveCreated: { curve_id, creator, name, symbol }
-// v5/v6 CurveCreated: { curve_id, creator, name, symbol, graduation_target, anti_bot_delay }
 
 export async function upsertCurve(evt, packageId) {
   const j = evt.parsedJson;
   if (!j?.curve_id) return;
 
-  // graduation_target and anti_bot_delay are v5/v6 only — null for v4
-  const graduationTarget = j.graduation_target !== undefined
-    ? Number(j.graduation_target)
-    : null;
-  const antiBotDelay = j.anti_bot_delay !== undefined
-    ? Number(j.anti_bot_delay)
-    : null;
-
-  // icon_url and description — parse from event fields
-  // Description may contain social links encoded as "desc||{json}"
-  const iconUrl     = j.icon_url     ?? null;
-  const description = j.description  ?? null;
-  // token_type is not in the CurveCreated event — stored separately when known
-  // We'll leave it null here; it gets populated via enrichment if needed
+  const graduationTarget = j.graduation_target !== undefined ? Number(j.graduation_target) : null;
+  const antiBotDelay     = j.anti_bot_delay    !== undefined ? Number(j.anti_bot_delay)    : null;
+  const iconUrl          = j.icon_url     ?? null;
+  const description      = j.description  ?? null;
 
   await pool.query(
     `INSERT INTO curves
@@ -164,13 +146,13 @@ export async function upsertCurve(evt, packageId) {
   );
 }
 
-// ── Stats recompute for a single curve ───────────────────────────────────────
+// ── Stats recompute ───────────────────────────────────────────────────────────
 
 export async function recomputeStats(curveId) {
-  const now = Date.now();
+  const now        = Date.now();
   const oneDayAgo  = now - 24 * 60 * 60 * 1000;
   const oneHourAgo = now - 60 * 60 * 1000;
-  const MIST = 1e9;
+  const MIST       = 1e9;
 
   const [buysRes, sellsRes, commentsRes] = await Promise.all([
     pool.query(
@@ -254,25 +236,21 @@ export async function recomputeStats(curveId) {
   );
 }
 
-// ── Query helpers for API ─────────────────────────────────────────────────────
+// ── Enrich curve with icon_url + token_type (COALESCE — only fills nulls) ────
+// Called once at CurveCreated ingestion and during startup backfill.
 
-// ── Enrich curve with icon_url + token_type from on-chain metadata ────────────
-// Called once per curve — either at ingestion or during startup sweep.
 export async function enrichCurveMetadata(curveId, suiClient) {
   try {
-    // 1. Get token type from curve object
     const obj = await suiClient.getObject({ id: curveId, options: { showType: true } });
-    const typeStr = obj.data?.type ?? '';
-    const match = typeStr.match(/Curve<(.+)>$/);
+    const typeStr  = obj.data?.type ?? '';
+    const match    = typeStr.match(/Curve<(.+)>$/);
     const tokenType = match ? match[1] : null;
     if (!tokenType) return;
 
-    // 2. Get icon from coin metadata
-    const meta = await suiClient.getCoinMetadata({ coinType: tokenType });
-    const iconUrl = meta?.iconUrl ?? null;
+    const meta        = await suiClient.getCoinMetadata({ coinType: tokenType });
+    const iconUrl     = meta?.iconUrl     ?? null;
     const description = meta?.description ?? null;
 
-    // 3. Store both
     await pool.query(
       `UPDATE curves SET
          token_type  = COALESCE($2, curves.token_type),
@@ -282,12 +260,46 @@ export async function enrichCurveMetadata(curveId, suiClient) {
       [curveId, tokenType, iconUrl, description]
     );
   } catch (err) {
-    // Non-fatal — icon is cosmetic
     console.error(`  enrich ${curveId.slice(0, 12)}… failed:`, err.message);
   }
 }
 
-// ── Startup sweep: fill icon_url for all curves missing it ────────────────────
+// ── Refresh curve metadata (OVERWRITE — called on MetadataUpdated event) ──────
+// Unlike enrichCurveMetadata which only fills nulls, this overwrites existing
+// values so that name/symbol/icon/description changes show up on the homepage.
+
+export async function refreshCurveMetadata(curveId, suiClient) {
+  try {
+    const obj = await suiClient.getObject({ id: curveId, options: { showType: true, showContent: true } });
+    const typeStr   = obj.data?.type ?? '';
+    const match     = typeStr.match(/Curve<(.+)>$/);
+    const tokenType = match ? match[1] : null;
+    if (!tokenType) return;
+
+    const meta        = await suiClient.getCoinMetadata({ coinType: tokenType });
+    const iconUrl     = meta?.iconUrl     ?? null;
+    const description = meta?.description ?? null;
+    // name + symbol also come from CoinMetadata post-update
+    const name        = meta?.name        ?? null;
+    const symbol      = meta?.symbol      ?? null;
+
+    await pool.query(
+      `UPDATE curves SET
+         token_type  = $2,
+         icon_url    = $3,
+         description = $4,
+         name        = COALESCE($5, curves.name),
+         symbol      = COALESCE($6, curves.symbol)
+       WHERE curve_id = $1`,
+      [curveId, tokenType, iconUrl, description, name, symbol]
+    );
+  } catch (err) {
+    console.error(`  refresh ${curveId.slice(0, 12)}… failed:`, err.message);
+  }
+}
+
+// ── Startup sweep: fill icon_url for curves missing it ───────────────────────
+
 export async function backfillMissingIcons(suiClient) {
   const res = await pool.query(
     `SELECT curve_id FROM curves WHERE icon_url IS NULL OR token_type IS NULL`
@@ -296,11 +308,12 @@ export async function backfillMissingIcons(suiClient) {
   console.log(`  Backfilling icons for ${res.rows.length} tokens…`);
   for (const row of res.rows) {
     await enrichCurveMetadata(row.curve_id, suiClient);
-    // Small delay to be polite to RPC
     await new Promise(r => setTimeout(r, 300));
   }
   console.log(`  ✓ Icon backfill complete`);
 }
+
+// ── Query helpers ─────────────────────────────────────────────────────────────
 
 export async function getAllTokenStats() {
   const res = await pool.query('SELECT * FROM token_stats');
@@ -345,18 +358,18 @@ export async function getTradeHistory(curveId, limit = 100) {
 export async function getAllCurves() {
   const res = await pool.query(`
     SELECT
-      c.curve_id        AS "curveId",
+      c.curve_id          AS "curveId",
       c.creator,
       c.name,
       c.symbol,
       c.description,
-      c.icon_url        AS "iconUrl",
-      c.token_type      AS "tokenType",
-      c.package_id      AS "packageId",
-      c.created_at      AS "createdAt",
+      c.icon_url          AS "iconUrl",
+      c.token_type        AS "tokenType",
+      c.package_id        AS "packageId",
+      c.created_at        AS "createdAt",
       c.graduation_target AS "graduationTarget",
-      c.anti_bot_delay  AS "antiBotDelay",
-      row_to_json(s.*)  AS stats
+      c.anti_bot_delay    AS "antiBotDelay",
+      row_to_json(s.*)    AS stats
     FROM curves c
     LEFT JOIN token_stats s ON s.curve_id = c.curve_id
     ORDER BY c.created_at DESC
