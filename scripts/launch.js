@@ -1,12 +1,14 @@
-// launch.js — full two-transaction token launch via Node
+// launch.js — Full two-transaction token launch (V8 active)
 //
 // Tx 1: Publish the patched coin_template bytecode.
-// Tx 2: Configure — calls create_and_return with all v6 params + optional dev-buy.
+//       V8 template: public_share_object(metadata) — NOT public_freeze_object.
+//       This is what makes update_metadata() work for V8 tokens.
+// Tx 2: create_and_return + optional dev-buy + optional lock + share_curve.
 //
 // Usage:
-//   node launch.js                          # launch with defaults
+//   node launch.js
 //   node launch.js --name "Moon Coin" --symbol MOON --buy 0.5
-//   node launch.js --dex deepbook --antibot 30
+//   node launch.js --dex turbos --antibot 15 --lock-mode cliff --lock-dur 30d
 //   node launch.js --help
 
 import { readFileSync } from 'node:fs';
@@ -22,10 +24,17 @@ import {
 
 const PACKAGE_ID_V4    = '0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8';
 const PACKAGE_ID_V7    = '0xfb8f3f3e4e8d53130ac140906eebea6b6740bfaf0c971aec607fbc723be951f0';
+// PACKAGE_ID_V8: set this to the real V8 package ID after running:
+//   cd contracts-v8 && sui client publish --gas-budget 100000000
+// Then update VITE_PACKAGE_ID_V8 in Vercel env as well.
+const PACKAGE_ID_V8    = process.env.PACKAGE_ID_V8 || '';
+
 const SUI_CLOCK_ID     = '0x0000000000000000000000000000000000000000000000000000000000000006';
 const LAUNCH_FEE_MIST  = 2_000_000_000n;
-const isV4             = PACKAGE_ID === PACKAGE_ID_V4;
-const isV7             = PACKAGE_ID === PACKAGE_ID_V7;
+
+const isV4  = PACKAGE_ID === PACKAGE_ID_V4;
+const isV7  = PACKAGE_ID === PACKAGE_ID_V7;
+const isV8  = PACKAGE_ID_V8 ? PACKAGE_ID === PACKAGE_ID_V8 : false;
 
 // Vesting (V7+) — must match bonding_curve.move
 const VEST_MODE = { cliff: 0, linear: 1, monthly: 2 };
@@ -53,12 +62,13 @@ if (args.includes('--help')) {
   --buy        SUI amount          (default: 0, no dev-buy)
   --payout     address:bps,...     (default: 100% to your wallet)
                e.g. --payout 0xABC:7000,0xDEF:3000
-  --dex        cetus|deepbook|turbos  (default: cetus) [v5+ only]
-  --antibot    0|15|30             (default: 0)     [v5+ only]
-  --lock-mode  cliff|linear|monthly   lock the dev-buy tokens [v7 only]
-  --lock-dur   7d|30d|180d|365d       lock duration         [v7 only]
+  --dex        cetus|deepbook|turbos  (default: cetus)
+  --antibot    0|15|30             (default: 0)
+  --lock-mode  cliff|linear|monthly   lock the dev-buy tokens [V7/V8 only]
+  --lock-dur   7d|30d|180d|365d       lock duration           [V7/V8 only]
                (monthly mode requires 30d or longer)
 
+  Active package: ${PACKAGE_ID}
   Costs: ~0.06 SUI gas (Tx1) + ~0.01 SUI gas (Tx2) + 2 SUI launch fee + dev-buy
 `);
   process.exit(0);
@@ -72,8 +82,8 @@ const devBuySui    = parseFloat(get('--buy', '0'));
 const payoutArg    = get('--payout',  null);
 const dexArg       = get('--dex',     'cetus');
 const antibotArg   = parseInt(get('--antibot', '0'));
-const lockModeArg  = get('--lock-mode', null);   // cliff | linear | monthly
-const lockDurArg   = get('--lock-dur',  '30d');  // 7d | 30d | 180d | 365d
+const lockModeArg  = get('--lock-mode', null);
+const lockDurArg   = get('--lock-dur',  '30d');
 
 // Validate
 if (!/^[A-Z][A-Z0-9_]{0,4}$/.test(tokenSymbol)) {
@@ -89,11 +99,11 @@ if (!['cetus', 'deepbook', 'turbos'].includes(dexArg)) {
   process.exit(1);
 }
 
-// Dev-buy lock validation (V7+ only)
+// Dev-buy lock validation (V7/V8 only)
 let lockEnabled = false, lockMode = 0, lockDurationMs = 0n;
 if (lockModeArg) {
-  if (!isV7) {
-    console.error('--lock-mode requires the V7 package (vesting is V7+ only).');
+  if (!isV7 && !isV8) {
+    console.error('--lock-mode requires V7 or V8 package (vesting is V7+ only).');
     process.exit(1);
   }
   if (devBuySui <= 0) {
@@ -117,7 +127,7 @@ if (lockModeArg) {
   lockDurationMs = VEST_DURATIONS_MS[lockDurArg];
 }
 
-const graduationTarget = dexArg === 'deepbook' ? 1 : dexArg === 'turbos' ? 2 : 0; // 0=Cetus 1=DeepBook 2=Turbos
+const graduationTarget = dexArg === 'deepbook' ? 1 : dexArg === 'turbos' ? 2 : 0;
 const antiBotDelay     = antibotArg;
 const moduleName       = tokenSymbol.toLowerCase();
 const keypair          = loadKeypair();
@@ -142,6 +152,9 @@ function parsePayouts(arg, fallback) {
 const { addresses: payoutAddrs, bps: payoutBps } = parsePayouts(payoutArg, address);
 
 // ---------- Load template bytecode ----------
+// V8 template: built from coin-template/ (which now uses public_share_object)
+// After V8 coin-template is deployed, run `cd coin-template && sui move build`
+// to regenerate template.mv with the new behaviour.
 const __dir = dirname(fileURLToPath(import.meta.url));
 const templatePath = join(__dir, '..', 'coin-template', 'build',
   'coin_template', 'bytecode_modules', 'template.mv');
@@ -164,13 +177,12 @@ try {
 // ---------- BCS helpers ----------
 function bcsBytes(str) {
   const buf = Buffer.from(str, 'utf8');
-  if (buf.length > 127) throw new Error(`Constant "${str}" too long for single-byte ULEB128`);
+  if (buf.length > 127) throw new Error(`Constant "${str.slice(0,30)}…" too long for single-byte ULEB128 (${buf.length} bytes)`);
   return Uint8Array.from([buf.length, ...buf]);
 }
 
 function bcs_vector_address(addrs) {
-  const count = addrs.length;
-  const out = [count];
+  const out = [addrs.length];
   for (const a of addrs) {
     const bytes = fromHex(a.replace('0x', '').padStart(64, '0'));
     out.push(...bytes);
@@ -188,7 +200,14 @@ function bcs_vector_u64(nums) {
   return new Uint8Array(buf);
 }
 
+// ---------- Placeholder constants (must match template.move exactly) ----------
+const PLACEHOLDER_NAME = 'Template Coin';
+const PLACEHOLDER_SYM  = 'TMPL';
+const PLACEHOLDER_DESC = 'Template description placeholder that is intentionally long to accommodate real token descriptions.';
+const PLACEHOLDER_ICON = 'https://suipump.test/icon-placeholder.png';
+
 // ---------- Print summary ----------
+const pkgLabel = isV8 ? 'v8' : isV7 ? 'v7' : isV4 ? 'v4' : 'v5/v6';
 console.log('━'.repeat(60));
 console.log('  SUIPUMP — launch');
 console.log('━'.repeat(60));
@@ -197,12 +216,13 @@ console.log(`  symbol:     ${tokenSymbol}`);
 console.log(`  module:     ${moduleName}`);
 console.log(`  dex:        ${dexArg} (graduation_target=${graduationTarget})`);
 console.log(`  anti-bot:   ${antiBotDelay}s`);
-console.log(`  package:    ${PACKAGE_ID} (${isV4 ? 'v4' : isV7 ? 'v7' : 'v5/v6'})`);
-console.log(`  payouts:    ${payoutAddrs.map((a, i) => `${a.slice(0,8)}... ${payoutBps[i] / 100}%`).join(', ')}`);
+console.log(`  package:    ${PACKAGE_ID} (${pkgLabel})`);
+console.log(`  payouts:    ${payoutAddrs.map((a, i) => `${a.slice(0,8)}… ${payoutBps[i] / 100}%`).join(', ')}`);
 console.log(`  dev-buy:    ${devBuySui > 0 ? devBuySui + ' SUI' : 'none'}`);
 if (lockEnabled) {
   console.log(`  dev lock:   ${lockModeArg} / ${lockDurArg} (immutable)`);
 }
+console.log(`  template:   ${templatePath}`);
 console.log();
 
 // ---------- Tx 1: Patch bytecode + publish ----------
@@ -215,12 +235,10 @@ let patched = update_identifiers(new Uint8Array(templateBytes), {
   'template': moduleName,
 });
 
-patched = update_constants(patched, bcsBytes(tokenSymbol),  bcsBytes('TMPL'),         'Vector(U8)');
-patched = update_constants(patched, bcsBytes(tokenName),    bcsBytes('Template Coin'), 'Vector(U8)');
-patched = update_constants(patched, bcsBytes(tokenDesc),
-  bcsBytes('Template description placeholder that is intentionally long to accommodate real token descriptions.'),
-  'Vector(U8)');
-patched = update_constants(patched, bcsBytes(tokenIcon),    bcsBytes('https://suipump.test/icon-placeholder.png'), 'Vector(U8)');
+patched = update_constants(patched, bcsBytes(tokenSymbol),  bcsBytes(PLACEHOLDER_SYM),  'Vector(U8)');
+patched = update_constants(patched, bcsBytes(tokenName),    bcsBytes(PLACEHOLDER_NAME), 'Vector(U8)');
+patched = update_constants(patched, bcsBytes(tokenDesc),    bcsBytes(PLACEHOLDER_DESC), 'Vector(U8)');
+patched = update_constants(patched, bcsBytes(tokenIcon),    bcsBytes(PLACEHOLDER_ICON), 'Vector(U8)');
 
 const tx1 = new Transaction();
 const [upgradeCap] = tx1.publish({
@@ -264,38 +282,50 @@ console.log(`  treasury:   ${treasuryCapId}`);
 console.log();
 
 // ---------- Tx 2: Configure curve ----------
-console.log('  [2/2] Configuring curve' +
-  (devBuySui > 0 ? ` + ${devBuySui} SUI dev-buy` : '') + '…');
+const devBuyLabel = devBuySui > 0 ? ` + dev-buy ${devBuySui} SUI` : '';
+const lockLabel   = lockEnabled    ? ' + lock tokens' : '';
+console.log(`  [2/2] Configuring curve${devBuyLabel}${lockLabel}…`);
 
-await new Promise(r => setTimeout(r, 3000));
+// Fetch treasury cap for Tx 2
+await client.waitForTransaction({ digest: res1.digest });
+const treasuryObj = await client.getObject({
+  id: treasuryCapId,
+  options: { showOwner: true, showType: true },
+});
 
 const tx2 = new Transaction();
-const [launchFeeCoin] = tx2.splitCoins(tx2.gas, [tx2.pure.u64(LAUNCH_FEE_MIST)]);
 
-let curve, cap;
+// Coin args for launch fee + optional dev-buy
+const launchFeeCoin = tx2.splitCoins(tx2.gas, [tx2.pure.u64(LAUNCH_FEE_MIST)]);
 
+const treasuryRef = tx2.object(treasuryCapId);
+
+// Dispatch by package version — V4 has legacy signature, V5+ and V7+ and V8+ share it
 if (isV4) {
-  // V4: create_and_return(treasury, payment, name, symbol, payout_addresses, payout_bps)
-  [curve, cap] = tx2.moveCall({
+  // V4 create() — no launch fee, no anti-bot, no graduation target
+  const [curve, cap] = tx2.moveCall({
     target: `${PACKAGE_ID}::bonding_curve::create_and_return`,
     typeArguments: [newTokenType],
     arguments: [
-      tx2.object(treasuryCapId),
-      launchFeeCoin,
+      treasuryRef,
       tx2.pure.string(tokenName),
       tx2.pure.string(tokenSymbol),
-      tx2.pure(bcs_vector_address(payoutAddrs)),
-      tx2.pure(bcs_vector_u64(payoutBps)),
+      address,
     ],
   });
+  tx2.moveCall({
+    target: `${PACKAGE_ID}::bonding_curve::share_curve`,
+    typeArguments: [newTokenType],
+    arguments: [curve],
+  });
+  tx2.transferObjects([cap], address);
 } else {
-  // V5/V6: create_and_return(treasury, payment, name, symbol, description,
-  //          payout_addresses, payout_bps, graduation_target, anti_bot_delay, clock)
-  [curve, cap] = tx2.moveCall({
+  // V5 / V6 / V7 / V8 — create_and_return with full params
+  const [curve, cap] = tx2.moveCall({
     target: `${PACKAGE_ID}::bonding_curve::create_and_return`,
     typeArguments: [newTokenType],
     arguments: [
-      tx2.object(treasuryCapId),
+      treasuryRef,
       launchFeeCoin,
       tx2.pure.string(tokenName),
       tx2.pure.string(tokenSymbol),
@@ -307,86 +337,85 @@ if (isV4) {
       tx2.object(SUI_CLOCK_ID),
     ],
   });
-}
 
-// Dev-buy
-if (devBuySui > 0) {
-  const devBuyMist = BigInt(Math.floor(devBuySui * 1e9));
-  const [devPayment] = tx2.splitCoins(tx2.gas, [tx2.pure.u64(devBuyMist)]);
-
-  const buyArgs = isV4
-    ? [curve, devPayment, tx2.pure.u64(0)]
-    : [curve, devPayment, tx2.pure.u64(0), tx2.pure.option('address', null), tx2.object(SUI_CLOCK_ID)];
-
-  const [tokens, refund] = tx2.moveCall({
-    target: `${PACKAGE_ID}::bonding_curve::buy`,
-    typeArguments: [newTokenType],
-    arguments: buyArgs,
-  });
-
-  if (lockEnabled) {
-    // V7: route the dev-buy tokens into an immutable VestingLock.
-    // lock_tokens(&Curve, Coin<T>, mode, duration_ms, clock)
-    tx2.moveCall({
-      target: `${PACKAGE_ID}::bonding_curve::lock_tokens`,
+  if (devBuySui > 0) {
+    const devBuyMist = BigInt(Math.floor(devBuySui * 1e9));
+    const devBuyCoin = tx2.splitCoins(tx2.gas, [tx2.pure.u64(devBuyMist)]);
+    const [tokens, refund] = tx2.moveCall({
+      target: `${PACKAGE_ID}::bonding_curve::buy`,
       typeArguments: [newTokenType],
       arguments: [
         curve,
-        tokens,
-        tx2.pure.u8(lockMode),
-        tx2.pure.u64(lockDurationMs),
+        devBuyCoin,
+        tx2.pure.u64(0),              // min_tokens_out = 0 (dev-buy, no slippage guard)
+        tx2.pure.option('address', null), // referral = none
         tx2.object(SUI_CLOCK_ID),
       ],
     });
+
+    if (lockEnabled) {
+      // Lock the dev-buy tokens immediately in the same PTB
+      tx2.moveCall({
+        target: `${PACKAGE_ID}::bonding_curve::lock_tokens`,
+        typeArguments: [newTokenType],
+        arguments: [
+          curve,
+          tokens,
+          tx2.pure.u8(lockMode),
+          tx2.pure.u64(lockDurationMs),
+          tx2.object(SUI_CLOCK_ID),
+        ],
+      });
+    } else {
+      tx2.transferObjects([tokens], address);
+    }
     tx2.transferObjects([refund], address);
-  } else {
-    tx2.transferObjects([refund], address);
-    tx2.transferObjects([tokens], address);
   }
+
+  tx2.moveCall({
+    target: `${PACKAGE_ID}::bonding_curve::share_curve`,
+    typeArguments: [newTokenType],
+    arguments: [curve],
+  });
+  tx2.transferObjects([cap], address);
 }
-
-tx2.moveCall({
-  target: `${PACKAGE_ID}::bonding_curve::share_curve`,
-  typeArguments: [newTokenType],
-  arguments: [curve],
-});
-
-tx2.transferObjects([cap], address);
 
 const res2 = await client.signAndExecuteTransaction({
   signer: keypair,
   transaction: tx2,
-  options: { showEffects: true, showObjectChanges: true, showEvents: true },
+  options: { showEffects: true, showObjectChanges: true },
 });
 
 if (res2.effects.status.status !== 'success') {
   console.error('❌ Tx 2 failed:', res2.effects.status.error);
-  console.error('  TreasuryCap still in wallet:', treasuryCapId);
+  console.error('  Stranded TreasuryCap:', treasuryCapId);
   process.exit(1);
 }
 
-console.log(`  ✓ configured: ${res2.digest}`);
+console.log(`  ✓ curve created: ${res2.digest}`);
 
-const curveEvent    = res2.events?.find(e => e.type?.includes('CurveCreated'));
-const newCurveId    = curveEvent?.parsedJson?.curve_id;
-const creatorCapObj = res2.objectChanges?.find(c =>
+const curveObj = res2.objectChanges?.find(c =>
+  c.type === 'created' && c.objectType?.includes('Curve<')
+);
+const capObj = res2.objectChanges?.find(c =>
   c.type === 'created' && c.objectType?.includes('CreatorCap')
 );
+const vestLockObj = lockEnabled
+  ? res2.objectChanges?.find(c =>
+      c.type === 'created' && c.objectType?.includes('VestingLock')
+    )
+  : null;
 
 console.log();
 console.log('━'.repeat(60));
-console.log('  ✓ LAUNCH COMPLETE');
+console.log('  LAUNCH COMPLETE');
 console.log('━'.repeat(60));
-console.log(`  token:        ${tokenName} ($${tokenSymbol})`);
-console.log(`  package:      ${newPackageId}`);
-console.log(`  curve:        ${newCurveId ?? '(check Tx 2 effects)'}`);
-console.log(`  creator cap:  ${creatorCapObj?.objectId ?? '(check wallet)'}`);
-console.log(`  dex:          ${dexArg}`);
-console.log(`  anti-bot:     ${antiBotDelay}s`);
-console.log(`  tx1:          https://testnet.suivision.xyz/txblock/${res1.digest}`);
-console.log(`  tx2:          https://testnet.suivision.xyz/txblock/${res2.digest}`);
+console.log(`  curve:      ${curveObj?.objectId ?? '(check explorer)'}`);
+console.log(`  creator cap:${capObj?.objectId   ?? '(check explorer)'}`);
+if (vestLockObj) {
+  console.log(`  vest lock:  ${vestLockObj.objectId}`);
+}
+console.log(`  token type: ${newTokenType}`);
+console.log(`  tx1:        https://suiexplorer.com/txblock/${res1.digest}?network=testnet`);
+console.log(`  tx2:        https://suiexplorer.com/txblock/${res2.digest}?network=testnet`);
 console.log();
-console.log('  Add to constants.js to trade this token:');
-console.log(`    PACKAGE_ID = '${newPackageId}'`);
-console.log(`    CURVE_ID   = '${newCurveId}'`);
-console.log(`    TOKEN_TYPE = '${newTokenType}'`);
