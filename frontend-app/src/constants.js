@@ -1,23 +1,32 @@
 // constants.js
-// Multi-package support: v4 (live), v5 (deprecated), v6 (legacy), v7 (active)
+// Multi-package support: v4 (legacy), v5 (legacy), v6 (legacy), v7 (legacy), v8 (active)
 
-// ── V4 (live testnet — keep forever for existing tokens) ─────────────────────
+// ── V4 (legacy — tokens still tradeable forever) ─────────────────────────────
 export const PACKAGE_ID_V4 =
   '0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8';
 
-// ── V5 (deprecated — tokens still tradeable, no new launches) ────────────────
+// ── V5 (legacy — tokens still tradeable forever) ─────────────────────────────
 export const PACKAGE_ID_V5 =
   '0x785c0604cb6c60a8547501e307d2b0ca7a586ff912c8abff4edfb88db65b7236';
 
-// ── V6 (legacy — tokens still tradeable, no new launches) ────────────────────
+// ── V6 (legacy — tokens still tradeable forever) ─────────────────────────────
 export const PACKAGE_ID_V6 =
   '0x21d5b1284d5f1d4d14214654f414ffca20c757ee9f9db7701d3ffaaac62cd768';
 
-// ── V7 (active — set after `sui client publish contracts-v7`) ────────────────
+// ── V7 (legacy — tokens still tradeable, metadata permanently frozen) ────────
 export const PACKAGE_ID_V7 =
   '0xfb8f3f3e4e8d53130ac140906eebea6b6740bfaf0c971aec607fbc723be951f0';
 
-// ── V7 capabilities ──────────────────────────────────────────────────────────
+// ── V8 (active — set after `sui client publish contracts-v8`) ─────────────────
+// FILL IN after deploy: replace the placeholder below with the real package ID.
+export const PACKAGE_ID_V8 =
+  import.meta.env.VITE_PACKAGE_ID_V8 || '';
+
+// ── V8 capabilities (set after publish) ──────────────────────────────────────
+export const ADMIN_CAP_V8   = import.meta.env.VITE_ADMIN_CAP_V8   || '';
+export const UPGRADE_CAP_V8 = import.meta.env.VITE_UPGRADE_CAP_V8 || '';
+
+// ── V7 capabilities (legacy, needed for admin ops on V7 tokens) ──────────────
 export const ADMIN_CAP_V7 =
   '0x1dc44030adaa6e366666a8e095fc29a5a55c8ae614f04c5e93c062a85b475527';
 export const UPGRADE_CAP_V7 =
@@ -25,15 +34,21 @@ export const UPGRADE_CAP_V7 =
 
 // ── Active package (used for new launches + write txs) ───────────────────────
 export const PACKAGE_ID =
-  PACKAGE_ID_V7 ?? PACKAGE_ID_V6 ?? PACKAGE_ID_V5 ?? PACKAGE_ID_V4;
+  PACKAGE_ID_V8 || PACKAGE_ID_V7;
 
-// ── All package IDs — queried for events ─────────────────────────────────────
+// ── All package IDs — queried for events (READ paths) ────────────────────────
+// CRITICAL: never remove any ID — old tokens, volume, and stats must stay visible.
 export const ALL_PACKAGE_IDS = [
   PACKAGE_ID_V4,
   PACKAGE_ID_V5,
   PACKAGE_ID_V6,
-  ...(PACKAGE_ID_V7 ? [PACKAGE_ID_V7] : []),
+  PACKAGE_ID_V7,
+  ...(PACKAGE_ID_V8 ? [PACKAGE_ID_V8] : []),
 ];
+
+// ── Active admin cap (used for admin write txs) ───────────────────────────────
+export const ADMIN_CAP =
+  ADMIN_CAP_V8 || ADMIN_CAP_V7;
 
 // ── Example curve (v4) ───────────────────────────────────────────────────────
 export const CURVE_ID =
@@ -48,7 +63,7 @@ export const PROTOCOL_SHARE_BPS = 5_000;
 export const LP_SHARE_BPS       = 1_000;
 export const REFERRAL_SHARE_BPS = 1_000;
 
-// V7 comment fee — 0.001 SUI in MIST
+// V7+ comment fee — 0.001 SUI in MIST
 export const COMMENT_FEE_MIST   = 1_000_000;
 
 // ── Curve supply ──────────────────────────────────────────────────────────────
@@ -71,28 +86,32 @@ export const VIRTUAL_SUI_V6    = 9_000;
 export const VIRTUAL_TOKENS_V6 = 1_073_000_000;
 export const DRAIN_SUI_V6      = 17_000;
 
-// ── V7 curve shape (recalibrated — ~$4k start mcap) ──────────────────────────
+// ── V7 curve shape (recalibrated) ────────────────────────────────────────────
 export const VIRTUAL_SUI_V7    = 3_500;
 export const VIRTUAL_TOKENS_V7 = 1_073_000_000;
 export const DRAIN_SUI_V7      = 9_000;
 
+// ── V8 curve shape (identical to V7 — only metadata behaviour changed) ───────
+export const VIRTUAL_SUI_V8    = 3_500;
+export const VIRTUAL_TOKENS_V8 = 1_073_000_000;
+export const DRAIN_SUI_V8      = 9_000;
+
 // ── Active virtual reserves (track the active package) ───────────────────────
 export const VIRTUAL_SUI =
-  PACKAGE_ID_V7 ? VIRTUAL_SUI_V7
-  : PACKAGE_ID_V6 ? VIRTUAL_SUI_V6
-  : VIRTUAL_SUI_V5;
+  PACKAGE_ID_V8 ? VIRTUAL_SUI_V8
+  : VIRTUAL_SUI_V7;
 export const VIRTUAL_TOKENS =
-  PACKAGE_ID_V7 ? VIRTUAL_TOKENS_V7
-  : PACKAGE_ID_V6 ? VIRTUAL_TOKENS_V6
-  : VIRTUAL_TOKENS_V5;
+  PACKAGE_ID_V8 ? VIRTUAL_TOKENS_V8
+  : VIRTUAL_TOKENS_V7;
 export const DRAIN_SUI_APPROX =
-  PACKAGE_ID_V7 ? DRAIN_SUI_V7
-  : PACKAGE_ID_V6 ? DRAIN_SUI_V6
-  : DRAIN_SUI_V5;
+  PACKAGE_ID_V8 ? DRAIN_SUI_V8
+  : DRAIN_SUI_V7;
 
 // ── Per-package curve shape lookup ───────────────────────────────────────────
-// Returns { virtualSui, virtualTokens, drainSui } for a given package id.
 export function curveShapeFor(pkgId) {
+  if (pkgId === PACKAGE_ID_V8) {
+    return { virtualSui: VIRTUAL_SUI_V8, virtualTokens: VIRTUAL_TOKENS_V8, drainSui: DRAIN_SUI_V8 };
+  }
   if (pkgId === PACKAGE_ID_V7) {
     return { virtualSui: VIRTUAL_SUI_V7, virtualTokens: VIRTUAL_TOKENS_V7, drainSui: DRAIN_SUI_V7 };
   }
@@ -106,29 +125,37 @@ export function curveShapeFor(pkgId) {
 }
 
 // ── Package feature helpers ───────────────────────────────────────────────────
-// New curve economics (v5+): lower virtual reserves
 export function isNewCurve(pkgId) {
-  return pkgId === PACKAGE_ID_V5 || pkgId === PACKAGE_ID_V6 || pkgId === PACKAGE_ID_V7;
+  return pkgId === PACKAGE_ID_V5 || pkgId === PACKAGE_ID_V6
+      || pkgId === PACKAGE_ID_V7 || pkgId === PACKAGE_ID_V8;
 }
-// V5+ features: referral, anti-bot, graduation target
 export function isV5OrLater(pkgId) {
-  return pkgId === PACKAGE_ID_V5 || pkgId === PACKAGE_ID_V6 || pkgId === PACKAGE_ID_V7;
+  return pkgId === PACKAGE_ID_V5 || pkgId === PACKAGE_ID_V6
+      || pkgId === PACKAGE_ID_V7 || pkgId === PACKAGE_ID_V8;
 }
-// V6+ : instant one-time metadata update within 24h
+// V6+: instant one-time metadata update within 24h
 export function supportsMetadataUpdate(pkgId) {
-  return pkgId === PACKAGE_ID_V6 || pkgId === PACKAGE_ID_V7;
+  return pkgId === PACKAGE_ID_V6 || pkgId === PACKAGE_ID_V7 || pkgId === PACKAGE_ID_V8;
 }
-// V7+ : Turbos graduation, comment fee, sell-side referral, pause, airdrop bucket
+// V7+: Turbos graduation, comment fee, sell-side referral, pause, airdrop bucket, vesting
 export function isV7OrLater(pkgId) {
-  return pkgId === PACKAGE_ID_V7;
+  return pkgId === PACKAGE_ID_V7 || pkgId === PACKAGE_ID_V8;
+}
+// V8+: metadata is SHARED (not frozen) — update_metadata actually works
+export function isV8OrLater(pkgId) {
+  return pkgId === PACKAGE_ID_V8;
 }
 
 // ── Graduation targets ───────────────────────────────────────────────────────
 export const GRAD_TARGET_CETUS    = 0;
 export const GRAD_TARGET_DEEPBOOK = 1;
-export const GRAD_TARGET_TURBOS   = 2; // v7
+export const GRAD_TARGET_TURBOS   = 2;
 
 // ── Anti-bot delay options (v5+) ─────────────────────────────────────────────
 export const ANTI_BOT_NONE = 0;
 export const ANTI_BOT_15S  = 15;
 export const ANTI_BOT_30S  = 30;
+
+// ── Clock ─────────────────────────────────────────────────────────────────────
+export const SUI_CLOCK_ID =
+  '0x0000000000000000000000000000000000000000000000000000000000000006';

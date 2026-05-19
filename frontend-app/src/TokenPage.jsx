@@ -130,6 +130,8 @@ function isPlaceholderDesc(desc) {
 // Determine which package a token belongs to by checking its type string
 function getTokenPackageId(tokenType) {
   if (!tokenType) return null;
+  if (PACKAGE_ID_V8 && tokenType.startsWith(PACKAGE_ID_V8)) return PACKAGE_ID_V8;
+  if (PACKAGE_ID_V8 && tokenType.startsWith(PACKAGE_ID_V8)) return PACKAGE_ID_V8;
   if (PACKAGE_ID_V7 && tokenType.startsWith(PACKAGE_ID_V7)) return PACKAGE_ID_V7;
   if (PACKAGE_ID_V6 && tokenType.startsWith(PACKAGE_ID_V6)) return PACKAGE_ID_V6;
   if (PACKAGE_ID_V5 && tokenType.startsWith(PACKAGE_ID_V5)) return PACKAGE_ID_V5;
@@ -142,6 +144,8 @@ function resolvePackageId(tokenType, packageIdHint) {
   const fromType = getTokenPackageId(tokenType);
   if (fromType) return fromType;
   if (packageIdHint) {
+    if (PACKAGE_ID_V8 && packageIdHint === PACKAGE_ID_V8) return PACKAGE_ID_V8;
+    if (PACKAGE_ID_V8 && packageIdHint === PACKAGE_ID_V8) return PACKAGE_ID_V8;
     if (PACKAGE_ID_V7 && packageIdHint === PACKAGE_ID_V7) return PACKAGE_ID_V7;
     if (PACKAGE_ID_V6 && packageIdHint === PACKAGE_ID_V6) return PACKAGE_ID_V6;
     if (PACKAGE_ID_V5 && packageIdHint === PACKAGE_ID_V5) return PACKAGE_ID_V5;
@@ -472,15 +476,19 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
   const isV5Token = isV5OrLater(pkgId);
   const isV6Token = !!(PACKAGE_ID_V6 && pkgId === PACKAGE_ID_V6);
   const isV7Token = isV7OrLater(pkgId);
+  // V8+ tokens have shared (not frozen) CoinMetadata — update_metadata works
+  const isV8Token = isV8OrLater(pkgId);
+  // V8+ tokens have shared (not frozen) CoinMetadata — update_metadata works
+  const isV8Token = isV8OrLater(pkgId);
   // V7+ has a real on-chain update_metadata; V6 and earlier do not.
-  const metadataPkg = PACKAGE_ID_V7;
+  const metadataPkg = isV8Token ? PACKAGE_ID_V8 : PACKAGE_ID_V7;
 
   // INTERIM (pre-V8): the on-chain update_metadata path is broken because the
   // V7 coin template freezes CoinMetadata at launch, so it can never be passed
   // by &mut. The metadata tab is hidden until the V8 contract ships (template
   // shares metadata + graduate() takes &mut). Flip this to true once V8 is
   // deployed and constants.js points the active package at V8.
-  const METADATA_UPDATE_ENABLED = false;
+  const METADATA_UPDATE_ENABLED = true;
 
   const [tab, setTab] = useState('links'); // 'links' | 'metadata'
   const [msg, setMsg] = useState('');
@@ -643,7 +651,7 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
           <span className="text-[9px] font-mono tracking-widest text-lime-400/70">CREATOR TOOLS</span>
         </div>
         <div className="flex gap-1">
-          {['links', ...((METADATA_UPDATE_ENABLED && (isV6Token || isV7Token)) ? ['metadata'] : [])].map(t => (
+          {['links', ...((METADATA_UPDATE_ENABLED && (isV6Token || isV7Token || isV8Token)) ? ['metadata'] : [])].map(t => (
             <button
               key={t}
               onClick={() => setTab(t)}

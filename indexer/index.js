@@ -1,4 +1,4 @@
-// index.js — SuiPump event indexer
+// index.js — SuiPump event indexer  (V8-aware)
 // Backfills all historical events then polls for new ones every 5s.
 // Writes to PostgreSQL. Exposes REST API via api.js.
 //
@@ -9,25 +9,32 @@
 
 import 'dotenv/config';
 import { SuiClient, getFullnodeUrl } from '@mysten/sui/client';
-import { pool, initSchema, getCursor, saveCursor, insertEvent, upsertCurve, recomputeStats, enrichCurveMetadata, backfillMissingIcons } from './db.js';
+import {
+  pool, initSchema, getCursor, saveCursor, insertEvent,
+  upsertCurve, recomputeStats, enrichCurveMetadata, backfillMissingIcons,
+} from './db.js';
 import { startApi } from './api.js';
 
 // All deployed SuiPump package versions. The indexer MUST cover every version
 // or tokens/trades/volume from older or newer packages silently disappear.
 // PACKAGE_IDS env var (Render) overrides this; the default below is the
-// complete V4-V7 set so a missing/incomplete env var still indexes everything.
+// complete V4-V8 set so a missing/incomplete env var still indexes everything.
 const ALL_PACKAGE_IDS = [
   '0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8', // V4
   '0x785c0604cb6c60a8547501e307d2b0ca7a586ff912c8abff4edfb88db65b7236', // V5
   '0x21d5b1284d5f1d4d14214654f414ffca20c757ee9f9db7701d3ffaaac62cd768', // V6
   '0xfb8f3f3e4e8d53130ac140906eebea6b6740bfaf0c971aec607fbc723be951f0', // V7
+  // V8: add the real package ID here once contracts-v8 is published.
+  // Also update the PACKAGE_IDS env var on Render.
+  ...(process.env.PACKAGE_ID_V8 ? [process.env.PACKAGE_ID_V8] : []),
 ];
+
 const PACKAGE_IDS = process.env.PACKAGE_IDS
   ? process.env.PACKAGE_IDS.split(',').map(s => s.trim()).filter(Boolean)
   : ALL_PACKAGE_IDS;
-const RPC_URL     = process.env.SUI_RPC_URL || getFullnodeUrl('testnet');
-const POLL_MS     = parseInt(process.env.POLL_MS || '5000');
-const PAGE_SIZE   = 100;
+const RPC_URL  = process.env.SUI_RPC_URL || getFullnodeUrl('testnet');
+const POLL_MS  = parseInt(process.env.POLL_MS || '5000');
+const PAGE_SIZE = 100;
 
 const client = new SuiClient({ url: RPC_URL });
 
@@ -54,23 +61,25 @@ async function syncEventType(eventType, packageId) {
       query: { MoveEventType: eventType },
       cursor: cursor ?? undefined,
       limit: PAGE_SIZE,
-      order: 'ascending', // ascending = oldest first for backfill
+      order: 'ascending',
     });
 
     for (const evt of res.data) {
       await insertEvent(eventType, evt);
 
-      // Handle CurveCreated specially
       if (eventType.includes('CurveCreated')) {
         await upsertCurve(evt, packageId);
-        // Fetch icon_url + token_type from on-chain metadata
         const curveId2 = evt.parsedJson?.curve_id;
         if (curveId2) await enrichCurveMetadata(curveId2, client);
       }
 
-      // Trigger stats recompute for trade/comment events
       const curveId = evt.parsedJson?.curve_id;
-      if (curveId && (eventType.includes('TokensPurchased') || eventType.includes('TokensSold') || eventType.includes('Comment'))) {
+      if (
+        curveId &&
+        (eventType.includes('TokensPurchased') ||
+          eventType.includes('TokensSold') ||
+          eventType.includes('Comment'))
+      ) {
         await recomputeStats(curveId);
       }
 
@@ -81,12 +90,10 @@ async function syncEventType(eventType, packageId) {
       cursor = res.nextCursor;
       await saveCursor(eventType, cursor);
     } else {
-      // Save current cursor for next poll
       if (res.nextCursor) await saveCursor(eventType, res.nextCursor);
       hasMore = false;
     }
 
-    // Small delay to be polite to RPC
     if (res.data.length === PAGE_SIZE) await sleep(200);
   }
 
@@ -101,7 +108,9 @@ async function syncAll() {
     for (const eventType of eventTypes) {
       try {
         const count = await syncEventType(eventType, packageId);
-        if (count > 0) console.log(`  synced ${count} new events: ${eventType.split('::').pop()}`);
+        if (count > 0) {
+          console.log(`  synced ${count} new events: ${eventType.split('::').pop()}`);
+        }
       } catch (err) {
         console.error(`  error syncing ${eventType.split('::').pop()}:`, err.message);
       }
@@ -124,23 +133,17 @@ async function main() {
   console.log(`  Poll:     every ${POLL_MS / 1000}s`);
   console.log();
 
-  // Init DB schema
   await initSchema();
-
-  // Start REST API
   startApi();
 
-  // Initial backfill
   console.log('  Backfilling historical events…');
   await syncAll();
   console.log('  ✓ Backfill complete');
   console.log();
 
-  // Fill missing icons for existing tokens
   await backfillMissingIcons(client);
   console.log();
 
-  // Poll for new events
   console.log('  Polling for new events…');
   while (true) {
     await sleep(POLL_MS);
