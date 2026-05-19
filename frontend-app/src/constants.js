@@ -17,38 +17,34 @@ export const PACKAGE_ID_V6 =
 export const PACKAGE_ID_V7 =
   '0xfb8f3f3e4e8d53130ac140906eebea6b6740bfaf0c971aec607fbc723be951f0';
 
-// ── V8 (active — set after `sui client publish contracts-v8`) ─────────────────
-// FILL IN after deploy: replace the placeholder below with the real package ID.
+// ── V8 (active — shared metadata, update_metadata works) ─────────────────────
 export const PACKAGE_ID_V8 =
-  import.meta.env.VITE_PACKAGE_ID_V8 || '';
+  '0x145a1e79b83cc17680dbfe4f96839cd359c7db380ac15463ecb6dc30f9849b69';
 
-// ── V8 capabilities (set after publish) ──────────────────────────────────────
-export const ADMIN_CAP_V8   = import.meta.env.VITE_ADMIN_CAP_V8   || '';
-export const UPGRADE_CAP_V8 = import.meta.env.VITE_UPGRADE_CAP_V8 || '';
-
-// ── V7 capabilities (legacy, needed for admin ops on V7 tokens) ──────────────
+// ── Capabilities ─────────────────────────────────────────────────────────────
 export const ADMIN_CAP_V7 =
   '0x1dc44030adaa6e366666a8e095fc29a5a55c8ae614f04c5e93c062a85b475527';
 export const UPGRADE_CAP_V7 =
   '0xfc3cbce835fa8a6990105e87c3cd6ea18482b1eadc435c8bf049a8d3fdbd20a4';
+export const ADMIN_CAP_V8 =
+  '0xdb22e067d9cf53cfab37bc6d4b626ff98c770bc59b8a192d007aca449e8f7103';
+export const UPGRADE_CAP_V8 =
+  '0xcc0c127866fbef958194d16d88ff35e626a13631938f398614914eba3b54547b';
 
 // ── Active package (used for new launches + write txs) ───────────────────────
-export const PACKAGE_ID =
-  PACKAGE_ID_V8 || PACKAGE_ID_V7;
+export const PACKAGE_ID = PACKAGE_ID_V8;
+
+// ── Active admin cap ─────────────────────────────────────────────────────────
+export const ADMIN_CAP = ADMIN_CAP_V8;
 
 // ── All package IDs — queried for events (READ paths) ────────────────────────
-// CRITICAL: never remove any ID — old tokens, volume, and stats must stay visible.
 export const ALL_PACKAGE_IDS = [
   PACKAGE_ID_V4,
   PACKAGE_ID_V5,
   PACKAGE_ID_V6,
   PACKAGE_ID_V7,
-  ...(PACKAGE_ID_V8 ? [PACKAGE_ID_V8] : []),
+  PACKAGE_ID_V8,
 ];
-
-// ── Active admin cap (used for admin write txs) ───────────────────────────────
-export const ADMIN_CAP =
-  ADMIN_CAP_V8 || ADMIN_CAP_V7;
 
 // ── Example curve (v4) ───────────────────────────────────────────────────────
 export const CURVE_ID =
@@ -64,7 +60,7 @@ export const LP_SHARE_BPS       = 1_000;
 export const REFERRAL_SHARE_BPS = 1_000;
 
 // V7+ comment fee — 0.001 SUI in MIST
-export const COMMENT_FEE_MIST   = 1_000_000;
+export const COMMENT_FEE_MIST = 1_000_000;
 
 // ── Curve supply ──────────────────────────────────────────────────────────────
 export const CURVE_SUPPLY   = 800_000_000;
@@ -81,31 +77,25 @@ export const VIRTUAL_SUI_V5    = 9_000;
 export const VIRTUAL_TOKENS_V5 = 1_073_000_000;
 export const DRAIN_SUI_V5      = 17_000;
 
-// ── V6 curve shape (same economics as v5) ────────────────────────────────────
+// ── V6 curve shape ────────────────────────────────────────────────────────────
 export const VIRTUAL_SUI_V6    = 9_000;
 export const VIRTUAL_TOKENS_V6 = 1_073_000_000;
 export const DRAIN_SUI_V6      = 17_000;
 
-// ── V7 curve shape (recalibrated) ────────────────────────────────────────────
+// ── V7 curve shape ────────────────────────────────────────────────────────────
 export const VIRTUAL_SUI_V7    = 3_500;
 export const VIRTUAL_TOKENS_V7 = 1_073_000_000;
 export const DRAIN_SUI_V7      = 9_000;
 
-// ── V8 curve shape (identical to V7 — only metadata behaviour changed) ───────
+// ── V8 curve shape (identical economics to V7) ───────────────────────────────
 export const VIRTUAL_SUI_V8    = 3_500;
 export const VIRTUAL_TOKENS_V8 = 1_073_000_000;
 export const DRAIN_SUI_V8      = 9_000;
 
-// ── Active virtual reserves (track the active package) ───────────────────────
-export const VIRTUAL_SUI =
-  PACKAGE_ID_V8 ? VIRTUAL_SUI_V8
-  : VIRTUAL_SUI_V7;
-export const VIRTUAL_TOKENS =
-  PACKAGE_ID_V8 ? VIRTUAL_TOKENS_V8
-  : VIRTUAL_TOKENS_V7;
-export const DRAIN_SUI_APPROX =
-  PACKAGE_ID_V8 ? DRAIN_SUI_V8
-  : DRAIN_SUI_V7;
+// ── Active virtual reserves ───────────────────────────────────────────────────
+export const VIRTUAL_SUI      = VIRTUAL_SUI_V8;
+export const VIRTUAL_TOKENS   = VIRTUAL_TOKENS_V8;
+export const DRAIN_SUI_APPROX = DRAIN_SUI_V8;
 
 // ── Per-package curve shape lookup ───────────────────────────────────────────
 export function curveShapeFor(pkgId) {
@@ -133,15 +123,12 @@ export function isV5OrLater(pkgId) {
   return pkgId === PACKAGE_ID_V5 || pkgId === PACKAGE_ID_V6
       || pkgId === PACKAGE_ID_V7 || pkgId === PACKAGE_ID_V8;
 }
-// V6+: instant one-time metadata update within 24h
 export function supportsMetadataUpdate(pkgId) {
   return pkgId === PACKAGE_ID_V6 || pkgId === PACKAGE_ID_V7 || pkgId === PACKAGE_ID_V8;
 }
-// V7+: Turbos graduation, comment fee, sell-side referral, pause, airdrop bucket, vesting
 export function isV7OrLater(pkgId) {
   return pkgId === PACKAGE_ID_V7 || pkgId === PACKAGE_ID_V8;
 }
-// V8+: metadata is SHARED (not frozen) — update_metadata actually works
 export function isV8OrLater(pkgId) {
   return pkgId === PACKAGE_ID_V8;
 }
