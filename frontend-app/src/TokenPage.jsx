@@ -10,7 +10,7 @@ import TradeHistory from './TradeHistory.jsx';
 import HolderList from './HolderList.jsx';
 import Comments from './Comments.jsx';
 import AIAnalysis from './AIAnalysis.jsx';
-import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, PACKAGE_ID_V8, MIST_PER_SUI, DRAIN_SUI_APPROX, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_SUI_V6, VIRTUAL_SUI_V7, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, VIRTUAL_TOKENS_V6, VIRTUAL_TOKENS_V7, DRAIN_SUI_V4, DRAIN_SUI_V5, DRAIN_SUI_V6, DRAIN_SUI_V7, isNewCurve, isV5OrLater, isV7OrLater, isV8OrLater, supportsMetadataUpdate } from './constants.js';
+import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8, MIST_PER_SUI, DRAIN_SUI_APPROX, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_SUI_V6, VIRTUAL_SUI_V7, VIRTUAL_SUI_V8, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, VIRTUAL_TOKENS_V6, VIRTUAL_TOKENS_V7, VIRTUAL_TOKENS_V8, DRAIN_SUI_V4, DRAIN_SUI_V5, DRAIN_SUI_V6, DRAIN_SUI_V7, DRAIN_SUI_V8, isNewCurve, isV5OrLater, isV7OrLater, isV8OrLater, supportsMetadataUpdate } from './constants.js';
 import { buyQuote, sellQuote } from './curve.js';
 import { t } from './i18n.js';
 
@@ -130,6 +130,7 @@ function isPlaceholderDesc(desc) {
 // Determine which package a token belongs to by checking its type string
 function getTokenPackageId(tokenType) {
   if (!tokenType) return null;
+  if (PACKAGE_ID_V8_1 && tokenType.startsWith(PACKAGE_ID_V8_1)) return PACKAGE_ID_V8_1;
   if (PACKAGE_ID_V8 && tokenType.startsWith(PACKAGE_ID_V8)) return PACKAGE_ID_V8;
   if (PACKAGE_ID_V7 && tokenType.startsWith(PACKAGE_ID_V7)) return PACKAGE_ID_V7;
   if (PACKAGE_ID_V6 && tokenType.startsWith(PACKAGE_ID_V6)) return PACKAGE_ID_V6;
@@ -143,6 +144,7 @@ function resolvePackageId(tokenType, packageIdHint) {
   const fromType = getTokenPackageId(tokenType);
   if (fromType) return fromType;
   if (packageIdHint) {
+    if (PACKAGE_ID_V8_1 && packageIdHint === PACKAGE_ID_V8_1) return PACKAGE_ID_V8_1;
     if (PACKAGE_ID_V8 && packageIdHint === PACKAGE_ID_V8) return PACKAGE_ID_V8;
     if (PACKAGE_ID_V7 && packageIdHint === PACKAGE_ID_V7) return PACKAGE_ID_V7;
     if (PACKAGE_ID_V6 && packageIdHint === PACKAGE_ID_V6) return PACKAGE_ID_V6;
@@ -478,7 +480,7 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
   // V8+ tokens have shared (not frozen) CoinMetadata — update_metadata works
   const isV8Token = isV8OrLater(pkgId);
   // V7+ has a real on-chain update_metadata; V6 and earlier do not.
-  const metadataPkg = isV8Token ? PACKAGE_ID_V8 : PACKAGE_ID_V7;
+  const metadataPkg = pkgId === PACKAGE_ID_V8_1 ? PACKAGE_ID_V8_1 : isV8Token ? PACKAGE_ID_V8 : PACKAGE_ID_V7;
 
   // INTERIM (pre-V8): the on-chain update_metadata path is broken because the
   // V7 coin template freezes CoinMetadata at launch, so it can never be passed
@@ -1255,7 +1257,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
       try {
         // Search every package version — a curve's CurveCreated event lives
         // on whichever SuiPump package launched it.
-        const packageIds = [PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, PACKAGE_ID_V8]
+        const packageIds = [PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8]
           .filter(Boolean)
           .filter((v, i, a) => a.indexOf(v) === i);
         let found = null;
@@ -1303,13 +1305,16 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   const isV5Token      = isV5OrLater(pkgId);
   // Per-version curve shape: V4=30k, V5/V6=9k, V7=3.5k virtual SUI.
   // Using the wrong shape would mis-price every quote and chart point.
-  const vSui           = (pkgId === PACKAGE_ID_V8 || pkgId === PACKAGE_ID_V7) ? VIRTUAL_SUI_V7
+  const vSui           = (pkgId === PACKAGE_ID_V8 || pkgId === PACKAGE_ID_V8_1) ? VIRTUAL_SUI_V8
+                       : pkgId === PACKAGE_ID_V7 ? VIRTUAL_SUI_V7
                        : (pkgId === PACKAGE_ID_V6 || pkgId === PACKAGE_ID_V5) ? VIRTUAL_SUI_V5
                        : VIRTUAL_SUI_V4;
-  const vTok           = (pkgId === PACKAGE_ID_V8 || pkgId === PACKAGE_ID_V7) ? VIRTUAL_TOKENS_V7
+  const vTok           = (pkgId === PACKAGE_ID_V8 || pkgId === PACKAGE_ID_V8_1) ? VIRTUAL_TOKENS_V8
+                       : pkgId === PACKAGE_ID_V7 ? VIRTUAL_TOKENS_V7
                        : (pkgId === PACKAGE_ID_V6 || pkgId === PACKAGE_ID_V5) ? VIRTUAL_TOKENS_V5
                        : VIRTUAL_TOKENS_V4;
-  const drainSui       = (pkgId === PACKAGE_ID_V8 || pkgId === PACKAGE_ID_V7) ? DRAIN_SUI_V7
+  const drainSui       = (pkgId === PACKAGE_ID_V8 || pkgId === PACKAGE_ID_V8_1) ? DRAIN_SUI_V8
+                       : pkgId === PACKAGE_ID_V7 ? DRAIN_SUI_V7
                        : (pkgId === PACKAGE_ID_V6 || pkgId === PACKAGE_ID_V5) ? DRAIN_SUI_V5
                        : DRAIN_SUI_V4;
   const reserveMist    = curveState ? BigInt(curveState.sui_reserve) : 0n;
@@ -1367,6 +1372,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
       ...(PACKAGE_ID_V5 ? [checkPkg(PACKAGE_ID_V5)] : []),
       ...(PACKAGE_ID_V6 ? [checkPkg(PACKAGE_ID_V6)] : []),
       ...(PACKAGE_ID_V7 ? [checkPkg(PACKAGE_ID_V7)] : []),
+      ...(PACKAGE_ID_V8_1 ? [checkPkg(PACKAGE_ID_V8_1)] : []),
       ...(PACKAGE_ID_V8 ? [checkPkg(PACKAGE_ID_V8)] : []),
     ]).then(results => {
       if (!cancelled) setIsCreator(results.some(Boolean));
