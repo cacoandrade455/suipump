@@ -1063,6 +1063,14 @@ function TradePanelContent({
               >
                 {t(lang, 'max')}
               </button>
+              {side === 'sell' && tokenBalance > 0 && (
+                <button
+                  onClick={() => setAmount(tokenBalance.toFixed(0))}
+                  className="px-3 py-2.5 text-[10px] font-mono text-red-400/70 hover:text-red-400 border border-red-400/20 rounded-lg hover:border-red-400/40 transition-colors whitespace-nowrap"
+                >
+                  SELL ALL
+                </button>
+              )}
             </div>
             {side === 'buy' ? (
               <div className="flex gap-1.5">
@@ -1647,9 +1655,11 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
                 <span className={`text-[9px] font-mono px-2 py-0.5 rounded-full border ${
                   dex === 'deepbook'
                     ? 'border-blue-400/30 text-blue-400/70 bg-blue-400/5'
+                    : dex === 'turbos'
+                    ? 'border-purple-400/30 text-purple-400/70 bg-purple-400/5'
                     : 'border-lime-400/30 text-lime-400/70 bg-lime-400/5'
                 }`}>
-                  {dex === 'deepbook' ? '⚡ DeepBook' : '🌊 Cetus'}
+                  {dex === 'deepbook' ? '⚡ DeepBook' : dex === 'turbos' ? '🔄 Turbos' : '🌊 Cetus'}
                 </span>
               </div>
             )}
