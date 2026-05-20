@@ -16,7 +16,7 @@ import PortfolioPage from './PortfolioPage.jsx';
 import RoadmapPage from './RoadmapPage.jsx';
 import StatsPage from './StatsPage.jsx';
 import { LANGUAGES, translations, t } from './i18n.js';
-import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, ALL_PACKAGE_IDS, DRAIN_SUI_APPROX, DRAIN_SUI_V4, DRAIN_SUI_V5, DRAIN_SUI_V6, DRAIN_SUI_V7, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_SUI_V6, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, VIRTUAL_TOKENS_V6, TOKEN_DECIMALS, isNewCurve, curveShapeFor } from './constants.js';
+import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8, ALL_PACKAGE_IDS, DRAIN_SUI_APPROX, DRAIN_SUI_V4, DRAIN_SUI_V5, DRAIN_SUI_V6, DRAIN_SUI_V7, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_SUI_V6, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, VIRTUAL_TOKENS_V6, TOKEN_DECIMALS, isNewCurve, isV7OrLater, curveShapeFor } from './constants.js';
 import { mistToSui, priceMistPerToken } from './curve.js';
 import { paginateEvents, paginateMultipleEvents } from './paginateEvents.js';
 import LiveFeedSidebar from './LiveFeedSidebar.jsx';
@@ -340,6 +340,20 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch
                 GRAD
               </div>
             )}
+            {!graduated && (() => {
+              const gt = Number(curveState?.graduation_target ?? 0);
+              const label = gt === 1 ? '⚡ Deep' : gt === 2 ? '🔄 Turbos' : '🌊 Cetus';
+              const cls = gt === 1
+                ? 'border-blue-400/25 text-blue-400/60 bg-blue-400/5'
+                : gt === 2
+                ? 'border-purple-400/25 text-purple-400/60 bg-purple-400/5'
+                : 'border-lime-400/25 text-lime-400/60 bg-lime-400/5';
+              return (
+                <div className={`text-[9px] font-mono px-1.5 py-0.5 rounded-full border ${cls}`}>
+                  {label}
+                </div>
+              );
+            })()}
             <PctBadge pct={stats?.pctChange} />
           </div>
           {/* Watchlist star */}
