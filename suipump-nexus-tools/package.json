@@ -1,0 +1,12 @@
+{
+  "name": "suipump-nexus-tools",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "bridge": "node bridge.js",
+    "start": "node bridge.js"
+  },
+  "dependencies": {
+    "@mysten/sui": "^1.45.2"
+  }
+}
