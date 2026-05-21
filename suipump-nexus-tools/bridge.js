@@ -255,24 +255,28 @@ async function handleClaim(body) {
 
   const { pkgId, tokenType, sharedVersion } = await resolveCurve(client, curveId);
 
-  // Find CreatorCap
-  const caps = await client.getOwnedObjects({
-    owner: address,
-    filter: { StructType: `${pkgId}::bonding_curve::CreatorCap` },
-    options: { showContent: true },
-  });
-  const cap = caps.data.find(o => o.data?.content?.fields?.curve_id === curveId);
+  // Search all package versions for CreatorCap — curve may be on any version
+  let cap = null;
+  for (const pkg of ALL_PACKAGE_IDS) {
+    const caps = await client.getOwnedObjects({
+      owner: address,
+      filter: { StructType: `${pkg}::bonding_curve::CreatorCap` },
+      options: { showContent: true },
+    });
+    cap = caps.data.find(o => o.data?.content?.fields?.curve_id === curveId);
+    if (cap) break;
+  }
   if (!cap) throw new Error(`No CreatorCap found in agent wallet for curve ${curveId}`);
 
   const tx       = new Transaction();
   const curveRef = tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: sharedVersion, mutable: true });
 
-  const suiCoin = tx.moveCall({
+  // claim_creator_fees is void — it transfers directly to payout recipients internally
+  tx.moveCall({
     target: `${pkgId}::bonding_curve::claim_creator_fees`,
     typeArguments: [tokenType],
     arguments: [tx.object(cap.data.objectId), curveRef],
   });
-  tx.transferObjects([suiCoin], address);
 
   const result = await client.signAndExecuteTransaction({
     signer: keypair, transaction: tx,
@@ -294,41 +298,69 @@ async function handleClaim(body) {
 }
 
 // ── Handler: /launch ──────────────────────────────────────────────────────────
-// Body: { name, symbol, description?, iconUrl?, devBuyMist?, graduationTarget?, antiBotDelay?, privateKey?, rpcUrl? }
-// Delegates to scripts/launch.js via child_process (reuses existing tested PTB logic)
+// Body: { name, symbol, description?, iconUrl?, devBuySui?, graduationTarget?, antiBotDelay?, privateKey?, rpcUrl? }
 async function handleLaunch(body) {
+  const { name, symbol, description, iconUrl, devBuySui, graduationTarget, antiBotDelay, privateKey, rpcUrl } = body;
+  if (!name)   throw new Error('name required');
+  if (!symbol) throw new Error('symbol required');
+
+  const pk = privateKey ?? process.env.SUI_PRIVATE_KEY;
+  if (!pk) throw new Error('No private key — set SUI_PRIVATE_KEY or pass privateKey in body');
+
   const scriptPath = path.resolve(__dirname, '../scripts/launch.js');
+
+  // Build CLI args for launch.js
+  const dexMap = { 0: 'cetus', 1: 'deepbook', 2: 'turbos' };
+  const dex    = dexMap[graduationTarget ?? 2] ?? 'turbos';
+
+  const cliArgs = [
+    '--name',    name,
+    '--symbol',  symbol.toUpperCase(),
+    '--dex',     dex,
+    '--antibot', String(antiBotDelay ?? 0),
+  ];
+  if (description) cliArgs.push('--desc', description);
+  if (iconUrl)     cliArgs.push('--icon', iconUrl);
+  if (devBuySui && parseFloat(devBuySui) > 0) cliArgs.push('--buy', String(devBuySui));
 
   const env = {
     ...process.env,
-    LAUNCH_NAME:         body.name          ?? '',
-    LAUNCH_SYMBOL:       body.symbol        ?? '',
-    LAUNCH_DESCRIPTION:  body.description   ?? '',
-    LAUNCH_ICON_URL:     body.iconUrl       ?? '',
-    LAUNCH_DEV_BUY_MIST: String(body.devBuyMist       ?? 0),
-    LAUNCH_GRAD_TARGET:  String(body.graduationTarget  ?? 2),  // default Turbos
-    LAUNCH_ANTI_BOT:     String(body.antiBotDelay      ?? 0),
-    SUI_RPC_URL:         body.rpcUrl        ?? process.env.SUI_RPC_URL ?? getFullnodeUrl('testnet'),
-    SUI_PRIVATE_KEY:     body.privateKey    ?? process.env.SUI_PRIVATE_KEY ?? '',
+    SUI_PRIVATE_KEY: pk,
+    SUI_RPC_URL: rpcUrl ?? process.env.SUI_RPC_URL ?? getFullnodeUrl('testnet'),
   };
 
-  if (!env.LAUNCH_NAME)   throw new Error('name required');
-  if (!env.LAUNCH_SYMBOL) throw new Error('symbol required');
-  if (!env.SUI_PRIVATE_KEY) throw new Error('No private key — set SUI_PRIVATE_KEY or pass privateKey in body');
+  console.log(`[bridge] /launch: ${symbol} via ${dex}`);
 
-  const { stdout, stderr } = await execFileAsync('node', ['--input-type=module', scriptPath], { env, timeout: 120_000 });
+  const { stdout, stderr } = await execFileAsync(
+    'node', [scriptPath, ...cliArgs],
+    { env, timeout: 180_000 }
+  );
 
   if (stderr && !stdout) throw new Error(stderr.trim());
 
-  // launch.js prints a final JSON line as the last stdout line
+  // launch.js prints progress lines then a final summary — parse the last JSON line
   const lines  = stdout.trim().split('\n').filter(Boolean);
-  const last   = lines[lines.length - 1];
-  try {
-    return JSON.parse(last);
-  } catch {
-    // launch.js might not output JSON in all code paths — return raw
-    return { output: stdout.trim() };
+
+  // Try to find a JSON line (launch.js may not emit one yet — parse from output)
+  let result = null;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    try { result = JSON.parse(lines[i]); break; } catch {}
   }
+
+  if (!result) {
+    // launch.js doesn't emit JSON yet — extract key values from stdout
+    const digestMatch  = stdout.match(/digest[:\s]+([A-Za-z0-9]{40,})/i);
+    const curveMatch   = stdout.match(/curve[:\s]+(0x[a-f0-9]{60,})/i);
+    const typeMatch    = stdout.match(/token type[:\s]+(0x[^\s]+)/i);
+    result = {
+      txDigest:  digestMatch?.[1] ?? 'see logs',
+      curveId:   curveMatch?.[1]  ?? 'see logs',
+      tokenType: typeMatch?.[1]   ?? 'see logs',
+      output:    lines.slice(-5).join('\n'),
+    };
+  }
+
+  return result;
 }
 
 // ── HTTP server ───────────────────────────────────────────────────────────────
