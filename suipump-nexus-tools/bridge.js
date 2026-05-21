@@ -41,11 +41,20 @@ const ALL_PACKAGE_IDS = [
   // V9 added after upgrade deploy
 ];
 
-// Packages that use the V7+ sell() signature (with referral arg + clock)
+// Packages that use V5+ buy() signature (with referral + clock)
+const V5_PLUS = new Set([
+  '0x785c0604cb6c60a8547501e307d2b0ca7a586ff912c8abff4edfb88db65b7236', // V5
+  '0x21d5b1284d5f1d4d14214654f414ffca20c757ee9f9db7701d3ffaaac62cd768', // V6
+  '0xfb8f3f3e4e8d53130ac140906eebea6b6740bfaf0c971aec607fbc723be951f0', // V7
+  '0x145a1e79b83cc17680dbfe4f96839cd359c7db380ac15463ecb6dc30f9849b69', // V8_1
+  '0xbb4ee050239f59dfd983501ce101698ba27857f77aff2d437cec568fe0062546', // V8
+]);
+
+// Packages that use V7+ sell() signature (with referral arg)
 const V7_PLUS = new Set([
-  '0xfb8f3f3e4e8d53130ac140906eebea6b6740bfaf0c971aec607fbc723be951f0',
-  '0x145a1e79b83cc17680dbfe4f96839cd359c7db380ac15463ecb6dc30f9849b69',
-  '0xbb4ee050239f59dfd983501ce101698ba27857f77aff2d437cec568fe0062546',
+  '0xfb8f3f3e4e8d53130ac140906eebea6b6740bfaf0c971aec607fbc723be951f0', // V7
+  '0x145a1e79b83cc17680dbfe4f96839cd359c7db380ac15463ecb6dc30f9849b69', // V8_1
+  '0xbb4ee050239f59dfd983501ce101698ba27857f77aff2d437cec568fe0062546', // V8
 ]);
 
 const SUI_CLOCK_ID = '0x6';
@@ -56,7 +65,7 @@ function loadKeypair(privateKey) {
   const raw   = privateKey ?? process.env.SUI_PRIVATE_KEY;
   if (!raw) throw new Error('No private key — set SUI_PRIVATE_KEY or pass privateKey in body');
   const bytes = fromBase64(raw);
-  const seed  = bytes.length === 65 ? bytes.slice(1) : bytes;
+  const seed  = (bytes.length === 65 || bytes.length === 33) ? bytes.slice(1) : bytes;
   return Ed25519Keypair.fromSecretKey(seed);
 }
 
@@ -72,12 +81,14 @@ async function getSharedVersion(client, objectId) {
 }
 
 async function resolveCurve(client, curveId) {
-  // Returns { pkgId, tokenType, fields, sharedVersion }
   const obj = await client.getObject({ id: curveId, options: { showContent: true, showType: true, showOwner: true } });
   if (!obj.data) throw new Error(`Curve ${curveId} not found`);
-  const tokenType     = obj.data.type?.match(/Curve<(.+)>$/)?.[1];
-  if (!tokenType)     throw new Error(`Could not parse token type from curve ${curveId}`);
-  const pkgId         = tokenType.split('::')[0];
+  // obj.data.type = "0xPKG::bonding_curve::Curve<0xCOIN::module::TOKEN>"
+  const curveType = obj.data.type;
+  const pkgId     = curveType?.split('::')[0];
+  const tokenType = curveType?.match(/Curve<(.+)>$/)?.[1];
+  if (!tokenType) throw new Error(`Could not parse token type from curve ${curveId}`);
+  if (!pkgId)     throw new Error(`Could not parse package ID from curve ${curveId}`);
   const sharedVersion = obj.data.owner?.Shared?.initial_shared_version;
   if (!sharedVersion) throw new Error(`Curve ${curveId} is not a shared object`);
   return { pkgId, tokenType, fields: obj.data.content?.fields ?? {}, sharedVersion };
@@ -115,22 +126,33 @@ async function handleBuy(body) {
 
   const suiMist  = BigInt(Math.floor(parseFloat(suiAmount) * Number(MIST_PER_SUI)));
   const minOut   = BigInt(minTokensOut ?? 0);
+  const isV5Plus = V5_PLUS.has(pkgId);
   const isV7Plus = V7_PLUS.has(pkgId);
 
   const tx      = new Transaction();
   const curveRef = tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: sharedVersion, mutable: true });
   const [payment] = tx.splitCoins(tx.gas, [tx.pure.u64(suiMist)]);
 
-  const buyArgs = isV7Plus
+  const buyArgs = isV5Plus
     ? [curveRef, payment, tx.pure.u64(minOut), tx.pure.option('address', referral ?? null), tx.object(SUI_CLOCK_ID)]
-    : [curveRef, payment, tx.pure.u64(minOut)];
+    : [curveRef, payment, tx.pure.u64(minOut)];  // V4: no referral, no clock
 
-  const [tokens, refund] = tx.moveCall({
-    target: `${pkgId}::bonding_curve::buy`,
-    typeArguments: [tokenType],
-    arguments: buyArgs,
-  });
-  tx.transferObjects([tokens, refund], address);
+  if (isV5Plus) {
+    const [tokens, refund] = tx.moveCall({
+      target: `${pkgId}::bonding_curve::buy`,
+      typeArguments: [tokenType],
+      arguments: buyArgs,
+    });
+    tx.transferObjects([tokens, refund], address);
+  } else {
+    // V4 buy returns (Coin<T>, Coin<SUI>) — transfer both results
+    const results = tx.moveCall({
+      target: `${pkgId}::bonding_curve::buy`,
+      typeArguments: [tokenType],
+      arguments: buyArgs,
+    });
+    tx.transferObjects([results], address);
+  }
 
   const result = await client.signAndExecuteTransaction({
     signer: keypair, transaction: tx,
@@ -169,6 +191,7 @@ async function handleSell(body) {
 
   const tokAtomic = BigInt(Math.floor(parseFloat(tokenAmount) * 1e6));
   const minOut    = BigInt(minSuiOut ?? 0);
+  const isV5Plus  = V5_PLUS.has(pkgId);
   const isV7Plus  = V7_PLUS.has(pkgId);
 
   // Collect + merge token coins
