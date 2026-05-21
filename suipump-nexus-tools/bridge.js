@@ -133,9 +133,11 @@ async function handleBuy(body) {
   const curveRef = tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: sharedVersion, mutable: true });
   const [payment] = tx.splitCoins(tx.gas, [tx.pure.u64(suiMist)]);
 
+  const clockRef = tx.sharedObjectRef({ objectId: SUI_CLOCK_ID, initialSharedVersion: 1, mutable: false });
+
   const buyArgs = isV5Plus
-    ? [curveRef, payment, tx.pure.u64(minOut), tx.pure.option('address', referral ?? null), tx.object(SUI_CLOCK_ID)]
-    : [curveRef, payment, tx.pure.u64(minOut)];  // V4: no referral, no clock
+    ? [curveRef, payment, tx.pure.u64(minOut), tx.pure.option('address', referral ?? null), clockRef]
+    : [curveRef, payment, tx.pure.u64(minOut)];
 
   if (isV5Plus) {
     const [tokens, refund] = tx.moveCall({
@@ -211,7 +213,7 @@ async function handleSell(body) {
   }
 
   const sellArgs = isV7Plus
-    ? [curveRef, tokenCoin, tx.pure.u64(minOut), tx.pure.option('address', referral ?? null), tx.object(SUI_CLOCK_ID)]
+    ? [curveRef, tokenCoin, tx.pure.u64(minOut), tx.pure.option('address', referral ?? null)]
     : [curveRef, tokenCoin, tx.pure.u64(minOut)];
 
   const [suiOut] = tx.moveCall({
