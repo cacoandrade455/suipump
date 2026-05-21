@@ -117,7 +117,7 @@
   "meta": {
     "author": "SuiPump",
     "network": "testnet",
-    "toolServerUrl": "https://FILL_AFTER_RENDER_DEPLOY",
+    "toolServerUrl": "https://suipump-bridge.onrender.com",
     "bridgeUrl": "http://localhost:3030",
     "nexusDocs": "https://docs.talus.network"
   }
