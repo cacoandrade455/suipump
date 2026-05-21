@@ -1,310 +1,347 @@
-// graduate_turbos_full.js
-// Complete Turbos CLMM graduation flow:
-// 1. graduate() — mark curve graduated, pay bonuses
-// 2. claim_graduation_funds() — pull SUI + LP tokens
-// 3. Split 50/50 — creator half + protocol half
-// 4. Create Turbos CLMM pool with full tick range
-// 5. Add both halves of liquidity
-// 6. Transfer creator LP NFT to creator
-// 7. Protocol keeps its LP NFT
+// graduation-test-turbos/graduate_turbos_full.js
+// Graduates a SuiPump bonding curve to a Turbos CLMM pool.
 //
-// Parameters: 10 SUI graduation threshold (throwaway contract)
-// Usage:
-//   node graduate_turbos_full.js <CURVE_ID>
+// DUAL-MODE:
+//   - Exported function: graduateToTurbos({ curveId, tokenType, pkgId, keypair, client })
+//     Called by indexer/auto_graduate.js — all context passed in, no process.exit.
+//
+//   - Standalone CLI: node graduate_turbos_full.js <CURVE_ID>
+//     Uses env SUI_PRIVATE_KEY + SUI_RPC_URL, calls process.exit on failure.
+//
+// Steps:
+//   1. graduate()               — mark curve graduated, pay bonuses
+//   2. claim_graduation_funds() — pull SUI reserve + LP tokens to admin wallet
+//   3. Split 50/50              — creator half + protocol half
+//   4. Create Turbos CLMM pool  — full tick range, 1% fee tier
+//   5. Add both halves          — creator gets LP NFT, protocol keeps theirs
+//   6. record_graduation_pool() — write pool_id on-chain
 
 import { Transaction } from '@mysten/sui/transactions';
+import { SuiClient, getFullnodeUrl } from '@mysten/sui/client';
+import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { TurbosSdk, Network } from 'turbos-clmm-sdk';
-import BN from 'bn.js';
 import Decimal from 'decimal.js';
-import { client, loadKeypair, TEST_PACKAGE_ID, TEST_ADMIN_CAP_ID, fmtSui } from './config.js';
+import { fromBase64 } from '@mysten/sui/utils';
 
-const SUI_TYPE = '0x2::sui::SUI';
-const MIN_TICK = -443636;
-const MAX_TICK =  443636;
-
-// Token decimals
+// ── Constants ─────────────────────────────────────────────────────────────────
+const SUI_TYPE     = '0x2::sui::SUI';
+const MIN_TICK     = -443636;
+const MAX_TICK     =  443636;
 const TOKEN_DECIMALS = 6;
 const SUI_DECIMALS   = 9;
 
-const args    = process.argv.slice(2);
-const curveId = args[0];
+const ADMIN_CAPS = {
+  '0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8': '0xfc80d40718e8e9d0bc1fddc1e47a74e46d0c89c3e1e36a2bc8f016efb6d51e0c',
+  '0x785c0604cb6c60a8547501e307d2b0ca7a586ff912c8abff4edfb88db65b7236': '0xfc80d40718e8e9d0bc1fddc1e47a74e46d0c89c3e1e36a2bc8f016efb6d51e0c',
+  '0x21d5b1284d5f1d4d14214654f414ffca20c757ee9f9db7701d3ffaaac62cd768': '0xfc80d40718e8e9d0bc1fddc1e47a74e46d0c89c3e1e36a2bc8f016efb6d51e0c',
+  '0xfb8f3f3e4e8d53130ac140906eebea6b6740bfaf0c971aec607fbc723be951f0': '0x1dc44030adaa6e366666a8e095fc29a5a55c8ae614f04c5e93c062a85b475527',
+  '0x145a1e79b83cc17680dbfe4f96839cd359c7db380ac15463ecb6dc30f9849b69': '0xdb22e067d9cf53cfab37bc6d4b626ff98c770bc59b8a192d007aca449e8f7103',
+  '0xbb4ee050239f59dfd983501ce101698ba27857f77aff2d437cec568fe0062546': '0x9779a2466f2e30ca5e139f636cc9ca1c44e025da29203d781cc2645ebb62bb35',
+};
 
-if (!curveId || !curveId.startsWith('0x')) {
-  console.error('Usage: node graduate_turbos_full.js <CURVE_ID>');
-  process.exit(1);
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+function fmtSui(mist) { return `${(Number(BigInt(mist)) / 1e9).toFixed(4)} SUI`; }
+
+function defaultClient() {
+  return new SuiClient({ url: process.env.SUI_RPC_URL || getFullnodeUrl('testnet') });
 }
 
-const keypair = loadKeypair();
-const address  = keypair.toSuiAddress();
-const sdk      = new TurbosSdk(Network.testnet, client);
+function defaultKeypair() {
+  const raw = process.env.SUI_PRIVATE_KEY;
+  if (!raw) throw new Error('SUI_PRIVATE_KEY env var not set');
+  const bytes = fromBase64(raw);
+  const seed  = bytes.length === 65 ? bytes.slice(1) : bytes;
+  return Ed25519Keypair.fromSecretKey(seed);
+}
 
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-
-async function getSharedVersion(objectId) {
+async function getSharedVersion(client, objectId) {
   const obj = await client.getObject({ id: objectId, options: { showOwner: true } });
   return obj.data?.owner?.Shared?.initial_shared_version;
 }
 
-console.log('━'.repeat(60));
-console.log('  SUIPUMP — Full Turbos CLMM Graduation');
-console.log('━'.repeat(60));
-console.log(`  wallet:  ${address}`);
-console.log(`  curve:   ${curveId}`);
-console.log();
+// ── Core exported function ────────────────────────────────────────────────────
 
-// ── Fetch curve state ─────────────────────────────────────────────────────────
-const curveRes = await client.getObject({ id: curveId, options: { showContent: true, showType: true } });
-if (curveRes.error || !curveRes.data?.content?.fields) {
-  console.error('❌ Could not fetch curve'); process.exit(1);
-}
+/**
+ * Graduates a SuiPump curve to a Turbos CLMM pool.
+ * Called by auto_graduate.js — all deps passed in, never calls process.exit.
+ *
+ * @param {object} opts
+ * @param {string}   opts.curveId   - Shared curve object ID
+ * @param {string}   opts.tokenType - Full Move type e.g. 0x...::template::TEMPLATE
+ * @param {string}   opts.pkgId     - Package ID the curve was launched on
+ * @param {object}   opts.keypair   - Ed25519Keypair (admin wallet)
+ * @param {object}   opts.client    - SuiClient instance
+ * @returns {Promise<{ poolId: string, txDigest: string }>}
+ */
+export async function graduateToTurbos({ curveId, tokenType, pkgId, keypair, client }) {
+  const address    = keypair.toSuiAddress();
+  const adminCapId = ADMIN_CAPS[pkgId];
+  if (!adminCapId) throw new Error(`No AdminCap for package ${pkgId}`);
 
-const fields    = curveRes.data.content.fields;
-const tokenType = curveRes.data.type?.match(/Curve<(.+)>$/)?.[1];
-const creator   = fields.creator ?? address;
+  const sdk = new TurbosSdk(Network.testnet, client);
 
-if (!tokenType) { console.error('❌ Could not parse token type'); process.exit(1); }
+  console.log(`  [turbos] Graduating ${curveId.slice(0, 12)}… → Turbos CLMM`);
+  console.log(`  [turbos] token: ${tokenType}`);
+  console.log(`  [turbos] pkg:   ${pkgId}`);
 
-console.log(`  token:   ${fields.name} ($${fields.symbol})`);
-console.log(`  type:    ${tokenType}`);
-console.log(`  creator: ${creator}`);
-console.log();
+  // ── Step 1: graduate() ──────────────────────────────────────────────────────
+  const curveObj = await client.getObject({ id: curveId, options: { showContent: true } });
+  const fields   = curveObj.data?.content?.fields ?? {};
 
-// ── Step 1: graduate() ────────────────────────────────────────────────────────
-if (!fields.graduated) {
-  console.log('  [1/5] Calling graduate()…');
-  const sv = await getSharedVersion(curveId);
-  const tx = new Transaction();
-  tx.moveCall({
-    target: `${TEST_PACKAGE_ID}::bonding_curve_test::graduate`,
-    typeArguments: [tokenType],
-    arguments: [tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: sv, mutable: true })],
-  });
-  const r = await client.signAndExecuteTransaction({ signer: keypair, transaction: tx, options: { showEffects: true } });
-  if (r.effects.status.status !== 'success') { console.error('❌ graduate() failed:', r.effects.status.error); process.exit(1); }
-  console.log(`  ✓ ${r.digest}`);
-  await sleep(3000);
-} else {
-  console.log('  [1/5] Already graduated — skipping');
-}
+  if (!fields.graduated) {
+    console.log(`  [turbos] [1/5] Calling graduate()…`);
 
-// ── Step 2: claim_graduation_funds() ─────────────────────────────────────────
-console.log('  [2/5] Claiming graduation funds…');
-const updatedCurve = await client.getObject({ id: curveId, options: { showContent: true } });
-const poolSuiMist  = BigInt(updatedCurve.data?.content?.fields?.sui_reserve ?? 0);
+    const metadataId = await (async () => {
+      try { const m = await client.getCoinMetadata({ coinType: tokenType }); return m?.id ?? null; }
+      catch { return null; }
+    })();
 
-if (poolSuiMist === 0n) {
-  console.error('❌ SUI reserve is 0 — already claimed'); process.exit(1);
-}
+    const sv  = await getSharedVersion(client, curveId);
+    const tx  = new Transaction();
+    const ref = tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: sv, mutable: true });
 
-const sv2 = await getSharedVersion(curveId);
-const claimTx = new Transaction();
-const [poolSuiCoin] = claimTx.moveCall({
-  target: `${TEST_PACKAGE_ID}::bonding_curve_test::claim_graduation_funds`,
-  typeArguments: [tokenType],
-  arguments: [
-    claimTx.object(TEST_ADMIN_CAP_ID),
-    claimTx.sharedObjectRef({ objectId: curveId, initialSharedVersion: sv2, mutable: true }),
-  ],
-});
-claimTx.transferObjects([poolSuiCoin], address);
+    if (metadataId) {
+      const metaObj = await client.getObject({ id: metadataId, options: { showOwner: true } });
+      const metaSv  = metaObj.data?.owner?.Shared?.initial_shared_version;
+      const metaRef = metaSv
+        ? tx.sharedObjectRef({ objectId: metadataId, initialSharedVersion: metaSv, mutable: true })
+        : tx.object(metadataId);
+      tx.moveCall({
+        target: `${pkgId}::bonding_curve::graduate`,
+        typeArguments: [tokenType],
+        arguments: [ref, metaRef],
+      });
+    } else {
+      tx.moveCall({
+        target: `${pkgId}::bonding_curve::graduate`,
+        typeArguments: [tokenType],
+        arguments: [ref],
+      });
+    }
 
-const claimResult = await client.signAndExecuteTransaction({ signer: keypair, transaction: claimTx, options: { showEffects: true } });
-if (claimResult.effects.status.status !== 'success') { console.error('❌ claim failed:', claimResult.effects.status.error); process.exit(1); }
-console.log(`  ✓ claimed ${fmtSui(poolSuiMist)} SUI: ${claimResult.digest}`);
-await sleep(3000);
-
-// ── Collect LP tokens + compute split ────────────────────────────────────────
-const lpCoins  = await client.getCoins({ owner: address, coinType: tokenType });
-const totalLp  = lpCoins.data.reduce((s, c) => s + BigInt(c.balance), 0n);
-const halfLp   = totalLp / 2n;
-const halfSui  = poolSuiMist / 2n;
-
-console.log(`  LP tokens:  ${(Number(totalLp) / 1e6).toLocaleString()}`);
-console.log(`  SUI pool:   ${fmtSui(poolSuiMist)}`);
-console.log(`  Each half:  ${(Number(halfLp)/1e6).toLocaleString()} tokens + ${fmtSui(halfSui)} SUI`);
-console.log();
-
-// ── Step 3: Fetch Turbos config + fees ────────────────────────────────────────
-console.log('  [3/5] Fetching Turbos config…');
-const contract = await sdk.contract.getConfig();
-const fees     = await sdk.contract.getFees();
-
-// Use lowest fee tier (1% = 10000) for meme tokens — volatile pairs
-// Turbos fee tiers: 100 (0.01%), 500 (0.05%), 2500 (0.25%), 10000 (1%)
-const fee = fees.find(f => f.fee === 10000) ?? fees[fees.length - 1];
-console.log(`  ✓ Using fee tier: ${fee.fee / 100}% (tickSpacing: ${fee.tickSpacing})`);
-
-// ── Step 4+5: Create pool + add liquidity for both halves ────────────────────
-console.log('  [4/5] Creating Turbos pool + adding liquidity…');
-
-// Calculate sqrtPrice
-// Turbos price = coinB per coinA = SUI per TOKEN
-// With decimals: price_raw = (suiAmount/1e9) / (tokenAmount/1e6)
-// price_adjusted = price_raw * 10^(decimalsA - decimalsB) ... but SDK handles decimals
-// Use sdk.math helper: priceToSqrtPriceX64(price, decimalsA, decimalsB)
-// price here = how many coinB (SUI) per 1 coinA (TOKEN)
-const suiPerToken = (Number(halfSui) / 1e9) / (Number(halfLp) / 1e6);
-console.log(`  Price: ${suiPerToken.toExponential(4)} SUI/token`);
-
-// Use sdk math to convert price to sqrtPriceX64
-const sqrtPriceX64 = sdk.math.priceToSqrtPriceX64(
-  new Decimal(suiPerToken),
-  TOKEN_DECIMALS,
-  SUI_DECIMALS
-);
-console.log(`  SqrtPrice: ${sqrtPriceX64.toString().slice(0, 20)}…`);
-
-// Round ticks to nearest valid tick spacing
-const tickSpacing = fee.tickSpacing;
-const tickLower   = Math.ceil(MIN_TICK / tickSpacing) * tickSpacing;
-const tickUpper   = Math.floor(MAX_TICK / tickSpacing) * tickSpacing;
-console.log(`  Ticks: ${tickLower} to ${tickUpper} (spacing: ${tickSpacing})`);
-
-// Use Turbos SDK to build the createPool transaction
-// This handles coin merging, tick math, and the moveCall internally
-// SDK expects atomic units (not whole tokens)
-// coinA = token (6 decimals), coinB = SUI (9 decimals)
-const poolTxb = await sdk.pool.createPool({
-  fee,
-  address,
-  tickLower,
-  tickUpper,
-  sqrtPrice:   sqrtPriceX64,
-  slippage:    0.05,
-  coinTypeA:   tokenType,
-  coinTypeB:   SUI_TYPE,
-  amountA:     halfLp.toString(),       // atomic token units
-  amountB:     halfSui.toString(),      // atomic MIST units
-});
-
-const poolResult = await client.signAndExecuteTransaction({
-  signer:      keypair,
-  transaction: poolTxb,
-  options:     { showEffects: true, showObjectChanges: true },
-});
-
-if (poolResult.effects.status.status !== 'success') {
-  console.error('❌ Pool creation failed:', poolResult.effects.status.error);
-  process.exit(1);
-}
-
-console.log(`  ✓ Pool created + creator liquidity added: ${poolResult.digest}`);
-await sleep(3000);
-
-// ── Step 5: Add protocol half of liquidity to same pool ──────────────────────
-console.log('  [5/5] Adding protocol liquidity…');
-
-// Find the pool ID from object changes
-// Must match Pool<coinTypeA, coinTypeB, fee> — not tick/position objects
-const poolObj = poolResult.objectChanges?.find(c =>
-  c.type === 'created' &&
-  c.objectType?.includes('::pool::Pool<')
-);
-const poolId = poolObj?.objectId;
-if (poolId) console.log(`  Pool object type: ${poolObj?.objectType?.slice(0, 80)}`);
-
-if (!poolId) {
-  console.log('  ⚠ Could not find pool ID from object changes — protocol LP skipped');
-} else {
-  // Add protocol half via direct MoveCall — bypasses SDK registry check
-  if (!poolId) {
-    console.log('  ⚠ Could not find pool ID — protocol LP skipped');
+    const r = await client.signAndExecuteTransaction({
+      signer: keypair, transaction: tx, options: { showEffects: true },
+    });
+    if (r.effects.status.status !== 'success') throw new Error(`graduate() failed: ${r.effects.status.error}`);
+    console.log(`  [turbos] ✓ graduate: ${r.digest}`);
+    await sleep(3000);
   } else {
-    console.log(`  Adding protocol liquidity via direct MoveCall to pool ${poolId.slice(0,16)}…`);
-    // Wait for pool to be indexed on-chain — retry up to 5x with 3s intervals
-    let poolSharedVersion = null;
-    for (let attempt = 1; attempt <= 5; attempt++) {
-      await sleep(3000);
-      console.log(`  Waiting for pool indexing… attempt ${attempt}/5`);
+    console.log(`  [turbos] [1/5] Already graduated — skipping`);
+  }
+
+  // ── Step 2: claim_graduation_funds() ───────────────────────────────────────
+  const updated     = await client.getObject({ id: curveId, options: { showContent: true } });
+  const poolSuiMist = BigInt(updated.data?.content?.fields?.sui_reserve ?? 0);
+  const creator     = updated.data?.content?.fields?.creator ?? address;
+  if (poolSuiMist === 0n) throw new Error('Pool SUI is 0 — already claimed');
+
+  console.log(`  [turbos] [2/5] Claiming ${fmtSui(poolSuiMist)}…`);
+  const sv2  = await getSharedVersion(client, curveId);
+  const tx2  = new Transaction();
+  const ref2 = tx2.sharedObjectRef({ objectId: curveId, initialSharedVersion: sv2, mutable: true });
+  const poolSuiCoin = tx2.moveCall({
+    target: `${pkgId}::bonding_curve::claim_graduation_funds`,
+    typeArguments: [tokenType],
+    arguments: [tx2.object(adminCapId), ref2],
+  });
+  tx2.transferObjects([poolSuiCoin], address);
+  const r2 = await client.signAndExecuteTransaction({
+    signer: keypair, transaction: tx2, options: { showEffects: true },
+  });
+  if (r2.effects.status.status !== 'success') throw new Error(`claim_graduation_funds() failed: ${r2.effects.status.error}`);
+  console.log(`  [turbos] ✓ claimed: ${r2.digest}`);
+  await sleep(3000);
+
+  // ── Step 3: Compute 50/50 split ────────────────────────────────────────────
+  const lpCoins = await client.getCoins({ owner: address, coinType: tokenType });
+  if (!lpCoins.data.length) throw new Error('No LP tokens in admin wallet');
+  const totalLp = lpCoins.data.reduce((s, c) => s + BigInt(c.balance), 0n);
+  const halfLp  = totalLp / 2n;
+  const halfSui = poolSuiMist / 2n;
+
+  console.log(`  [turbos] [3/5] Split: ${(Number(halfLp)/1e6).toLocaleString()} tokens + ${fmtSui(halfSui)} each half`);
+
+  // ── Step 4: Turbos fee tier + sqrtPrice ────────────────────────────────────
+  console.log(`  [turbos] [4/5] Fetching Turbos config…`);
+  const fees = await sdk.contract.getFees();
+  const fee  = fees.find(f => f.fee === 10000) ?? fees[fees.length - 1];
+  console.log(`  [turbos] Fee tier: ${fee.fee / 100}% (tickSpacing: ${fee.tickSpacing})`);
+
+  // price = SUI per TOKEN (adjusted for decimals)
+  const suiPerToken = (Number(halfSui) / 1e9) / (Number(halfLp) / 1e6);
+  const sqrtPriceX64 = sdk.math.priceToSqrtPriceX64(
+    new Decimal(suiPerToken),
+    TOKEN_DECIMALS,
+    SUI_DECIMALS,
+  );
+
+  const tickSpacing = fee.tickSpacing;
+  const tickLower   = Math.ceil(MIN_TICK / tickSpacing) * tickSpacing;
+  const tickUpper   = Math.floor(MAX_TICK / tickSpacing) * tickSpacing;
+
+  // ── Step 5: Create Turbos pool + add creator half ──────────────────────────
+  console.log(`  [turbos] [5/5] Creating Turbos pool + adding creator liquidity…`);
+  const poolTxb = await sdk.pool.createPool({
+    fee,
+    address,
+    tickLower,
+    tickUpper,
+    sqrtPrice:  sqrtPriceX64,
+    slippage:   0.05,
+    coinTypeA:  tokenType,
+    coinTypeB:  SUI_TYPE,
+    amountA:    halfLp.toString(),
+    amountB:    halfSui.toString(),
+  });
+
+  const poolResult = await client.signAndExecuteTransaction({
+    signer: keypair, transaction: poolTxb,
+    options: { showEffects: true, showObjectChanges: true },
+  });
+  if (poolResult.effects.status.status !== 'success') {
+    throw new Error(`Turbos pool creation failed: ${poolResult.effects.status.error}`);
+  }
+  console.log(`  [turbos] ✓ Pool created: ${poolResult.digest}`);
+  await sleep(3000);
+
+  // Find pool ID
+  const poolObj = poolResult.objectChanges?.find(c =>
+    c.type === 'created' && c.objectType?.includes('::pool::Pool<')
+  );
+  const poolId = poolObj?.objectId;
+  if (!poolId) throw new Error('Could not find pool ID in object changes');
+
+  // Find creator LP NFT — transfer to curve creator
+  const creatorNft = poolResult.objectChanges?.find(c =>
+    c.type === 'created' && c.objectType?.includes('::position::Position')
+  );
+  const creatorNftId = creatorNft?.objectId;
+  if (creatorNftId && creator !== address) {
+    const txTransfer = new Transaction();
+    txTransfer.transferObjects([txTransfer.object(creatorNftId)], creator);
+    const rTransfer = await client.signAndExecuteTransaction({
+      signer: keypair, transaction: txTransfer, options: { showEffects: true },
+    });
+    if (rTransfer.effects.status.status === 'success') {
+      console.log(`  [turbos] ✓ LP NFT transferred to creator: ${rTransfer.digest}`);
+    } else {
+      console.warn(`  [turbos] ⚠ LP NFT transfer failed: ${rTransfer.effects.status.error}`);
+    }
+    await sleep(2000);
+  }
+
+  // Add protocol half to the same pool
+  await sleep(3000);
+  console.log(`  [turbos]   Adding protocol liquidity…`);
+  try {
+    let poolSv = null;
+    for (let i = 0; i < 5; i++) {
       try {
-        const poolObj = await client.getObject({ id: poolId, options: { showOwner: true } });
-        poolSharedVersion = poolObj.data?.owner?.Shared?.initial_shared_version;
-        if (poolSharedVersion) { console.log(`  ✓ Pool indexed`); break; }
+        const po = await client.getObject({ id: poolId, options: { showOwner: true } });
+        poolSv = po.data?.owner?.Shared?.initial_shared_version;
+        if (poolSv) break;
       } catch {}
+      await sleep(3000);
     }
-    if (!poolSharedVersion) {
-      console.log('  ⚠ Pool not indexed after 15s — skipping protocol LP');
-    }
-    try {
-      if (!poolSharedVersion) throw new Error('Pool not indexed');
-      const protocolTx = new Transaction();
 
-      // Re-fetch LP coins and SUI after pool creation
-      const lpCoins2  = await client.getCoins({ owner: address, coinType: tokenType });
+    if (poolSv) {
       const suiCoins2 = await client.getCoins({ owner: address, coinType: SUI_TYPE });
+      const suiCoin2  = suiCoins2.data
+        .filter(c => BigInt(c.balance) >= halfSui + 500_000_000n)
+        .sort((a, b) => Number(BigInt(a.balance) - BigInt(b.balance)))[0];
 
-      const lpBal2  = lpCoins2.data.reduce((s, c) => s + BigInt(c.balance), 0n);
-      const suiBal2 = suiCoins2.data.reduce((s, c) => s + BigInt(c.balance), 0n);
+      const lpCoins2 = await client.getCoins({ owner: address, coinType: tokenType });
+      const totalLp2 = lpCoins2.data.reduce((s, c) => s + BigInt(c.balance), 0n);
 
-      // Use remaining LP and SUI (what's left after creator half)
-      const protocolLp  = lpBal2;
-      const protocolSui = halfSui; // use same amount as creator half
-
-      if (protocolLp === 0n || suiBal2 < protocolSui) {
-        console.log(`  ⚠ Insufficient funds for protocol LP — LP: ${Number(protocolLp)/1e6}, SUI: ${Number(suiBal2)/1e9}`);
-      } else {
-        // Merge LP coins
-        const lpObjs2 = lpCoins2.data.map(c => protocolTx.object(c.coinObjectId));
-        if (lpObjs2.length > 1) protocolTx.mergeCoins(lpObjs2[0], lpObjs2.slice(1));
-
-        // Split SUI
-        const [suiForProtocol] = protocolTx.splitCoins(protocolTx.gas, [protocolTx.pure.u64(protocolSui)]);
-
-        // Direct moveCall to position_manager::mint
-        protocolTx.moveCall({
-          target: `${contract.PackageId}::position_manager::mint`,
-          typeArguments: [tokenType, SUI_TYPE, fee.type],
-          arguments: [
-            protocolTx.sharedObjectRef({ objectId: poolId, initialSharedVersion: poolSharedVersion, mutable: true }), // pool
-            protocolTx.object(contract.Positions),                  // positions
-            protocolTx.makeMoveVec({ elements: lpObjs2.slice(0, 1) }), // coinA vec
-            protocolTx.makeMoveVec({ elements: [suiForProtocol] }), // coinB vec
-            protocolTx.pure.u32(Math.abs(tickLower)),               // tick_lower_index
-            protocolTx.pure.bool(tickLower < 0),                    // tick_lower_is_negative
-            protocolTx.pure.u32(Math.abs(tickUpper)),               // tick_upper_index
-            protocolTx.pure.bool(tickUpper < 0),                    // tick_upper_is_negative
-            protocolTx.pure.u64(protocolLp.toString()),             // amount_desired_a
-            protocolTx.pure.u64(protocolSui.toString()),            // amount_desired_b
-            protocolTx.pure.u64(0),                                 // amount_min_a
-            protocolTx.pure.u64(0),                                 // amount_min_b
-            protocolTx.pure.address(address),                       // recipient
-            protocolTx.pure.u64(Date.now() + 60_000),               // deadline
-            protocolTx.object('0x6'),                               // clock
-            protocolTx.object(contract.Versioned),                  // versioned
-          ],
+      if (suiCoin2 && totalLp2 >= halfLp) {
+        const addTxb = await sdk.pool.addLiquidity({
+          pool:     { objectId: poolId, initialSharedVersion: poolSv },
+          address,
+          tickLower,
+          tickUpper,
+          slippage: 0.05,
+          coinTypeA: tokenType,
+          coinTypeB: SUI_TYPE,
+          amountA:   halfLp.toString(),
+          amountB:   halfSui.toString(),
         });
-
-        const protocolResult = await client.signAndExecuteTransaction({
-          signer: keypair,
-          transaction: protocolTx,
-          options: { showEffects: true, showObjectChanges: true },
+        const rAdd = await client.signAndExecuteTransaction({
+          signer: keypair, transaction: addTxb, options: { showEffects: true },
         });
-
-        if (protocolResult.effects.status.status !== 'success') {
-          console.log(`  ⚠ Protocol LP failed: ${protocolResult.effects.status.error}`);
+        if (rAdd.effects.status.status === 'success') {
+          console.log(`  [turbos] ✓ Protocol liquidity added: ${rAdd.digest}`);
         } else {
-          const protocolNft = protocolResult.objectChanges?.find(c =>
-            c.type === 'created' && c.objectType?.toLowerCase().includes('position')
-          );
-          console.log(`  ✓ Protocol LP added: ${protocolResult.digest}`);
-          console.log(`  Protocol LP NFT: ${protocolNft?.objectId ?? 'see object changes'}`);
+          console.warn(`  [turbos] ⚠ Protocol liquidity failed: ${rAdd.effects.status.error}`);
         }
+      } else {
+        console.warn(`  [turbos] ⚠ Insufficient balance for protocol half — skipped`);
       }
-    } catch (e) {
-      console.log(`  ⚠ Protocol LP error: ${e.message?.slice(0, 80)}`);
     }
+  } catch (err) {
+    console.warn(`  [turbos] ⚠ Protocol liquidity step failed: ${err.message}`);
+  }
+
+  // ── Step 6: record_graduation_pool() ───────────────────────────────────────
+  const sv5  = await getSharedVersion(client, curveId);
+  const tx5  = new Transaction();
+  const ref5 = tx5.sharedObjectRef({ objectId: curveId, initialSharedVersion: sv5, mutable: true });
+  tx5.moveCall({
+    target: `${pkgId}::bonding_curve::record_graduation_pool`,
+    typeArguments: [tokenType],
+    arguments: [
+      tx5.object(adminCapId),
+      ref5,
+      tx5.pure.id(poolId),
+      tx5.pure.id(creatorNftId ?? poolId),
+    ],
+  });
+  const r5 = await client.signAndExecuteTransaction({
+    signer: keypair, transaction: tx5, options: { showEffects: true },
+  });
+  if (r5.effects.status.status !== 'success') {
+    console.warn(`  [turbos] ⚠ record_graduation_pool failed: ${r5.effects.status.error}`);
+  } else {
+    console.log(`  [turbos] ✓ recorded: ${r5.digest}`);
+  }
+
+  console.log(`  [turbos] ✅ Done — Pool: ${poolId}`);
+  return { poolId, txDigest: poolResult.digest };
+}
+
+// ── Standalone CLI entry point ────────────────────────────────────────────────
+if (process.argv[1] && process.argv[1].endsWith('graduate_turbos_full.js')) {
+  const curveId = process.argv[2];
+  if (!curveId?.startsWith('0x')) {
+    console.error('Usage: node graduate_turbos_full.js <CURVE_ID>');
+    process.exit(1);
+  }
+
+  const client  = defaultClient();
+  const keypair = defaultKeypair();
+  const obj     = await client.getObject({ id: curveId, options: { showContent: true, showType: true } });
+  const fields  = obj.data?.content?.fields ?? {};
+  const tokenType = obj.data?.type?.match(/Curve<(.+)>$/)?.[1];
+  if (!tokenType) { console.error('❌ Could not parse token type'); process.exit(1); }
+  const pkgId = tokenType.split('::')[0];
+
+  console.log('━'.repeat(60));
+  console.log('  SUIPUMP — Graduate to Turbos CLMM (standalone)');
+  console.log('━'.repeat(60));
+  console.log(`  curve:   ${curveId}`);
+  console.log(`  token:   ${fields.name} ($${fields.symbol})`);
+  console.log(`  type:    ${tokenType}`);
+  console.log(`  pkg:     ${pkgId}`);
+  console.log();
+
+  try {
+    const result = await graduateToTurbos({ curveId, tokenType, pkgId, keypair, client });
+    console.log();
+    console.log(`  txDigest: ${result.txDigest}`);
+    console.log(`  poolId:   ${result.poolId}`);
+    console.log('  https://testnet.suivision.xyz/txblock/' + result.txDigest);
+  } catch (err) {
+    console.error('❌', err.message);
+    process.exit(1);
   }
 }
-
-console.log();
-console.log('━'.repeat(60));
-console.log('  ✓ FULL TURBOS GRADUATION COMPLETE');
-console.log('━'.repeat(60));
-console.log(`  Pool digest:     ${poolResult.digest}`);
-console.log(`  Pool ID:         ${poolId ?? 'check object changes'}`);
-console.log(`  Creator:         ${creator}`);
-console.log(`  SUI per side:    ${fmtSui(halfSui)}`);
-console.log(`  Tokens per side: ${(Number(halfLp)/1e6).toLocaleString()}`);
-console.log();
-console.log(`  https://testnet.suivision.xyz/txblock/${poolResult.digest}`);
-console.log('━'.repeat(60));
