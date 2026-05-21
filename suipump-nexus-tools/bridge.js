@@ -363,6 +363,96 @@ async function handleLaunch(body) {
   return result;
 }
 
+// ── Handler: /status ─────────────────────────────────────────────────────────
+// Body: { curveId, rpcUrl? }
+// Returns a snapshot of the curve state — reserve, price, graduation %, fees.
+async function handleStatus(body) {
+  const { curveId, rpcUrl } = body;
+  if (!curveId) throw new Error('curveId required');
+
+  const client = makeClient(rpcUrl);
+
+  // Fetch curve object
+  const obj = await client.getObject({ id: curveId, options: { showContent: true, showType: true } });
+  if (!obj.data) throw new Error(`Curve ${curveId} not found`);
+
+  const fields    = obj.data.content?.fields ?? {};
+  const tokenType = obj.data.type?.match(/Curve<(.+)>$/)?.[1];
+  const pkgId     = obj.data.type?.split('::')?.[0];
+
+  // Raw values
+  const suiReserveMist    = BigInt(fields.sui_reserve    ?? 0);
+  const tokenReserveAtomic = BigInt(fields.token_reserve ?? 0);
+  const creatorFeesMist   = BigInt(fields.creator_fees   ?? 0);
+  const protocolFeesMist  = BigInt(fields.protocol_fees  ?? 0);
+  const airdropFeesMist   = BigInt(fields.airdrop_fees   ?? 0);
+  const graduated         = fields.graduated === true || fields.graduated === 'true';
+  const paused            = fields.paused    === true || fields.paused    === 'true';
+  const gradTarget        = Number(fields.graduation_target ?? 0);
+
+  // V8/V9 constants
+  const VIRTUAL_SUI_RESERVE   = 4_369_000_000_000n;  // V9 (3_500 for V8 and earlier)
+  const VIRTUAL_TOKEN_RESERVE = 1_073_000_000_000_000n;
+  const GRAD_THRESHOLD_MIST   = 12_305_000_000_000n;  // V9 (9_000 for V8 and earlier)
+  const CURVE_SUPPLY          = 800_000_000_000_000n;
+  const TOTAL_SUPPLY          = 1_000_000_000_000_000n;
+
+  // Effective reserves
+  const effectiveSui    = suiReserveMist + VIRTUAL_SUI_RESERVE;
+  const tokensSold      = CURVE_SUPPLY - tokenReserveAtomic;
+  const effectiveTokens = VIRTUAL_TOKEN_RESERVE - tokensSold;
+
+  // Current price in SUI per 1 human token
+  const priceInSui = effectiveTokens > 0n
+    ? Number(effectiveSui) / Number(effectiveTokens) * 1_000_000 / 1_000_000_000
+    : 0;
+
+  // Market cap
+  const mcapSui = priceInSui * 1_000_000_000; // price * total supply (1B tokens)
+
+  // Graduation progress
+  const gradPct = graduated ? 100 :
+    Math.min(100, Number(suiReserveMist) / Number(GRAD_THRESHOLD_MIST) * 100);
+
+  const dexNames = ['Cetus', 'DeepBook', 'Turbos'];
+
+  // Also try indexer for richer data (name, symbol, trade count)
+  let name = fields.name ?? null;
+  let symbol = null;
+  let tradeCount = null;
+  try {
+    const r = await fetch(`${INDEXER_URL}/token/${curveId}`);
+    if (r.ok) {
+      const d = await r.json();
+      name      = d.name      ?? name;
+      symbol    = d.symbol    ?? null;
+      tradeCount = d.tradeCount ?? d.trade_count ?? null;
+    }
+  } catch {}
+
+  return {
+    curveId,
+    tokenType,
+    pkgId,
+    name,
+    symbol,
+    graduated,
+    paused,
+    graduationTarget:    dexNames[gradTarget] ?? 'Unknown',
+    suiReserveSui:       Number(suiReserveMist)    / 1e9,
+    tokenRemainingHuman: Number(tokenReserveAtomic) / 1e6,
+    creatorFeesSui:      Number(creatorFeesMist)   / 1e9,
+    protocolFeesSui:     Number(protocolFeesMist)  / 1e9,
+    airdropFeesSui:      Number(airdropFeesMist)   / 1e9,
+    priceInSui:          priceInSui.toFixed(10),
+    mcapSui:             mcapSui.toFixed(2),
+    gradThresholdSui:    Number(GRAD_THRESHOLD_MIST) / 1e9,
+    gradPercent:         gradPct.toFixed(2),
+    tradeCount,
+    checkedAtMs:         Date.now(),
+  };
+}
+
 // ── HTTP server ───────────────────────────────────────────────────────────────
 const server = http.createServer(async (req, res) => {
   if (req.method !== 'POST') {
@@ -385,6 +475,7 @@ const server = http.createServer(async (req, res) => {
       case '/sell':   result = await handleSell(body);   break;
       case '/claim':  result = await handleClaim(body);  break;
       case '/launch': result = await handleLaunch(body); break;
+      case '/status': result = await handleStatus(body); break;
       case '/health': result = { status: 'ok', ts: Date.now() }; break;
       default:
         jsonResp(res, 404, { error: `Unknown endpoint: ${req.url}` });
