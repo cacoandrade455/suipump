@@ -13,6 +13,7 @@ import {
   pool, initSchema, getCursor, saveCursor, insertEvent,
   upsertCurve, recomputeStats, enrichCurveMetadata, backfillMissingIcons,
 } from './db.js';
+import { startGraduationWatcher } from './auto_graduate.js';
 import { startApi } from './api.js';
 
 // All deployed SuiPump package versions. The indexer MUST cover every version
@@ -143,6 +144,9 @@ async function main() {
 
   await backfillMissingIcons(client);
   console.log();
+
+  // Start auto-graduation watcher (non-blocking)
+  startGraduationWatcher().catch(err => console.error('Auto-grad watcher crashed:', err.message));
 
   console.log('  Polling for new events…');
   while (true) {
