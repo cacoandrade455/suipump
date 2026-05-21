@@ -1,0 +1,124 @@
+{
+  "name": "suipump-agent",
+  "version": "1",
+  "description": "SuiPump autonomous token lifecycle agent. Launches tokens, trades on bonding curves, monitors graduation alerts, and claims creator fees.",
+  "nodes": [
+    {
+      "id": "launch",
+      "tool": "xyz.suipump.launch@1",
+      "description": "Launch a new token on SuiPump bonding curve",
+      "inputs": {
+        "name":             { "type": "string",  "description": "Token name, e.g. Moon Cat" },
+        "symbol":           { "type": "string",  "description": "Token symbol, e.g. MCAT" },
+        "description":      { "type": "string",  "description": "Token description", "optional": true },
+        "iconUrl":          { "type": "string",  "description": "Token icon URL", "optional": true },
+        "devBuyMist":       { "type": "integer", "description": "Dev-buy amount in MIST (0 = no dev-buy)", "default": 0 },
+        "graduationTarget": { "type": "integer", "description": "0=Cetus 1=DeepBook 2=Turbos", "default": 2 },
+        "antiBotDelay":     { "type": "integer", "description": "Anti-bot delay in seconds (0/15/30)", "default": 0 }
+      },
+      "outputs": {
+        "curveId":   { "type": "string", "description": "Shared curve object ID" },
+        "tokenType": { "type": "string", "description": "Full Move coin type" },
+        "txDigest":  { "type": "string", "description": "Transaction digest" }
+      }
+    },
+    {
+      "id": "buy",
+      "tool": "xyz.suipump.buy@1",
+      "description": "Buy tokens on a SuiPump bonding curve",
+      "inputs": {
+        "curveId":      { "type": "string",  "description": "Shared curve object ID" },
+        "suiAmount":    { "type": "number",  "description": "SUI to spend, e.g. 0.5" },
+        "minTokensOut": { "type": "integer", "description": "Minimum tokens to receive (slippage guard)", "default": 0 },
+        "referral":     { "type": "string",  "description": "Referral address (optional)", "optional": true }
+      },
+      "outputs": {
+        "txDigest":       { "type": "string", "description": "Transaction digest" },
+        "tokensReceived": { "type": "string", "description": "Tokens received" },
+        "tokenType":      { "type": "string", "description": "Coin type of received tokens" }
+      },
+      "edges": {
+        "curveId": { "from": "launch", "output": "curveId" }
+      }
+    },
+    {
+      "id": "sell",
+      "tool": "xyz.suipump.sell@1",
+      "description": "Sell tokens back to SUI on a SuiPump bonding curve",
+      "inputs": {
+        "curveId":     { "type": "string", "description": "Shared curve object ID" },
+        "tokenAmount": { "type": "number", "description": "Tokens to sell (in whole tokens, e.g. 1000)" },
+        "minSuiOut":   { "type": "integer", "description": "Minimum SUI to receive", "default": 0 },
+        "referral":    { "type": "string",  "description": "Referral address (optional)", "optional": true }
+      },
+      "outputs": {
+        "txDigest":    { "type": "string", "description": "Transaction digest" },
+        "suiReceived": { "type": "string", "description": "SUI received" }
+      }
+    },
+    {
+      "id": "alerts",
+      "tool": "xyz.suipump.alerts@1",
+      "description": "Monitor a curve for graduation threshold and price milestones",
+      "inputs": {
+        "curveId":           { "type": "string",  "description": "Shared curve object ID" },
+        "watchGraduation":   { "type": "boolean", "description": "Notify when curve reaches graduation threshold", "default": true },
+        "priceAlertPercent": { "type": "number",  "description": "Notify when price moves by this % from baseline", "optional": true },
+        "pollIntervalMs":    { "type": "integer", "description": "Poll interval in ms", "default": 30000 }
+      },
+      "outputs": {
+        "event":         { "type": "string", "description": "Alert event type: graduated | price_up | price_down" },
+        "curveId":       { "type": "string", "description": "Curve that triggered the alert" },
+        "suiReserve":    { "type": "string", "description": "Current real SUI reserve" },
+        "graduationPct": { "type": "number", "description": "% progress toward graduation threshold" }
+      },
+      "edges": {
+        "curveId": { "from": "launch", "output": "curveId" }
+      }
+    },
+    {
+      "id": "claim",
+      "tool": "xyz.suipump.claim@1",
+      "description": "Claim accumulated creator fees from a curve",
+      "inputs": {
+        "curveId": { "type": "string", "description": "Shared curve object ID" }
+      },
+      "outputs": {
+        "txDigest":   { "type": "string", "description": "Transaction digest" },
+        "suiClaimed": { "type": "string", "description": "SUI claimed" }
+      },
+      "edges": {
+        "curveId": { "from": "launch", "output": "curveId" }
+      }
+    }
+  ],
+  "workflows": {
+    "launch_and_buy": {
+      "description": "Launch a token then immediately dev-buy",
+      "sequence": ["launch", "buy"],
+      "notes": "buy.curveId is wired from launch.curveId automatically via edges"
+    },
+    "launch_monitor_claim": {
+      "description": "Launch a token, monitor it, claim fees when threshold is hit",
+      "sequence": ["launch", "alerts", "claim"],
+      "notes": "alerts watches for graduation; claim fires after fees accumulate"
+    },
+    "buy_sell": {
+      "description": "Speculative trade — buy then sell on same curve",
+      "sequence": ["buy", "sell"],
+      "notes": "curveId must be provided externally for both steps"
+    },
+    "full_lifecycle": {
+      "description": "Full autonomous lifecycle: launch → monitor → claim",
+      "sequence": ["launch", "buy", "alerts", "claim"],
+      "notes": "Agent launches token, makes dev-buy, watches graduation, claims fees"
+    }
+  },
+  "meta": {
+    "author": "SuiPump",
+    "network": "testnet",
+    "toolServerUrl": "https://FILL_AFTER_RENDER_DEPLOY",
+    "bridgeUrl": "http://localhost:3030",
+    "nexusDocs": "https://docs.talus.network"
+  }
+}
