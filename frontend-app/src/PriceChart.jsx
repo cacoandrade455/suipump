@@ -4,7 +4,7 @@
 // We feed it our trade events; it handles zoom, pan, crosshair, candles, etc.
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { useSuiClient } from '@mysten/dapp-kit';
+import { useCurrentClient } from '@mysten/dapp-kit-react';
 import { createChart, CandlestickSeries, AreaSeries } from 'lightweight-charts';
 import { ALL_PACKAGE_IDS } from './constants.js';
 import { paginateMultipleEvents } from './paginateEvents.js';
@@ -85,7 +85,7 @@ function buildCandles(points, bucketSeconds) {
 }
 
 export default function PriceChart({ curveId, refreshKey }) {
-  const client = useSuiClient();
+  const client = useCurrentClient();
   const containerRef = useRef(null);
   const chartRef     = useRef(null);
   const seriesRef    = useRef(null);

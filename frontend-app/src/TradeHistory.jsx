@@ -1,6 +1,6 @@
 // TradeHistory.jsx
 import React, { useState, useEffect } from 'react';
-import { useSuiClient } from '@mysten/dapp-kit';
+import { useCurrentClient } from '@mysten/dapp-kit-react';
 import { ArrowUpRight, ArrowDownRight } from 'lucide-react';
 import { PACKAGE_ID, ALL_PACKAGE_IDS } from './constants.js';
 import { paginateMultipleEvents } from './paginateEvents.js';
@@ -19,7 +19,7 @@ function timeAgo(ts) {
 }
 
 export default function TradeHistory({ curveId, symbol, refreshKey, creator = null }) {
-  const client = useSuiClient();
+  const client = useCurrentClient();
   const [trades, setTrades] = useState([]);
   const [loading, setLoading] = useState(true);
 

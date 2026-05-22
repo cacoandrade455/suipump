@@ -2,7 +2,7 @@
 // App.jsx  -  react-router-dom based routing
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, useNavigate, useParams, Link, useLocation } from 'react-router-dom';
-import { ConnectButton, useCurrentAccount, useSuiClient, useDisconnectWallet, useAccounts, ConnectModal } from '@mysten/dapp-kit';
+import { ConnectButton, ConnectModal, useCurrentAccount, useCurrentClient, useDAppKit } from '@mysten/dapp-kit-react';
 import { Flame, Rocket, Plus, Gift, TrendingUp, Coins, Users, Trophy, Wallet, Search, Menu, X, Map, Copy, Crown, BarChart3, Github, MessageCircle, Bell, Star, Zap, Activity, ChevronRight, AlertTriangle } from 'lucide-react';
 
 import { useTokenList } from './useTokenList.js';
@@ -122,7 +122,7 @@ function applyLocalOverrides(token) {
 }
 
 function useStats() {
-  const client = useSuiClient();
+  const client = useCurrentClient();
   const [stats, setStats] = useState({ poolSui: null, tradeCount: null, volume: null });
 
   useEffect(() => {
@@ -208,7 +208,7 @@ function Sparkline({ points, width = 80, height = 24 }) {
 }
 
 function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch }) {
-  const client = useSuiClient();
+  const client = useCurrentClient();
   const navigate = useNavigate();
   const [curveState, setCurveState] = useState(null);
   const [iconUrl, setIconUrl] = useState(null);
@@ -498,7 +498,7 @@ function MobileWalletButtons() {
 // ── Notifications ─────────────────────────────────────────────────────────────
 
 function useNotifications(walletAddress) {
-  const client = useSuiClient();
+  const client = useCurrentClient();
   const [notifications, setNotifications] = useState([]);
   const [unread, setUnread] = useState(0);
   const storageKey = walletAddress ? `suipump_notif_seen_${walletAddress}` : null;
@@ -689,7 +689,7 @@ function NotificationBell({ walletAddress }) {
 
 function WalletButton({ size = 'md', lang = 'en' }) {
   const account = useCurrentAccount();
-  const { mutate: disconnect } = useDisconnectWallet();
+  const dAppKit = useDAppKit();
   const [open, setOpen] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const menuRef = React.useRef(null);
@@ -742,7 +742,7 @@ function WalletButton({ size = 'md', lang = 'en' }) {
             <div className="text-[10px] font-mono text-white/60 truncate">{short}</div>
           </div>
           <button
-            onClick={() => { disconnect(); setShowMenu(false); }}
+            onClick={() => { dAppKit.disconnect(); setShowMenu(false); }}
             className="w-full px-3 py-2.5 text-left text-[10px] font-mono text-red-400/80 hover:bg-white/5 hover:text-red-400 transition-colors"
           >
             {t(lang, 'disconnect')}
@@ -1007,7 +1007,7 @@ function StatsBar({ tokenCount, stats, lang = 'en' }) {
 // ── Community Crown featured banner ──────────────────────────────────────────
 
 function CrownBanner({ token, stats, suiUsd }) {
-  const client = useSuiClient();
+  const client = useCurrentClient();
   const navigate = useNavigate();
   const [curveState, setCurveState] = useState(null);
   const [iconUrl, setIconUrl] = useState(null);
@@ -1116,7 +1116,7 @@ function HomePage({ onLaunch, lang = 'en' }) {
   const { tokens, loading, error } = useTokenList();
 
   // Fetch curve states directly for accurate sorting
-  const client = useSuiClient();
+  const client = useCurrentClient();
   const [curveStates, setCurveStates] = React.useState({});
   React.useEffect(() => {
     if (!tokens || tokens.length === 0) return;
@@ -1346,7 +1346,7 @@ function HomePage({ onLaunch, lang = 'en' }) {
 function TokenPageWrapper({ lang }) {
   const { curveId } = useParams();
   const navigate = useNavigate();
-  const client = useSuiClient();
+  const client = useCurrentClient();
   const [tokenType, setTokenType] = useState(null);
   const [packageId, setPackageId] = useState(null);
   const [error, setError] = useState(null);

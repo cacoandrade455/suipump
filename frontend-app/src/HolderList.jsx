@@ -13,7 +13,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useSuiClient } from '@mysten/dapp-kit';
+import { useCurrentClient } from '@mysten/dapp-kit-react';
 import { Users, BarChart2 } from 'lucide-react';
 import { ALL_PACKAGE_IDS } from './constants.js';
 import { paginateMultipleEvents } from './paginateEvents.js';
@@ -77,7 +77,7 @@ async function fetchTradeEvents(client, curveId) {
 }
 
 export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = null }) {
-  const client = useSuiClient();
+  const client = useCurrentClient();
   const [tab, setTab] = useState('holders');
   const [holders, setHolders] = useState([]);
   const [traders, setTraders] = useState([]);

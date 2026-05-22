@@ -1,4 +1,4 @@
-@import '@mysten/dapp-kit/dist/index.css';
+/* dapp-kit-react styles are imported by the components themselves */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;

@@ -2,7 +2,7 @@
 // TokenPage.jsx
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useCurrentAccount, useSignAndExecuteTransaction, useSuiClient } from '@mysten/dapp-kit';
+import { useCurrentAccount, useCurrentClient, useDAppKit } from '@mysten/dapp-kit-react';
 import { Transaction } from '@mysten/sui/transactions';
 import { ArrowLeft, Copy, Check, Share2, ExternalLink, Settings, Edit3, Clock } from 'lucide-react';
 import PriceChart from './PriceChart.jsx';
@@ -185,8 +185,17 @@ function vestedAmount(total, startMs, durationMs, mode, nowMs) {
 }
 
 function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, lang }) {
-  const client = useSuiClient();
-  const { mutate: signAndExecute } = useSignAndExecuteTransaction();
+  const client = useCurrentClient();
+  const dAppKit_signAndExecute = useDAppKit();
+  const signAndExecute = (args, callbacks) => {
+    dAppKit_signAndExecute.signAndExecuteTransaction(args).then(result => {
+      if (result.FailedTransaction) {
+        callbacks?.onError?.(new Error(result.FailedTransaction.status?.error?.message || 'Transaction failed'));
+      } else {
+        callbacks?.onSuccess?.(result.Transaction);
+      }
+    }).catch(err => callbacks?.onError?.(err));
+  }
 
   const [locks, setLocks] = React.useState([]);
   const [loading, setLoading] = React.useState(true);
@@ -470,8 +479,17 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
 }
 
 function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveState, currentDesc, currentTwitter, currentTelegram, currentWebsite, currentDex, lang }) {
-  const client = useSuiClient();
-  const { mutate: signAndExecutePanel } = useSignAndExecuteTransaction();
+  const client = useCurrentClient();
+  const dAppKit_signAndExecutePanel = useDAppKit();
+  const signAndExecutePanel = (args, callbacks) => {
+    dAppKit_signAndExecutePanel.signAndExecuteTransaction(args).then(result => {
+      if (result.FailedTransaction) {
+        callbacks?.onError?.(new Error(result.FailedTransaction.status?.error?.message || 'Transaction failed'));
+      } else {
+        callbacks?.onSuccess?.(result.Transaction);
+      }
+    }).catch(err => callbacks?.onError?.(err));
+  }
   const pkgId = resolvePackageId(tokenType, packageIdHint);
   const isV5Token = isV5OrLater(pkgId);
   const isV6Token = !!(PACKAGE_ID_V6 && pkgId === PACKAGE_ID_V6);
@@ -863,8 +881,17 @@ function TradePanelContent({
   packageIdHint: panelPkgHint,
   curveState,
 }) {
-  const { mutate: signAndExecutePanel } = useSignAndExecuteTransaction();
-  const client2 = useSuiClient();
+  const dAppKit_signAndExecutePanel = useDAppKit();
+  const signAndExecutePanel = (args, callbacks) => {
+    dAppKit_signAndExecutePanel.signAndExecuteTransaction(args).then(result => {
+      if (result.FailedTransaction) {
+        callbacks?.onError?.(new Error(result.FailedTransaction.status?.error?.message || 'Transaction failed'));
+      } else {
+        callbacks?.onSuccess?.(result.Transaction);
+      }
+    }).catch(err => callbacks?.onError?.(err));
+  }
+  const client2 = useCurrentClient();
   const [claiming, setClaiming] = useState(false);
   const [claimMsg, setClaimMsg] = useState('');
   const [showSlippage, setShowSlippage] = useState(false);
@@ -1196,8 +1223,17 @@ function CommentsBlock({ curveId, packageId, lang }) {
 export default function TokenPage({ curveId, tokenType, packageId: packageIdHint, onBack, lang = 'en' }) {
   const navigate = useNavigate();
   const account = useCurrentAccount();
-  const client = useSuiClient();
-  const { mutate: signAndExecute } = useSignAndExecuteTransaction();
+  const client = useCurrentClient();
+  const dAppKit_signAndExecute = useDAppKit();
+  const signAndExecute = (args, callbacks) => {
+    dAppKit_signAndExecute.signAndExecuteTransaction(args).then(result => {
+      if (result.FailedTransaction) {
+        callbacks?.onError?.(new Error(result.FailedTransaction.status?.error?.message || 'Transaction failed'));
+      } else {
+        callbacks?.onSuccess?.(result.Transaction);
+      }
+    }).catch(err => callbacks?.onError?.(err));
+  }
 
   const [suiUsd, setSuiUsd]               = useState(0);
   const [curveState, setCurveState]       = useState(null);

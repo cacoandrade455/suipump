@@ -1,39 +1,38 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { SuiClientProvider, WalletProvider, createNetworkConfig } from '@mysten/dapp-kit';
-import { getFullnodeUrl } from '@mysten/sui/client';
+import { createDAppKit, DAppKitProvider } from '@mysten/dapp-kit-react';
+import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { BrowserRouter } from 'react-router-dom';
 import { Analytics } from '@vercel/analytics/react';
 
 import App from './App.jsx';
 import './index.css';
 
-const { networkConfig } = createNetworkConfig({
-  testnet: { url: getFullnodeUrl('testnet') },
+// ── gRPC client (replaces JSON-RPC SuiClient) ─────────────────────────────────
+// Public Mysten Labs gRPC endpoints — free, no API key, no rate limits.
+// Replaces the deprecated JSON-RPC endpoint (removed July 31 2026).
+const GRPC_URLS = {
+  testnet: 'https://fullnode.testnet.sui.io:443',
+  mainnet: 'https://fullnode.mainnet.sui.io:443',
+};
+
+export const dAppKit = createDAppKit({
+  networks: ['testnet'],
+  defaultNetwork: 'testnet',
+  createClient: (network) =>
+    new SuiGrpcClient({
+      network,
+      baseUrl: GRPC_URLS[network],
+    }),
 });
-
-const queryClient = new QueryClient();
-
-// Get your free WalletConnect project ID at https://cloud.walletconnect.com
-// Create a project → copy the Project ID → paste in frontend-app/.env as:
-// VITE_WALLETCONNECT_PROJECT_ID=your_id_here
-const WALLET_CONNECT_PROJECT_ID = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID || '';
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <SuiClientProvider networks={networkConfig} defaultNetwork="testnet">
-        <WalletProvider
-          autoConnect
-          walletConnectProjectId={WALLET_CONNECT_PROJECT_ID || undefined}
-        >
-          <BrowserRouter>
-            <App />
-            <Analytics />
-          </BrowserRouter>
-        </WalletProvider>
-      </SuiClientProvider>
-    </QueryClientProvider>
+    <DAppKitProvider dAppKit={dAppKit} autoConnect>
+      <BrowserRouter>
+        <App />
+        <Analytics />
+      </BrowserRouter>
+    </DAppKitProvider>
   </React.StrictMode>
 );
