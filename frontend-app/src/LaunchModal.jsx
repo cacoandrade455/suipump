@@ -1,6 +1,6 @@
 // LaunchModal.jsx — v5 wired
 import React, { useState, useCallback } from 'react';
-import { useCurrentAccount, useSignAndExecuteTransaction, useSuiClient } from '@mysten/dapp-kit';
+import { useCurrentAccount, useCurrentClient, useDAppKit } from '@mysten/dapp-kit-react';
 import { Transaction } from '@mysten/sui/transactions';
 import { X, Plus, Trash2, Rocket, CheckCircle } from 'lucide-react';
 import wasmInit, * as bytecodeTemplate from '@mysten/move-bytecode-template';
@@ -122,8 +122,18 @@ function TokenPreview({ name, symbol, iconUrl }) {
 
 export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
   const account = useCurrentAccount();
-  const client = useSuiClient();
-  const { mutateAsync: signAndExecute } = useSignAndExecuteTransaction();
+  const client = useCurrentClient();
+  const dAppKit = useDAppKit();
+  // Wrapper that preserves the old `{ digest }` return shape so the existing
+  // launch flow doesn't need to be rewritten. The new dapp-kit returns either
+  // `{ Transaction: { digest } }` or `{ FailedTransaction: { status: { error } } }`.
+  const signAndExecute = async (args) => {
+    const result = await dAppKit.signAndExecuteTransaction(args);
+    if (result.FailedTransaction) {
+      throw new Error(result.FailedTransaction.status?.error?.message || 'Transaction failed');
+    }
+    return { digest: result.Transaction.digest };
+  };
 
   const [step, setStep] = useState(0);
   const [form, setForm] = useState({

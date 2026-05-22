@@ -453,6 +453,276 @@ async function handleStatus(body) {
   };
 }
 
+// ── Active strategies store ───────────────────────────────────────────────────
+// In-memory map of strategyId → strategy state
+// Survives as long as the process is alive (Render free tier — ~15min idle timeout)
+const activeStrategies = new Map();
+
+function generateId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+}
+
+// ── Handler: /strategy ────────────────────────────────────────────────────────
+// Body:
+//   action: 'create' | 'status' | 'cancel' | 'list'
+//
+//   For action='create':
+//   {
+//     curveId,
+//     suiAmount,           — SUI to buy in (e.g. 5)
+//     takeProfitPct,       — sell sellPct when price is up this % (e.g. 100 = 2x)
+//     sellPct,             — % of holdings to sell at take-profit (e.g. 50)
+//     stopLossPct,         — sell 100% if price drops this % (e.g. 40)
+//     trailingStop,        — optional: trail stop-loss behind highest price seen
+//     pollIntervalMs,      — how often to check price (default 30000)
+//     maxDurationMs,       — auto-cancel after this ms (default 24h)
+//     privateKey?, rpcUrl?
+//   }
+async function handleStrategy(body) {
+  const { action = 'create' } = body;
+
+  // ── LIST ──────────────────────────────────────────────────────────────────
+  if (action === 'list') {
+    return {
+      strategies: Array.from(activeStrategies.values()).map(s => ({
+        id:           s.id,
+        curveId:      s.curveId,
+        status:       s.status,
+        entryPriceSui: s.entryPrice?.toFixed(10),
+        currentPriceSui: s.lastPrice?.toFixed(10),
+        pnlPct:       s.lastPrice && s.entryPrice
+          ? (((s.lastPrice - s.entryPrice) / s.entryPrice) * 100).toFixed(2) + '%'
+          : null,
+        tokenBalance: s.tokenBalance,
+        takeProfitPct: s.takeProfitPct,
+        stopLossPct:   s.stopLossPct,
+        sellPct:       s.sellPct,
+        createdAt:     new Date(s.createdAt).toISOString(),
+        log:           s.log.slice(-5), // last 5 events
+      })),
+    };
+  }
+
+  // ── STATUS ────────────────────────────────────────────────────────────────
+  if (action === 'status') {
+    const s = activeStrategies.get(body.strategyId);
+    if (!s) throw new Error(`Strategy ${body.strategyId} not found`);
+    return {
+      id:             s.id,
+      curveId:        s.curveId,
+      status:         s.status,
+      entryPriceSui:  s.entryPrice?.toFixed(10),
+      currentPriceSui: s.lastPrice?.toFixed(10),
+      highPriceSui:   s.highPrice?.toFixed(10),
+      pnlPct:         s.lastPrice && s.entryPrice
+        ? (((s.lastPrice - s.entryPrice) / s.entryPrice) * 100).toFixed(2) + '%'
+        : null,
+      tokenBalance:   s.tokenBalance,
+      log:            s.log,
+    };
+  }
+
+  // ── CANCEL ────────────────────────────────────────────────────────────────
+  if (action === 'cancel') {
+    const s = activeStrategies.get(body.strategyId);
+    if (!s) throw new Error(`Strategy ${body.strategyId} not found`);
+    s.status = 'cancelled';
+    s.log.push(`[${new Date().toISOString()}] Cancelled by user`);
+    return { id: s.id, status: 'cancelled' };
+  }
+
+  // ── CREATE ────────────────────────────────────────────────────────────────
+  const {
+    curveId,
+    suiAmount,
+    takeProfitPct   = 100,   // default: sell at 2x
+    sellPct         = 50,    // default: sell 50% at take-profit
+    stopLossPct     = 40,    // default: stop-loss at -40%
+    trailingStop    = false,
+    pollIntervalMs  = 30_000,
+    maxDurationMs   = 24 * 60 * 60 * 1_000,
+    privateKey,
+    rpcUrl,
+  } = body;
+
+  if (!curveId)   throw new Error('curveId required');
+  if (!suiAmount) throw new Error('suiAmount required');
+
+  const id = generateId();
+  const strategy = {
+    id,
+    curveId,
+    suiAmount,
+    takeProfitPct,
+    sellPct,
+    stopLossPct,
+    trailingStop,
+    pollIntervalMs,
+    maxDurationMs,
+    privateKey: privateKey ?? process.env.SUI_PRIVATE_KEY,
+    rpcUrl,
+    status:       'buying',
+    entryPrice:   null,
+    lastPrice:    null,
+    highPrice:    null,
+    tokenBalance: 0,
+    createdAt:    Date.now(),
+    log:          [],
+  };
+
+  activeStrategies.set(id, strategy);
+
+  // Run strategy loop in background — don't await
+  runStrategy(strategy).catch(err => {
+    strategy.status = 'error';
+    strategy.log.push(`[${new Date().toISOString()}] Fatal error: ${err.message}`);
+    console.error(`[strategy:${id}] Fatal:`, err.message);
+  });
+
+  return {
+    strategyId:    id,
+    status:        'buying',
+    curveId,
+    suiAmount,
+    takeProfitPct,
+    sellPct,
+    stopLossPct,
+    trailingStop,
+    pollIntervalMs,
+    message:       `Strategy created. Buying ${suiAmount} SUI then watching for ${takeProfitPct}% gain / ${stopLossPct}% loss.`,
+  };
+}
+
+// ── Strategy execution loop ───────────────────────────────────────────────────
+async function runStrategy(s) {
+  const log = (msg) => {
+    const entry = `[${new Date().toISOString()}] ${msg}`;
+    s.log.push(entry);
+    console.log(`[strategy:${s.id}] ${msg}`);
+  };
+
+  // Step 1: Buy in
+  log(`Buying ${s.suiAmount} SUI on ${s.curveId.slice(0, 12)}…`);
+  let buyResult;
+  try {
+    buyResult = await handleBuy({
+      curveId:    s.curveId,
+      suiAmount:  s.suiAmount,
+      privateKey: s.privateKey,
+      rpcUrl:     s.rpcUrl,
+    });
+  } catch (err) {
+    s.status = 'error';
+    log(`Buy failed: ${err.message}`);
+    return;
+  }
+
+  // Get entry price from status
+  const statusAfterBuy = await handleStatus({ curveId: s.curveId, rpcUrl: s.rpcUrl });
+  s.entryPrice   = parseFloat(statusAfterBuy.priceInSui);
+  s.highPrice    = s.entryPrice;
+  s.lastPrice    = s.entryPrice;
+  s.tokenBalance = parseFloat(buyResult.tokensReceived);
+  s.status       = 'watching';
+
+  log(`Bought ${s.tokenBalance.toLocaleString()} tokens at ${s.entryPrice.toExponential(4)} SUI/token`);
+  log(`Take-profit: +${s.takeProfitPct}% → sell ${s.sellPct}% | Stop-loss: -${s.stopLossPct}%${s.trailingStop ? ' (trailing)' : ''}`);
+
+  // Step 2: Watch loop
+  const deadline = Date.now() + s.maxDurationMs;
+
+  while (s.status === 'watching' && Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, s.pollIntervalMs));
+
+    if (s.status !== 'watching') break;
+
+    let currentStatus;
+    try {
+      currentStatus = await handleStatus({ curveId: s.curveId, rpcUrl: s.rpcUrl });
+    } catch (err) {
+      log(`Status check failed: ${err.message} — retrying next interval`);
+      continue;
+    }
+
+    // Check if graduated — exit strategy
+    if (currentStatus.graduated) {
+      s.status = 'exited_graduation';
+      log(`Token graduated to DEX — strategy complete. Trade on ${currentStatus.graduationTarget}.`);
+      return;
+    }
+
+    s.lastPrice  = parseFloat(currentStatus.priceInSui);
+    const pnlPct = ((s.lastPrice - s.entryPrice) / s.entryPrice) * 100;
+
+    // Update trailing high
+    if (s.lastPrice > s.highPrice) s.highPrice = s.lastPrice;
+
+    // Trailing stop: stop-loss trails behind highest seen price
+    const effectiveStopPct = s.trailingStop
+      ? -s.stopLossPct + ((s.highPrice - s.entryPrice) / s.entryPrice * 100)
+      : -s.stopLossPct;
+
+    log(`Price: ${s.lastPrice.toExponential(4)} | PnL: ${pnlPct.toFixed(1)}% | Balance: ${s.tokenBalance.toLocaleString()} tokens`);
+
+    // ── Take-profit ─────────────────────────────────────────────────────────
+    if (pnlPct >= s.takeProfitPct) {
+      const sellAmount = Math.floor(s.tokenBalance * (s.sellPct / 100));
+      log(`🎯 Take-profit triggered at +${pnlPct.toFixed(1)}%! Selling ${s.sellPct}% (${sellAmount.toLocaleString()} tokens)…`);
+
+      try {
+        const sellResult = await handleSell({
+          curveId:     s.curveId,
+          tokenAmount: sellAmount,
+          privateKey:  s.privateKey,
+          rpcUrl:      s.rpcUrl,
+        });
+        s.tokenBalance -= sellAmount;
+        log(`✅ Sold ${sellAmount.toLocaleString()} tokens → ${sellResult.suiReceived} SUI (tx: ${sellResult.txDigest?.slice(0, 12)}…)`);
+
+        // If sellPct is 100, we're done
+        if (s.sellPct >= 100 || s.tokenBalance <= 0) {
+          s.status = 'completed';
+          log(`Strategy complete — full exit at +${pnlPct.toFixed(1)}% PnL.`);
+          return;
+        }
+
+        // Otherwise keep watching remainder with updated entry (break-even mode)
+        log(`Remaining ${s.tokenBalance.toLocaleString()} tokens — continuing to watch.`);
+        // Reset entry to current price so next take-profit is relative to now
+        s.entryPrice = s.lastPrice;
+      } catch (err) {
+        log(`⚠️ Take-profit sell failed: ${err.message}`);
+      }
+      continue;
+    }
+
+    // ── Stop-loss ───────────────────────────────────────────────────────────
+    if (pnlPct <= effectiveStopPct) {
+      log(`🛑 Stop-loss triggered at ${pnlPct.toFixed(1)}%! Selling 100% (${s.tokenBalance.toLocaleString()} tokens)…`);
+
+      try {
+        const sellResult = await handleSell({
+          curveId:     s.curveId,
+          tokenAmount: Math.floor(s.tokenBalance),
+          privateKey:  s.privateKey,
+          rpcUrl:      s.rpcUrl,
+        });
+        log(`✅ Stop-loss executed → ${sellResult.suiReceived} SUI (tx: ${sellResult.txDigest?.slice(0, 12)}…)`);
+      } catch (err) {
+        log(`⚠️ Stop-loss sell failed: ${err.message}`);
+      }
+
+      s.status = 'stopped';
+      return;
+    }
+  }
+
+  if (Date.now() >= deadline && s.status === 'watching') {
+    s.status = 'expired';
+    log(`Strategy expired after ${s.maxDurationMs / 3600000}h — no trigger fired.`);
+  }
+}
+
 // ── HTTP server ───────────────────────────────────────────────────────────────
 const server = http.createServer(async (req, res) => {
   if (req.method !== 'POST') {
@@ -471,12 +741,13 @@ const server = http.createServer(async (req, res) => {
   try {
     let result;
     switch (req.url) {
-      case '/buy':    result = await handleBuy(body);    break;
-      case '/sell':   result = await handleSell(body);   break;
-      case '/claim':  result = await handleClaim(body);  break;
-      case '/launch': result = await handleLaunch(body); break;
-      case '/status': result = await handleStatus(body); break;
-      case '/health': result = { status: 'ok', ts: Date.now() }; break;
+      case '/buy':      result = await handleBuy(body);      break;
+      case '/sell':     result = await handleSell(body);     break;
+      case '/claim':    result = await handleClaim(body);    break;
+      case '/launch':   result = await handleLaunch(body);   break;
+      case '/status':   result = await handleStatus(body);   break;
+      case '/strategy': result = await handleStrategy(body); break;
+      case '/health':   result = { status: 'ok', ts: Date.now() }; break;
       default:
         jsonResp(res, 404, { error: `Unknown endpoint: ${req.url}` });
         return;
@@ -491,7 +762,7 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`[bridge] SuiPump bridge listening on port ${PORT}`);
   console.log(`[bridge] Indexer: ${INDEXER_URL}`);
-  console.log(`[bridge] Endpoints: /buy /sell /claim /launch /health`);
+  console.log(`[bridge] Endpoints: /buy /sell /claim /launch /status /strategy /health`);
 });
 
 export { handleBuy, handleSell, handleClaim, handleLaunch };

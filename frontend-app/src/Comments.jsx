@@ -1,6 +1,6 @@
 // Comments.jsx — on-chain comments + off-chain replies (localStorage)
 import React, { useState, useEffect, useRef } from 'react';
-import { useCurrentAccount, useSuiClient, useSignAndExecuteTransaction } from '@mysten/dapp-kit';
+import { useCurrentAccount, useCurrentClient, useDAppKit } from '@mysten/dapp-kit-react';
 import { Transaction } from '@mysten/sui/transactions';
 import { Send, Reply, ChevronDown, ChevronUp } from 'lucide-react';
 import {
@@ -203,8 +203,8 @@ function CommentItem({ comment, replies, account, curveId, onReplyPosted }) {
 
 export default function Comments({ curveId, packageId }) {
   const account = useCurrentAccount();
-  const client = useSuiClient();
-  const { mutate: signAndExecute } = useSignAndExecuteTransaction();
+  const client = useCurrentClient();
+  const dAppKit = useDAppKit();
 
   const [comments, setComments] = useState([]);
   const [replies, setReplies] = useState([]);
@@ -299,25 +299,23 @@ export default function Comments({ curveId, packageId }) {
         });
       }
 
-      signAndExecute(
-        { transaction: tx },
-        {
-          onSuccess: () => {
-            setText('');
-            setPosting(false);
-            setComments(prev => [...prev, {
-              id: 'pending_' + Date.now(),
-              author: account.address,
-              text: trimmed,
-              timestamp: Date.now(),
-            }]);
-          },
-          onError: (err) => {
-            setPostErr(err.message || 'Failed to post');
-            setPosting(false);
-          },
+      try {
+        const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+        if (result.FailedTransaction) {
+          throw new Error(result.FailedTransaction.status?.error?.message || 'Transaction failed');
         }
-      );
+        setText('');
+        setPosting(false);
+        setComments(prev => [...prev, {
+          id: 'pending_' + Date.now(),
+          author: account.address,
+          text: trimmed,
+          timestamp: Date.now(),
+        }]);
+      } catch (err) {
+        setPostErr(err.message || 'Failed to post');
+        setPosting(false);
+      }
     } catch (err) {
       setPostErr(err.message || 'Failed to post');
       setPosting(false);

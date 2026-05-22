@@ -4,7 +4,7 @@
 // USD primary. Reuses existing useStats() pattern and useTokenList().
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { useSuiClient } from '@mysten/dapp-kit';
+import { useCurrentClient } from '@mysten/dapp-kit-react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, TrendingUp, Flame, Gift, Coins, Trophy, Zap, BarChart3 } from 'lucide-react';
 import { PACKAGE_ID, ALL_PACKAGE_IDS, DRAIN_SUI_APPROX } from './constants.js';
@@ -89,7 +89,7 @@ function MiniBar({ value, max, color = 'lime' }) {
 }
 
 export default function StatsPage({ onBack }) {
-  const client = useSuiClient();
+  const client = useCurrentClient();
   const navigate = useNavigate();
   const { tokens } = useTokenList();
 

@@ -3,7 +3,7 @@
 // Falls back to RPC event scan if indexer is unavailable.
 
 import React, { useState, useEffect } from 'react';
-import { useSuiClient } from '@mysten/dapp-kit';
+import { useCurrentClient } from '@mysten/dapp-kit-react';
 import { ALL_PACKAGE_IDS } from './constants.js';
 const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
 import { paginateMultipleEvents } from './paginateEvents.js';
@@ -33,7 +33,7 @@ function fmtUsd(usd) {
 }
 
 export default function S1AirdropCounter() {
-  const client = useSuiClient();
+  const client = useCurrentClient();
 
   const [poolSui,    setPoolSui]    = useState(0);
   const [volumeSui,  setVolumeSui]  = useState(0);

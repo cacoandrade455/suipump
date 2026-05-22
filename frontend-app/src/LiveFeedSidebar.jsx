@@ -1,6 +1,6 @@
 // LiveFeedSidebar.jsx  -  real-time buys/sells across all tokens
 import React, { useState, useEffect, useRef } from 'react';
-import { useSuiClient } from '@mysten/dapp-kit';
+import { useCurrentClient } from '@mysten/dapp-kit-react';
 import { useNavigate } from 'react-router-dom';
 import { Zap, X } from 'lucide-react';
 import { ALL_PACKAGE_IDS } from './constants.js';
@@ -23,7 +23,7 @@ function fmt(n) {
 }
 
 export default function LiveFeedSidebar({ tokens, onClose }) {
-  const client = useSuiClient();
+  const client = useCurrentClient();
   const navigate = useNavigate();
   const [feed, setFeed] = useState([]);
   const seenRef = useRef(new Set());

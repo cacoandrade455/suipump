@@ -1,0 +1,14 @@
+{
+  "name": "suipump-graduation-test",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "test": "echo ok"
+  },
+  "dependencies": {
+    "@mysten/sui": "^1.21.1",
+    "turbos-clmm-sdk": "latest",
+    "bn.js": "^5.2.1",
+    "decimal.js": "^10.4.3"
+  }
+}

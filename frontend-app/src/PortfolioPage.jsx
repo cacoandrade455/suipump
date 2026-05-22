@@ -1,7 +1,7 @@
 // v17-indexer-claimall
 // PortfolioPage.jsx
 import React, { useState, useEffect, useMemo } from 'react';
-import { useCurrentAccount, useSuiClient, useSignAndExecuteTransaction } from '@mysten/dapp-kit';
+import { useCurrentAccount, useCurrentClient, useDAppKit } from '@mysten/dapp-kit-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Wallet, TrendingUp, Plus } from 'lucide-react';
 import { useTokenList } from './useTokenList.js';
@@ -316,7 +316,7 @@ function TradedTab({ account, tokens, client, lang }) {
 
 function CreatedTab({ account, tokens, client, lang }) {
   const navigate = useNavigate();
-  const { mutate: signAndExecute } = useSignAndExecuteTransaction();
+  const dAppKit = useDAppKit();
   const [curveStats, setCurveStats]   = useState({});
   const [capMap, setCapMap]           = useState({}); // curveId → capId
   const [loading, setLoading]         = useState(true);
@@ -447,27 +447,25 @@ function CreatedTab({ account, tokens, client, lang }) {
           arguments: [tx.object(capId), curveRef],
         });
       }
-      signAndExecute(
-        { transaction: tx },
-        {
-          onSuccess: () => {
-            setClaimMsg(`✅ Claimed fees from ${actualClaimable.length} token${actualClaimable.length !== 1 ? 's' : ''}`);
-            setClaimingAll(false);
-            setTimeout(() => setClaimMsg(''), 4000);
-            // Refresh stats
-            setCurveStats(prev => {
-              const next = { ...prev };
-              for (const tk of actualClaimable) next[tk.curveId] = { ...next[tk.curveId], creatorFeesSui: 0 };
-              return next;
-            });
-          },
-          onError: (err) => {
-            setClaimMsg(err.message || 'Claim failed');
-            setClaimingAll(false);
-            setTimeout(() => setClaimMsg(''), 4000);
-          },
+      try {
+        const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+        if (result.FailedTransaction) {
+          throw new Error(result.FailedTransaction.status?.error?.message || 'Claim failed');
         }
-      );
+        setClaimMsg(`✅ Claimed fees from ${actualClaimable.length} token${actualClaimable.length !== 1 ? 's' : ''}`);
+        setClaimingAll(false);
+        setTimeout(() => setClaimMsg(''), 4000);
+        // Refresh stats
+        setCurveStats(prev => {
+          const next = { ...prev };
+          for (const tk of actualClaimable) next[tk.curveId] = { ...next[tk.curveId], creatorFeesSui: 0 };
+          return next;
+        });
+      } catch (err) {
+        setClaimMsg(err.message || 'Claim failed');
+        setClaimingAll(false);
+        setTimeout(() => setClaimMsg(''), 4000);
+      }
     } catch (err) {
       setClaimMsg(err.message || 'Claim failed');
       setClaimingAll(false);
@@ -611,7 +609,7 @@ function setPfp(addr, url) { try { localStorage.setItem(pfpKey(addr), url); } ca
 
 export default function PortfolioPage({ onBack, lang = 'en' }) {
   const account    = useCurrentAccount();
-  const client     = useSuiClient();
+  const client     = useCurrentClient();
   const { tokens } = useTokenList();
   const navigate   = useNavigate();
   const { walletAddress } = useParams();

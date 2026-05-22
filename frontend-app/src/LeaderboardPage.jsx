@@ -1,6 +1,6 @@
 // LeaderboardPage.jsx
 import React, { useState, useEffect } from 'react';
-import { useSuiClient } from '@mysten/dapp-kit';
+import { useCurrentClient } from '@mysten/dapp-kit-react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, TrendingUp, Trophy, Zap } from 'lucide-react';
 import { ALL_PACKAGE_IDS } from './constants.js';
@@ -33,7 +33,7 @@ function RankBadge({ rank }) {
 }
 
 export default function LeaderboardPage({ onBack, lang = 'en' }) {
-  const client = useSuiClient();
+  const client = useCurrentClient();
   const navigate = useNavigate();
   const { tokens } = useTokenList();
 

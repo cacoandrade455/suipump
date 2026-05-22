@@ -4,14 +4,14 @@
 // V5 tokens include graduation_target and anti_bot_delay fields.
 
 import { useState, useEffect } from 'react';
-import { useSuiClient } from '@mysten/dapp-kit';
+import { useCurrentClient } from '@mysten/dapp-kit-react';
 import { ALL_PACKAGE_IDS, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, isV5OrLater } from './constants.js';
 import { paginateEvents } from './paginateEvents.js';
 
 const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
 
 export function useTokenList() {
-  const client = useSuiClient();
+  const client = useCurrentClient();
   const [tokens, setTokens]   = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(null);

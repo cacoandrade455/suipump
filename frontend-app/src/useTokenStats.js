@@ -6,7 +6,7 @@
 //   sparkline24h, holderCount } }
 
 import { useState, useEffect, useRef } from 'react';
-import { useSuiClient } from '@mysten/dapp-kit';
+import { useCurrentClient } from '@mysten/dapp-kit-react';
 import { ALL_PACKAGE_IDS } from './constants.js'; // ALL_PACKAGE_IDS includes v4, v5, v6
 import { paginateMultipleEvents } from './paginateEvents.js';
 
@@ -48,7 +48,7 @@ async function fetchHolderCount(client, coinType) {
 }
 
 export function useTokenStats(tokens) {
-  const client = useSuiClient();
+  const client = useCurrentClient();
   const [stats, setStats]         = useState({});
   const holderCountsRef           = useRef({});
   const prevTokenIds              = useRef('');
