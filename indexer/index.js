@@ -1,24 +1,19 @@
-// index.js — SuiPump event indexer (gRPC + GraphQL, v2 SDK)
+// index.js — SuiPump event indexer (gRPC + GraphQL, @mysten/sui v2)
 //
-// Migration from JSON-RPC (v1 SDK):
-//   - Event querying:    queryEvents (JSON-RPC) → GraphQL events query
-//   - Object fetching:   getObject (JSON-RPC)   → SuiGrpcClient core.getObject
-//   - Real-time stream:  polling every 5s       → GraphQL subscription (push)
-//   - Fallback:          GraphQL cursor polling  (same logic, no polling loop needed)
+// Event querying:  queryEvents (JSON-RPC) → GraphQL events query (raw string)
+// Object fetching: getObject (JSON-RPC)   → SuiGrpcClient core.getObject
+// Real-time:       polling every 10s      → GraphQL cursor pagination (no sub yet)
 //
-// Public endpoints used (free, no API key):
+// Public endpoints (free, no API key):
 //   gRPC:    https://fullnode.testnet.sui.io:443
 //   GraphQL: https://sui-testnet.mystenlabs.com/graphql
 //
-// Zero downtime: both old cursors and new GraphQL cursors are stored in the
-// same `cursors` table. Old JSON-RPC cursors are ignored on startup.
-// The UNIQUE(tx_digest, event_seq) constraint silently drops any duplicates
-// if both code paths briefly overlap during deploy.
+// Zero downtime: new cursors are namespaced graphql:<event_type>
+// Old JSON-RPC cursors are ignored. UNIQUE(tx_digest, event_seq) drops duplicates.
 
 import 'dotenv/config';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
-import { graphql } from '@mysten/sui/graphql/schema';
 import {
   pool, initSchema, getCursor, saveCursor, insertEvent,
   upsertCurve, recomputeStats, enrichCurveMetadata, backfillMissingIcons,
@@ -41,27 +36,26 @@ const PACKAGE_IDS = process.env.PACKAGE_IDS
   ? process.env.PACKAGE_IDS.split(',').map(s => s.trim()).filter(Boolean)
   : ALL_PACKAGE_IDS;
 
-const NETWORK      = process.env.NETWORK ?? 'testnet';
-const GRPC_URL     = process.env.SUI_GRPC_URL     ?? `https://fullnode.${NETWORK}.sui.io:443`;
-const GRAPHQL_URL  = process.env.SUI_GRAPHQL_URL  ?? `https://sui-${NETWORK}.mystenlabs.com/graphql`;
+const NETWORK      = process.env.NETWORK       ?? 'testnet';
+const GRPC_URL     = process.env.SUI_GRPC_URL  ?? `https://fullnode.${NETWORK}.sui.io:443`;
+const GRAPHQL_URL  = process.env.SUI_GRAPHQL_URL ?? `https://sui-${NETWORK}.mystenlabs.com/graphql`;
 const PAGE_SIZE    = 50;
-const POLL_MS      = parseInt(process.env.POLL_MS ?? '10000'); // fallback poll interval
+const POLL_MS      = parseInt(process.env.POLL_MS ?? '10000');
 
 // ── Clients ───────────────────────────────────────────────────────────────────
 
 const grpcClient = new SuiGrpcClient({
   network: NETWORK,
-  baseUrl: GRPC_URL,
+  baseUrl:  GRPC_URL,
 });
 
 const graphqlClient = new SuiGraphQLClient({
-  url: GRAPHQL_URL,
+  url:     GRAPHQL_URL,
   network: NETWORK,
 });
 
 // ── Event type helpers ────────────────────────────────────────────────────────
 
-// SuiPump event short names → GraphQL filter type prefixes
 const EVENT_NAMES = [
   'TokensBought',
   'TokensSold',
@@ -70,14 +64,13 @@ const EVENT_NAMES = [
   'Graduated',
 ];
 
-// Build full event type strings for a package
 function getEventTypes(packageId) {
   return EVENT_NAMES.map(name => `${packageId}::bonding_curve::${name}`);
 }
 
-// ── GraphQL event query ───────────────────────────────────────────────────────
+// ── GraphQL event query (raw string — no tagged template needed) ──────────────
 
-const EVENTS_QUERY = graphql(`
+const EVENTS_QUERY = `
   query SuiPumpEvents($type: String!, $after: String, $first: Int!) {
     events(
       filter: { type: $type }
@@ -89,16 +82,10 @@ const EVENTS_QUERY = graphql(`
         endCursor
       }
       nodes {
-        transactionDigest: sendingModule {
-          package { address }
-          name
-        }
-        sender { address }
         timestamp
         contents {
           type { repr }
           json
-          bcs
         }
         transaction {
           digest
@@ -109,34 +96,28 @@ const EVENTS_QUERY = graphql(`
       }
     }
   }
-`);
+`;
 
-// ── Parse GraphQL event into the shape insertEvent/upsertCurve expect ─────────
+// ── Parse GraphQL event node ──────────────────────────────────────────────────
 
 function parseGraphQLEvent(node, eventType) {
   const digest  = node.transaction?.digest ?? 'unknown';
   const seqRaw  = node.transaction?.effects?.checkpoint?.sequenceNumber ?? 0;
   const tsMs    = node.timestamp ? new Date(node.timestamp).getTime() : null;
   const json    = node.contents?.json ?? {};
-
-  // Reconstruct parsedJson compatible with the old JSON-RPC shape
   const parsedJson = typeof json === 'string' ? JSON.parse(json) : json;
 
   return {
-    id: {
-      txDigest:  digest,
-      eventSeq:  seqRaw,
-    },
+    id:          { txDigest: digest, eventSeq: seqRaw },
     timestampMs: tsMs ? String(tsMs) : null,
     parsedJson,
     type: eventType,
   };
 }
 
-// ── Sync one event type via GraphQL (backfill + catchup) ──────────────────────
+// ── Sync one event type ───────────────────────────────────────────────────────
 
 async function syncEventType(eventType, packageId) {
-  // Use a namespaced cursor key so old JSON-RPC cursors don't interfere
   const cursorKey = `graphql:${eventType}`;
   let cursor    = await getCursor(cursorKey);
   let newEvents = 0;
@@ -152,6 +133,10 @@ async function syncEventType(eventType, packageId) {
       },
     });
 
+    if (result.errors?.length) {
+      throw new Error(result.errors.map(e => e.message).join('; '));
+    }
+
     const events   = result.data?.events?.nodes ?? [];
     const pageInfo = result.data?.events?.pageInfo;
 
@@ -160,14 +145,12 @@ async function syncEventType(eventType, packageId) {
 
       await insertEvent(eventType, evt);
 
-      // TokensLaunched / CurveCreated — upsert curve record
       if (eventType.includes('TokensLaunched') || eventType.includes('CurveCreated')) {
         await upsertCurve(evt, packageId);
         const curveId = evt.parsedJson?.curve_id;
         if (curveId) await enrichCurveMetadata(curveId, grpcClient);
       }
 
-      // Trade / comment — recompute stats
       const curveId = evt.parsedJson?.curve_id;
       if (curveId && (
         eventType.includes('TokensBought') ||
@@ -189,14 +172,13 @@ async function syncEventType(eventType, packageId) {
       hasMore = false;
     }
 
-    // Gentle rate limiting between pages
     if (events.length === PAGE_SIZE) await sleep(100);
   }
 
   return newEvents;
 }
 
-// ── Full sync across all event types and package IDs ─────────────────────────
+// ── Full sync ─────────────────────────────────────────────────────────────────
 
 async function syncAll() {
   for (const packageId of PACKAGE_IDS) {
@@ -209,109 +191,6 @@ async function syncAll() {
       } catch (err) {
         console.error(`  error syncing ${eventType.split('::').pop()}:`, err.message);
       }
-    }
-  }
-}
-
-// ── Real-time subscription via GraphQL ────────────────────────────────────────
-// GraphQL subscriptions push new events as they happen — no polling needed.
-// Falls back to polling if subscription fails.
-
-async function startSubscriptions() {
-  console.log('  Starting GraphQL event subscriptions…');
-
-  let subscriptionCount = 0;
-
-  for (const packageId of PACKAGE_IDS) {
-    for (const eventType of getEventTypes(packageId)) {
-      try {
-        // GraphQL subscription — fires callback for each new event
-        const unsubscribe = await graphqlClient.subscribe({
-          query: graphql(`
-            subscription SuiPumpLive($type: String!) {
-              events(filter: { type: $type }) {
-                transactionDigest: sendingModule {
-                  package { address }
-                  name
-                }
-                sender { address }
-                timestamp
-                contents {
-                  type { repr }
-                  json
-                }
-                transaction {
-                  digest
-                  effects {
-                    checkpoint { sequenceNumber }
-                  }
-                }
-              }
-            }
-          `),
-          variables: { type: eventType },
-          onResult: async (result) => {
-            const node = result.data?.events;
-            if (!node) return;
-            try {
-              const evt = parseGraphQLEvent(node, eventType);
-              await insertEvent(eventType, evt);
-
-              if (eventType.includes('TokensLaunched') || eventType.includes('CurveCreated')) {
-                const pkgId = eventType.split('::')[0];
-                await upsertCurve(evt, pkgId);
-                const curveId = evt.parsedJson?.curve_id;
-                if (curveId) await enrichCurveMetadata(curveId, grpcClient);
-              }
-
-              const curveId = evt.parsedJson?.curve_id;
-              if (curveId && (
-                eventType.includes('TokensBought') ||
-                eventType.includes('TokensSold') ||
-                eventType.includes('TokensPurchased') ||
-                eventType.includes('Comment')
-              )) {
-                await recomputeStats(curveId);
-              }
-
-              const shortName = eventType.split('::').pop();
-              console.log(`  [live] ${shortName} — ${curveId?.slice(0, 10) ?? 'n/a'}…`);
-            } catch (err) {
-              console.error('  [live] event processing error:', err.message);
-            }
-          },
-          onError: (err) => {
-            console.error(`  [live] subscription error (${eventType.split('::').pop()}):`, err.message);
-          },
-        });
-
-        subscriptionCount++;
-        // Store unsubscribe handles for graceful shutdown (optional)
-      } catch (err) {
-        console.warn(`  subscription failed for ${eventType.split('::').pop()}: ${err.message}`);
-      }
-    }
-  }
-
-  if (subscriptionCount > 0) {
-    console.log(`  ✓ ${subscriptionCount} live subscriptions active`);
-    return true;
-  }
-
-  console.warn('  ⚠ No subscriptions started — falling back to polling');
-  return false;
-}
-
-// ── Polling fallback (used if subscriptions not supported) ───────────────────
-
-async function startPolling() {
-  console.log(`  Falling back to polling every ${POLL_MS / 1000}s…`);
-  while (true) {
-    await sleep(POLL_MS);
-    try {
-      await syncAll();
-    } catch (err) {
-      console.error('  poll error:', err.message);
     }
   }
 }
@@ -335,37 +214,26 @@ async function main() {
   await initSchema();
   startApi();
 
-  // Step 1: Backfill all historical events via GraphQL pagination
   console.log('  Backfilling historical events…');
   await syncAll();
   console.log('  ✓ Backfill complete');
   console.log();
 
-  // Step 2: Backfill missing metadata
   await backfillMissingIcons(grpcClient);
   console.log();
 
-  // Step 3: Start auto-graduation watcher
   startGraduationWatcher().catch(err =>
     console.error('Auto-grad watcher crashed:', err.message)
   );
 
-  // Step 4: Start real-time subscriptions (falls back to polling if unsupported)
-  const subscribed = await startSubscriptions();
-  if (!subscribed) {
-    // Polling fallback — runs forever
-    startPolling();
-  } else {
-    // Subscriptions are active — run a periodic catchup sync every 60s
-    // to catch any events missed during subscription gaps/reconnects
-    console.log('  Running catchup sync every 60s as safety net…');
-    while (true) {
-      await sleep(60_000);
-      try {
-        await syncAll();
-      } catch (err) {
-        console.error('  catchup error:', err.message);
-      }
+  // Poll every POLL_MS — no subscription support yet in SDK v2
+  console.log(`  Polling for new events every ${POLL_MS / 1000}s…`);
+  while (true) {
+    await sleep(POLL_MS);
+    try {
+      await syncAll();
+    } catch (err) {
+      console.error('  poll error:', err.message);
     }
   }
 }
