@@ -147,7 +147,7 @@ app.get('/trades/recent', async (req, res) => {
               c.name, c.symbol
        FROM events e
        LEFT JOIN curves c ON c.curve_id = e.curve_id
-       WHERE e.event_type LIKE '%TokensPurchased' OR e.event_type LIKE '%TokensSold'
+       WHERE (e.event_type LIKE '%TokensPurchased' OR e.event_type LIKE '%TokensBought' OR e.event_type LIKE '%TokensSold')
        ORDER BY e.timestamp_ms DESC
        LIMIT $1`,
       [limit]
@@ -171,13 +171,13 @@ app.get('/tokens/stats', async (req, res) => {
       pool.query(
         `SELECT curve_id,
                 json_agg(json_build_object('t', timestamp_ms, 'p',
-                  CASE WHEN event_type LIKE '%TokensPurchased'
+                  CASE WHEN (event_type LIKE '%TokensPurchased' OR event_type LIKE '%TokensBought')
                     THEN (data->>'sui_in')::float / 1e9 / NULLIF((data->>'tokens_out')::float / 1e6, 0)
                     ELSE (data->>'sui_out')::float / 1e9 / NULLIF((data->>'tokens_in')::float / 1e6, 0)
                   END
                 ) ORDER BY timestamp_ms ASC) as sparkline
          FROM events
-         WHERE (event_type LIKE '%TokensPurchased' OR event_type LIKE '%TokensSold')
+         WHERE (event_type LIKE '%TokensPurchased' OR event_type LIKE '%TokensBought' OR event_type LIKE '%TokensSold')
            AND timestamp_ms > $1
          GROUP BY curve_id`,
         [oneDayAgo]
@@ -207,7 +207,7 @@ app.get('/token/:curveId/ohlc', async (req, res) => {
     const result = await pool.query(
       `SELECT data, timestamp_ms, event_type FROM events
        WHERE curve_id = $1
-         AND (event_type LIKE '%TokensPurchased' OR event_type LIKE '%TokensSold')
+         AND (event_type LIKE '%TokensPurchased' OR event_type LIKE '%TokensBought' OR event_type LIKE '%TokensSold')
        ORDER BY timestamp_ms ASC`,
       [req.params.curveId]
     );
@@ -217,7 +217,7 @@ app.get('/token/:curveId/ohlc', async (req, res) => {
       .map(row => {
         const d   = row.data;
         const ts  = row.timestamp_ms ? Math.floor(Number(row.timestamp_ms) / 1000) : 0;
-        const isBuy = row.event_type.includes('TokensPurchased');
+        const isBuy = row.event_type.includes('TokensPurchased') || row.event_type.includes('TokensBought');
         const price = isBuy
           ? (Number(d.sui_in   ?? 0) / MIST) / (Number(d.tokens_out ?? 1) / 1e6)
           : (Number(d.sui_out  ?? 0) / MIST) / (Number(d.tokens_in  ?? 1) / 1e6);
@@ -247,7 +247,7 @@ app.get('/trader/:address', async (req, res) => {
         `SELECT e.curve_id, e.data, c.name, c.symbol, c.token_type, c.package_id
          FROM events e
          LEFT JOIN curves c ON c.curve_id = e.curve_id
-         WHERE e.event_type LIKE '%TokensPurchased'
+         WHERE (e.event_type LIKE '%TokensPurchased' OR e.event_type LIKE '%TokensBought')
            AND e.data->>'buyer' = $1`,
         [addr]
       ),
@@ -326,7 +326,7 @@ app.get('/leaderboard/traders', async (req, res) => {
                 (data->>'sui_in')::float / 1e9 AS vol_sui,
                 1 AS trade_count
          FROM events
-         WHERE event_type LIKE '%TokensPurchased'
+         WHERE (event_type LIKE '%TokensPurchased' OR event_type LIKE '%TokensBought')
            AND data->>'buyer' IS NOT NULL
          UNION ALL
          SELECT data->>'seller' AS wallet,
