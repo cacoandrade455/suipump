@@ -16,35 +16,11 @@ const MIST_PER_SUI = 1e9;
 const ONE_HOUR_MS  = 60 * 60 * 1000;
 const ONE_DAY_MS   = 24 * 60 * 60 * 1000;
 
-// Count unique non-zero holders for a given coin type.
-async function fetchHolderCount(client, coinType) {
-  const holders = new Set();
-  let cursor = null;
-  let pages  = 0;
-  while (pages < 20) {
-    let result;
-    try {
-      result = await client.getAllCoins({ coinType, cursor, limit: 50 });
-    } catch {
-      break;
-    }
-    for (const coin of result.data) {
-      if (coin.balance && coin.balance !== '0') {
-        holders.add(coin.coinObjectId);
-        if (coin.owner) {
-          const ownerAddr =
-            typeof coin.owner === 'string'
-              ? coin.owner
-              : coin.owner?.AddressOwner ?? coin.owner?.ObjectOwner ?? null;
-          if (ownerAddr) holders.add(ownerAddr);
-        }
-      }
-    }
-    if (!result.hasNextPage) break;
-    cursor = result.nextCursor;
-    pages++;
-  }
-  return holders.size;
+// Holder count requires cross-owner queries which aren't supported in gRPC.
+// The indexer computes holder counts from trade events and serves them via
+// /tokens/stats. This function is kept for API compatibility but returns null.
+async function fetchHolderCount(_client, _coinType) {
+  return null;
 }
 
 export function useTokenStats(tokens) {

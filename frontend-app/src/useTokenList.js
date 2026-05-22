@@ -30,8 +30,8 @@ export function useTokenList() {
         creator:          r.creator,
         name:             r.name,
         symbol:           r.symbol,
-        description:      r.description,
-        iconUrl:          r.iconUrl,
+        description:      r.description?.trim() || '',
+        iconUrl:          r.iconUrl?.trim() || '',
         timestamp:        r.createdAt ? Number(r.createdAt) : null,
         packageId:        r.packageId,
         isV5:             isV5OrLater(r.packageId),
@@ -82,8 +82,8 @@ export function useTokenList() {
       // Enrich with tokenType from on-chain object
       return await Promise.all(list.map(async (token) => {
         try {
-          const obj = await client.getObject({ id: token.curveId, options: { showType: true } });
-          const typeStr = obj.data?.type ?? '';
+          const obj = await client.getObject({ objectId: token.curveId });
+          const typeStr = obj.object?.type ?? '';
           const match   = typeStr.match(/Curve<(.+)>$/);
           return { ...token, tokenType: match ? match[1] : null };
         } catch {
@@ -97,19 +97,24 @@ export function useTokenList() {
         setLoading(true);
         setError(null);
 
+        console.log('[SUIPUMP] useTokenList load() — INDEXER_URL =', INDEXER_URL);
         let enriched;
         if (INDEXER_URL) {
           try {
             enriched = await loadFromIndexer();
-          } catch {
+            console.log('[SUIPUMP] useTokenList: loaded', enriched.length, 'tokens from indexer');
+          } catch (e) {
+            console.warn('[SUIPUMP] useTokenList: indexer failed, falling back to RPC:', e);
             enriched = await loadFromRpc();
           }
         } else {
+          console.warn('[SUIPUMP] useTokenList: no INDEXER_URL set, using RPC');
           enriched = await loadFromRpc();
         }
 
         if (!cancelled) setTokens(enriched);
       } catch (err) {
+        console.error('[SUIPUMP] useTokenList load failed:', err);
         if (!cancelled) setError(err.message || String(err));
       } finally {
         if (!cancelled) setLoading(false);
@@ -125,6 +130,6 @@ export function useTokenList() {
 }
 
 export async function fetchCurveState(client, curveId) {
-  const obj = await client.getObject({ id: curveId, options: { showContent: true } });
-  return obj.data?.content?.fields ?? null;
+  const obj = await client.getObject({ objectId: curveId, include: { json: true } });
+  return obj.object?.json ?? null;
 }

@@ -2,19 +2,26 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { createDAppKit, DAppKitProvider } from '@mysten/dapp-kit-react';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
+import { GrpcWebFetchTransport } from '@protobuf-ts/grpcweb-transport';
 import { BrowserRouter } from 'react-router-dom';
 import { Analytics } from '@vercel/analytics/react';
 
 import App from './App.jsx';
 import './index.css';
 
-// ── gRPC client (replaces JSON-RPC SuiClient) ─────────────────────────────────
-// Public Mysten Labs gRPC endpoints — free, no API key, no rate limits.
-// Replaces the deprecated JSON-RPC endpoint (removed July 31 2026).
-const GRPC_URLS = {
-  testnet: 'https://fullnode.testnet.sui.io:443',
-  mainnet: 'https://fullnode.mainnet.sui.io:443',
-};
+// ── BlockVision gRPC-Web with x-api-key auth ─────────────────────────────────
+// SuiGrpcClient ignores `meta` in its options (only forwards `baseUrl`), so
+// we build our own GrpcWebFetchTransport with the api key in meta and pass it
+// via the `transport` option.
+const GRPC_WEB_BASE = 'https://sui-testnet-grpc-web.blockvision.org';
+const API_KEY = '3E5yGg2pwBkloflndd4oQPQU08w';
+
+const transport = new GrpcWebFetchTransport({
+  baseUrl: GRPC_WEB_BASE,
+  meta: {
+    'x-api-key': API_KEY,
+  },
+});
 
 export const dAppKit = createDAppKit({
   networks: ['testnet'],
@@ -22,9 +29,12 @@ export const dAppKit = createDAppKit({
   createClient: (network) =>
     new SuiGrpcClient({
       network,
-      baseUrl: GRPC_URLS[network],
+      transport,
     }),
 });
+
+console.log('[SUIPUMP] gRPC-Web base:', GRPC_WEB_BASE);
+console.log('[SUIPUMP] API key set:', !!API_KEY, 'len:', API_KEY.length);
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>

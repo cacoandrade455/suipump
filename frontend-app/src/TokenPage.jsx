@@ -188,11 +188,30 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
   const client = useCurrentClient();
   const dAppKit_signAndExecute = useDAppKit();
   const signAndExecute = (args, callbacks) => {
-    dAppKit_signAndExecute.signAndExecuteTransaction(args).then(result => {
+    dAppKit_signAndExecute.signAndExecuteTransaction({
+      ...args,
+      include: { effects: true, events: true, objectTypes: true },
+    }).then(result => {
       if (result.FailedTransaction) {
-        callbacks?.onError?.(new Error(result.FailedTransaction.status?.error?.message || 'Transaction failed'));
+        const err = new Error(result.FailedTransaction.effects?.status?.error?.message || 'Transaction failed');
+        callbacks?.onError?.(err);
       } else {
-        callbacks?.onSuccess?.(result.Transaction);
+        // Mimic the old shape (digest/effects/objectChanges/events)
+        const tx = result.Transaction;
+        const compat = {
+          digest: tx.digest,
+          effects: tx.effects,
+          events: tx.events,
+          // changedObjects with idOperation==="Created" mapped to old objectChanges shape
+          objectChanges: (tx.effects?.changedObjects ?? []).map(c => ({
+            type: c.idOperation === 'Created' ? 'created' :
+                  c.idOperation === 'Deleted' ? 'deleted' : 'mutated',
+            objectId: c.objectId,
+            objectType: tx.objectTypes?.[c.objectId] || '',
+            owner: c.outputOwner,
+          })),
+        };
+        callbacks?.onSuccess?.(compat);
       }
     }).catch(err => callbacks?.onError?.(err));
   }
@@ -233,10 +252,8 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
 
       const out = [];
       for (const lockId of mine) {
-        const obj = await client.getObject({
-          id: lockId, options: { showContent: true },
-        }).catch(() => null);
-        const f = obj?.data?.content?.fields;
+        const obj = await client.getObject({ objectId: lockId, include: { json: true } }).catch(() => null);
+        const f = obj?.object?.json;
         if (!f) continue;
         out.push({
           id: lockId,
@@ -262,8 +279,8 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
     if (!account || busy) return;
     setBusy(true); setMsg('');
     try {
-      const objForRef = await client.getObject({ id: lockId, options: { showOwner: true } });
-      const isv = objForRef.data?.owner?.Shared?.initial_shared_version;
+      const objForRef = await client.getObject({ objectId: lockId });
+      const isv = objForRef.object?.owner?.Shared?.initialSharedVersion;
       const tx = new Transaction();
       const lockRef = isv
         ? tx.sharedObjectRef({ objectId: lockId, initialSharedVersion: isv, mutable: true })
@@ -291,17 +308,17 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
     setBusy(true); setMsg('');
     try {
       const atomic = BigInt(Math.floor(amt * 10 ** TOKEN_DECIMALS));
-      const coins = await client.getCoins({ owner: account.address, coinType: tokenType });
-      if (coins.data.length === 0) throw new Error('No token balance');
+      const coins = await client.listCoins({ owner: account.address, coinType: tokenType });
+      if (coins.objects.length === 0) throw new Error('No token balance');
 
-      const objForRef = await client.getObject({ id: curveId, options: { showOwner: true } });
-      const isv = objForRef.data?.owner?.Shared?.initial_shared_version;
+      const objForRef = await client.getObject({ objectId: curveId });
+      const isv = objForRef.object?.owner?.Shared?.initialSharedVersion;
       const tx = new Transaction();
       const curveRef = isv
         ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: isv, mutable: false })
         : tx.object(curveId);
 
-      const coinObjs = coins.data.map(c => tx.object(c.coinObjectId));
+      const coinObjs = coins.objects.map(c => tx.object(c.objectId));
       let tokenCoin;
       if (coinObjs.length === 1) {
         [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(atomic)]);
@@ -482,11 +499,30 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
   const client = useCurrentClient();
   const dAppKit_signAndExecutePanel = useDAppKit();
   const signAndExecutePanel = (args, callbacks) => {
-    dAppKit_signAndExecutePanel.signAndExecuteTransaction(args).then(result => {
+    dAppKit_signAndExecutePanel.signAndExecuteTransaction({
+      ...args,
+      include: { effects: true, events: true, objectTypes: true },
+    }).then(result => {
       if (result.FailedTransaction) {
-        callbacks?.onError?.(new Error(result.FailedTransaction.status?.error?.message || 'Transaction failed'));
+        const err = new Error(result.FailedTransaction.effects?.status?.error?.message || 'Transaction failed');
+        callbacks?.onError?.(err);
       } else {
-        callbacks?.onSuccess?.(result.Transaction);
+        // Mimic the old shape (digest/effects/objectChanges/events)
+        const tx = result.Transaction;
+        const compat = {
+          digest: tx.digest,
+          effects: tx.effects,
+          events: tx.events,
+          // changedObjects with idOperation==="Created" mapped to old objectChanges shape
+          objectChanges: (tx.effects?.changedObjects ?? []).map(c => ({
+            type: c.idOperation === 'Created' ? 'created' :
+                  c.idOperation === 'Deleted' ? 'deleted' : 'mutated',
+            objectId: c.objectId,
+            objectType: tx.objectTypes?.[c.objectId] || '',
+            owner: c.outputOwner,
+          })),
+        };
+        callbacks?.onSuccess?.(compat);
       }
     }).catch(err => callbacks?.onError?.(err));
   }
@@ -543,20 +579,20 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
 
   // Get CreatorCap for this curve
   const getCapId = async () => {
-    const ownedObjs = await client.getOwnedObjects({
-      owner: account.address,
-      filter: { StructType: `${pkgId}::bonding_curve::CreatorCap` },
-      options: { showContent: true },
-    });
-    const capObj = ownedObjs.data?.find(o => o.data?.content?.fields?.curve_id === curveId)
-      ?? ownedObjs.data?.[0];
+    const ownedObjs = await client.listOwnedObjects({
+              owner: account.address,
+              type: `${pkgId}::bonding_curve::CreatorCap`,
+              include: { json: true },
+            });
+    const capObj = ownedObjs.objects?.find(o => o.json?.curve_id === curveId)
+      ?? ownedObjs.objects?.[0];
     if (!capObj) throw new Error('CreatorCap not found in wallet');
-    return capObj.data?.objectId;
+    return capObj.objectId;
   };
 
   const getCurveRef = async (tx) => {
-    const objForRef = await client.getObject({ id: curveId, options: { showOwner: true } });
-    const initialSharedVersion = objForRef.data?.owner?.Shared?.initial_shared_version;
+    const objForRef = await client.getObject({ objectId: curveId });
+    const initialSharedVersion = objForRef.object?.owner?.Shared?.initialSharedVersion;
     return initialSharedVersion
       ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion, mutable: true })
       : tx.object(curveId);
@@ -614,8 +650,8 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
       // sharedObjectRef with mutable:true. A plain tx.object() can't be borrowed
       // mutably and fails with InvalidObjectByMutRef. (Owned metadata is rare,
       // but handle it too.)
-      const metaObj = await client.getObject({ id: metadataId, options: { showOwner: true } });
-      const metaSharedVersion = metaObj.data?.owner?.Shared?.initial_shared_version;
+      const metaObj = await client.getObject({ objectId: metadataId });
+      const metaSharedVersion = metaObj.object?.owner?.Shared?.initialSharedVersion;
 
       const capId = await getCapId();
 
@@ -883,11 +919,30 @@ function TradePanelContent({
 }) {
   const dAppKit_signAndExecutePanel = useDAppKit();
   const signAndExecutePanel = (args, callbacks) => {
-    dAppKit_signAndExecutePanel.signAndExecuteTransaction(args).then(result => {
+    dAppKit_signAndExecutePanel.signAndExecuteTransaction({
+      ...args,
+      include: { effects: true, events: true, objectTypes: true },
+    }).then(result => {
       if (result.FailedTransaction) {
-        callbacks?.onError?.(new Error(result.FailedTransaction.status?.error?.message || 'Transaction failed'));
+        const err = new Error(result.FailedTransaction.effects?.status?.error?.message || 'Transaction failed');
+        callbacks?.onError?.(err);
       } else {
-        callbacks?.onSuccess?.(result.Transaction);
+        // Mimic the old shape (digest/effects/objectChanges/events)
+        const tx = result.Transaction;
+        const compat = {
+          digest: tx.digest,
+          effects: tx.effects,
+          events: tx.events,
+          // changedObjects with idOperation==="Created" mapped to old objectChanges shape
+          objectChanges: (tx.effects?.changedObjects ?? []).map(c => ({
+            type: c.idOperation === 'Created' ? 'created' :
+                  c.idOperation === 'Deleted' ? 'deleted' : 'mutated',
+            objectId: c.objectId,
+            objectType: tx.objectTypes?.[c.objectId] || '',
+            owner: c.outputOwner,
+          })),
+        };
+        callbacks?.onSuccess?.(compat);
       }
     }).catch(err => callbacks?.onError?.(err));
   }
@@ -915,20 +970,20 @@ function TradePanelContent({
     setClaiming(true);
     setClaimMsg('');
     try {
-      const ownedObjs = await client2.getOwnedObjects({
-        owner: account.address,
-        filter: { StructType: `${pkgId}::bonding_curve::CreatorCap` },
-        options: { showContent: true },
-      });
-      const capObj = ownedObjs.data?.find(o => {
-        const fields = o.data?.content?.fields;
+      const ownedObjs = await client2.listOwnedObjects({
+              owner: account.address,
+              type: `${pkgId}::bonding_curve::CreatorCap`,
+              include: { json: true },
+            });
+      const capObj = ownedObjs.objects?.find(o => {
+        const fields = o.json;
         return fields?.curve_id === panelCurveId;
-      }) ?? ownedObjs.data?.[0];
+      }) ?? ownedObjs.objects?.[0];
       if (!capObj) throw new Error('CreatorCap not found in wallet');
-      const capId = capObj.data?.objectId;
+      const capId = capObj.objectId;
 
-      const objForRef = await client2.getObject({ id: panelCurveId, options: { showOwner: true } });
-      const initialSharedVersion = objForRef.data?.owner?.Shared?.initial_shared_version;
+      const objForRef = await client2.getObject({ objectId: panelCurveId });
+      const initialSharedVersion = objForRef.object?.owner?.Shared?.initialSharedVersion;
       const tx = new Transaction();
       const curveRef = initialSharedVersion
         ? tx.sharedObjectRef({ objectId: panelCurveId, initialSharedVersion, mutable: true })
@@ -1226,11 +1281,30 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   const client = useCurrentClient();
   const dAppKit_signAndExecute = useDAppKit();
   const signAndExecute = (args, callbacks) => {
-    dAppKit_signAndExecute.signAndExecuteTransaction(args).then(result => {
+    dAppKit_signAndExecute.signAndExecuteTransaction({
+      ...args,
+      include: { effects: true, events: true, objectTypes: true },
+    }).then(result => {
       if (result.FailedTransaction) {
-        callbacks?.onError?.(new Error(result.FailedTransaction.status?.error?.message || 'Transaction failed'));
+        const err = new Error(result.FailedTransaction.effects?.status?.error?.message || 'Transaction failed');
+        callbacks?.onError?.(err);
       } else {
-        callbacks?.onSuccess?.(result.Transaction);
+        // Mimic the old shape (digest/effects/objectChanges/events)
+        const tx = result.Transaction;
+        const compat = {
+          digest: tx.digest,
+          effects: tx.effects,
+          events: tx.events,
+          // changedObjects with idOperation==="Created" mapped to old objectChanges shape
+          objectChanges: (tx.effects?.changedObjects ?? []).map(c => ({
+            type: c.idOperation === 'Created' ? 'created' :
+                  c.idOperation === 'Deleted' ? 'deleted' : 'mutated',
+            objectId: c.objectId,
+            objectType: tx.objectTypes?.[c.objectId] || '',
+            owner: c.outputOwner,
+          })),
+        };
+        callbacks?.onSuccess?.(compat);
       }
     }).catch(err => callbacks?.onError?.(err));
   }
@@ -1265,8 +1339,8 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
     let cancelled = false;
     async function load() {
       try {
-        const obj = await client.getObject({ id: curveId, options: { showContent: true } });
-        if (!cancelled) setCurveState(obj.data?.content?.fields ?? null);
+        const obj = await client.getObject({ objectId: curveId, include: { json: true } });
+        if (!cancelled) setCurveState(obj.object?.json ?? null);
       } catch {}
     }
     load();
@@ -1308,7 +1382,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
             });
             found = res.data?.find(e => e.parsedJson?.curve_id === curveId);
             if (!res.hasNextPage) break;
-            cursor = res.nextCursor;
+            cursor = res.cursor;
           }
         }
         if (found?.parsedJson && !cancelled) setCurveCreatedData(found.parsedJson);
@@ -1323,10 +1397,10 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
     async function loadBalances() {
       try {
         const sui = await client.getBalance({ owner: account.address, coinType: '0x2::sui::SUI' });
-        if (!cancelled) setSuiBalance(Number(sui.totalBalance) / 1e9);
+        if (!cancelled) setSuiBalance(Number(sui.balance.balance) / 1e9);
         if (tokenType) {
           const tok = await client.getBalance({ owner: account.address, coinType: tokenType });
-          if (!cancelled) setTokenBalance(Number(tok.totalBalance) / 10 ** TOKEN_DECIMALS);
+          if (!cancelled) setTokenBalance(Number(tok.balance.balance) / 10 ** TOKEN_DECIMALS);
         }
       } catch {}
     }
@@ -1396,12 +1470,12 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
     if (!account?.address || !curveId || !client) { setIsCreator(false); return; }
     let cancelled = false;
     const checkPkg = async (pid) => {
-      const res = await client.getOwnedObjects({
-        owner: account.address,
-        filter: { StructType: `${pid}::bonding_curve::CreatorCap` },
-        options: { showContent: true },
-      });
-      return res.data?.some(o => o.data?.content?.fields?.curve_id === curveId);
+      const res = await client.listOwnedObjects({
+              owner: account.address,
+              type: `${pid}::bonding_curve::CreatorCap`,
+              include: { json: true },
+            });
+      return res.data?.some(o => o.object?.json?.curve_id === curveId);
     };
     Promise.all([
       checkPkg(PACKAGE_ID_V4),
@@ -1463,8 +1537,8 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
     setTxMsg('');
 
     try {
-      const objForRef = await client.getObject({ id: curveId, options: { showOwner: true } });
-      const initialSharedVersion = objForRef.data?.owner?.Shared?.initial_shared_version;
+      const objForRef = await client.getObject({ objectId: curveId });
+      const initialSharedVersion = objForRef.object?.owner?.Shared?.initialSharedVersion;
       const tx = new Transaction();
       const curveRef = initialSharedVersion
         ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion, mutable: true })
@@ -1493,8 +1567,8 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
         tx.transferObjects([tokens, refund], account.address);
       } else {
         const tokInAtomic = BigInt(Math.floor(amtFloat * 10 ** TOKEN_DECIMALS));
-        const coins = await client.getCoins({ owner: account.address, coinType: tokenType });
-        const coinObjs = coins.data.map(c => tx.object(c.coinObjectId));
+        const coins = await client.listCoins({ owner: account.address, coinType: tokenType });
+        const coinObjs = coins.objects.map(c => tx.object(c.objectId));
         let tokenCoin;
         if (coinObjs.length === 0) throw new Error('No token balance');
         if (coinObjs.length === 1) {
