@@ -157,7 +157,7 @@ export async function recomputeStats(curveId) {
   const [buysRes, sellsRes, commentsRes] = await Promise.all([
     pool.query(
       `SELECT data, timestamp_ms FROM events
-       WHERE curve_id = $1 AND event_type LIKE '%TokensPurchased'
+       WHERE curve_id = $1 AND (event_type LIKE '%TokensPurchased' OR event_type LIKE '%TokensBought')
        ORDER BY timestamp_ms DESC`,
       [curveId]
     ),
@@ -347,7 +347,7 @@ export async function getTradeHistory(curveId, limit = 100) {
   const res = await pool.query(
     `SELECT data, timestamp_ms, event_type FROM events
      WHERE curve_id = $1
-       AND (event_type LIKE '%TokensPurchased' OR event_type LIKE '%TokensSold')
+       AND (event_type LIKE '%TokensPurchased' OR event_type LIKE '%TokensBought' OR event_type LIKE '%TokensSold')
      ORDER BY timestamp_ms DESC
      LIMIT $2`,
     [curveId, limit]
