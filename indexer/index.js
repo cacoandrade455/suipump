@@ -189,7 +189,7 @@ async function syncAll() {
           console.log(`  synced ${count} new events: ${eventType.split('::').pop()}`);
         }
       } catch (err) {
-        console.error(`  error syncing ${eventType.split('::').pop()}:`, err.message);
+        console.error(`  error syncing ${eventType.split('::').pop()}:`, err.message, err.cause?.message ?? '');
       }
     }
   }
@@ -213,6 +213,18 @@ async function main() {
 
   await initSchema();
   startApi();
+
+  // Test GraphQL connectivity
+  console.log('  Testing GraphQL connectivity…');
+  try {
+    const test = await graphqlClient.query({
+      query: `{ chainIdentifier }`,
+    });
+    console.log(`  ✓ GraphQL connected — chain: ${test.data?.chainIdentifier}`);
+  } catch (err) {
+    console.error(`  ✗ GraphQL connection failed: ${err.message}`, err.cause?.message ?? '');
+    console.error(`  ⚠ Will keep retrying — indexer may be degraded`);
+  }
 
   console.log('  Backfilling historical events…');
   await syncAll();
