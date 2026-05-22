@@ -20,3 +20,8 @@ Desktop.ini
 coin-template/template.hex
 frontend/"scripts/sim_wallets.json" 
 "indexer/.env" 
+
+# Nexus agent signing key (local only, never commit)
+tool_keypair.json
+suipump-nexus-tools/tool_keypair.json
+suipump-nexus-tools/nexus_toolkit_config.json

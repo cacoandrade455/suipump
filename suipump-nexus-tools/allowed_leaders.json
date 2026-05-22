@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "leaders": [
+    {
+      "leader_id": "0x0d49f9a652187195d8cd36ac981aa137861e1671b7f45759637af2d810cdca06",
+      "keys": [
+        {
+          "kid": 0,
+          "public_key": "4a870dd0f2b64afa007bb105df1d8cfcc5432662596c0d87820539fe1154719c"
+        }
+      ]
+    },
+    {
+      "leader_id": "0x1e0e1d1fea2fbe920432d2065da01859a4219d05b6022e6d657a02dc088ea1f6",
+      "keys": [
+        {
+          "kid": 0,
+          "public_key": "68747be4f5c5dd8ea2c4da95b1539af180994b8787f144a0c773973e2042e76a"
+        }
+      ]
+    },
+    {
+      "leader_id": "0x3fcb0acc4c7696a344a61db25b8d7f8d9ec53bc3fdd6aba7271dcbe89dcf841b",
+      "keys": [
+        {
+          "kid": 0,
+          "public_key": "61150814d8bd82bb40301cc4f504dacf45a2aee1312ef838300771a25d6e4f13"
+        }
+      ]
+    }
+  ]
+}
