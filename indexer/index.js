@@ -17,7 +17,8 @@
 
 import 'dotenv/config';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
-import { SuiGraphQLClient, graphql } from '@mysten/sui/graphql';
+import { SuiGraphQLClient } from '@mysten/sui/graphql';
+import { graphql } from '@mysten/sui/graphql/schema';
 import {
   pool, initSchema, getCursor, saveCursor, insertEvent,
   upsertCurve, recomputeStats, enrichCurveMetadata, backfillMissingIcons,
