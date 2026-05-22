@@ -50,8 +50,7 @@ const grpcClient = new SuiGrpcClient({
 });
 
 const graphqlClient = new SuiGraphQLClient({
-  url:     GRAPHQL_URL,
-  network: NETWORK,
+  url: GRAPHQL_URL,
 });
 
 // ── Event type helpers ────────────────────────────────────────────────────────
