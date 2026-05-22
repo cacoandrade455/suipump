@@ -83,7 +83,7 @@ function HoldingsTab({ account, tokens, client, lang, onTotalValue }) {
           tokens.filter(tk => tk.tokenType).map(async (token) => {
             try {
               const balance = await client.getBalance({ owner: account.address, coinType: token.tokenType });
-              const rawBalance = BigInt(balance.totalBalance ?? '0');
+              const rawBalance = BigInt(balance.balance.balance ?? '0');
               if (rawBalance === 0n) return null;
 
               let reserveMist = 0n, tokensRemaining = 0n, graduated = false;
@@ -93,8 +93,8 @@ function HoldingsTab({ account, tokens, client, lang, onTotalValue }) {
               if (idx) {
                 reserveMist = BigInt(Math.floor((idx.reserve_sui ?? 0) * MIST_PER_SUI));
               } else {
-                const curveObj = await client.getObject({ id: token.curveId, options: { showContent: true } });
-                const fields = curveObj.data?.content?.fields;
+                const curveObj = await client.getObject({ objectId: token.curveId, include: { json: true } });
+                const fields = curveObj.object?.json;
                 if (fields) {
                   const rawSui = fields.sui_reserve;
                   reserveMist = typeof rawSui === 'object' ? BigInt(rawSui?.value ?? 0) : BigInt(rawSui ?? 0);
@@ -316,7 +316,35 @@ function TradedTab({ account, tokens, client, lang }) {
 
 function CreatedTab({ account, tokens, client, lang }) {
   const navigate = useNavigate();
-  const dAppKit = useDAppKit();
+  const dAppKit_signAndExecute = useDAppKit();
+  const signAndExecute = (args, callbacks) => {
+    dAppKit_signAndExecute.signAndExecuteTransaction({
+      ...args,
+      include: { effects: true, events: true, objectTypes: true },
+    }).then(result => {
+      if (result.FailedTransaction) {
+        const err = new Error(result.FailedTransaction.effects?.status?.error?.message || 'Transaction failed');
+        callbacks?.onError?.(err);
+      } else {
+        // Mimic the old shape (digest/effects/objectChanges/events)
+        const tx = result.Transaction;
+        const compat = {
+          digest: tx.digest,
+          effects: tx.effects,
+          events: tx.events,
+          // changedObjects with idOperation==="Created" mapped to old objectChanges shape
+          objectChanges: (tx.effects?.changedObjects ?? []).map(c => ({
+            type: c.idOperation === 'Created' ? 'created' :
+                  c.idOperation === 'Deleted' ? 'deleted' : 'mutated',
+            objectId: c.objectId,
+            objectType: tx.objectTypes?.[c.objectId] || '',
+            owner: c.outputOwner,
+          })),
+        };
+        callbacks?.onSuccess?.(compat);
+      }
+    }).catch(err => callbacks?.onError?.(err));
+  }
   const [curveStats, setCurveStats]   = useState({});
   const [capMap, setCapMap]           = useState({}); // curveId → capId
   const [loading, setLoading]         = useState(true);
@@ -348,7 +376,7 @@ function CreatedTab({ account, tokens, client, lang }) {
         }
 
         const curveObjs = await Promise.all(
-          createdTokens.map(tk => client.getObject({ id: tk.curveId, options: { showContent: true } }).catch(() => null))
+          createdTokens.map(tk => client.getObject({ objectId: tk.curveId, include: { json: true } }).catch(() => null))
         );
         const iconResults = await Promise.all(
           createdTokens.map(async (tk) => {
@@ -362,8 +390,8 @@ function CreatedTab({ account, tokens, client, lang }) {
         for (let i = 0; i < createdTokens.length; i++) {
           const obj = curveObjs[i];
           const tk  = createdTokens[i];
-          if (!obj?.data?.content?.fields) continue;
-          const fields = obj.data.content.fields;
+          if (!obj?.object?.json) continue;
+          const fields = obj.object.json;
           const reserveMist  = BigInt(fields.sui_reserve ?? 0);
           const reserveSui   = mistToSui(reserveMist);
           const progress     = Math.min(100, (reserveSui / DRAIN_SUI_APPROX) * 100);
@@ -378,13 +406,13 @@ function CreatedTab({ account, tokens, client, lang }) {
         const caps = {};
         await Promise.all(createdTokens.map(async (tk) => {
           try {
-            const ownedObjs = await client.getOwnedObjects({
+            const ownedObjs = await client.listOwnedObjects({
               owner: account.address,
-              filter: { StructType: `${tk.packageId}::bonding_curve::CreatorCap` },
-              options: { showContent: true },
+              type: `${tk.packageId}::bonding_curve::CreatorCap`,
+              include: { json: true },
             });
-            const capObj = ownedObjs.data?.find(o => o.data?.content?.fields?.curve_id === tk.curveId);
-            if (capObj?.data?.objectId) caps[tk.curveId] = capObj.data.objectId;
+            const capObj = ownedObjs.objects?.find(o => o.json?.curve_id === tk.curveId);
+            if (capObj?.objectId) caps[tk.curveId] = capObj.objectId;
           } catch {}
         }));
         setCapMap(caps);
@@ -418,8 +446,8 @@ function CreatedTab({ account, tokens, client, lang }) {
       // Verify on-chain fees before building PTB — avoids ENoFees abort
       const verified = await Promise.all(claimable.map(async (tk) => {
         try {
-          const obj = await client.getObject({ id: tk.curveId, options: { showContent: true } });
-          const f = obj.data?.content?.fields;
+          const obj = await client.getObject({ objectId: tk.curveId, include: { json: true } });
+          const f = obj.object?.json;
           // creator_fees is Balance<SUI> — serialized as { value: "123" } or plain string
           const raw = f?.creator_fees;
           const fees = typeof raw === 'object' ? Number(raw?.value ?? 0) : Number(raw ?? 0);
@@ -436,8 +464,8 @@ function CreatedTab({ account, tokens, client, lang }) {
       for (const tk of actualClaimable) {
         const pkgId   = tk.packageId;
         const capId   = capMap[tk.curveId];
-        const objForRef = await client.getObject({ id: tk.curveId, options: { showOwner: true } });
-        const initVer   = objForRef.data?.owner?.Shared?.initial_shared_version;
+        const objForRef = await client.getObject({ objectId: tk.curveId });
+        const initVer   = objForRef.object?.owner?.Shared?.initialSharedVersion;
         const curveRef  = initVer
           ? tx.sharedObjectRef({ objectId: tk.curveId, initialSharedVersion: initVer, mutable: true })
           : tx.object(tk.curveId);
@@ -447,25 +475,27 @@ function CreatedTab({ account, tokens, client, lang }) {
           arguments: [tx.object(capId), curveRef],
         });
       }
-      try {
-        const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-        if (result.FailedTransaction) {
-          throw new Error(result.FailedTransaction.status?.error?.message || 'Claim failed');
+      signAndExecute(
+        { transaction: tx },
+        {
+          onSuccess: () => {
+            setClaimMsg(`✅ Claimed fees from ${actualClaimable.length} token${actualClaimable.length !== 1 ? 's' : ''}`);
+            setClaimingAll(false);
+            setTimeout(() => setClaimMsg(''), 4000);
+            // Refresh stats
+            setCurveStats(prev => {
+              const next = { ...prev };
+              for (const tk of actualClaimable) next[tk.curveId] = { ...next[tk.curveId], creatorFeesSui: 0 };
+              return next;
+            });
+          },
+          onError: (err) => {
+            setClaimMsg(err.message || 'Claim failed');
+            setClaimingAll(false);
+            setTimeout(() => setClaimMsg(''), 4000);
+          },
         }
-        setClaimMsg(`✅ Claimed fees from ${actualClaimable.length} token${actualClaimable.length !== 1 ? 's' : ''}`);
-        setClaimingAll(false);
-        setTimeout(() => setClaimMsg(''), 4000);
-        // Refresh stats
-        setCurveStats(prev => {
-          const next = { ...prev };
-          for (const tk of actualClaimable) next[tk.curveId] = { ...next[tk.curveId], creatorFeesSui: 0 };
-          return next;
-        });
-      } catch (err) {
-        setClaimMsg(err.message || 'Claim failed');
-        setClaimingAll(false);
-        setTimeout(() => setClaimMsg(''), 4000);
-      }
+      );
     } catch (err) {
       setClaimMsg(err.message || 'Claim failed');
       setClaimingAll(false);

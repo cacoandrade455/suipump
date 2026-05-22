@@ -72,7 +72,7 @@ export default function AIAnalysis({ curveId, tokenType, name, symbol, progress,
           [...candidates].map(async (addr) => {
             try {
               const bal = await client.getBalance({ owner: addr, coinType: tokenType });
-              return BigInt(bal.totalBalance ?? '0');
+              return BigInt(bal.balance.balance ?? '0');
             } catch {
               return 0n;
             }

@@ -217,8 +217,8 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch
     let cancelled = false;
     async function load() {
       try {
-        const obj = await client.getObject({ id: token.curveId, options: { showContent: true } });
-        if (!cancelled) setCurveState(obj.data?.content?.fields ?? null);
+        const obj = await client.getObject({ objectId: token.curveId, include: { json: true } });
+        if (!cancelled) setCurveState(obj.object?.json ?? null);
       } catch { }
     }
     load();
@@ -232,8 +232,8 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch
       try {
         let tokenType = token.tokenType;
         if (!tokenType && token.curveId) {
-          const obj = await client.getObject({ id: token.curveId, options: { showType: true } });
-          const m = obj.data?.type?.match(/Curve<(.+)>$/);
+          const obj = await client.getObject({ objectId: token.curveId });
+          const m = obj.object?.type?.match(/Curve<(.+)>$/);
           tokenType = m ? m[1] : null;
         }
         if (!tokenType) return;
@@ -689,7 +689,8 @@ function NotificationBell({ walletAddress }) {
 
 function WalletButton({ size = 'md', lang = 'en' }) {
   const account = useCurrentAccount();
-  const dAppKit = useDAppKit();
+  const dAppKit_disc = useDAppKit();
+  const disconnect = () => dAppKit_disc.disconnect();
   const [open, setOpen] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const menuRef = React.useRef(null);
@@ -742,7 +743,7 @@ function WalletButton({ size = 'md', lang = 'en' }) {
             <div className="text-[10px] font-mono text-white/60 truncate">{short}</div>
           </div>
           <button
-            onClick={() => { dAppKit.disconnect(); setShowMenu(false); }}
+            onClick={() => { disconnect(); setShowMenu(false); }}
             className="w-full px-3 py-2.5 text-left text-[10px] font-mono text-red-400/80 hover:bg-white/5 hover:text-red-400 transition-colors"
           >
             {t(lang, 'disconnect')}
@@ -1015,8 +1016,8 @@ function CrownBanner({ token, stats, suiUsd }) {
   useEffect(() => {
     if (!token) return;
     let cancelled = false;
-    client.getObject({ id: token.curveId, options: { showContent: true } })
-      .then(o => { if (!cancelled) setCurveState(o.data?.content?.fields ?? null); })
+    client.getObject({ objectId: token.curveId, include: { json: true } })
+      .then(o => { if (!cancelled) setCurveState(o.object?.json ?? null); })
       .catch(() => {});
     return () => { cancelled = true; };
   }, [token?.curveId, client]);
@@ -1027,8 +1028,8 @@ function CrownBanner({ token, stats, suiUsd }) {
       try {
         let tokenType = token?.tokenType;
         if (!tokenType && token?.curveId) {
-          const obj = await client.getObject({ id: token.curveId, options: { showType: true } });
-          const m = obj.data?.type?.match(/Curve<(.+)>$/);
+          const obj = await client.getObject({ objectId: token.curveId });
+          const m = obj.object?.type?.match(/Curve<(.+)>$/);
           tokenType = m ? m[1] : null;
         }
         if (!tokenType) return;
@@ -1136,7 +1137,7 @@ function HomePage({ onLaunch, lang = 'en' }) {
 
         // Fetch curve objects + last trade events in parallel
         const [objResults, ...eventResults] = await Promise.all([
-          Promise.all(tokens.map(t => client.getObject({ id: t.curveId, options: { showContent: true } }).catch(() => null))),
+          Promise.all(tokens.map(t => client.getObject({ objectId: t.curveId, include: { json: true } }).catch(() => null))),
           ...eventQueries,
         ]);
 
@@ -1154,7 +1155,7 @@ function HomePage({ onLaunch, lang = 'en' }) {
 
         const map = {};
         objResults.forEach((res, i) => {
-          const fields = res?.data?.content?.fields;
+          const fields = res?.object?.json;
           if (!fields) return;
           const curveId   = tokens[i].curveId;
           const reserveSui = Number(BigInt(fields.sui_reserve ?? 0)) / 1e9;
@@ -1356,9 +1357,9 @@ function TokenPageWrapper({ lang }) {
     let cancelled = false;
     async function load() {
       try {
-        const obj = await client.getObject({ id: curveId, options: { showContent: true, showType: true } });
+        const obj = await client.getObject({ objectId: curveId, include: { json: true } });
         if (cancelled) return;
-        const typeStr = obj.data?.type ?? '';
+        const typeStr = obj.object?.type ?? '';
         // typeStr = "0xPKG::bonding_curve::Curve<0xTEMPLATE::module::TOKEN>"
         // Extract bonding curve package ID from the outer type (before ::bonding_curve)
         const outerPkgMatch = typeStr.match(/^(0x[0-9a-fA-F]+)::bonding_curve::Curve/);

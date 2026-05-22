@@ -105,7 +105,7 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = n
             [...candidates].map(async (addr) => {
               try {
                 const bal = await client.getBalance({ owner: addr, coinType: tokenType });
-                return { addr, raw: BigInt(bal.totalBalance ?? '0') };
+                return { addr, raw: BigInt(bal.balance.balance ?? '0') };
               } catch {
                 return { addr, raw: 0n };
               }

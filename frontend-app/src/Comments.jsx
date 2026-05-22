@@ -204,7 +204,35 @@ function CommentItem({ comment, replies, account, curveId, onReplyPosted }) {
 export default function Comments({ curveId, packageId }) {
   const account = useCurrentAccount();
   const client = useCurrentClient();
-  const dAppKit = useDAppKit();
+  const dAppKit_signAndExecute = useDAppKit();
+  const signAndExecute = (args, callbacks) => {
+    dAppKit_signAndExecute.signAndExecuteTransaction({
+      ...args,
+      include: { effects: true, events: true, objectTypes: true },
+    }).then(result => {
+      if (result.FailedTransaction) {
+        const err = new Error(result.FailedTransaction.effects?.status?.error?.message || 'Transaction failed');
+        callbacks?.onError?.(err);
+      } else {
+        // Mimic the old shape (digest/effects/objectChanges/events)
+        const tx = result.Transaction;
+        const compat = {
+          digest: tx.digest,
+          effects: tx.effects,
+          events: tx.events,
+          // changedObjects with idOperation==="Created" mapped to old objectChanges shape
+          objectChanges: (tx.effects?.changedObjects ?? []).map(c => ({
+            type: c.idOperation === 'Created' ? 'created' :
+                  c.idOperation === 'Deleted' ? 'deleted' : 'mutated',
+            objectId: c.objectId,
+            objectType: tx.objectTypes?.[c.objectId] || '',
+            owner: c.outputOwner,
+          })),
+        };
+        callbacks?.onSuccess?.(compat);
+      }
+    }).catch(err => callbacks?.onError?.(err));
+  }
 
   const [comments, setComments] = useState([]);
   const [replies, setReplies] = useState([]);
@@ -278,8 +306,8 @@ export default function Comments({ curveId, packageId }) {
       if (isV7OrLater(pkg)) {
         // V7: post_comment(&mut Curve, payment: Coin<SUI>, text)
         // Curve is a shared object — must use sharedObjectRef, not tx.object.
-        const objForRef = await client.getObject({ id: curveId, options: { showOwner: true } });
-        const initialSharedVersion = objForRef.data?.owner?.Shared?.initial_shared_version;
+        const objForRef = await client.getObject({ objectId: curveId });
+        const initialSharedVersion = objForRef.object?.owner?.Shared?.initialSharedVersion;
         const curveRef = initialSharedVersion
           ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion, mutable: true })
           : tx.object(curveId);
@@ -299,23 +327,25 @@ export default function Comments({ curveId, packageId }) {
         });
       }
 
-      try {
-        const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-        if (result.FailedTransaction) {
-          throw new Error(result.FailedTransaction.status?.error?.message || 'Transaction failed');
+      signAndExecute(
+        { transaction: tx },
+        {
+          onSuccess: () => {
+            setText('');
+            setPosting(false);
+            setComments(prev => [...prev, {
+              id: 'pending_' + Date.now(),
+              author: account.address,
+              text: trimmed,
+              timestamp: Date.now(),
+            }]);
+          },
+          onError: (err) => {
+            setPostErr(err.message || 'Failed to post');
+            setPosting(false);
+          },
         }
-        setText('');
-        setPosting(false);
-        setComments(prev => [...prev, {
-          id: 'pending_' + Date.now(),
-          author: account.address,
-          text: trimmed,
-          timestamp: Date.now(),
-        }]);
-      } catch (err) {
-        setPostErr(err.message || 'Failed to post');
-        setPosting(false);
-      }
+      );
     } catch (err) {
       setPostErr(err.message || 'Failed to post');
       setPosting(false);

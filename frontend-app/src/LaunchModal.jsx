@@ -123,16 +123,28 @@ function TokenPreview({ name, symbol, iconUrl }) {
 export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
   const account = useCurrentAccount();
   const client = useCurrentClient();
-  const dAppKit = useDAppKit();
-  // Wrapper that preserves the old `{ digest }` return shape so the existing
-  // launch flow doesn't need to be rewritten. The new dapp-kit returns either
-  // `{ Transaction: { digest } }` or `{ FailedTransaction: { status: { error } } }`.
+  const dAppKit_signAndExecute = useDAppKit();
+  // Awaitable wrapper — LaunchModal uses `await signAndExecute({transaction})`
+  // and reads .digest + .effects + .objectTypes on the result.
   const signAndExecute = async (args) => {
-    const result = await dAppKit.signAndExecuteTransaction(args);
-    if (result.FailedTransaction) {
-      throw new Error(result.FailedTransaction.status?.error?.message || 'Transaction failed');
+    console.log('[SUIPUMP] calling signAndExecuteTransaction, dAppKit:', dAppKit_signAndExecute);
+    console.log('[SUIPUMP] args:', args);
+    try {
+      const result = await dAppKit_signAndExecute.signAndExecuteTransaction({
+        ...args,
+        include: { effects: true, events: true, objectTypes: true },
+      });
+      console.log('[SUIPUMP] tx result:', result);
+      if (result.FailedTransaction) {
+        throw new Error(
+          result.FailedTransaction.effects?.status?.error?.message || 'Transaction failed'
+        );
+      }
+      return result.Transaction; // { digest, effects, events, objectTypes }
+    } catch (e) {
+      console.error('[SUIPUMP] signAndExecuteTransaction threw:', e);
+      throw e;
     }
-    return { digest: result.Transaction.digest };
   };
 
   const [step, setStep] = useState(0);
@@ -228,22 +240,60 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
       const [upgradeCap] = tx1.publish({ modules: [[...patched]], dependencies: ['0x1', '0x2'] });
       tx1.transferObjects([upgradeCap], account.address);
 
+      console.log('[SUIPUMP] Tx1: about to call signAndExecute');
       const res1raw = await signAndExecute({ transaction: tx1 });
+      console.log('[SUIPUMP] Tx1: signed, digest =', res1raw?.digest);
+      console.log('[SUIPUMP] Tx1: result =', res1raw);
       setTx1Digest(res1raw.digest);
 
-      const res1 = await client.waitForTransaction({
-        digest: res1raw.digest,
-        options: { showEffects: true, showObjectChanges: true },
-      });
-      if (res1.effects.status.status !== 'success') throw new Error('Tx1 failed: ' + res1.effects.status.error);
+      // signAndExecute already returns the Transaction with effects + objectTypes.
+      // Wait for indexing so subsequent getObject calls reflect new state.
+      console.log('[SUIPUMP] Tx1: waiting for transaction to be indexed...');
+      try {
+        await client.waitForTransaction({ digest: res1raw.digest, timeout: 30000 });
+        console.log('[SUIPUMP] Tx1: waitForTransaction resolved');
+      } catch (waitErr) {
+        console.warn('[SUIPUMP] Tx1: waitForTransaction failed (continuing anyway):', waitErr);
+      }
 
-      const createdObjs = res1.objectChanges?.filter(c => c.type === 'created') ?? [];
-      const treasuryCapObj = createdObjs.find(o => o.objectType?.includes('TreasuryCap'));
-      if (!treasuryCapObj) throw new Error('TreasuryCap not found in Tx1 output');
+      if (res1raw.effects?.status?.success !== true) {
+        throw new Error('Tx1 failed: ' + (res1raw.effects?.status?.error?.message || 'unknown'));
+      }
+      console.log('[SUIPUMP] Tx1: status success, checking changedObjects');
 
-      const treasuryCapId = treasuryCapObj.objectId;
-      const newTokenType = treasuryCapObj.objectType.match(/<(.+)>/)?.[1];
+      // changedObjects (was objectChanges) doesn't include type info; objectTypes is a map.
+      const createdIds = (res1raw.effects?.changedObjects ?? [])
+        .filter(c => c.idOperation === 'Created')
+        .map(c => c.objectId);
+      console.log('[SUIPUMP] Tx1: created IDs:', createdIds);
+      console.log('[SUIPUMP] Tx1: objectTypes map:', res1raw.objectTypes);
+
+      let treasuryCapId = null;
+      let newTokenType = null;
+      for (const id of createdIds) {
+        // Prefer the objectTypes map from sign result; if missing, fetch the object.
+        let typeStr = res1raw.objectTypes?.[id] || '';
+        if (!typeStr) {
+          try {
+            const obj = await client.getObject({ objectId: id });
+            typeStr = obj?.object?.type || '';
+            console.log('[SUIPUMP] Tx1: fetched type for', id, '→', typeStr);
+          } catch (e) {
+            console.log('[SUIPUMP] Tx1: getObject failed for', id, e);
+          }
+        } else {
+          console.log('[SUIPUMP] Tx1: checking', id, '→', typeStr);
+        }
+        if (typeStr.includes('TreasuryCap')) {
+          treasuryCapId = id;
+          const m = typeStr.match(/<(.+)>/);
+          newTokenType = m ? m[1] : null;
+          break;
+        }
+      }
+      if (!treasuryCapId) throw new Error('TreasuryCap not found in Tx1 output');
       if (!newTokenType) throw new Error('Could not parse token type');
+      console.log('[SUIPUMP] Tx1: treasuryCapId =', treasuryCapId, 'newTokenType =', newTokenType);
 
       setTxStep('tx2');
 
@@ -346,16 +396,73 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
       tx2.moveCall({ target: `${PACKAGE_ID}::bonding_curve::share_curve`, typeArguments: [newTokenType], arguments: [curve] });
       tx2.transferObjects([cap], account.address);
 
+      console.log('[SUIPUMP] Tx2: about to call signAndExecute');
       const res2raw = await signAndExecute({ transaction: tx2 });
-      const res2 = await client.waitForTransaction({
-        digest: res2raw.digest,
-        options: { showEffects: true, showObjectChanges: true, showEvents: true },
-      });
-      if (res2.effects.status.status !== 'success') throw new Error('Tx2 failed: ' + res2.effects.status.error);
+      console.log('[SUIPUMP] Tx2: signed, digest =', res2raw?.digest);
+      console.log('[SUIPUMP] Tx2: result =', res2raw);
+
+      try {
+        await client.waitForTransaction({ digest: res2raw.digest, timeout: 30000 });
+      } catch (e) {
+        console.warn('[SUIPUMP] Tx2: waitForTransaction failed (continuing):', e);
+      }
+
+      if (res2raw.effects?.status?.success !== true) {
+        throw new Error('Tx2 failed: ' + (res2raw.effects?.status?.error?.message || 'unknown'));
+      }
       setTx2Digest(res2raw.digest);
 
-      const curveEvent = res2.events?.find(e => e.type?.includes('CurveCreated'));
-      const curveId = curveEvent?.parsedJson?.curve_id;
+      console.log('[SUIPUMP] Tx2: events =', res2raw.events);
+      console.log('[SUIPUMP] Tx2: changedObjects =', res2raw.effects?.changedObjects);
+      console.log('[SUIPUMP] Tx2: objectTypes =', res2raw.objectTypes);
+
+      // Find curveId from CurveCreated event (new field names: eventType + json)
+      const curveEvent = res2raw.events?.find(e =>
+        (e.eventType || e.type || '').includes('CurveCreated')
+      );
+      let curveId = curveEvent?.json?.curve_id || curveEvent?.parsedJson?.curve_id;
+      console.log('[SUIPUMP] Tx2: curveId from event =', curveId);
+
+      // Fallback 1 — scan created objects via objectTypes map
+      if (!curveId && res2raw.objectTypes) {
+        const created = (res2raw.effects?.changedObjects ?? [])
+          .filter(c => c.idOperation === 'Created');
+        for (const c of created) {
+          const t = res2raw.objectTypes?.[c.objectId] || '';
+          if (t.includes('::bonding_curve::Curve<')) {
+            curveId = c.objectId;
+            console.log('[SUIPUMP] Tx2: curveId from objectTypes =', curveId);
+            break;
+          }
+        }
+      }
+
+      // Fallback 2 — fetch each created object's type via getObject (objectTypes missing)
+      if (!curveId) {
+        console.log('[SUIPUMP] Tx2: falling back to per-object getObject lookup');
+        const createdIds = (res2raw.effects?.changedObjects ?? [])
+          .filter(c => c.idOperation === 'Created')
+          .map(c => c.objectId);
+        for (const id of createdIds) {
+          try {
+            const obj = await client.getObject({ objectId: id });
+            const t = obj?.object?.type || '';
+            console.log('[SUIPUMP] Tx2: fetched type for', id, '→', t);
+            if (t.includes('::bonding_curve::Curve<')) {
+              curveId = id;
+              break;
+            }
+          } catch (e) {
+            console.log('[SUIPUMP] Tx2: getObject failed for', id, e);
+          }
+        }
+      }
+
+      console.log('[SUIPUMP] Tx2: final curveId =', curveId);
+      if (!curveId) {
+        throw new Error('Could not find curveId in Tx2 output');
+      }
+
       setNewCurveId(curveId);
       setTxStep('done');
       if (onLaunched) onLaunched({ curveId, tokenType: newTokenType, name: tokenName, symbol: tokenSymbol });
