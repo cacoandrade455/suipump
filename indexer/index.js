@@ -38,7 +38,7 @@ const PACKAGE_IDS = process.env.PACKAGE_IDS
 
 const NETWORK      = process.env.NETWORK       ?? 'testnet';
 const GRPC_URL     = process.env.SUI_GRPC_URL  ?? `https://fullnode.${NETWORK}.sui.io:443`;
-const GRAPHQL_URL  = process.env.SUI_GRAPHQL_URL ?? `https://sui-${NETWORK}.mystenlabs.com/graphql`;
+const GRAPHQL_URL  = process.env.SUI_GRAPHQL_URL ?? `https://graphql.${NETWORK}.sui.io/graphql`;
 const PAGE_SIZE    = 50;
 const POLL_MS      = parseInt(process.env.POLL_MS ?? '10000');
 
