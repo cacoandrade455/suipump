@@ -187,53 +187,44 @@ function pkgFromEventType(eventType) {
 async function processCheckpoint(checkpoint, seqNum) {
   let processed = 0;
 
-  // Collect all digests that have tracked events
-  const trackedDigests = new Set();
+  // Single pass: collect tracked event types present in this checkpoint
+  const trackedEventTypes = new Set();
   let totalEvents = 0;
   for (const tx of checkpoint.transactions ?? []) {
     for (const event of tx.events?.events ?? []) {
       totalEvents++;
-      if (event.eventType) {
-        if (event.eventType.includes('bonding_curve')) {
-          console.log(`[stream-all] bonding_curve event: ${event.eventType}`);
-        }
-        if (TRACKED_EVENT_TYPES.has(event.eventType)) {
-          trackedDigests.add(tx.digest ?? 'unknown');
-          break;
-        }
-      }
-    }
-  }
-  if (totalEvents > 0) console.log(`[stream-scan] checkpoint ${seqNum}: ${totalEvents} total events, ${trackedDigests.size} tracked`);
-  if (trackedDigests.size === 0) return 0;
-
-  // Fetch full event JSON via GraphQL events query filtered by checkpoint + event type
-  // (GraphQL EventFilter has no txDigest field; atCheckpoint is the targeted approach)
-  const trackedEventTypes = new Set();
-  for (const tx of checkpoint.transactions ?? []) {
-    for (const event of tx.events?.events ?? []) {
       if (event.eventType && TRACKED_EVENT_TYPES.has(event.eventType)) {
         trackedEventTypes.add(event.eventType);
       }
     }
   }
 
+  if (totalEvents > 0 && trackedEventTypes.size > 0) {
+    console.log(`[stream-scan] checkpoint ${seqNum}: ${totalEvents} total events, ${trackedEventTypes.size} tracked types`);
+  }
+  if (trackedEventTypes.size === 0) return 0;
+
   for (const eventType of trackedEventTypes) {
     try {
-      const result = await graphqlClient.query({
-        query: `query CheckpointEvents($type: String!, $cp: UInt53!) {
-          events(filter: { type: $type, atCheckpoint: $cp }, first: 50) {
-            nodes {
-              contents { type { repr } json }
-              transaction { digest }
-              timestamp
+      // GraphQL may lag behind gRPC stream — retry up to 5x with 1s delay
+      let nodes = [];
+      for (let attempt = 0; attempt < 5; attempt++) {
+        if (attempt > 0) await sleep(1000);
+        const result = await graphqlClient.query({
+          query: `query CheckpointEvents($type: String!, $cp: UInt53!) {
+            events(filter: { type: $type, atCheckpoint: $cp }, first: 50) {
+              nodes {
+                contents { type { repr } json }
+                transaction { digest }
+                timestamp
+              }
             }
-          }
-        }`,
-        variables: { type: eventType, cp: seqNum },
-      });
-
-      const nodes = result.data?.events?.nodes ?? [];
+          }`,
+          variables: { type: eventType, cp: seqNum },
+        });
+        nodes = result.data?.events?.nodes ?? [];
+        if (nodes.length > 0) break;
+      }
       console.log(`[stream-gql] checkpoint ${seqNum} type=${eventType.split('::').pop()} nodes=${nodes.length}`);
 
       for (let i = 0; i < nodes.length; i++) {
