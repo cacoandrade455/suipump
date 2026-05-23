@@ -41,7 +41,7 @@ const PACKAGE_IDS = process.env.PACKAGE_IDS
   : ALL_PACKAGE_IDS;
 
 const NETWORK     = process.env.NETWORK          ?? 'testnet';
-const GRPC_URL    = process.env.SUI_GRPC_URL     ?? `fullnode.${NETWORK}.sui.io:443`;
+const GRPC_URL    = (process.env.SUI_GRPC_URL ?? `fullnode.${NETWORK}.sui.io:443`).replace(/^https?:///, '');
 const GRAPHQL_URL = process.env.SUI_GRAPHQL_URL  ?? `https://graphql.${NETWORK}.sui.io/graphql`;
 const PAGE_SIZE   = 50;
 
