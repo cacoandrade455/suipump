@@ -207,23 +207,42 @@ async function processCheckpoint(checkpoint, seqNum) {
   if (totalEvents > 0) console.log(`[stream-scan] checkpoint ${seqNum}: ${totalEvents} total events, ${trackedDigests.size} tracked`);
   if (trackedDigests.size === 0) return 0;
 
-  // Fetch full event JSON via gRPC core getTransaction (Value.toJson handles proto conversion)
-  for (const digest of trackedDigests) {
+  // Fetch full event JSON via GraphQL events query filtered by checkpoint + event type
+  // (GraphQL EventFilter has no txDigest field; atCheckpoint is the targeted approach)
+  const trackedEventTypes = new Set();
+  for (const tx of checkpoint.transactions ?? []) {
+    for (const event of tx.events?.events ?? []) {
+      if (event.eventType && TRACKED_EVENT_TYPES.has(event.eventType)) {
+        trackedEventTypes.add(event.eventType);
+      }
+    }
+  }
+
+  for (const eventType of trackedEventTypes) {
     try {
-      const tx = await grpcClient.core.getTransaction({ digest, include: { events: true } });
+      const result = await graphqlClient.query({
+        query: `query CheckpointEvents($type: String!, $cp: UInt53!) {
+          events(filter: { type: $type, atCheckpoint: $cp }, first: 50) {
+            nodes {
+              contents { type { repr } json }
+              transaction { digest }
+              timestamp
+            }
+          }
+        }`,
+        variables: { type: eventType, cp: seqNum },
+      });
 
-      const tsMs = tx?.timestampMs ? Number(tx.timestampMs) : null;
-      const events = tx?.events ?? [];
+      const nodes = result.data?.events?.nodes ?? [];
+      console.log(`[stream-gql] checkpoint ${seqNum} type=${eventType.split('::').pop()} nodes=${nodes.length}`);
 
-      console.log(`[stream-gql] digest=${digest.slice(0,12)} events=${events.length}`);
-
-      for (let i = 0; i < events.length; i++) {
-        const event = events[i];
-        const eventType = event.type;
-        if (!eventType || !TRACKED_EVENT_TYPES.has(eventType)) continue;
-
-        const parsedJson = event.json ?? {};
-        const pkgId = pkgFromEventType(eventType);
+      for (let i = 0; i < nodes.length; i++) {
+        const node = nodes[i];
+        const digest = node.transaction?.digest ?? 'unknown';
+        const tsMs   = node.timestamp ? new Date(node.timestamp).getTime() : null;
+        const json   = node.contents?.json ?? {};
+        const parsedJson = typeof json === 'string' ? JSON.parse(json) : json;
+        const pkgId  = pkgFromEventType(eventType);
 
         const evt = {
           id:          { txDigest: digest, eventSeq: i },
@@ -237,7 +256,7 @@ async function processCheckpoint(checkpoint, seqNum) {
         console.log(`  [stream] ${eventType.split('::').pop()} curve=${parsedJson?.curve_id?.slice(0,10)}… tx=${digest.slice(0,12)}…`);
       }
     } catch (err) {
-      console.error(`[stream] fetch error for ${digest.slice(0,12)}:`, err.message);
+      console.error(`[stream] checkpoint events fetch error:`, err.message);
     }
   }
 
