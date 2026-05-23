@@ -36,11 +36,11 @@ const PACKAGE_IDS = process.env.PACKAGE_IDS
   ? process.env.PACKAGE_IDS.split(',').map(s => s.trim()).filter(Boolean)
   : ALL_PACKAGE_IDS;
 
-const NETWORK      = process.env.NETWORK       ?? 'testnet';
-const GRPC_URL     = process.env.SUI_GRPC_URL  ?? `https://fullnode.${NETWORK}.sui.io:443`;
-const GRAPHQL_URL  = process.env.SUI_GRAPHQL_URL ?? `https://graphql.${NETWORK}.sui.io/graphql`;
-const PAGE_SIZE    = 50;
-const POLL_MS      = parseInt(process.env.POLL_MS ?? '10000');
+const NETWORK     = process.env.NETWORK          ?? 'testnet';
+const GRPC_URL    = process.env.SUI_GRPC_URL     ?? `https://fullnode.${NETWORK}.sui.io:443`;
+const GRAPHQL_URL = process.env.SUI_GRAPHQL_URL  ?? `https://graphql.${NETWORK}.sui.io/graphql`;
+const PAGE_SIZE   = 50;
+const POLL_MS     = parseInt(process.env.POLL_MS ?? '10000');
 
 // ── Clients ───────────────────────────────────────────────────────────────────
 
@@ -55,10 +55,13 @@ const graphqlClient = new SuiGraphQLClient({
 
 // ── Event type helpers ────────────────────────────────────────────────────────
 
+// CRITICAL: these must match the exact struct names emitted by the Move contracts.
+// V4–V8 all emit: TokensPurchased, TokensSold, CurveCreated, Comment, Graduated
+// Wrong names (TokensBought, TokensLaunched) silently return zero results from GraphQL.
 const EVENT_NAMES = [
-  'TokensBought',
-  'TokensSold',
-  'TokensLaunched',
+  'TokensPurchased', // buy events  (was wrongly 'TokensBought')
+  'TokensSold',      // sell events
+  'CurveCreated',    // launch events (was wrongly 'TokensLaunched')
   'Comment',
   'Graduated',
 ];
@@ -100,10 +103,10 @@ const EVENTS_QUERY = `
 // ── Parse GraphQL event node ──────────────────────────────────────────────────
 
 function parseGraphQLEvent(node, eventType) {
-  const digest  = node.transaction?.digest ?? 'unknown';
-  const seqRaw  = node.transaction?.effects?.checkpoint?.sequenceNumber ?? 0;
-  const tsMs    = node.timestamp ? new Date(node.timestamp).getTime() : null;
-  const json    = node.contents?.json ?? {};
+  const digest     = node.transaction?.digest ?? 'unknown';
+  const seqRaw     = node.transaction?.effects?.checkpoint?.sequenceNumber ?? 0;
+  const tsMs       = node.timestamp ? new Date(node.timestamp).getTime() : null;
+  const json       = node.contents?.json ?? {};
   const parsedJson = typeof json === 'string' ? JSON.parse(json) : json;
 
   return {
@@ -144,17 +147,18 @@ async function syncEventType(eventType, packageId) {
 
       await insertEvent(eventType, evt);
 
-      if (eventType.includes('TokensLaunched') || eventType.includes('CurveCreated')) {
+      // Upsert curve record on launch events
+      if (eventType.includes('CurveCreated')) {
         await upsertCurve(evt, packageId);
         const curveId = evt.parsedJson?.curve_id;
         if (curveId) await enrichCurveMetadata(curveId, grpcClient);
       }
 
+      // Recompute stats on trade and comment events
       const curveId = evt.parsedJson?.curve_id;
       if (curveId && (
-        eventType.includes('TokensBought') ||
-        eventType.includes('TokensSold') ||
         eventType.includes('TokensPurchased') ||
+        eventType.includes('TokensSold') ||
         eventType.includes('Comment')
       )) {
         await recomputeStats(curveId);
@@ -208,6 +212,7 @@ async function main() {
   console.log(`  gRPC:     ${GRPC_URL}`);
   console.log(`  GraphQL:  ${GRAPHQL_URL}`);
   console.log(`  Packages: ${PACKAGE_IDS.length} versions`);
+  console.log(`  Events:   ${EVENT_NAMES.join(', ')}`);
   console.log();
 
   await initSchema();
