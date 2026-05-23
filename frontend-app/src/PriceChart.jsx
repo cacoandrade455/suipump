@@ -120,18 +120,14 @@ export default function PriceChart({ curveId }) {
           if (!isTrade) return;
           const isBuy = event.type !== 'TokensSold';
           const d = event.data ?? {};
-          // Match priceMistPerToken from curve.js: (vSui_mist + realSui) / (vTok_atomic - tokensSold)
-          // V8 virtuals: vSui=3500 SUI, vTok=800M tokens
-          const V_SUI  = 3500 * 1e9;
-          const V_TOK  = 800_000_000 * 1e6;
-          const CURVE_SUPPLY_ATOMIC = 800_000_000 * 1e6;
-          const realSuiMist   = Number(d.new_sui_reserve   ?? 0);
-          const realTokAtomic = Number(d.new_token_reserve ?? 0);
-          const tokensSold    = CURVE_SUPPLY_ATOMIC - realTokAtomic;
-          const numSui        = V_SUI + realSuiMist;
-          const denTok        = V_TOK - tokensSold;
-          if (denTok <= 0) return;
-          const price = (numSui / 1e9) / (denTok / 1e6);
+          // price = total_pool_value / 1B total supply
+          // V8 virtual SUI = 3500 SUI
+          const V_SUI_MIST   = 3500 * 1e9;
+          const TOTAL_SUPPLY = 1_000_000_000;
+          const realSuiMist  = Number(d.new_sui_reserve ?? 0);
+          const totalPoolSui = (V_SUI_MIST + realSuiMist) / 1e9;
+          const price        = totalPoolSui / TOTAL_SUPPLY;
+          if (price <= 0) return;
           const time  = Math.floor((event.ts ?? Date.now()) / 1000);
           setRawTrades(prev => [...prev, { time, price, kind: isBuy ? 'buy' : 'sell' }].sort((a,b) => a.time - b.time));
         } catch {}
