@@ -1,17 +1,9 @@
 // index.js — SuiPump event indexer
-// 
-// Architecture (matches Sui blog Feb 2026 recommendation):
-//   PRIMARY:  gRPC streaming via subscribeCheckpoints — sub-second latency
-//   FALLBACK: GraphQL cursor pagination — backfill + gap recovery on reconnect
 //
-// Flow:
-//   1. Backfill all historical events via GraphQL (cursor-based, idempotent)
-//   2. Start gRPC checkpoint stream — process events in real-time
-//   3. On stream disconnect: reconnect + backfill gap via GraphQL, then resume stream
+// PRIMARY:  gRPC checkpoint streaming — sub-second latency
+// FALLBACK: GraphQL cursor pagination — backfill + gap recovery on reconnect
 //
-// Transport:
-//   - Indexer is Node.js server-side → use @protobuf-ts/grpc-transport (native HTTP/2)
-//   - NOT GrpcWebFetchTransport (browser-only fetch-based)
+// Transport: @protobuf-ts/grpc-transport (Node.js native HTTP/2, NOT browser fetch)
 
 import 'dotenv/config';
 import { GrpcTransport } from '@protobuf-ts/grpc-transport';
@@ -41,29 +33,17 @@ const PACKAGE_IDS = process.env.PACKAGE_IDS
   : ALL_PACKAGE_IDS;
 
 const NETWORK     = process.env.NETWORK          ?? 'testnet';
-const GRPC_URL    = (process.env.SUI_GRPC_URL ?? `fullnode.${NETWORK}.sui.io:443`).replace('https://', '').replace('http://', '');
+const GRPC_URL    = (process.env.SUI_GRPC_URL    ?? `fullnode.${NETWORK}.sui.io:443`).replace(/^https?:\/\//, '');
 const GRAPHQL_URL = process.env.SUI_GRAPHQL_URL  ?? `https://graphql.${NETWORK}.sui.io/graphql`;
-const PAGE_SIZE   = 50;
 
-// CRITICAL: these must match exact struct names emitted by the Move contracts.
-const EVENT_NAMES = [
-  'TokensPurchased',
-  'TokensSold',
-  'CurveCreated',
-  'Comment',
-  'Graduated',
-];
+const EVENT_NAMES = ['TokensPurchased', 'TokensSold', 'CurveCreated', 'Comment', 'Graduated'];
 
-// Build Set of all tracked event type strings for fast O(1) lookup
 const TRACKED_EVENT_TYPES = new Set(
-  PACKAGE_IDS.flatMap(pkg =>
-    EVENT_NAMES.map(name => `${pkg}::bonding_curve::${name}`)
-  )
+  PACKAGE_IDS.flatMap(pkg => EVENT_NAMES.map(name => `${pkg}::bonding_curve::${name}`))
 );
 
 // ── Clients ───────────────────────────────────────────────────────────────────
 
-// Node.js native gRPC transport — uses @grpc/grpc-js, HTTP/2, NOT browser fetch
 const grpcTransport = new GrpcTransport({
   host: GRPC_URL,
   channelCredentials: ChannelCredentials.createSsl(),
@@ -74,38 +54,29 @@ const grpcClient = new SuiGrpcClient({
   transport: grpcTransport,
 });
 
-const graphqlClient = new SuiGraphQLClient({
-  url: GRAPHQL_URL,
-});
+const graphqlClient = new SuiGraphQLClient({ url: GRAPHQL_URL });
 
-// ── GraphQL backfill (historical + gap recovery) ──────────────────────────────
+// ── GraphQL backfill ──────────────────────────────────────────────────────────
 
 const EVENTS_QUERY = `
   query SuiPumpEvents($type: String!, $after: String, $first: Int!) {
-    events(
-      filter: { type: $type }
-      first: $first
-      after: $after
-    ) {
+    events(filter: { type: $type } first: $first after: $after) {
       pageInfo { hasNextPage endCursor }
       nodes {
         timestamp
         contents { type { repr } json }
-        transaction {
-          digest
-          effects { checkpoint { sequenceNumber } }
-        }
+        transaction { digest effects { checkpoint { sequenceNumber } } }
       }
     }
   }
 `;
 
 function parseGraphQLEvent(node, eventType) {
-  const digest  = node.transaction?.digest ?? 'unknown';
-  const seqRaw  = node.transaction?.effects?.checkpoint?.sequenceNumber ?? 0;
-  const tsMs    = node.timestamp ? new Date(node.timestamp).getTime() : null;
-  const json    = node.contents?.json ?? {};
-  const parsed  = typeof json === 'string' ? JSON.parse(json) : json;
+  const digest = node.transaction?.digest ?? 'unknown';
+  const seqRaw = node.transaction?.effects?.checkpoint?.sequenceNumber ?? 0;
+  const tsMs   = node.timestamp ? new Date(node.timestamp).getTime() : null;
+  const json   = node.contents?.json ?? {};
+  const parsed = typeof json === 'string' ? JSON.parse(json) : json;
   return {
     id:          { txDigest: digest, eventSeq: seqRaw },
     timestampMs: tsMs ? String(tsMs) : null,
@@ -123,9 +94,8 @@ async function syncEventType(eventType, packageId) {
   while (hasMore) {
     const result = await graphqlClient.query({
       query: EVENTS_QUERY,
-      variables: { type: eventType, after: cursor ?? null, first: PAGE_SIZE },
+      variables: { type: eventType, after: cursor ?? null, first: 50 },
     });
-
     if (result.errors?.length) throw new Error(result.errors.map(e => e.message).join('; '));
 
     const events   = result.data?.events?.nodes ?? [];
@@ -145,13 +115,12 @@ async function syncEventType(eventType, packageId) {
       hasMore = false;
     }
 
-    if (events.length === PAGE_SIZE) await sleep(100);
+    if (events.length === 50) await sleep(100);
   }
-
   return total;
 }
 
-async function backfill() {
+async function graphqlBackfill() {
   console.log('  Backfilling historical events via GraphQL…');
   for (const packageId of PACKAGE_IDS) {
     for (const eventName of EVENT_NAMES) {
@@ -167,7 +136,7 @@ async function backfill() {
   console.log('  ✓ Backfill complete');
 }
 
-// ── Event processor (shared by both streaming and backfill) ───────────────────
+// ── Event processor ───────────────────────────────────────────────────────────
 
 async function processEvent(eventType, evt, packageId) {
   await insertEvent(eventType, evt);
@@ -188,33 +157,32 @@ async function processEvent(eventType, evt, packageId) {
   }
 }
 
-// ── gRPC streaming (primary real-time path) ───────────────────────────────────
+// ── Proto Value → JS conversion ───────────────────────────────────────────────
 
-// Extract package ID from full event type string
-// e.g. "0xbb4e...::bonding_curve::TokensPurchased" → "0xbb4e..."
+function protoValueToJs(val) {
+  if (!val) return null;
+  const k = val.kind;
+  if (!k) return null;
+  if (k.oneofKind === 'structValue') {
+    const obj = {};
+    for (const [key, v] of Object.entries(k.structValue?.fields ?? {})) {
+      obj[key] = protoValueToJs(v);
+    }
+    return obj;
+  }
+  if (k.oneofKind === 'listValue')   return (k.listValue?.values ?? []).map(protoValueToJs);
+  if (k.oneofKind === 'stringValue') return k.stringValue;
+  if (k.oneofKind === 'numberValue') return k.numberValue;
+  if (k.oneofKind === 'boolValue')   return k.boolValue;
+  if (k.oneofKind === 'nullValue')   return null;
+  return null;
+}
+
 function pkgFromEventType(eventType) {
   return eventType?.split('::')?.[0] ?? null;
 }
 
-// Convert protobuf google.protobuf.Value to plain JS object
-function protoValueToJs(val) {
-  if (!val) return null;
-  if (val.kind?.oneofKind === 'structValue') {
-    const obj = {};
-    for (const [k, v] of Object.entries(val.kind.structValue.fields ?? {})) {
-      obj[k] = protoValueToJs(v);
-    }
-    return obj;
-  }
-  if (val.kind?.oneofKind === 'listValue') {
-    return (val.kind.listValue.values ?? []).map(protoValueToJs);
-  }
-  if (val.kind?.oneofKind === 'stringValue')  return val.kind.stringValue;
-  if (val.kind?.oneofKind === 'numberValue')  return val.kind.numberValue;
-  if (val.kind?.oneofKind === 'boolValue')    return val.kind.boolValue;
-  if (val.kind?.oneofKind === 'nullValue')    return null;
-  return null;
-}
+// ── gRPC checkpoint stream processor ─────────────────────────────────────────
 
 async function processCheckpoint(checkpoint, seqNum) {
   let processed = 0;
@@ -223,36 +191,42 @@ async function processCheckpoint(checkpoint, seqNum) {
     const tsMs   = tx.timestamp ? new Date(tx.timestamp).getTime() : null;
 
     for (const event of tx.events?.events ?? []) {
-      const eventType = event.eventType;
-      if (!eventType || !TRACKED_EVENT_TYPES.has(eventType)) continue;
-
-      // DEBUG: safely log gRPC event structure
       try {
-        const keys = Object.keys(event ?? {}).join(',');
-        const jsonStr = event?.json ? JSON.stringify(event.json).substring(0, 200) : 'UNDEFINED';
-        console.log('[stream-debug] keys:', keys, '| json:', jsonStr);
-      } catch(e) { console.log('[stream-debug] log error:', e.message); }
+        const eventType = event.eventType;
+        if (!eventType || !TRACKED_EVENT_TYPES.has(eventType)) continue;
 
-      const parsedJson = protoValueToJs(event?.json);
-      const pkgId      = pkgFromEventType(eventType);
+        // Log raw structure on first match to debug json field
+        console.log(`[stream-debug] eventType: ${eventType.split('::').pop()} | json type: ${typeof event.json} | keys: ${Object.keys(event ?? {}).join(',')}`);
+        if (event.json) {
+          console.log(`[stream-debug] json.kind: ${JSON.stringify(event.json.kind)?.substring(0, 150)}`);
+        }
 
-      const evt = {
-        id:          { txDigest: digest, eventSeq: seqNum },
-        timestampMs: tsMs ? String(tsMs) : null,
-        parsedJson:  parsedJson ?? {},
-        type:        eventType,
-      };
+        const parsedJson = protoValueToJs(event.json);
+        const pkgId      = pkgFromEventType(eventType);
 
-      await processEvent(eventType, evt, pkgId);
-      processed++;
+        console.log(`[stream-debug] parsedJson curve_id: ${parsedJson?.curve_id ?? 'NULL'}`);
+
+        const evt = {
+          id:          { txDigest: digest, eventSeq: seqNum },
+          timestampMs: tsMs ? String(tsMs) : null,
+          parsedJson:  parsedJson ?? {},
+          type:        eventType,
+        };
+
+        await processEvent(eventType, evt, pkgId);
+        processed++;
+      } catch (err) {
+        console.error(`[stream] event processing error:`, err.message);
+      }
     }
   }
   return processed;
 }
 
+// ── gRPC streaming (primary real-time path) ───────────────────────────────────
+
 async function startStreaming() {
   console.log(`  Starting gRPC checkpoint stream → ${GRPC_URL}`);
-
   let reconnectDelay = 1000;
 
   while (true) {
@@ -269,8 +243,7 @@ async function startStreaming() {
       });
 
       console.log('  ✓ gRPC stream connected');
-      reconnectDelay = 1000; // reset on successful connect
-
+      reconnectDelay = 1000;
       let lastSeq = null;
 
       for await (const response of stream.responses) {
@@ -278,31 +251,21 @@ async function startStreaming() {
         const checkpoint = response.checkpoint;
         if (!checkpoint) continue;
 
-        let count = 0;
-        try {
-          count = await processCheckpoint(checkpoint, seqNum);
-        } catch(err) {
-          console.error(`  [stream] processCheckpoint error at ${seqNum}:`, err.message);
-        }
-        if (count > 0) {
-          console.log(`  [stream] checkpoint ${seqNum}: ${count} SuiPump events`);
-        }
-
+        const count = await processCheckpoint(checkpoint, seqNum);
+        if (count > 0) console.log(`  [stream] checkpoint ${seqNum}: ${count} SuiPump events`);
         lastSeq = seqNum;
       }
 
       console.log(`  gRPC stream ended at checkpoint ${lastSeq}. Reconnecting…`);
-
     } catch (err) {
       console.error(`  gRPC stream error: ${err.message}`);
     }
 
-    // Before reconnecting, backfill any gap via GraphQL
     console.log('  Backfilling gap via GraphQL before reconnect…');
-    try { await backfill(); } catch (e) { console.error('  gap backfill error:', e.message); }
+    try { await graphqlBackfill(); } catch (e) { console.error('  gap backfill error:', e.message); }
 
     await sleep(reconnectDelay);
-    reconnectDelay = Math.min(reconnectDelay * 2, 30_000); // exponential backoff, max 30s
+    reconnectDelay = Math.min(reconnectDelay * 2, 30_000);
   }
 }
 
@@ -326,7 +289,6 @@ async function main() {
   await initSchema();
   startApi();
 
-  // Test GraphQL connectivity
   try {
     const test = await graphqlClient.query({ query: `{ chainIdentifier }` });
     console.log(`  ✓ GraphQL — chain: ${test.data?.chainIdentifier}`);
@@ -334,21 +296,14 @@ async function main() {
     console.error(`  ✗ GraphQL failed: ${err.message}`);
   }
 
-  // Step 1: Backfill all historical events
-  await backfill();
+  await graphqlBackfill();
   await backfillMissingIcons();
 
-  // Step 2: Start graduation watcher
   startGraduationWatcher(grpcClient).catch(err =>
     console.error('Auto-grad watcher crashed:', err.message)
   );
 
-  // Step 3: Poll for new events every 5s via GraphQL (gRPC stream event.json is empty on public endpoint)
-  console.log('  Polling for new events every 5s via GraphQL…');
-  while (true) {
-    await sleep(5_000);
-    try { await syncAll(); } catch (err) { console.error('  poll error:', err.message); }
-  }
+  await startStreaming();
 }
 
 main().catch(err => {
