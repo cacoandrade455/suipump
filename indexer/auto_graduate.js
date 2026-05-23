@@ -9,10 +9,15 @@
 import { Transaction } from '@mysten/sui/transactions';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { fromBase64 } from '@mysten/sui/utils';
+import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { pool } from './db.js';
+
+const NETWORK     = process.env.NETWORK         ?? 'testnet';
+const GRAPHQL_URL = process.env.SUI_GRAPHQL_URL ?? 'https://graphql.' + NETWORK + '.sui.io/graphql';
+const graphqlClient = new SuiGraphQLClient({ url: GRAPHQL_URL });
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -236,12 +241,8 @@ export async function startGraduationWatcher(grpcClient) {
         if (inProgress.has(row.curve_id)) continue;
 
         try {
-          const { object } = await grpcClient.core.getObject({
-            objectId: row.curve_id,
-            include: { content: true },
-          });
-
-          const fields = object?.asMoveObject?.contents?.fields;
+          const obj = await graphqlClient.getObject({ objectId: row.curve_id });
+          const fields = obj?.object?.asMoveObject?.contents?.fields;
           if (!fields) continue;
 
           if (fields.graduated === true) {
