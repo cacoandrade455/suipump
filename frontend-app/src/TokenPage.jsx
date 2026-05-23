@@ -656,7 +656,7 @@ function TradePanelContent({
           {/* Amount input + preset buttons */}
           <div className="space-y-1.5">
             <div className="text-[10px] font-mono text-white/35">
-              {side === 'buy' ? t(lang, 'amount') : `${t(lang, 'amount')} ($${symbol})`}
+              {side === 'buy' ? t(lang, 'amount') : `AMOUNT ($${symbol})`}
             </div>
             <div className="flex gap-2">
               <input type="number" min="0" step="any" value={amount} onChange={e => setAmount(e.target.value)}
