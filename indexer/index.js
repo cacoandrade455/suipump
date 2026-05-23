@@ -207,22 +207,22 @@ async function processCheckpoint(checkpoint, seqNum) {
   if (totalEvents > 0) console.log(`[stream-scan] checkpoint ${seqNum}: ${totalEvents} total events, ${trackedDigests.size} tracked`);
   if (trackedDigests.size === 0) return 0;
 
-  // Fetch full event JSON via SDK getTransaction (handles GraphQL field names correctly)
+  // Fetch full event JSON via gRPC core getTransaction (Value.toJson handles proto conversion)
   for (const digest of trackedDigests) {
     try {
-      const tx = await graphqlClient.getTransaction({ digest, include: { events: true, effects: true } });
+      const tx = await grpcClient.core.getTransaction({ digest, include: { events: true } });
 
-      const tsMs = tx?.effects?.timestamp ? new Date(tx.effects.timestamp).getTime() : null;
+      const tsMs = tx?.timestampMs ? Number(tx.timestampMs) : null;
       const events = tx?.events ?? [];
 
       console.log(`[stream-gql] digest=${digest.slice(0,12)} events=${events.length}`);
 
       for (let i = 0; i < events.length; i++) {
         const event = events[i];
-        const eventType = event.type ?? event.eventType;
+        const eventType = event.type;
         if (!eventType || !TRACKED_EVENT_TYPES.has(eventType)) continue;
 
-        const parsedJson = event.parsedJson ?? event.json ?? {};
+        const parsedJson = event.json ?? {};
         const pkgId = pkgFromEventType(eventType);
 
         const evt = {
