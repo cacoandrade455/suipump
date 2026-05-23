@@ -1,7 +1,7 @@
 // db.js — PostgreSQL connection, schema, and query helpers
 
 import pg from 'pg';
-import { SuiClient, getFullnodeUrl } from '@mysten/sui';
+import { SuiGraphQLClient } from '@mysten/sui/graphql';
 
 const { Pool } = pg;
 
@@ -10,13 +10,13 @@ export const pool = new Pool({
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
 });
 
-// ── Internal JSON-RPC client for metadata fetches ─────────────────────────────
-// enrichCurveMetadata / refreshCurveMetadata use getObject + getCoinMetadata,
-// which are JSON-RPC methods. SuiGrpcClient does NOT support them — calling
-// grpcClient.getObject() throws INVALID_ARGUMENT. Use a plain SuiClient here.
-const NETWORK    = process.env.NETWORK     ?? 'testnet';
-const RPC_URL    = process.env.SUI_RPC_URL ?? getFullnodeUrl(NETWORK);
-const rpcClient  = new SuiClient({ url: RPC_URL });
+// ── Internal GraphQL client for metadata fetches ──────────────────────────────
+// enrichCurveMetadata / refreshCurveMetadata need getObject + getCoinMetadata.
+// SuiGrpcClient does NOT support these — throws INVALID_ARGUMENT.
+// SuiGraphQLClient v2 supports both methods natively.
+const NETWORK     = process.env.NETWORK         ?? 'testnet';
+const GRAPHQL_URL = process.env.SUI_GRAPHQL_URL ?? `https://graphql.${NETWORK}.sui.io/graphql`;
+const rpcClient   = new SuiGraphQLClient({ url: GRAPHQL_URL });
 
 // ── Schema ────────────────────────────────────────────────────────────────────
 
@@ -247,12 +247,12 @@ export async function recomputeStats(curveId) {
 }
 
 // ── Enrich curve with icon_url + token_type (COALESCE — only fills nulls) ────
-// Uses internal rpcClient (JSON-RPC) — NOT the gRPC client passed in.
+// Uses internal SuiGraphQLClient — NOT the gRPC client passed in.
 // The _unusedClient parameter is kept for backwards-compat with callers.
 export async function enrichCurveMetadata(curveId, _unusedClient) {
   try {
-    const obj = await rpcClient.getObject({ id: curveId, options: { showType: true } });
-    const typeStr   = obj.data?.type ?? '';
+    const obj = await rpcClient.getObject({ id: curveId });
+    const typeStr   = obj?.type ?? '';
     const match     = typeStr.match(/Curve<(.+)>$/);
     const tokenType = match ? match[1] : null;
     if (!tokenType) return;
@@ -275,11 +275,11 @@ export async function enrichCurveMetadata(curveId, _unusedClient) {
 }
 
 // ── Refresh curve metadata (OVERWRITE — called on MetadataUpdated event) ──────
-// Uses internal rpcClient (JSON-RPC) — NOT the gRPC client passed in.
+// Uses internal SuiGraphQLClient — NOT the gRPC client passed in.
 export async function refreshCurveMetadata(curveId, _unusedClient) {
   try {
-    const obj = await rpcClient.getObject({ id: curveId, options: { showType: true, showContent: true } });
-    const typeStr   = obj.data?.type ?? '';
+    const obj = await rpcClient.getObject({ id: curveId });
+    const typeStr   = obj?.type ?? '';
     const match     = typeStr.match(/Curve<(.+)>$/);
     const tokenType = match ? match[1] : null;
     if (!tokenType) return;
