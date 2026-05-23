@@ -226,11 +226,14 @@ async function processCheckpoint(checkpoint, seqNum) {
       const eventType = event.eventType;
       if (!eventType || !TRACKED_EVENT_TYPES.has(eventType)) continue;
 
-      // DEBUG: log raw proto event structure once
-      console.log('[stream-debug] raw event.json kind:', JSON.stringify(event.json?.kind).slice(0, 200));
+      // DEBUG: safely log gRPC event structure
+      try {
+        const keys = Object.keys(event ?? {}).join(',');
+        const jsonStr = event?.json ? JSON.stringify(event.json).substring(0, 200) : 'UNDEFINED';
+        console.log('[stream-debug] keys:', keys, '| json:', jsonStr);
+      } catch(e) { console.log('[stream-debug] log error:', e.message); }
 
-      const parsedJson = protoValueToJs(event.json);
-      console.log('[stream-debug] parsedJson:', JSON.stringify(parsedJson).slice(0, 200));
+      const parsedJson = protoValueToJs(event?.json);
       const pkgId      = pkgFromEventType(eventType);
 
       const evt = {
@@ -259,7 +262,8 @@ async function startStreaming() {
           paths: [
             'transactions.digest',
             'transactions.timestamp',
-            'transactions.events',
+            'transactions.events.events.event_type',
+            'transactions.events.events.json',
           ],
         },
       });
@@ -274,7 +278,12 @@ async function startStreaming() {
         const checkpoint = response.checkpoint;
         if (!checkpoint) continue;
 
-        const count = await processCheckpoint(checkpoint, seqNum);
+        let count = 0;
+        try {
+          count = await processCheckpoint(checkpoint, seqNum);
+        } catch(err) {
+          console.error(`  [stream] processCheckpoint error at ${seqNum}:`, err.message);
+        }
         if (count > 0) {
           console.log(`  [stream] checkpoint ${seqNum}: ${count} SuiPump events`);
         }
@@ -334,8 +343,12 @@ async function main() {
     console.error('Auto-grad watcher crashed:', err.message)
   );
 
-  // Step 3: Start gRPC streaming (runs forever, reconnects on failure)
-  await startStreaming();
+  // Step 3: Poll for new events every 5s via GraphQL (gRPC stream event.json is empty on public endpoint)
+  console.log('  Polling for new events every 5s via GraphQL…');
+  while (true) {
+    await sleep(5_000);
+    try { await syncAll(); } catch (err) { console.error('  poll error:', err.message); }
+  }
 }
 
 main().catch(err => {
