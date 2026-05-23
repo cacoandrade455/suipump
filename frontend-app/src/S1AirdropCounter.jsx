@@ -1,31 +1,20 @@
-// S1AirdropCounter.jsx
-// Reads s1PoolSui, totalVolume, totalTrades from the indexer /stats endpoint.
-// Falls back to RPC event scan if indexer is unavailable.
+// S1AirdropCounter.jsx — SSE real-time, no polling
+import React, { useState, useEffect, useRef } from 'react';
 
-import React, { useState, useEffect } from 'react';
-import { useSuiClient } from '@mysten/dapp-kit';
-import { ALL_PACKAGE_IDS } from './constants.js';
-const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
-import { paginateMultipleEvents } from './paginateEvents.js';
-
-const AIRDROP_SHARE = 0.5;
-const MIST_PER_SUI  = 1e9;
+const INDEXER_URL  = import.meta.env.VITE_INDEXER_URL || '';
+const MIST_PER_SUI = 1e9;
 
 async function fetchSuiUsd() {
   try {
-    const res = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=SUIUSDT');
-    const j   = await res.json();
-    return parseFloat(j.price) || 0;
-  } catch {
-    return 0;
-  }
+    const r = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=SUIUSDT');
+    return parseFloat((await r.json()).price) || 0;
+  } catch { return 0; }
 }
 
 function fmtSui(sui) {
   if (sui >= 1000) return `${sui.toFixed(2)} SUI`;
   return `${sui.toFixed(4)} SUI`;
 }
-
 function fmtUsd(usd) {
   if (usd >= 1e6) return `$${(usd / 1e6).toFixed(2)}M`;
   if (usd >= 1e3) return `$${(usd / 1e3).toFixed(2)}k`;
@@ -33,91 +22,73 @@ function fmtUsd(usd) {
 }
 
 export default function S1AirdropCounter() {
-  const client = useSuiClient();
-
   const [poolSui,    setPoolSui]    = useState(0);
   const [volumeSui,  setVolumeSui]  = useState(0);
   const [tradeCount, setTradeCount] = useState(0);
   const [suiUsd,     setSuiUsd]     = useState(0);
   const [loading,    setLoading]    = useState(true);
+  const esRef    = useRef(null);
+  const timerRef = useRef(null);
 
-  // SUI price — refresh every 30s
+  // SUI/USD price every 30s
   useEffect(() => {
     fetchSuiUsd().then(setSuiUsd);
     const t = setInterval(() => fetchSuiUsd().then(setSuiUsd), 30_000);
     return () => clearInterval(t);
   }, []);
 
-  // Stats — indexer first, RPC fallback
+  // Initial load
   useEffect(() => {
-    let cancelled = false;
+    if (!INDEXER_URL) return;
+    fetch(`${INDEXER_URL}/stats`, { signal: AbortSignal.timeout(5000) })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (!d) return;
+        setPoolSui(d.s1PoolSui   ?? 0);
+        setVolumeSui(d.totalVolume ?? 0);
+        setTradeCount(d.totalTrades ?? 0);
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
+  }, []);
 
-    async function load() {
-      // ── Indexer path (fast) ────────────────────────────────────────────────
-      if (INDEXER_URL) {
+  // SSE — update on every trade
+  useEffect(() => {
+    if (!INDEXER_URL) return;
+
+    function connect() {
+      const es = new EventSource(`${INDEXER_URL}/stream`);
+      esRef.current = es;
+
+      es.onmessage = (e) => {
         try {
-          const res = await fetch(`${INDEXER_URL}/stats`, {
-            signal: AbortSignal.timeout(5000),
-          });
-          if (res.ok) {
-            const d = await res.json();
-            if (!cancelled) {
-              setPoolSui(d.s1PoolSui    ?? 0);
-              setVolumeSui(d.totalVolume ?? 0);
-              setTradeCount(d.totalTrades ?? 0);
-              setLoading(false);
-            }
-            return;
-          }
-        } catch { /* fall through to RPC */ }
-      }
+          const event = JSON.parse(e.data);
+          if (event.type === 'connected') return;
+          const isTrade = event.type === 'TokensPurchased' ||
+                          event.type === 'TokensBought'    ||
+                          event.type === 'TokensSold';
+          if (!isTrade) return;
 
-      // ── RPC fallback (slow) ────────────────────────────────────────────────
-      try {
-        const eventTypes = ALL_PACKAGE_IDS.flatMap(pkg => [
-          `${pkg}::bonding_curve::TokensPurchased`,
-          `${pkg}::bonding_curve::TokensSold`,
-        ]);
+          const d      = event.data ?? {};
+          const isBuy  = event.type !== 'TokensSold';
+          const sui    = Number(isBuy ? d.sui_in ?? 0 : d.sui_out ?? 0) / MIST_PER_SUI;
+          const proto  = Number(d.protocol_fee ?? 0) / MIST_PER_SUI;
 
-        const eventMap = await paginateMultipleEvents(
-          client,
-          eventTypes,
-          { order: 'descending', maxPages: 100 }
-        );
+          setVolumeSui(prev => prev + sui);
+          setPoolSui(prev => prev + proto * 0.5);
+          setTradeCount(prev => prev + 1);
+        } catch {}
+      };
 
-        let totalVolumeMist   = 0;
-        let totalProtocolMist = 0;
-
-        for (const [type, events] of Object.entries(eventMap)) {
-          for (const e of events) {
-            const p = e.parsedJson;
-            if (type.includes('TokensPurchased')) {
-              totalVolumeMist   += Number(p.sui_in       ?? 0);
-              totalProtocolMist += Number(p.protocol_fee ?? 0);
-            } else {
-              totalVolumeMist   += Number(p.sui_out      ?? 0);
-              totalProtocolMist += Number(p.protocol_fee ?? 0);
-            }
-          }
-        }
-
-        const totalEvents = Object.values(eventMap).reduce((s, arr) => s + arr.length, 0);
-
-        if (!cancelled) {
-          setPoolSui(   (totalProtocolMist * AIRDROP_SHARE) / MIST_PER_SUI);
-          setVolumeSui(  totalVolumeMist / MIST_PER_SUI);
-          setTradeCount( totalEvents);
-          setLoading(false);
-        }
-      } catch {
-        if (!cancelled) setLoading(false);
-      }
+      es.onerror = () => {
+        es.close();
+        timerRef.current = setTimeout(connect, 3_000);
+      };
     }
 
-    load();
-    const timer = setInterval(load, 15_000);
-    return () => { cancelled = true; clearInterval(timer); };
-  }, [client]);
+    connect();
+    return () => { esRef.current?.close(); clearTimeout(timerRef.current); };
+  }, []);
 
   const poolUsd   = poolSui   * suiUsd;
   const volumeUsd = volumeSui * suiUsd;
@@ -140,55 +111,30 @@ export default function S1AirdropCounter() {
 
       <div className="mb-4">
         {loading ? (
-          <div className="text-2xl font-bold font-mono text-lime-400">…</div>
+          <div className="h-8 bg-lime-950/30 rounded animate-pulse w-32" />
         ) : (
           <>
-            <div className="text-3xl font-bold font-mono text-lime-400 tabular-nums">
-              {fmtSui(poolSui)}
+            <div className="text-3xl font-bold font-mono text-lime-400">
+              {suiUsd > 0 ? fmtUsd(poolUsd) : fmtSui(poolSui)}
             </div>
             {suiUsd > 0 && (
-              <div className="text-sm font-mono text-lime-700 mt-0.5">
-                ≈ {fmtUsd(poolUsd)}
-              </div>
+              <div className="text-xs font-mono text-lime-800 mt-0.5">{fmtSui(poolSui)}</div>
             )}
           </>
         )}
       </div>
 
-      <div className="grid grid-cols-3 gap-3 border-t border-lime-950 pt-4">
-        <div>
-          <div className="text-[9px] font-mono text-lime-900 tracking-widest mb-1">TOTAL VOLUME</div>
-          <div className="text-sm font-bold font-mono text-lime-600">{fmtSui(volumeSui)}</div>
-          {suiUsd > 0 && (
-            <div className="text-[10px] font-mono text-lime-900">{fmtUsd(volumeUsd)}</div>
-          )}
-        </div>
-        <div>
-          <div className="text-[9px] font-mono text-lime-900 tracking-widest mb-1">TOTAL TRADES</div>
-          <div className="text-sm font-bold font-mono text-lime-600">{tradeCount.toLocaleString()}</div>
-        </div>
-        <div>
-          <div className="text-[9px] font-mono text-lime-900 tracking-widest mb-1">YOUR SHARE</div>
-          <div className="text-sm font-bold font-mono text-lime-600">TRADE TO EARN</div>
-        </div>
-      </div>
-
-      <div className="mt-4 border-t border-lime-950 pt-3 grid grid-cols-2 gap-2 text-[10px] font-mono">
-        {[
-          ['BUY / SELL',       '1 pt per 0.01 SUI'],
-          ['LAUNCH TOKEN',     '500 pts flat'],
-          ['TOKEN GRADUATES',  '2,000 pts (creator)'],
-          ['REFER A LAUNCHER', '20% of their pts'],
-        ].map(([action, reward]) => (
-          <div key={action} className="flex justify-between">
-            <span className="text-lime-800">{action}</span>
-            <span className="text-lime-600">{reward}</span>
+      <div className="grid grid-cols-2 gap-3 text-[10px] font-mono">
+        <div className="bg-lime-950/20 border border-lime-900/30 rounded-lg p-2.5">
+          <div className="text-lime-900 mb-1">TOTAL VOLUME</div>
+          <div className="text-lime-400 font-bold">
+            {suiUsd > 0 ? fmtUsd(volumeUsd) : fmtSui(volumeSui)}
           </div>
-        ))}
-      </div>
-
-      <div className="mt-3 text-[9px] font-mono text-lime-900 leading-relaxed">
-        Estimated pool = 50% of protocol fees collected · Final amount determined at season close · Distributed in SUI · No vesting
+        </div>
+        <div className="bg-lime-950/20 border border-lime-900/30 rounded-lg p-2.5">
+          <div className="text-lime-900 mb-1">TOTAL TRADES</div>
+          <div className="text-lime-400 font-bold">{tradeCount.toLocaleString()}</div>
+        </div>
       </div>
     </div>
   );
