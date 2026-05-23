@@ -1,7 +1,7 @@
 // db.js — PostgreSQL connection, schema, and query helpers
 
 import pg from 'pg';
-import { SuiClient, getFullnodeUrl } from '@mysten/sui/client';
+import { SuiClient, getFullnodeUrl } from '@mysten/sui';
 
 const { Pool } = pg;
 
