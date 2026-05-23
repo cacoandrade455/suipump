@@ -230,9 +230,10 @@ export default function PriceChart({ curveId }) {
       const highs = candles.map(c => c.high);
       const minP  = Math.min(...lows);
       const maxP  = Math.max(...highs);
-      const pad   = Math.max((maxP - minP) * 0.5, maxP * 0.05);
+      const range = maxP - minP;
+      const pad   = Math.max(range * 0.1, maxP * 0.02);
       seriesRef.current.applyOptions({
-        autoscaleInfoProvider: () => ({ priceRange: { minValue: minP - pad, maxValue: maxP + pad } }),
+        autoscaleInfoProvider: () => ({ priceRange: { minValue: Math.max(0, minP - pad), maxValue: maxP + pad } }),
       });
     }
 
