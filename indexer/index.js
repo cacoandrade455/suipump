@@ -15,7 +15,7 @@ import {
   upsertCurve, recomputeStats, enrichCurveMetadata, backfillMissingIcons,
 } from './db.js';
 import { startGraduationWatcher } from './auto_graduate.js';
-import { startApi } from './api.js';
+import { startApi, emitEvent } from './api.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -140,6 +140,8 @@ async function graphqlBackfill() {
 
 async function processEvent(eventType, evt, packageId) {
   await insertEvent(eventType, evt);
+  // Emit to SSE clients immediately
+  emitEvent(eventType, evt.parsedJson, evt.parsedJson?.curve_id ?? null);
 
   if (eventType.includes('CurveCreated')) {
     await upsertCurve(evt, packageId);
@@ -200,7 +202,6 @@ async function processCheckpoint(checkpoint, seqNum) {
   }
 
   if (totalEvents > 0 && trackedEventTypes.size > 0) {
-    console.log(`[stream-scan] checkpoint ${seqNum}: ${totalEvents} total events, ${trackedEventTypes.size} tracked types`);
   }
   if (trackedEventTypes.size === 0) return 0;
 
@@ -225,7 +226,6 @@ async function processCheckpoint(checkpoint, seqNum) {
         nodes = result.data?.events?.nodes ?? [];
         if (nodes.length > 0) break;
       }
-      console.log(`[stream-gql] checkpoint ${seqNum} type=${eventType.split('::').pop()} nodes=${nodes.length}`);
 
       for (let i = 0; i < nodes.length; i++) {
         const node = nodes[i];
