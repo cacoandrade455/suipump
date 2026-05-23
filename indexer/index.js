@@ -233,6 +233,7 @@ async function processCheckpoint(checkpoint, seqNum) {
       const tsStr = result.data?.transactionBlock?.effects?.timestamp;
       const tsMs  = tsStr ? new Date(tsStr).getTime() : null;
       const nodes = result.data?.transactionBlock?.events?.nodes ?? [];
+      console.log(`[stream-gql] digest=${digest.slice(0,12)} nodes=${nodes.length} errors=${JSON.stringify(result.errors)?.slice(0,100)}`);
 
       for (let i = 0; i < nodes.length; i++) {
         const node      = nodes[i];
