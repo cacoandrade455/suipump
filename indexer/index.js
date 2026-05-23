@@ -326,7 +326,7 @@ async function main() {
   await backfillMissingIcons();
 
   // Step 2: Start graduation watcher
-  startGraduationWatcher().catch(err =>
+  startGraduationWatcher(grpcClient).catch(err =>
     console.error('Auto-grad watcher crashed:', err.message)
   );
 
