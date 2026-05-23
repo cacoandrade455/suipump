@@ -111,7 +111,7 @@ export async function insertEvent(eventType, evt) {
     await pool.query(
       `INSERT INTO events (event_type, tx_digest, event_seq, timestamp_ms, curve_id, data)
        VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT (tx_digest, event_seq) DO NOTHING`,
+       ON CONFLICT (tx_digest, event_type) DO NOTHING`,
       [
         eventType,
         evt.id?.txDigest ?? evt.id?.txDigest,
