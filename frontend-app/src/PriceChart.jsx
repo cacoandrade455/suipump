@@ -125,7 +125,7 @@ export default function PriceChart({ curveId }) {
           if (tok <= 0) return;
           const price = sui / tok;
           const time  = Math.floor((event.ts ?? Date.now()) / 1000);
-          setRawTrades(prev => [...prev, { time, price, kind: isBuy ? 'buy' : 'sell' }]);
+          setRawTrades(prev => [...prev, { time, price, kind: isBuy ? 'buy' : 'sell' }].sort((a,b) => a.time - b.time));
         } catch {}
       };
       es.onerror = () => { setConnected(false); es.close(); sseTimer.current = setTimeout(connect, 3000); };
@@ -201,7 +201,12 @@ export default function PriceChart({ curveId }) {
     } else {
       mul = suiUsd > 0 ? suiUsd : 1;
     }
-    const built = buildCandles(rawTrades, INTERVALS[intervalIdx].seconds);
+    // Deduplicate by time+price and sort ascending before building candles
+    const seen = new Set();
+    const deduped = rawTrades
+      .filter(p => { const k = `${p.time}_${p.price}`; if (seen.has(k)) return false; seen.add(k); return true; })
+      .sort((a, b) => a.time - b.time);
+    const built = buildCandles(deduped, INTERVALS[intervalIdx].seconds);
     return built.map(c => ({
       time:  c.time,
       open:  c.open  * mul,
