@@ -157,25 +157,22 @@ app.get('/token/:curveId/ohlc', async (req, res) => {
       return { vSui: 3500, vTok: 800_000_000 }; // V8, V8_1
     }
 
+    const TOTAL_SUPPLY = 1_000_000_000; // 1B tokens
+
     const points = result.rows.map(row => {
       const d     = row.data;
       const ts    = row.timestamp_ms ? Math.floor(Number(row.timestamp_ms) / 1000) : 0;
       const isBuy = row.event_type.includes('TokensPurchased') || row.event_type.includes('TokensBought');
 
-      const { vSui, vTok } = getVirtuals(row.package_id);
+      const { vSui } = getVirtuals(row.package_id);
 
-      // Match priceMistPerToken from curve.js exactly:
-      // price = (vSui_mist + real_sui_reserve) / (vTok_atomic - tokens_sold)
-      // tokens_sold = CURVE_SUPPLY - new_token_reserve (in whole tokens)
-      const realSuiMist = Number(d.new_sui_reserve   ?? 0);
-      const realTokAtomic = Number(d.new_token_reserve ?? 0);
-      const tokensSold  = CURVE_SUPPLY * TOKEN_DEC - realTokAtomic;
-      const numSui      = (vSui * MIST) + realSuiMist;         // mist
-      const denTok      = (vTok * TOKEN_DEC) - tokensSold;     // atomic
-      if (denTok <= 0) return null;
+      // price = total_pool_value / total_supply (1B)
+      // total_pool_value = virtual_sui + real_sui_reserve
+      // This matches: header mcap = price * 1B * suiUsd
+      const realSuiMist = Number(d.new_sui_reserve ?? 0);
+      const totalPoolSui = (vSui * MIST + realSuiMist) / MIST;
+      const price = totalPoolSui / TOTAL_SUPPLY;
 
-      // price in SUI per whole token
-      const price = (numSui / MIST) / (denTok / TOKEN_DEC);
       return { time: ts, price, kind: isBuy ? 'buy' : 'sell' };
     }).filter(p => p && p.price > 0 && p.time > 0);
 
