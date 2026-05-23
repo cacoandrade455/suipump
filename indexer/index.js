@@ -1,17 +1,21 @@
-// index.js — SuiPump event indexer (gRPC + GraphQL, @mysten/sui v2)
+// index.js — SuiPump event indexer
+// 
+// Architecture (matches Sui blog Feb 2026 recommendation):
+//   PRIMARY:  gRPC streaming via subscribeCheckpoints — sub-second latency
+//   FALLBACK: GraphQL cursor pagination — backfill + gap recovery on reconnect
 //
-// Event querying:  queryEvents (JSON-RPC) → GraphQL events query (raw string)
-// Object fetching: getObject (JSON-RPC)   → SuiGrpcClient core.getObject
-// Real-time:       polling every 10s      → GraphQL cursor pagination (no sub yet)
+// Flow:
+//   1. Backfill all historical events via GraphQL (cursor-based, idempotent)
+//   2. Start gRPC checkpoint stream — process events in real-time
+//   3. On stream disconnect: reconnect + backfill gap via GraphQL, then resume stream
 //
-// Public endpoints (free, no API key):
-//   gRPC:    https://fullnode.testnet.sui.io:443
-//   GraphQL: https://sui-testnet.mystenlabs.com/graphql
-//
-// Zero downtime: new cursors are namespaced graphql:<event_type>
-// Old JSON-RPC cursors are ignored. UNIQUE(tx_digest, event_seq) drops duplicates.
+// Transport:
+//   - Indexer is Node.js server-side → use @protobuf-ts/grpc-transport (native HTTP/2)
+//   - NOT GrpcWebFetchTransport (browser-only fetch-based)
 
 import 'dotenv/config';
+import { GrpcTransport } from '@protobuf-ts/grpc-transport';
+import { ChannelCredentials } from '@grpc/grpc-js';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import {
@@ -37,40 +41,44 @@ const PACKAGE_IDS = process.env.PACKAGE_IDS
   : ALL_PACKAGE_IDS;
 
 const NETWORK     = process.env.NETWORK          ?? 'testnet';
-const GRPC_URL    = process.env.SUI_GRPC_URL     ?? `https://fullnode.${NETWORK}.sui.io:443`;
+const GRPC_URL    = process.env.SUI_GRPC_URL     ?? `fullnode.${NETWORK}.sui.io:443`;
 const GRAPHQL_URL = process.env.SUI_GRAPHQL_URL  ?? `https://graphql.${NETWORK}.sui.io/graphql`;
 const PAGE_SIZE   = 50;
-const POLL_MS     = parseInt(process.env.POLL_MS ?? '10000');
+
+// CRITICAL: these must match exact struct names emitted by the Move contracts.
+const EVENT_NAMES = [
+  'TokensPurchased',
+  'TokensSold',
+  'CurveCreated',
+  'Comment',
+  'Graduated',
+];
+
+// Build Set of all tracked event type strings for fast O(1) lookup
+const TRACKED_EVENT_TYPES = new Set(
+  PACKAGE_IDS.flatMap(pkg =>
+    EVENT_NAMES.map(name => `${pkg}::bonding_curve::${name}`)
+  )
+);
 
 // ── Clients ───────────────────────────────────────────────────────────────────
 
+// Node.js native gRPC transport — uses @grpc/grpc-js, HTTP/2, NOT browser fetch
+const grpcTransport = new GrpcTransport({
+  host: GRPC_URL,
+  channelCredentials: ChannelCredentials.createSsl(),
+});
+
 const grpcClient = new SuiGrpcClient({
   network: NETWORK,
-  baseUrl:  GRPC_URL,
+  transport: grpcTransport,
 });
 
 const graphqlClient = new SuiGraphQLClient({
   url: GRAPHQL_URL,
 });
 
-// ── Event type helpers ────────────────────────────────────────────────────────
-
-// CRITICAL: these must match the exact struct names emitted by the Move contracts.
-// V4–V8 all emit: TokensPurchased, TokensSold, CurveCreated, Comment, Graduated
-// Wrong names (TokensBought, TokensLaunched) silently return zero results from GraphQL.
-const EVENT_NAMES = [
-  'TokensPurchased', // buy events  (was wrongly 'TokensBought')
-  'TokensSold',      // sell events
-  'CurveCreated',    // launch events (was wrongly 'TokensLaunched')
-  'Comment',
-  'Graduated',
-];
-
-function getEventTypes(packageId) {
-  return EVENT_NAMES.map(name => `${packageId}::bonding_curve::${name}`);
-}
-
-// ── GraphQL event query (raw string — no tagged template needed) ──────────────
+// ── GraphQL backfill (historical + gap recovery) ──────────────────────────────
 
 const EVENTS_QUERY = `
   query SuiPumpEvents($type: String!, $after: String, $first: Int!) {
@@ -79,92 +87,54 @@ const EVENTS_QUERY = `
       first: $first
       after: $after
     ) {
-      pageInfo {
-        hasNextPage
-        endCursor
-      }
+      pageInfo { hasNextPage endCursor }
       nodes {
         timestamp
-        contents {
-          type { repr }
-          json
-        }
+        contents { type { repr } json }
         transaction {
           digest
-          effects {
-            checkpoint { sequenceNumber }
-          }
+          effects { checkpoint { sequenceNumber } }
         }
       }
     }
   }
 `;
 
-// ── Parse GraphQL event node ──────────────────────────────────────────────────
-
 function parseGraphQLEvent(node, eventType) {
-  const digest     = node.transaction?.digest ?? 'unknown';
-  const seqRaw     = node.transaction?.effects?.checkpoint?.sequenceNumber ?? 0;
-  const tsMs       = node.timestamp ? new Date(node.timestamp).getTime() : null;
-  const json       = node.contents?.json ?? {};
-  const parsedJson = typeof json === 'string' ? JSON.parse(json) : json;
-
+  const digest  = node.transaction?.digest ?? 'unknown';
+  const seqRaw  = node.transaction?.effects?.checkpoint?.sequenceNumber ?? 0;
+  const tsMs    = node.timestamp ? new Date(node.timestamp).getTime() : null;
+  const json    = node.contents?.json ?? {};
+  const parsed  = typeof json === 'string' ? JSON.parse(json) : json;
   return {
     id:          { txDigest: digest, eventSeq: seqRaw },
     timestampMs: tsMs ? String(tsMs) : null,
-    parsedJson,
-    type: eventType,
+    parsedJson:  parsed,
+    type:        eventType,
   };
 }
 
-// ── Sync one event type ───────────────────────────────────────────────────────
-
 async function syncEventType(eventType, packageId) {
   const cursorKey = `graphql:${eventType}`;
-  let cursor    = await getCursor(cursorKey);
-  let newEvents = 0;
-  let hasMore   = true;
+  let cursor  = await getCursor(cursorKey);
+  let total   = 0;
+  let hasMore = true;
 
   while (hasMore) {
     const result = await graphqlClient.query({
       query: EVENTS_QUERY,
-      variables: {
-        type:  eventType,
-        after: cursor ?? null,
-        first: PAGE_SIZE,
-      },
+      variables: { type: eventType, after: cursor ?? null, first: PAGE_SIZE },
     });
 
-    if (result.errors?.length) {
-      throw new Error(result.errors.map(e => e.message).join('; '));
-    }
+    if (result.errors?.length) throw new Error(result.errors.map(e => e.message).join('; '));
 
     const events   = result.data?.events?.nodes ?? [];
     const pageInfo = result.data?.events?.pageInfo;
 
     for (const node of events) {
       const evt = parseGraphQLEvent(node, eventType);
-
-      await insertEvent(eventType, evt);
-
-      // Upsert curve record on launch events
-      if (eventType.includes('CurveCreated')) {
-        await upsertCurve(evt, packageId);
-        const curveId = evt.parsedJson?.curve_id;
-        if (curveId) await enrichCurveMetadata(curveId, grpcClient);
-      }
-
-      // Recompute stats on trade and comment events
-      const curveId = evt.parsedJson?.curve_id;
-      if (curveId && (
-        eventType.includes('TokensPurchased') ||
-        eventType.includes('TokensSold') ||
-        eventType.includes('Comment')
-      )) {
-        await recomputeStats(curveId);
-      }
-
-      newEvents++;
+      await processEvent(eventType, evt, packageId);
+      total++;
     }
 
     if (pageInfo?.hasNextPage && pageInfo?.endCursor) {
@@ -178,23 +148,148 @@ async function syncEventType(eventType, packageId) {
     if (events.length === PAGE_SIZE) await sleep(100);
   }
 
-  return newEvents;
+  return total;
 }
 
-// ── Full sync ─────────────────────────────────────────────────────────────────
-
-async function syncAll() {
+async function backfill() {
+  console.log('  Backfilling historical events via GraphQL…');
   for (const packageId of PACKAGE_IDS) {
-    for (const eventType of getEventTypes(packageId)) {
+    for (const eventName of EVENT_NAMES) {
+      const eventType = `${packageId}::bonding_curve::${eventName}`;
       try {
         const count = await syncEventType(eventType, packageId);
-        if (count > 0) {
-          console.log(`  synced ${count} new events: ${eventType.split('::').pop()}`);
-        }
+        if (count > 0) console.log(`  synced ${count} new: ${eventName} (${packageId.slice(0,10)}…)`);
       } catch (err) {
-        console.error(`  error syncing ${eventType.split('::').pop()}:`, err.message, err.cause?.message ?? '');
+        console.error(`  backfill error ${eventName}:`, err.message);
       }
     }
+  }
+  console.log('  ✓ Backfill complete');
+}
+
+// ── Event processor (shared by both streaming and backfill) ───────────────────
+
+async function processEvent(eventType, evt, packageId) {
+  await insertEvent(eventType, evt);
+
+  if (eventType.includes('CurveCreated')) {
+    await upsertCurve(evt, packageId);
+    const curveId = evt.parsedJson?.curve_id;
+    if (curveId) await enrichCurveMetadata(curveId);
+  }
+
+  const curveId = evt.parsedJson?.curve_id;
+  if (curveId && (
+    eventType.includes('TokensPurchased') ||
+    eventType.includes('TokensSold') ||
+    eventType.includes('Comment')
+  )) {
+    await recomputeStats(curveId);
+  }
+}
+
+// ── gRPC streaming (primary real-time path) ───────────────────────────────────
+
+// Extract package ID from full event type string
+// e.g. "0xbb4e...::bonding_curve::TokensPurchased" → "0xbb4e..."
+function pkgFromEventType(eventType) {
+  return eventType?.split('::')?.[0] ?? null;
+}
+
+// Convert protobuf google.protobuf.Value to plain JS object
+function protoValueToJs(val) {
+  if (!val) return null;
+  if (val.kind?.oneofKind === 'structValue') {
+    const obj = {};
+    for (const [k, v] of Object.entries(val.kind.structValue.fields ?? {})) {
+      obj[k] = protoValueToJs(v);
+    }
+    return obj;
+  }
+  if (val.kind?.oneofKind === 'listValue') {
+    return (val.kind.listValue.values ?? []).map(protoValueToJs);
+  }
+  if (val.kind?.oneofKind === 'stringValue')  return val.kind.stringValue;
+  if (val.kind?.oneofKind === 'numberValue')  return val.kind.numberValue;
+  if (val.kind?.oneofKind === 'boolValue')    return val.kind.boolValue;
+  if (val.kind?.oneofKind === 'nullValue')    return null;
+  return null;
+}
+
+async function processCheckpoint(checkpoint, seqNum) {
+  let processed = 0;
+  for (const tx of checkpoint.transactions ?? []) {
+    const digest = tx.digest ?? 'unknown';
+    const tsMs   = tx.timestamp ? new Date(tx.timestamp).getTime() : null;
+
+    for (const event of tx.events?.events ?? []) {
+      const eventType = event.eventType;
+      if (!eventType || !TRACKED_EVENT_TYPES.has(eventType)) continue;
+
+      const parsedJson = protoValueToJs(event.json);
+      const pkgId      = pkgFromEventType(eventType);
+
+      const evt = {
+        id:          { txDigest: digest, eventSeq: seqNum },
+        timestampMs: tsMs ? String(tsMs) : null,
+        parsedJson:  parsedJson ?? {},
+        type:        eventType,
+      };
+
+      await processEvent(eventType, evt, pkgId);
+      processed++;
+    }
+  }
+  return processed;
+}
+
+async function startStreaming() {
+  console.log(`  Starting gRPC checkpoint stream → ${GRPC_URL}`);
+
+  let reconnectDelay = 1000;
+
+  while (true) {
+    try {
+      const stream = grpcClient.subscriptionService.subscribeCheckpoints({
+        readMask: {
+          paths: [
+            'transactions.digest',
+            'transactions.timestamp',
+            'transactions.events',
+          ],
+        },
+      });
+
+      console.log('  ✓ gRPC stream connected');
+      reconnectDelay = 1000; // reset on successful connect
+
+      let lastSeq = null;
+
+      for await (const response of stream.responses) {
+        const seqNum     = Number(response.cursor ?? 0);
+        const checkpoint = response.checkpoint;
+        if (!checkpoint) continue;
+
+        const count = await processCheckpoint(checkpoint, seqNum);
+        if (count > 0) {
+          console.log(`  [stream] checkpoint ${seqNum}: ${count} SuiPump events`);
+        }
+
+        lastSeq = seqNum;
+      }
+
+      console.log(`  gRPC stream ended at checkpoint ${lastSeq}. Reconnecting…`);
+
+    } catch (err) {
+      console.error(`  gRPC stream error: ${err.message}`);
+    }
+
+    // Before reconnecting, backfill any gap via GraphQL
+    console.log('  Backfilling gap via GraphQL before reconnect…');
+    try { await backfill(); } catch (e) { console.error('  gap backfill error:', e.message); }
+
+    await sleep(reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 2, 30_000); // exponential backoff, max 30s
   }
 }
 
@@ -205,9 +300,9 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.log('━'.repeat(50));
-  console.log('  SUIPUMP INDEXER (gRPC + GraphQL)');
-  console.log('━'.repeat(50));
+  console.log('━'.repeat(52));
+  console.log('  SUIPUMP INDEXER (gRPC streaming + GraphQL backfill)');
+  console.log('━'.repeat(52));
   console.log(`  Network:  ${NETWORK}`);
   console.log(`  gRPC:     ${GRPC_URL}`);
   console.log(`  GraphQL:  ${GRAPHQL_URL}`);
@@ -219,39 +314,24 @@ async function main() {
   startApi();
 
   // Test GraphQL connectivity
-  console.log('  Testing GraphQL connectivity…');
   try {
-    const test = await graphqlClient.query({
-      query: `{ chainIdentifier }`,
-    });
-    console.log(`  ✓ GraphQL connected — chain: ${test.data?.chainIdentifier}`);
+    const test = await graphqlClient.query({ query: `{ chainIdentifier }` });
+    console.log(`  ✓ GraphQL — chain: ${test.data?.chainIdentifier}`);
   } catch (err) {
-    console.error(`  ✗ GraphQL connection failed: ${err.message}`, err.cause?.message ?? '');
-    console.error(`  ⚠ Will keep retrying — indexer may be degraded`);
+    console.error(`  ✗ GraphQL failed: ${err.message}`);
   }
 
-  console.log('  Backfilling historical events…');
-  await syncAll();
-  console.log('  ✓ Backfill complete');
-  console.log();
+  // Step 1: Backfill all historical events
+  await backfill();
+  await backfillMissingIcons();
 
-  await backfillMissingIcons(grpcClient);
-  console.log();
-
+  // Step 2: Start graduation watcher
   startGraduationWatcher().catch(err =>
     console.error('Auto-grad watcher crashed:', err.message)
   );
 
-  // Poll every POLL_MS — no subscription support yet in SDK v2
-  console.log(`  Polling for new events every ${POLL_MS / 1000}s…`);
-  while (true) {
-    await sleep(POLL_MS);
-    try {
-      await syncAll();
-    } catch (err) {
-      console.error('  poll error:', err.message);
-    }
-  }
+  // Step 3: Start gRPC streaming (runs forever, reconnects on failure)
+  await startStreaming();
 }
 
 main().catch(err => {
