@@ -184,42 +184,72 @@ function pkgFromEventType(eventType) {
 
 // ── gRPC checkpoint stream processor ─────────────────────────────────────────
 
+const TX_EVENTS_QUERY = `
+  query TxEvents($digest: String!) {
+    transactionBlock(digest: $digest) {
+      effects { timestamp }
+      events {
+        nodes {
+          contents { type { repr } json }
+        }
+      }
+    }
+  }
+`;
+
 async function processCheckpoint(checkpoint, seqNum) {
   let processed = 0;
-  for (const tx of checkpoint.transactions ?? []) {
-    const digest = tx.digest ?? 'unknown';
-    const tsMs   = tx.timestamp ? new Date(tx.timestamp).getTime() : null;
 
+  // Collect all digests that have tracked events
+  const trackedDigests = new Set();
+  for (const tx of checkpoint.transactions ?? []) {
     for (const event of tx.events?.events ?? []) {
-      try {
-        const eventType = event.eventType;
+      if (event.eventType && TRACKED_EVENT_TYPES.has(event.eventType)) {
+        trackedDigests.add(tx.digest ?? 'unknown');
+        break;
+      }
+    }
+  }
+
+  if (trackedDigests.size === 0) return 0;
+
+  // For each tx with tracked events, fetch full event JSON from GraphQL
+  for (const digest of trackedDigests) {
+    try {
+      const result = await graphqlClient.query({
+        query: TX_EVENTS_QUERY,
+        variables: { digest },
+      });
+
+      const tsStr = result.data?.transactionBlock?.effects?.timestamp;
+      const tsMs  = tsStr ? new Date(tsStr).getTime() : null;
+      const nodes = result.data?.transactionBlock?.events?.nodes ?? [];
+
+      for (let i = 0; i < nodes.length; i++) {
+        const node      = nodes[i];
+        const eventType = node.contents?.type?.repr;
         if (!eventType || !TRACKED_EVENT_TYPES.has(eventType)) continue;
 
-        // Log raw structure on first match to debug json field
-        console.log(`[stream-debug] eventType: ${eventType.split('::').pop()} | json type: ${typeof event.json} | keys: ${Object.keys(event ?? {}).join(',')}`);
-        if (event.json) {
-          console.log(`[stream-debug] json.kind: ${JSON.stringify(event.json.kind)?.substring(0, 150)}`);
-        }
-
-        const parsedJson = protoValueToJs(event.json);
-        const pkgId      = pkgFromEventType(eventType);
-
-        console.log(`[stream-debug] parsedJson curve_id: ${parsedJson?.curve_id ?? 'NULL'}`);
+        const json      = node.contents?.json ?? {};
+        const parsedJson = typeof json === 'string' ? JSON.parse(json) : json;
+        const pkgId     = pkgFromEventType(eventType);
 
         const evt = {
-          id:          { txDigest: digest, eventSeq: seqNum },
+          id:          { txDigest: digest, eventSeq: i },
           timestampMs: tsMs ? String(tsMs) : null,
-          parsedJson:  parsedJson ?? {},
+          parsedJson,
           type:        eventType,
         };
 
         await processEvent(eventType, evt, pkgId);
         processed++;
-      } catch (err) {
-        console.error(`[stream] event processing error:`, err.message);
+        console.log(`  [stream] ${eventType.split('::').pop()} curve=${parsedJson?.curve_id?.slice(0,10)}… tx=${digest.slice(0,12)}…`);
       }
+    } catch (err) {
+      console.error(`[stream] GraphQL fetch error for ${digest.slice(0,12)}:`, err.message);
     }
   }
+
   return processed;
 }
 
