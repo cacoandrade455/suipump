@@ -15,7 +15,7 @@ import {
   upsertCurve, recomputeStats, enrichCurveMetadata, backfillMissingIcons,
 } from './db.js';
 import { startGraduationWatcher } from './auto_graduate.js';
-import { startApi, emitEvent } from './api.js';
+import { startApi } from './api.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -140,8 +140,17 @@ async function graphqlBackfill() {
 
 async function processEvent(eventType, evt, packageId) {
   await insertEvent(eventType, evt);
-  // Emit to SSE clients immediately
-  emitEvent(eventType, evt.parsedJson, evt.parsedJson?.curve_id ?? null);
+  // Notify web service via PostgreSQL LISTEN/NOTIFY
+  try {
+    const payload = JSON.stringify({
+      type:      eventType.split('::').pop(),
+      eventType,
+      curveId:   evt.parsedJson?.curve_id ?? null,
+      data:      evt.parsedJson,
+      ts:        evt.timestampMs ? Number(evt.timestampMs) : Date.now(),
+    });
+    await pool.query(`SELECT pg_notify('suipump_events', $1)`, [payload]);
+  } catch {}
 
   if (eventType.includes('CurveCreated')) {
     await upsertCurve(evt, packageId);

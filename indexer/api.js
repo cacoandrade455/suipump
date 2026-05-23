@@ -1,5 +1,6 @@
 // api.js — REST API + SSE stream for SuiPump indexer
 import express from 'express';
+import pg from 'pg';
 import cors from 'cors';
 import {
   getGlobalStats, getTokenStats, getTradeHistory,
@@ -286,6 +287,35 @@ app.get('/trader/:address', async (req, res) => {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 
+// ── PostgreSQL LISTEN — receives events from background worker ───────────────
+
+async function startPgListener() {
+  const client = new pg.Client({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false },
+  });
+  try {
+    await client.connect();
+    await client.query('LISTEN suipump_events');
+    client.on('notification', (msg) => {
+      try {
+        const event = JSON.parse(msg.payload);
+        emitEvent(event.eventType, event.data, event.curveId);
+      } catch {}
+    });
+    client.on('error', (err) => {
+      console.error('  PG listener error:', err.message);
+      client.end().catch(() => {});
+      setTimeout(startPgListener, 5_000);
+    });
+    console.log('  ✓ PostgreSQL LISTEN active — suipump_events');
+  } catch (err) {
+    console.error('  PG listener connect failed:', err.message);
+    setTimeout(startPgListener, 5_000);
+  }
+}
+
 export function startApi() {
   app.listen(PORT, () => console.log(`  ✓ API listening on port ${PORT}`));
+  startPgListener().catch(err => console.error('PG listener failed:', err.message));
 }
