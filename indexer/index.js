@@ -186,7 +186,7 @@ function pkgFromEventType(eventType) {
 
 const TX_EVENTS_QUERY = `
   query TxEvents($digest: String!) {
-    transactionBlock(digest: $digest) {
+    transaction(digest: $digest) {
       effects { timestamp }
       events {
         nodes {
@@ -230,9 +230,9 @@ async function processCheckpoint(checkpoint, seqNum) {
         variables: { digest },
       });
 
-      const tsStr = result.data?.transactionBlock?.effects?.timestamp;
+      const tsStr = result.data?.transaction?.effects?.timestamp;
       const tsMs  = tsStr ? new Date(tsStr).getTime() : null;
-      const nodes = result.data?.transactionBlock?.events?.nodes ?? [];
+      const nodes = result.data?.transaction?.events?.nodes ?? [];
       console.log(`[stream-gql] digest=${digest.slice(0,12)} nodes=${nodes.length} errors=${JSON.stringify(result.errors)?.slice(0,100)}`);
 
       for (let i = 0; i < nodes.length; i++) {
