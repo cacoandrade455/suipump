@@ -251,8 +251,8 @@ export async function recomputeStats(curveId) {
 // The _unusedClient parameter is kept for backwards-compat with callers.
 export async function enrichCurveMetadata(curveId, _unusedClient) {
   try {
-    const obj = await rpcClient.getObject({ id: curveId });
-    const typeStr   = obj?.type ?? '';
+    const obj = await rpcClient.getObject({ objectId: curveId });
+    const typeStr   = obj?.object?.type ?? '';
     const match     = typeStr.match(/Curve<(.+)>$/);
     const tokenType = match ? match[1] : null;
     if (!tokenType) return;
@@ -278,8 +278,8 @@ export async function enrichCurveMetadata(curveId, _unusedClient) {
 // Uses internal SuiGraphQLClient — NOT the gRPC client passed in.
 export async function refreshCurveMetadata(curveId, _unusedClient) {
   try {
-    const obj = await rpcClient.getObject({ id: curveId });
-    const typeStr   = obj?.type ?? '';
+    const obj = await rpcClient.getObject({ objectId: curveId });
+    const typeStr   = obj?.object?.type ?? '';
     const match     = typeStr.match(/Curve<(.+)>$/);
     const tokenType = match ? match[1] : null;
     if (!tokenType) return;
