@@ -4,7 +4,7 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { createChart, CandlestickSeries } from 'lightweight-charts';
-import { useTokenPageFeed } from './useRealtimeFeed.js';
+
 
 const INDEXER_URL        = import.meta.env.VITE_INDEXER_URL || '';
 const TOTAL_SUPPLY_WHOLE = 1_000_000_000;
@@ -89,8 +89,50 @@ export default function PriceChart({ curveId }) {
   const [intervalIdx, setIntervalIdx] = useState(4);
   const [view,        setView]        = useState('PRICE');
 
-  // ── Real-time data via SSE + initial HTTP fetch ───────────────────────────
-  const { ohlc: rawTrades, loading, connected } = useTokenPageFeed(curveId);
+  // ── Initial fetch + SSE real-time append ─────────────────────────────────
+  const [rawTrades, setRawTrades] = useState([]);
+  const [loading,   setLoading]   = useState(true);
+  const [connected, setConnected] = useState(false);
+  const sseRef   = useRef(null);
+  const sseTimer = useRef(null);
+
+  useEffect(() => {
+    if (!curveId || !INDEXER_URL) return;
+    let cancelled = false;
+    fetch(`${INDEXER_URL}/token/${curveId}/ohlc`)
+      .then(r => r.ok ? r.json() : [])
+      .then(pts => { if (!cancelled) { setRawTrades(pts); setLoading(false); } })
+      .catch(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [curveId]);
+
+  useEffect(() => {
+    if (!curveId || !INDEXER_URL) return;
+    function connect() {
+      const es = new EventSource(`${INDEXER_URL}/stream?curveId=${curveId}`);
+      sseRef.current = es;
+      es.onopen = () => setConnected(true);
+      es.onmessage = (e) => {
+        try {
+          const event = JSON.parse(e.data);
+          if (event.type === 'connected') return;
+          const isTrade = event.type === 'TokensPurchased' || event.type === 'TokensBought' || event.type === 'TokensSold';
+          if (!isTrade) return;
+          const isBuy = event.type !== 'TokensSold';
+          const d = event.data ?? {};
+          const sui = Number(isBuy ? d.sui_in ?? 0 : d.sui_out ?? 0) / 1e9;
+          const tok = Number(isBuy ? d.tokens_out ?? 0 : d.tokens_in ?? 0) / 1e6;
+          if (tok <= 0) return;
+          const price = sui / tok;
+          const time  = Math.floor((event.ts ?? Date.now()) / 1000);
+          setRawTrades(prev => [...prev, { time, price, kind: isBuy ? 'buy' : 'sell' }]);
+        } catch {}
+      };
+      es.onerror = () => { setConnected(false); es.close(); sseTimer.current = setTimeout(connect, 3000); };
+    }
+    connect();
+    return () => { sseRef.current?.close(); clearTimeout(sseTimer.current); };
+  }, [curveId]);
 
   // ── SUI/USD price ─────────────────────────────────────────────────────────
   useEffect(() => {
