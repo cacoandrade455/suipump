@@ -226,7 +226,11 @@ async function processCheckpoint(checkpoint, seqNum) {
       const eventType = event.eventType;
       if (!eventType || !TRACKED_EVENT_TYPES.has(eventType)) continue;
 
+      // DEBUG: log raw proto event structure once
+      console.log('[stream-debug] raw event.json kind:', JSON.stringify(event.json?.kind).slice(0, 200));
+
       const parsedJson = protoValueToJs(event.json);
+      console.log('[stream-debug] parsedJson:', JSON.stringify(parsedJson).slice(0, 200));
       const pkgId      = pkgFromEventType(eventType);
 
       const evt = {
