@@ -120,10 +120,13 @@ export default function PriceChart({ curveId }) {
           if (!isTrade) return;
           const isBuy = event.type !== 'TokensSold';
           const d = event.data ?? {};
-          const sui = Number(isBuy ? d.sui_in ?? 0 : d.sui_out ?? 0) / 1e9;
-          const tok = Number(isBuy ? d.tokens_out ?? 0 : d.tokens_in ?? 0) / 1e6;
-          if (tok <= 0) return;
-          const price = sui / tok;
+          // Use spot price from new reserves — same formula as /ohlc endpoint
+          const VIRTUAL_SUI    = 3500 * 1e9;
+          const VIRTUAL_TOKENS = 800_000_000 * 1e6;
+          const suiRes  = Number(d.new_sui_reserve   ?? 0) + VIRTUAL_SUI;
+          const tokRes  = Number(d.new_token_reserve ?? 1) + VIRTUAL_TOKENS;
+          if (tokRes <= 0) return;
+          const price = (suiRes / 1e9) / (tokRes / 1e6);
           const time  = Math.floor((event.ts ?? Date.now()) / 1000);
           setRawTrades(prev => [...prev, { time, price, kind: isBuy ? 'buy' : 'sell' }].sort((a,b) => a.time - b.time));
         } catch {}

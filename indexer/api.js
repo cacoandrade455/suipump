@@ -139,14 +139,20 @@ app.get('/token/:curveId/ohlc', async (req, res) => {
        ORDER BY timestamp_ms ASC`,
       [req.params.curveId]
     );
-    const MIST   = 1e9;
+    const MIST = 1e9;
+    // Use spot price from new_sui_reserve / new_token_reserve after each trade.
+    // This reflects the actual curve state, not the average trade price.
+    // Virtual reserves for V8: VS=3500 SUI, VT=800M tokens
+    const VIRTUAL_SUI    = 3500 * MIST;
+    const VIRTUAL_TOKENS = 800_000_000 * 1e6;
     const points = result.rows.map(row => {
       const d     = row.data;
       const ts    = row.timestamp_ms ? Math.floor(Number(row.timestamp_ms) / 1000) : 0;
       const isBuy = row.event_type.includes('TokensPurchased') || row.event_type.includes('TokensBought');
-      const price = isBuy
-        ? (Number(d.sui_in  ?? 0) / MIST) / (Number(d.tokens_out ?? 1) / 1e6)
-        : (Number(d.sui_out ?? 0) / MIST) / (Number(d.tokens_in  ?? 1) / 1e6);
+      // Spot price = (real_sui_reserve + virtual_sui) / (real_token_reserve + virtual_tokens)
+      const suiRes  = Number(d.new_sui_reserve   ?? 0) + VIRTUAL_SUI;
+      const tokRes  = Number(d.new_token_reserve ?? 1) + VIRTUAL_TOKENS;
+      const price   = (suiRes / MIST) / (tokRes / 1e6);
       return { time: ts, price, kind: isBuy ? 'buy' : 'sell' };
     }).filter(p => p.price > 0 && p.time > 0);
     res.json(points);
