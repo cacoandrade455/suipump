@@ -202,14 +202,23 @@ async function processCheckpoint(checkpoint, seqNum) {
 
   // Collect all digests that have tracked events
   const trackedDigests = new Set();
+  let totalEvents = 0;
   for (const tx of checkpoint.transactions ?? []) {
     for (const event of tx.events?.events ?? []) {
-      if (event.eventType && TRACKED_EVENT_TYPES.has(event.eventType)) {
-        trackedDigests.add(tx.digest ?? 'unknown');
-        break;
+      totalEvents++;
+      if (event.eventType) {
+        // Log every event type seen — helps debug TRACKED_EVENT_TYPES mismatch
+        if (event.eventType.includes('bonding_curve')) {
+          console.log(`[stream-all] bonding_curve event: ${event.eventType}`);
+        }
+        if (TRACKED_EVENT_TYPES.has(event.eventType)) {
+          trackedDigests.add(tx.digest ?? 'unknown');
+          break;
+        }
       }
     }
   }
+  if (totalEvents > 0) console.log(`[stream-scan] checkpoint ${seqNum}: ${totalEvents} total events, ${trackedDigests.size} tracked`);
 
   if (trackedDigests.size === 0) return 0;
 
