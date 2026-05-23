@@ -1,12 +1,22 @@
 // db.js — PostgreSQL connection, schema, and query helpers
 
 import pg from 'pg';
+import { SuiGraphQLClient } from '@mysten/sui/graphql';
+
 const { Pool } = pg;
 
 export const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
 });
+
+// ── Internal GraphQL client for metadata fetches ──────────────────────────────
+// enrichCurveMetadata / refreshCurveMetadata need getObject + getCoinMetadata.
+// SuiGrpcClient does NOT support these — throws INVALID_ARGUMENT.
+// SuiGraphQLClient v2 supports both methods natively.
+const NETWORK     = process.env.NETWORK         ?? 'testnet';
+const GRAPHQL_URL = process.env.SUI_GRAPHQL_URL ?? `https://graphql.${NETWORK}.sui.io/graphql`;
+const rpcClient   = new SuiGraphQLClient({ url: GRAPHQL_URL });
 
 // ── Schema ────────────────────────────────────────────────────────────────────
 
@@ -237,17 +247,17 @@ export async function recomputeStats(curveId) {
 }
 
 // ── Enrich curve with icon_url + token_type (COALESCE — only fills nulls) ────
-// Called once at CurveCreated ingestion and during startup backfill.
-
-export async function enrichCurveMetadata(curveId, suiClient) {
+// Uses internal SuiGraphQLClient — NOT the gRPC client passed in.
+// The _unusedClient parameter is kept for backwards-compat with callers.
+export async function enrichCurveMetadata(curveId, _unusedClient) {
   try {
-    const obj = await suiClient.getObject({ id: curveId, options: { showType: true } });
-    const typeStr  = obj.data?.type ?? '';
-    const match    = typeStr.match(/Curve<(.+)>$/);
+    const obj = await rpcClient.getObject({ objectId: curveId });
+    const typeStr   = obj?.object?.type ?? '';
+    const match     = typeStr.match(/Curve<(.+)>$/);
     const tokenType = match ? match[1] : null;
     if (!tokenType) return;
 
-    const meta        = await suiClient.getCoinMetadata({ coinType: tokenType });
+    const meta        = await rpcClient.getCoinMetadata({ coinType: tokenType });
     const iconUrl     = meta?.iconUrl     ?? null;
     const description = meta?.description ?? null;
 
@@ -265,21 +275,18 @@ export async function enrichCurveMetadata(curveId, suiClient) {
 }
 
 // ── Refresh curve metadata (OVERWRITE — called on MetadataUpdated event) ──────
-// Unlike enrichCurveMetadata which only fills nulls, this overwrites existing
-// values so that name/symbol/icon/description changes show up on the homepage.
-
-export async function refreshCurveMetadata(curveId, suiClient) {
+// Uses internal SuiGraphQLClient — NOT the gRPC client passed in.
+export async function refreshCurveMetadata(curveId, _unusedClient) {
   try {
-    const obj = await suiClient.getObject({ id: curveId, options: { showType: true, showContent: true } });
-    const typeStr   = obj.data?.type ?? '';
+    const obj = await rpcClient.getObject({ objectId: curveId });
+    const typeStr   = obj?.object?.type ?? '';
     const match     = typeStr.match(/Curve<(.+)>$/);
     const tokenType = match ? match[1] : null;
     if (!tokenType) return;
 
-    const meta        = await suiClient.getCoinMetadata({ coinType: tokenType });
+    const meta        = await rpcClient.getCoinMetadata({ coinType: tokenType });
     const iconUrl     = meta?.iconUrl     ?? null;
     const description = meta?.description ?? null;
-    // name + symbol also come from CoinMetadata post-update
     const name        = meta?.name        ?? null;
     const symbol      = meta?.symbol      ?? null;
 
@@ -300,14 +307,14 @@ export async function refreshCurveMetadata(curveId, suiClient) {
 
 // ── Startup sweep: fill icon_url for curves missing it ───────────────────────
 
-export async function backfillMissingIcons(suiClient) {
+export async function backfillMissingIcons(_unusedClient) {
   const res = await pool.query(
     `SELECT curve_id FROM curves WHERE icon_url IS NULL OR token_type IS NULL`
   );
   if (res.rows.length === 0) return;
   console.log(`  Backfilling icons for ${res.rows.length} tokens…`);
   for (const row of res.rows) {
-    await enrichCurveMetadata(row.curve_id, suiClient);
+    await enrichCurveMetadata(row.curve_id);
     await new Promise(r => setTimeout(r, 300));
   }
   console.log(`  ✓ Icon backfill complete`);
