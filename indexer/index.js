@@ -184,19 +184,6 @@ function pkgFromEventType(eventType) {
 
 // ── gRPC checkpoint stream processor ─────────────────────────────────────────
 
-const TX_EVENTS_QUERY = `
-  query TxEvents($digest: String!) {
-    transaction(digest: $digest) {
-      effects { timestamp }
-      events {
-        nodes {
-          contents { type { repr } json }
-        }
-      }
-    }
-  }
-`;
-
 async function processCheckpoint(checkpoint, seqNum) {
   let processed = 0;
 
@@ -207,7 +194,6 @@ async function processCheckpoint(checkpoint, seqNum) {
     for (const event of tx.events?.events ?? []) {
       totalEvents++;
       if (event.eventType) {
-        // Log every event type seen — helps debug TRACKED_EVENT_TYPES mismatch
         if (event.eventType.includes('bonding_curve')) {
           console.log(`[stream-all] bonding_curve event: ${event.eventType}`);
         }
@@ -219,30 +205,25 @@ async function processCheckpoint(checkpoint, seqNum) {
     }
   }
   if (totalEvents > 0) console.log(`[stream-scan] checkpoint ${seqNum}: ${totalEvents} total events, ${trackedDigests.size} tracked`);
-
   if (trackedDigests.size === 0) return 0;
 
-  // For each tx with tracked events, fetch full event JSON from GraphQL
+  // Fetch full event JSON via SDK getTransaction (handles GraphQL field names correctly)
   for (const digest of trackedDigests) {
     try {
-      const result = await graphqlClient.query({
-        query: TX_EVENTS_QUERY,
-        variables: { digest },
-      });
+      const tx = await graphqlClient.getTransaction({ digest, include: { events: true, effects: true } });
 
-      const tsStr = result.data?.transaction?.effects?.timestamp;
-      const tsMs  = tsStr ? new Date(tsStr).getTime() : null;
-      const nodes = result.data?.transaction?.events?.nodes ?? [];
-      console.log(`[stream-gql] digest=${digest.slice(0,12)} nodes=${nodes.length} errors=${JSON.stringify(result.errors)?.slice(0,100)}`);
+      const tsMs = tx?.effects?.timestamp ? new Date(tx.effects.timestamp).getTime() : null;
+      const events = tx?.events ?? [];
 
-      for (let i = 0; i < nodes.length; i++) {
-        const node      = nodes[i];
-        const eventType = node.contents?.type?.repr;
+      console.log(`[stream-gql] digest=${digest.slice(0,12)} events=${events.length}`);
+
+      for (let i = 0; i < events.length; i++) {
+        const event = events[i];
+        const eventType = event.type ?? event.eventType;
         if (!eventType || !TRACKED_EVENT_TYPES.has(eventType)) continue;
 
-        const json      = node.contents?.json ?? {};
-        const parsedJson = typeof json === 'string' ? JSON.parse(json) : json;
-        const pkgId     = pkgFromEventType(eventType);
+        const parsedJson = event.parsedJson ?? event.json ?? {};
+        const pkgId = pkgFromEventType(eventType);
 
         const evt = {
           id:          { txDigest: digest, eventSeq: i },
@@ -256,7 +237,7 @@ async function processCheckpoint(checkpoint, seqNum) {
         console.log(`  [stream] ${eventType.split('::').pop()} curve=${parsedJson?.curve_id?.slice(0,10)}… tx=${digest.slice(0,12)}…`);
       }
     } catch (err) {
-      console.error(`[stream] GraphQL fetch error for ${digest.slice(0,12)}:`, err.message);
+      console.error(`[stream] fetch error for ${digest.slice(0,12)}:`, err.message);
     }
   }
 
