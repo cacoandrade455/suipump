@@ -1,11 +1,7 @@
 // useTokenList.js
-// Queries CurveCreated events from ALL deployed suipump packages (v4 + v5).
-// Uses cursor-based pagination to fetch ALL events (not capped at 50).
-// V5 tokens include graduation_target and anti_bot_delay fields.
-
 import { useState, useEffect } from 'react';
 import { useSuiClient } from '@mysten/dapp-kit';
-import { ALL_PACKAGE_IDS, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, isV5OrLater } from './constants.js';
+import { ALL_PACKAGE_IDS, isV5OrLater } from './constants.js';
 import { paginateEvents } from './paginateEvents.js';
 
 const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
@@ -20,9 +16,7 @@ export function useTokenList() {
     let cancelled = false;
 
     async function loadFromIndexer() {
-      const res = await fetch(`${INDEXER_URL}/tokens`, {
-        signal: AbortSignal.timeout(6000),
-      });
+      const res = await fetch(`${INDEXER_URL}/tokens`, { signal: AbortSignal.timeout(6000) });
       if (!res.ok) throw new Error('indexer not ok');
       const rows = await res.json();
       return rows.map(r => ({
@@ -42,28 +36,16 @@ export function useTokenList() {
     }
 
     async function loadFromRpc() {
-      // Fetch CurveCreated events from all package versions in parallel
       const eventArrays = await Promise.all(
         ALL_PACKAGE_IDS.map(pkgId =>
-          paginateEvents(
-            client,
-            `${pkgId}::bonding_curve::CurveCreated`,
-            { order: 'descending', maxPages: 20 }
-          ).catch(() => [])
+          paginateEvents(client, `${pkgId}::bonding_curve::CurveCreated`, { order: 'descending', maxPages: 20 }).catch(() => [])
         )
       );
-
       const allEvents = eventArrays.flatMap((events, idx) =>
         events.map(evt => ({ ...evt, _pkgId: ALL_PACKAGE_IDS[idx] }))
       );
-
-      allEvents.sort((a, b) => {
-        const ta = a.timestampMs ? Number(a.timestampMs) : 0;
-        const tb = b.timestampMs ? Number(b.timestampMs) : 0;
-        return tb - ta;
-      });
-
-      const list = allEvents.map((evt) => {
+      allEvents.sort((a, b) => (b.timestampMs ? Number(b.timestampMs) : 0) - (a.timestampMs ? Number(a.timestampMs) : 0));
+      const list = allEvents.map(evt => {
         const j = evt.parsedJson;
         const isV5 = isV5OrLater(evt._pkgId);
         return {
@@ -76,19 +58,17 @@ export function useTokenList() {
           isV5,
           graduationTarget: isV5 ? j.graduation_target : undefined,
           antiBotDelay:     isV5 ? j.anti_bot_delay    : undefined,
+          iconUrl:          j.icon_url ?? null,
+          tokenType:        null,
         };
       });
-
-      // Enrich with tokenType from on-chain object
       return await Promise.all(list.map(async (token) => {
         try {
           const obj = await client.getObject({ id: token.curveId, options: { showType: true } });
           const typeStr = obj.data?.type ?? '';
           const match   = typeStr.match(/Curve<(.+)>$/);
           return { ...token, tokenType: match ? match[1] : null };
-        } catch {
-          return { ...token, tokenType: null };
-        }
+        } catch { return token; }
       }));
     }
 
@@ -96,19 +76,23 @@ export function useTokenList() {
       try {
         setLoading(true);
         setError(null);
-
         let enriched;
         if (INDEXER_URL) {
-          try {
-            enriched = await loadFromIndexer();
-          } catch {
-            enriched = await loadFromRpc();
-          }
+          try { enriched = await loadFromIndexer(); }
+          catch { enriched = await loadFromRpc(); }
         } else {
           enriched = await loadFromRpc();
         }
-
-        if (!cancelled) setTokens(enriched);
+        if (!cancelled) {
+          setTokens(enriched);
+          // Preload all icon images immediately so they're cached before cards render
+          enriched.forEach(t => {
+            if (t.iconUrl) {
+              const img = new window.Image();
+              img.src = t.iconUrl;
+            }
+          });
+        }
       } catch (err) {
         if (!cancelled) setError(err.message || String(err));
       } finally {
