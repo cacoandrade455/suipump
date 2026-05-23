@@ -133,28 +133,52 @@ app.get('/token/:curveId/trades', async (req, res) => {
 app.get('/token/:curveId/ohlc', async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT data, timestamp_ms, event_type FROM events
-       WHERE curve_id = $1
-         AND (event_type LIKE '%TokensPurchased' OR event_type LIKE '%TokensBought' OR event_type LIKE '%TokensSold')
+      `SELECT data, timestamp_ms, event_type, e.curve_id,
+              c.package_id
+       FROM events e
+       LEFT JOIN curves c ON c.curve_id = e.curve_id
+       WHERE e.curve_id = $1
+         AND (e.event_type LIKE '%TokensPurchased' OR e.event_type LIKE '%TokensBought' OR e.event_type LIKE '%TokensSold')
        ORDER BY timestamp_ms ASC`,
       [req.params.curveId]
     );
+
     const MIST = 1e9;
-    // Use spot price from new_sui_reserve / new_token_reserve after each trade.
-    // This reflects the actual curve state, not the average trade price.
-    // Virtual reserves for V8: VS=3500 SUI, VT=800M tokens
-    const VIRTUAL_SUI    = 3500 * MIST;
-    const VIRTUAL_TOKENS = 800_000_000 * 1e6;
+    const TOKEN_DEC = 1e6;
+    const CURVE_SUPPLY = 800_000_000;
+
+    // Virtual reserves by package version — must match frontend curve.js
+    function getVirtuals(packageId) {
+      if (!packageId) return { vSui: 3500, vTok: 800_000_000 };
+      if (packageId.startsWith('0x2154')) return { vSui: 30000, vTok: 1_073_000_191 }; // V4
+      if (packageId.startsWith('0x785c')) return { vSui: 10000, vTok: 1_073_000_191 }; // V5
+      if (packageId.startsWith('0x21d5')) return { vSui: 10000, vTok: 1_073_000_191 }; // V6
+      if (packageId.startsWith('0xfb8f')) return { vSui: 5000,  vTok: 800_000_000   }; // V7
+      return { vSui: 3500, vTok: 800_000_000 }; // V8, V8_1
+    }
+
     const points = result.rows.map(row => {
       const d     = row.data;
       const ts    = row.timestamp_ms ? Math.floor(Number(row.timestamp_ms) / 1000) : 0;
       const isBuy = row.event_type.includes('TokensPurchased') || row.event_type.includes('TokensBought');
-      // Spot price = (real_sui_reserve + virtual_sui) / (real_token_reserve + virtual_tokens)
-      const suiRes  = Number(d.new_sui_reserve   ?? 0) + VIRTUAL_SUI;
-      const tokRes  = Number(d.new_token_reserve ?? 1) + VIRTUAL_TOKENS;
-      const price   = (suiRes / MIST) / (tokRes / 1e6);
+
+      const { vSui, vTok } = getVirtuals(row.package_id);
+
+      // Match priceMistPerToken from curve.js exactly:
+      // price = (vSui_mist + real_sui_reserve) / (vTok_atomic - tokens_sold)
+      // tokens_sold = CURVE_SUPPLY - new_token_reserve (in whole tokens)
+      const realSuiMist = Number(d.new_sui_reserve   ?? 0);
+      const realTokAtomic = Number(d.new_token_reserve ?? 0);
+      const tokensSold  = CURVE_SUPPLY * TOKEN_DEC - realTokAtomic;
+      const numSui      = (vSui * MIST) + realSuiMist;         // mist
+      const denTok      = (vTok * TOKEN_DEC) - tokensSold;     // atomic
+      if (denTok <= 0) return null;
+
+      // price in SUI per whole token
+      const price = (numSui / MIST) / (denTok / TOKEN_DEC);
       return { time: ts, price, kind: isBuy ? 'buy' : 'sell' };
-    }).filter(p => p.price > 0 && p.time > 0);
+    }).filter(p => p && p.price > 0 && p.time > 0);
+
     res.json(points);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
