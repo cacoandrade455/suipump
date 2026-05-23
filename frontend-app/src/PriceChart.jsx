@@ -1,144 +1,255 @@
-// PriceChart.jsx
-// TradingView Lightweight Charts wrapper.
-// Same library used by Binance, Coinbase, Bybit, OKX, pump.fun.
-// We feed it our trade events; it handles zoom, pan, crosshair, candles, etc.
-
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+// PriceChart.jsx — pump.fun-style clean chart with line + bar toggle
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useSuiClient } from '@mysten/dapp-kit';
-import { createChart, CandlestickSeries, AreaSeries } from 'lightweight-charts';
-import { ALL_PACKAGE_IDS } from './constants.js';
-import { paginateMultipleEvents } from './paginateEvents.js';
-
-const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
+import { PACKAGE_ID } from './constants.js';
 
 const TOTAL_SUPPLY_WHOLE = 1_000_000_000;
-
-// Candle bucket (in seconds, lightweight-charts uses unix seconds)
 const INTERVALS = [
-  { label: '1M',  seconds: 60 },
-  { label: '5M',  seconds: 300 },
-  { label: '30M', seconds: 1_800 },
-  { label: '1H',  seconds: 3_600 },
-  { label: 'ALL', seconds: 0 }, // auto
+  { label: '1m',  ms: 60_000 },
+  { label: '5m',  ms: 300_000 },
+  { label: '15m', ms: 900_000 },
+  { label: '1h',  ms: 3_600_000 },
+  { label: '6h',  ms: 21_600_000 },
+  { label: '24h', ms: 86_400_000 },
+  { label: 'ALL', ms: 0 },
 ];
 const VIEWS = ['PRICE', 'MCAP'];
 
 async function fetchSuiUsd() {
   try {
-    const r = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=SUIUSDT');
-    return parseFloat((await r.json()).price) || 0;
+    const res = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=SUIUSDT');
+    const j = await res.json();
+    return parseFloat(j.price) || 0;
   } catch {
     try {
-      const r = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=sui&vs_currencies=usd');
-      return (await r.json())?.sui?.usd || 0;
+      const res = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=sui&vs_currencies=usd');
+      const j = await res.json();
+      return j?.sui?.usd || 0;
     } catch { return 0; }
   }
 }
 
-// Build OHLC candles from trades, forward-filling empty buckets so the
-// chart shows a continuous price line even with gaps in trading activity.
-function buildCandles(points, bucketSeconds) {
-  if (points.length === 0) return [];
-
-  let s = bucketSeconds;
-  if (!s) {
-    // Auto bucket — aim for ~80 candles across history
-    const span = points[points.length - 1].time - points[0].time;
-    const raw  = span / 80;
-    const snaps = [60, 300, 900, 1800, 3600, 14_400, 86_400];
-    s = snaps.find(x => x >= raw) ?? snaps[snaps.length - 1];
-  }
-
-  // Group trades by bucket
-  const buckets = new Map();
+function toCandles(points, intervalMs) {
+  if (!intervalMs) return points.map(p => ({ ...p, o: p.price, h: p.price, l: p.price, c: p.price }));
+  if (!points.length) return [];
+  const buckets = {};
   for (const p of points) {
-    const t = Math.floor(p.time / s) * s;
-    if (!buckets.has(t)) buckets.set(t, []);
-    buckets.get(t).push(p.price);
+    const bucket = Math.floor(p.time / intervalMs) * intervalMs;
+    if (!buckets[bucket]) buckets[bucket] = { time: bucket, prices: [], kind: p.kind };
+    buckets[bucket].prices.push(p.price);
   }
+  return Object.values(buckets).sort((a, b) => a.time - b.time).map(b => ({
+    time: b.time, kind: b.kind,
+    price: b.prices[b.prices.length - 1],
+    o: b.prices[0],
+    h: Math.max(...b.prices),
+    l: Math.min(...b.prices),
+    c: b.prices[b.prices.length - 1],
+  }));
+}
 
-  // Forward-fill from first to now
-  const firstBucket = Math.floor(points[0].time / s) * s;
-  const lastBucket  = Math.floor(Date.now() / 1000 / s) * s;
+// Line chart SVG
+function LineChart({ chartData, W, H, PL, PR, PT, PB, lineColor, fillColor, hover, onMouseMove, onMouseLeave, svgRef, fmtVal, fmtUsd, suiUsd }) {
+  const cW = W - PL - PR, cH = H - PT - PB;
+  const values = chartData.map(d => d.value);
+  const minV = values.length ? Math.min(...values) * 0.992 : 0;
+  const maxV = values.length ? Math.max(...values) * 1.008 : 1;
+  const rangeV = maxV - minV || 1;
 
-  const candles = [];
-  let prevClose = points[0].price;
-  for (let t = firstBucket; t <= lastBucket; t += s) {
-    const trades = buckets.get(t);
-    if (trades?.length > 0) {
-      const open  = prevClose;
-      const close = trades[trades.length - 1];
-      candles.push({
-        time: t,
-        open,
-        high: Math.max(open, ...trades),
-        low:  Math.min(open, ...trades),
-        close,
-      });
-      prevClose = close;
-    } else {
-      // Empty bucket — flat doji (TradingView renders this as a horizontal tick automatically)
-      candles.push({ time: t, open: prevClose, high: prevClose, low: prevClose, close: prevClose });
-    }
-  }
-  return candles;
+  const toX = i => PL + (i / Math.max(chartData.length - 1, 1)) * cW;
+  const toY = v => PT + (1 - (v - minV) / rangeV) * cH;
+
+  const pathD = chartData.length >= 2
+    ? 'M ' + chartData.map((d, i) => `${toX(i).toFixed(1)},${toY(d.value).toFixed(1)}`).join(' L ')
+    : null;
+  const areaD = pathD
+    ? `${pathD} L ${toX(chartData.length - 1).toFixed(1)},${H - PB} L ${PL},${H - PB} Z`
+    : null;
+
+  const yTicks = [0, 0.5, 1].map(t => ({ y: PT + (1 - t) * cH, value: minV + t * rangeV }));
+  const xTicks = chartData.length >= 2
+    ? [0, Math.floor((chartData.length - 1) / 2), chartData.length - 1].map(i => ({
+        x: toX(i),
+        label: chartData[i] ? new Date(chartData[i].time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
+      }))
+    : [];
+
+  // Recalculate hover y from value when rendering
+  const hoverY = hover ? toY(hover.point.value) : null;
+  const hoverX = hover ? toX(hover.idx) : null;
+
+  return (
+    <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="w-full cursor-crosshair select-none"
+      style={{ height: '140px' }} onMouseMove={onMouseMove} onMouseLeave={onMouseLeave}
+      preserveAspectRatio="none">
+      {yTicks.map((t, i) => (
+        <line key={i} x1={PL} x2={W - PR} y1={t.y} y2={t.y} stroke="#ffffff08" strokeWidth="1" />
+      ))}
+      {yTicks.map((t, i) => (
+        <text key={i} x={PL - 4} y={t.y + 3.5} textAnchor="end" fontSize="7.5" fill="#ffffff25" fontFamily="monospace">
+          {fmtVal(t.value)}
+        </text>
+      ))}
+      {xTicks.map((t, i) => (
+        <text key={i} x={t.x} y={H - 5} textAnchor="middle" fontSize="7" fill="#ffffff20" fontFamily="monospace">
+          {t.label}
+        </text>
+      ))}
+      {areaD && <path d={areaD} fill={fillColor} />}
+      {pathD && <path d={pathD} fill="none" stroke={lineColor} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />}
+      {chartData.map((d, i) => (
+        <circle key={i} cx={toX(i)} cy={toY(d.value)} r="1.5"
+          fill={d.kind === 'sell' ? '#EF4444' : '#84CC16'} opacity="0.5" />
+      ))}
+      {hover && hoverX !== null && hoverY !== null && (
+        <>
+          <line x1={hoverX} x2={hoverX} y1={PT} y2={H - PB} stroke="#ffffff" strokeWidth="0.5" opacity="0.15" />
+          <line x1={PL} x2={W - PR} y1={hoverY} y2={hoverY} stroke="#ffffff" strokeWidth="0.5" opacity="0.15" />
+          <circle cx={hoverX} cy={hoverY} r="3.5" fill={lineColor} stroke="#080808" strokeWidth="1.5" />
+          <Tooltip hover={hover} hoverX={hoverX} hoverY={hoverY} W={W} PR={PR} PT={PT} PB={PB} H={H} ttH={suiUsd > 0 ? 50 : 38} fmtVal={fmtVal} fmtUsd={fmtUsd} lineColor={lineColor} suiUsd={suiUsd} />
+        </>
+      )}
+    </svg>
+  );
+}
+
+// Bar chart SVG — OHLC candles
+function BarChart({ chartData, W, H, PL, PR, PT, PB, hover, onMouseMove, onMouseLeave, svgRef, fmtVal, fmtUsd, suiUsd }) {
+  const cW = W - PL - PR, cH = H - PT - PB;
+  const values = chartData.flatMap(d => [d.h ?? d.value, d.l ?? d.value]);
+  const minV = values.length ? Math.min(...values) * 0.99 : 0;
+  const maxV = values.length ? Math.max(...values) * 1.01 : 1;
+  const rangeV = maxV - minV || 1;
+
+  const n = chartData.length;
+  const barW = Math.max(2, Math.min(12, (cW / Math.max(n, 1)) * 0.7));
+  const toX = i => PL + ((i + 0.5) / Math.max(n, 1)) * cW;
+  const toY = v => PT + (1 - (v - minV) / rangeV) * cH;
+
+  const yTicks = [0, 0.5, 1].map(t => ({ y: PT + (1 - t) * cH, value: minV + t * rangeV }));
+  const xTicks = n >= 2
+    ? [0, Math.floor((n - 1) / 2), n - 1].map(i => ({
+        x: toX(i),
+        label: chartData[i] ? new Date(chartData[i].time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
+      }))
+    : [];
+
+  const hoverX = hover ? toX(hover.idx) : null;
+  const hoverY = hover ? toY(hover.point.value) : null;
+
+  return (
+    <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="w-full cursor-crosshair select-none"
+      style={{ height: '140px' }} onMouseMove={onMouseMove} onMouseLeave={onMouseLeave}
+      preserveAspectRatio="none">
+      {yTicks.map((t, i) => (
+        <line key={i} x1={PL} x2={W - PR} y1={t.y} y2={t.y} stroke="#ffffff08" strokeWidth="1" />
+      ))}
+      {yTicks.map((t, i) => (
+        <text key={i} x={PL - 4} y={t.y + 3.5} textAnchor="end" fontSize="7.5" fill="#ffffff25" fontFamily="monospace">
+          {fmtVal(t.value)}
+        </text>
+      ))}
+      {xTicks.map((t, i) => (
+        <text key={i} x={t.x} y={H - 5} textAnchor="middle" fontSize="7" fill="#ffffff20" fontFamily="monospace">
+          {t.label}
+        </text>
+      ))}
+
+      {/* Candle bars */}
+      {chartData.map((d, i) => {
+        const x = toX(i);
+        const isGreen = d.c >= d.o;
+        const color = isGreen ? '#84CC16' : '#EF4444';
+        const bodyTop = toY(Math.max(d.o, d.c));
+        const bodyBot = toY(Math.min(d.o, d.c));
+        const bodyH = Math.max(1.5, bodyBot - bodyTop);
+        const wickTop = toY(d.h);
+        const wickBot = toY(d.l);
+        return (
+          <g key={i}>
+            {/* Wick */}
+            <line x1={x} x2={x} y1={wickTop} y2={wickBot} stroke={color} strokeWidth="1" opacity="0.6" />
+            {/* Body */}
+            <rect x={x - barW / 2} y={bodyTop} width={barW} height={bodyH}
+              fill={color} opacity={hover?.idx === i ? 1 : 0.8} rx="0.5" />
+          </g>
+        );
+      })}
+
+      {/* Hover crosshair */}
+      {hover && hoverX !== null && (
+        <>
+          <line x1={hoverX} x2={hoverX} y1={PT} y2={H - PB} stroke="#ffffff" strokeWidth="0.5" opacity="0.15" />
+          <Tooltip hover={hover} hoverX={hoverX} hoverY={hoverY ?? PT} W={W} PR={PR} PT={PT} PB={PB} H={H} ttH={suiUsd > 0 ? 50 : 38} fmtVal={fmtVal} fmtUsd={fmtUsd} lineColor={hover.point.c >= hover.point.o ? '#84CC16' : '#EF4444'} suiUsd={suiUsd} />
+        </>
+      )}
+    </svg>
+  );
+}
+
+function Tooltip({ hover, hoverX, hoverY, W, PR, PT, PB, H, ttH, fmtVal, fmtUsd, lineColor, suiUsd }) {
+  const ttW = 140;
+  const ttX = hoverX + 10 + ttW > W - PR ? hoverX - ttW - 10 : hoverX + 10;
+  const ttY = Math.max(PT, Math.min(H - PB - ttH, hoverY - ttH / 2));
+  return (
+    <g>
+      <rect x={ttX} y={ttY} width={ttW} height={ttH} fill="#111" stroke="#ffffff15" strokeWidth="1" rx="4" />
+      <text x={ttX + 8} y={ttY + 15} fontSize="9.5" fill={lineColor} fontFamily="monospace" fontWeight="bold">
+        {fmtVal(hover.point.value)} SUI
+      </text>
+      {suiUsd > 0 && (
+        <text x={ttX + 8} y={ttY + 29} fontSize="8.5" fill="#9CA3AF" fontFamily="monospace">
+          {fmtUsd(hover.point.value)}
+        </text>
+      )}
+      <text x={ttX + 8} y={ttY + ttH - 7} fontSize="7" fill="#ffffff30" fontFamily="monospace">
+        {new Date(hover.point.time).toLocaleTimeString()}
+      </text>
+    </g>
+  );
 }
 
 export default function PriceChart({ curveId, refreshKey }) {
   const client = useSuiClient();
-  const containerRef = useRef(null);
-  const chartRef     = useRef(null);
-  const seriesRef    = useRef(null);
+  const svgRef = useRef(null);
 
-  const [rawTrades, setRawTrades]     = useState([]);
-  const [suiUsd,    setSuiUsd]        = useState(0);
-  const [intervalIdx, setIntervalIdx] = useState(4); // ALL by default
-  const [view,      setView]          = useState('PRICE');
-  const [loading,   setLoading]       = useState(true);
+  const [rawTrades, setRawTrades] = useState([]);
+  const [suiUsd, setSuiUsd] = useState(0);
+  const [intervalIdx, setIntervalIdx] = useState(6);
+  const [view, setView] = useState('PRICE');
+  const [chartType, setChartType] = useState('line'); // 'line' | 'bar'
+  const [hover, setHover] = useState(null);
+  const [loading, setLoading] = useState(true);
 
-  // ── Fetch SUI/USD ──────────────────────────────────────────────────────────
   useEffect(() => {
     fetchSuiUsd().then(setSuiUsd);
     const t = setInterval(() => fetchSuiUsd().then(setSuiUsd), 30_000);
     return () => clearInterval(t);
   }, []);
 
-  // ── Fetch trades ───────────────────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false;
     async function load() {
       setLoading(true);
       try {
-        // Try indexer first — instant, pre-computed per token
-        if (INDEXER_URL) {
-          try {
-            const res = await fetch(`${INDEXER_URL}/token/${curveId}/ohlc`, { signal: AbortSignal.timeout(5000) });
-            if (res.ok) {
-              const points = await res.json();
-              if (!cancelled) { setRawTrades(points); setLoading(false); }
-              return;
-            }
-          } catch {}
-        }
-        // Fall back to RPC pagination — query ALL package versions (v4/v5/v6/v7)
-        // so a chart for an older-package token is never empty.
-        const buyTypes  = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensPurchased`);
-        const sellTypes = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensSold`);
-        const eventMap = await paginateMultipleEvents(client, [...buyTypes, ...sellTypes], { order: 'ascending', maxPages: 20 });
+        const [buys, sells] = await Promise.all([
+          client.queryEvents({ query: { MoveEventType: `${PACKAGE_ID}::bonding_curve::TokensPurchased` }, limit: 100, order: 'ascending' }),
+          client.queryEvents({ query: { MoveEventType: `${PACKAGE_ID}::bonding_curve::TokensSold` }, limit: 100, order: 'ascending' }),
+        ]);
         const all = [
-          ...buyTypes.flatMap(t  => (eventMap[t] || []).map(e => ({ ...e, kind: 'buy'  }))),
-          ...sellTypes.flatMap(t => (eventMap[t] || []).map(e => ({ ...e, kind: 'sell' }))),
+          ...buys.data.map(e => ({ ...e, kind: 'buy' })),
+          ...sells.data.map(e => ({ ...e, kind: 'sell' })),
         ]
           .filter(e => e.parsedJson?.curve_id === curveId)
           .sort((a, b) => Number(a.timestampMs) - Number(b.timestampMs));
 
         const points = all.map(e => {
           const p = e.parsedJson;
-          const price = e.kind === 'buy'
-            ? (Number(p.sui_in   ?? 0) / 1e9) / (Number(p.tokens_out ?? 1) / 1e6)
-            : (Number(p.sui_out  ?? 0) / 1e9) / (Number(p.tokens_in  ?? 1) / 1e6);
-          return { time: Math.floor(Number(e.timestampMs) / 1000), price, kind: e.kind };
-        }).filter(p => p.price > 0);
+          const suiVal = e.kind === 'buy' ? Number(p.sui_in ?? 0) / 1e9 : Number(p.sui_out ?? 0) / 1e9;
+          const tokVal = e.kind === 'buy' ? Number(p.tokens_out ?? 1) / 1e6 : Number(p.tokens_in ?? 1) / 1e6;
+          const price = tokVal > 0 ? suiVal / tokVal : 0;
+          return { time: Number(e.timestampMs), price, kind: e.kind };
+        }).filter(t => t.price > 0);
 
         if (!cancelled) { setRawTrades(points); setLoading(false); }
       } catch { if (!cancelled) setLoading(false); }
@@ -148,252 +259,164 @@ export default function PriceChart({ curveId, refreshKey }) {
     return () => { cancelled = true; clearInterval(t); };
   }, [curveId, client, refreshKey]);
 
-  // ── Initialize chart once ───────────────────────────────────────────────────
-  useEffect(() => {
-    if (!containerRef.current) return;
+  const intervalMs = INTERVALS[intervalIdx].ms;
+  const candles = useMemo(() => toCandles(rawTrades.slice(-100), intervalMs), [rawTrades, intervalMs]);
+  const chartData = useMemo(() => view === 'MCAP'
+    ? candles.map(c => ({ ...c, value: c.price * TOTAL_SUPPLY_WHOLE, o: c.o * TOTAL_SUPPLY_WHOLE, h: c.h * TOTAL_SUPPLY_WHOLE, l: c.l * TOTAL_SUPPLY_WHOLE, c: c.c * TOTAL_SUPPLY_WHOLE }))
+    : candles,
+  [candles, view]);
 
-    const chart = createChart(containerRef.current, {
-      layout: {
-        background: { type: 'solid', color: '#000000' },
-        textColor:  '#84CC16',
-        fontFamily: 'JetBrains Mono, ui-monospace, monospace',
-        attributionLogo: false,
-      },
-      grid: {
-        vertLines: { color: '#141414' },
-        horzLines: { color: '#141414' },
-      },
-      rightPriceScale: {
-        borderColor: '#1a3a0a',
-        textColor:   '#4B5563',
-      },
-      timeScale: {
-        borderColor:    '#1a3a0a',
-        timeVisible:    true,
-        secondsVisible: false,
-      },
-      crosshair: {
-        mode: 1, // CrosshairMode.Normal — follows mouse exactly
-        vertLine: {
-          color: '#84CC16',
-          width: 1,
-          style: 3, // dashed
-          labelBackgroundColor: '#84CC16',
-        },
-        horzLine: {
-          color: '#84CC16',
-          width: 1,
-          style: 3,
-          labelBackgroundColor: '#84CC16',
-        },
-      },
-      width:  containerRef.current.clientWidth,
-      height: 280,
-      autoSize: true,
-    });
+  const W = 600, H = 140, PL = 60, PR = 6, PT = 8, PB = 24;
+  const cW = W - PL - PR;
 
-    const series = chart.addSeries(CandlestickSeries, {
-      upColor:        '#84CC16',
-      downColor:      '#EF4444',
-      borderVisible:  false,
-      wickUpColor:    '#84CC16',
-      wickDownColor:  '#EF4444',
-      // Current price line — white for clarity against green/red candles
-      priceLineColor: '#FFFFFF',
-      priceLineWidth: 1,
-      priceLineStyle: 4, // sparse-dashed (LineStyle.LargeDashed)
-      lastValueVisible: true,
-    });
+  const isUp = chartData.length >= 2 && chartData[chartData.length - 1].value >= chartData[0].value;
+  const lineColor = isUp ? '#84CC16' : '#EF4444';
+  const fillColor = isUp ? '#84CC1612' : '#EF444412';
 
-    chartRef.current  = chart;
-    seriesRef.current = series;
-
-    // Resize observer
-    const ro = new ResizeObserver(() => {
-      if (containerRef.current && chartRef.current) {
-        chartRef.current.applyOptions({ width: containerRef.current.clientWidth });
-      }
-    });
-    ro.observe(containerRef.current);
-
-    return () => {
-      ro.disconnect();
-      chart.remove();
-      chartRef.current  = null;
-      seriesRef.current = null;
-    };
-  }, []);
-
-  // ── Build candle data and apply to chart ────────────────────────────────────
-  const candles = useMemo(() => {
-    // PRICE view: render in USD when a SUI/USD rate is available, so the
-    // candle data, the axis scale, and the axis labels are all the SAME unit.
-    // (Previously data was in SUI but the formatter multiplied by suiUsd,
-    // so the axis labels disagreed with the candle positions.)
-    // MCAP view: multiply price-per-token (SUI) by total supply for market cap.
-    let mul;
+  const fmtVal = v => {
     if (view === 'MCAP') {
-      mul = TOTAL_SUPPLY_WHOLE * (suiUsd > 0 ? suiUsd : 1);
+      if (v >= 1e6) return `${(v / 1e6).toFixed(2)}M`;
+      if (v >= 1e3) return `${(v / 1e3).toFixed(1)}k`;
+      return v.toFixed(2);
+    }
+    if (v < 0.000001) return v.toExponential(3);
+    if (v < 0.001) return v.toFixed(7);
+    return v.toFixed(6);
+  };
+
+  const fmtUsd = suiVal => {
+    if (!suiUsd) return '';
+    const raw = suiVal * suiUsd;
+    if (raw >= 1e6) return `$${(raw / 1e6).toFixed(2)}M`;
+    if (raw >= 1e3) return `$${(raw / 1e3).toFixed(2)}k`;
+    if (raw >= 0.01) return `$${raw.toFixed(4)}`;
+    if (raw === 0) return '$0';
+    return `$${parseFloat(raw.toPrecision(4)).toFixed(Math.max(4, -Math.floor(Math.log10(raw)) + 3))}`;
+  };
+
+  const handleMouseMove = useCallback(e => {
+    if (!svgRef.current || !chartData.length) return;
+    const rect = svgRef.current.getBoundingClientRect();
+    const svgX = ((e.clientX - rect.left) / rect.width) * W;
+    if (svgX < PL || svgX > W - PR) { setHover(null); return; }
+    let idx;
+    if (chartType === 'bar') {
+      idx = Math.max(0, Math.min(chartData.length - 1, Math.floor(((svgX - PL) / cW) * chartData.length)));
     } else {
-      mul = suiUsd > 0 ? suiUsd : 1;
+      idx = Math.max(0, Math.min(chartData.length - 1, Math.round(((svgX - PL) / cW) * (chartData.length - 1))));
     }
-    const built = buildCandles(rawTrades, INTERVALS[intervalIdx].seconds);
-    return built.map(c => ({
-      time:  c.time,
-      open:  c.open  * mul,
-      high:  c.high  * mul,
-      low:   c.low   * mul,
-      close: c.close * mul,
-    }));
-  }, [rawTrades, intervalIdx, view, suiUsd]);
+    const point = chartData[idx];
+    if (point) setHover({ point, idx });
+  }, [chartData, chartType]);
 
-  useEffect(() => {
-    if (!seriesRef.current || !chartRef.current) return;
+  const currentPoint = hover?.point ?? (chartData.length > 0 ? chartData[chartData.length - 1] : null);
 
-    if (candles.length === 0) {
-      seriesRef.current.setData([]);
-      return;
-    }
+  // Line chart SVG icon
+  const LineIcon = () => (
+    <svg width="16" height="10" viewBox="0 0 16 10" fill="none">
+      <polyline points="1,9 5,5 9,7 15,1" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+    </svg>
+  );
 
-    seriesRef.current.setData(candles);
-
-    // Force a visible price range even when most candles are flat dojis.
-    // Without this, lightweight-charts auto-fits to the tiny variation
-    // and renders the candles too small to see.
-    if (candles.length > 0) {
-      const lows  = candles.map(c => c.low);
-      const highs = candles.map(c => c.high);
-      const minP  = Math.min(...lows);
-      const maxP  = Math.max(...highs);
-      const pad   = Math.max((maxP - minP) * 0.5, maxP * 0.05);
-      seriesRef.current.applyOptions({
-        autoscaleInfoProvider: () => ({
-          priceRange: { minValue: minP - pad, maxValue: maxP + pad },
-        }),
-      });
-    }
-
-    // Custom price formatter. Candle data is ALREADY in USD when suiUsd > 0
-    // (converted in the candles useMemo), so the formatter must NOT multiply
-    // by suiUsd again — it only formats the value it is given.
-    seriesRef.current.applyOptions({
-      priceFormat: {
-        type: 'custom',
-        formatter: (price) => {
-          if (suiUsd > 0) {
-            // value is USD already
-            if (view === 'MCAP') {
-              if (price >= 1e6) return `$${(price/1e6).toFixed(2)}M`;
-              if (price >= 1e3) return `$${(price/1e3).toFixed(1)}k`;
-              return `$${price.toFixed(0)}`;
-            }
-            if (price >= 1)    return `$${price.toFixed(4)}`;
-            if (price >= 1e-4) return `$${price.toFixed(6)}`;
-            return `$${price.toPrecision(4)}`;
-          }
-          // No USD rate — value is in SUI (or token count for MCAP)
-          if (view === 'MCAP') {
-            if (price >= 1e6) return `${(price/1e6).toFixed(2)}M`;
-            if (price >= 1e3) return `${(price/1e3).toFixed(1)}k`;
-            return price.toFixed(0);
-          }
-          if (price < 1e-6) return price.toExponential(2);
-          return price.toFixed(7);
-        },
-        minMove: 1e-9,
-      },
-    });
-
-    chartRef.current.timeScale().fitContent();
-  }, [candles, suiUsd, view]);
-
-  // ── Latest price for header display ─────────────────────────────────────────
-  const latestPrice = candles.length > 0 ? candles[candles.length - 1].close : null;
-  const firstPrice  = candles.length > 0 ? candles[0].open : null;
-  const isUp        = latestPrice != null && firstPrice != null && latestPrice >= firstPrice;
-  const accentColor = isUp ? '#84CC16' : '#EF4444';
-
-  // NOTE: when suiUsd > 0, candle values (and thus latestPrice/firstPrice)
-  // are already in USD. fmtUsd therefore formats the value directly, and
-  // fmtSui divides back out to recover the SUI figure for the sub-label.
-  const fmtUsd = (v) => {
-    if (!suiUsd || v == null) return null;
-    const usd = v; // already USD
-    if (usd >= 1e6)  return `$${(usd/1e6).toFixed(3)}M`;
-    if (usd >= 1e3)  return `$${(usd/1e3).toFixed(2)}k`;
-    if (usd >= 1)    return `$${usd.toFixed(4)}`;
-    if (usd >= 1e-4) return `$${usd.toFixed(6)}`;
-    return `$${usd.toPrecision(4)}`;
-  };
-
-  const fmtSui = (v) => {
-    if (v == null) return '-';
-    // Recover SUI value: candle data is USD when a rate exists.
-    const s = suiUsd > 0 ? v / suiUsd : v;
-    if (view === 'MCAP') {
-      if (s >= 1e6) return `${(s/1e6).toFixed(2)}M`;
-      if (s >= 1e3) return `${(s/1e3).toFixed(1)}k`;
-      return s.toFixed(1);
-    }
-    if (s < 1e-7)  return s.toExponential(2);
-    if (s < 0.001) return s.toFixed(7);
-    return s.toFixed(5);
-  };
+  // Bar chart SVG icon
+  const BarIcon = () => (
+    <svg width="14" height="10" viewBox="0 0 14 10" fill="none">
+      <rect x="1" y="4" width="2.5" height="6" fill="currentColor" opacity="0.9" />
+      <rect x="5" y="1" width="2.5" height="9" fill="currentColor" opacity="0.9" />
+      <rect x="9" y="3" width="2.5" height="7" fill="currentColor" opacity="0.9" />
+    </svg>
+  );
 
   return (
-    <div className="border border-lime-900/30 bg-black p-3 rounded-xl">
-      {/* Controls */}
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex gap-1">
+    <div className="bg-transparent">
+      {/* Controls row */}
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-1">
+          {/* View toggle */}
           {VIEWS.map(v => (
             <button key={v} onClick={() => setView(v)}
-              className={`text-[10px] font-mono px-2 py-0.5 border transition-colors ${
-                view === v ? 'bg-lime-400 text-black border-lime-400' : 'text-lime-700 border-lime-900 hover:border-lime-600'
-              }`}>{v}</button>
+              className={`text-[10px] font-mono px-2.5 py-1 rounded-lg transition-all ${
+                view === v ? 'bg-white/10 text-white font-bold' : 'text-white/30 hover:text-white/60'
+              }`}
+            >{v}</button>
           ))}
+
+          {/* Divider */}
+          <div className="w-px h-3 bg-white/10 mx-1" />
+
+          {/* Chart type toggle */}
+          <button
+            onClick={() => setChartType('line')}
+            className={`flex items-center gap-1 px-2.5 py-1 rounded-lg transition-all text-[10px] font-mono ${
+              chartType === 'line' ? 'bg-white/10 text-white' : 'text-white/30 hover:text-white/60'
+            }`}
+            title="Line chart"
+          >
+            <LineIcon />
+          </button>
+          <button
+            onClick={() => setChartType('bar')}
+            className={`flex items-center gap-1 px-2.5 py-1 rounded-lg transition-all text-[10px] font-mono ${
+              chartType === 'bar' ? 'bg-white/10 text-white' : 'text-white/30 hover:text-white/60'
+            }`}
+            title="Candlestick / bar chart"
+          >
+            <BarIcon />
+          </button>
         </div>
-        <div className="flex gap-1">
+
+        {/* Interval buttons */}
+        <div className="flex gap-0.5">
           {INTERVALS.map((iv, i) => (
             <button key={iv.label} onClick={() => setIntervalIdx(i)}
-              className={`text-[10px] font-mono px-2 py-0.5 border transition-colors ${
-                intervalIdx === i ? 'bg-lime-950 text-lime-400 border-lime-600' : 'text-lime-900 border-lime-950 hover:border-lime-800'
-              }`}>{iv.label}</button>
+              className={`text-[10px] font-mono px-2.5 py-1 rounded-lg transition-all ${
+                intervalIdx === i ? 'bg-white/10 text-white font-bold' : 'text-white/20 hover:text-white/50'
+              }`}
+            >{iv.label}</button>
           ))}
         </div>
       </div>
 
       {/* Price display */}
-      {latestPrice != null && (
-        <div className="flex items-baseline gap-3 mb-2">
-          {fmtUsd(latestPrice) ? (
-            <>
-              <span className="text-lg font-bold font-mono" style={{ color: accentColor }}>{fmtUsd(latestPrice)}</span>
-              <span className="text-xs font-mono text-lime-700">{fmtSui(latestPrice)} SUI</span>
-            </>
-          ) : (
-            <span className="text-lg font-bold font-mono" style={{ color: accentColor }}>{fmtSui(latestPrice)} SUI</span>
+      {currentPoint && (
+        <div className="flex items-baseline gap-2 mb-1.5 min-h-[28px]">
+          <span className="text-xl font-bold font-mono" style={{ color: lineColor }}>
+            {suiUsd > 0 ? fmtUsd(currentPoint.value) : `${fmtVal(currentPoint.value)} SUI`}
+          </span>
+          {suiUsd > 0 && (
+            <span className="text-xs font-mono text-white/30">{fmtVal(currentPoint.value)} SUI</span>
+          )}
+          {hover && (
+            <span className="text-[10px] font-mono text-white/20 ml-auto">
+              {new Date(currentPoint.time).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+            </span>
           )}
         </div>
       )}
 
-      {/* Chart container — always mounted so the chart instance has a target */}
-      <div className="relative">
-        <div ref={containerRef} style={{ width: '100%', height: '280px' }} />
-        {(loading || rawTrades.length === 0) && (
-          <div className="absolute inset-0 flex items-center justify-center text-[10px] font-mono text-lime-900 bg-black pointer-events-none">
-            {loading ? 'LOADING TRADES…' : 'NO TRADES YET — BE THE FIRST TO BUY'}
-          </div>
-        )}
-      </div>
-
-      {/* Required attribution per Apache 2.0 license */}
-      <div className="text-[8px] font-mono text-lime-900/40 mt-1 text-right">
-        chart by{' '}
-        <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer"
-          className="hover:text-lime-700 transition-colors">
-          TradingView
-        </a>
-      </div>
+      {/* Chart body */}
+      {loading ? (
+        <div className="h-36 flex items-center justify-center">
+          <span className="text-[10px] font-mono text-white/20 animate-pulse">LOADING…</span>
+        </div>
+      ) : chartData.length < 2 ? (
+        <div className="h-36 flex items-center justify-center rounded-xl border border-white/5">
+          <span className="text-[10px] font-mono text-white/20">NOT ENOUGH TRADES FOR CHART</span>
+        </div>
+      ) : chartType === 'line' ? (
+        <LineChart
+          chartData={chartData} W={W} H={H} PL={PL} PR={PR} PT={PT} PB={PB}
+          lineColor={lineColor} fillColor={fillColor}
+          hover={hover} onMouseMove={handleMouseMove} onMouseLeave={() => setHover(null)}
+          svgRef={svgRef} fmtVal={fmtVal} fmtUsd={fmtUsd} suiUsd={suiUsd}
+        />
+      ) : (
+        <BarChart
+          chartData={chartData} W={W} H={H} PL={PL} PR={PR} PT={PT} PB={PB}
+          hover={hover} onMouseMove={handleMouseMove} onMouseLeave={() => setHover(null)}
+          svgRef={svgRef} fmtVal={fmtVal} fmtUsd={fmtUsd} suiUsd={suiUsd}
+        />
+      )}
     </div>
   );
 }
