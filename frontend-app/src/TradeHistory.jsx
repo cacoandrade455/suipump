@@ -2,12 +2,12 @@
 import React, { useState, useEffect } from 'react';
 import { useSuiClient } from '@mysten/dapp-kit';
 import { ArrowUpRight, ArrowDownRight } from 'lucide-react';
-import { PACKAGE_ID, ALL_PACKAGE_IDS } from './constants.js';
+import { ALL_PACKAGE_IDS } from './constants.js';
 import { paginateMultipleEvents } from './paginateEvents.js';
 
 const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
-
 const MIST_PER_SUI = 1e9;
+const POLL_MS = 10_000; // poll every 10s
 
 function timeAgo(ts) {
   if (!ts) return '';
@@ -25,66 +25,81 @@ export default function TradeHistory({ curveId, symbol, refreshKey, creator = nu
 
   useEffect(() => {
     let cancelled = false;
+
     async function load() {
       try {
-        setLoading(true);
-
         // Try indexer first
         if (INDEXER_URL) {
           try {
-            const res = await fetch(`${INDEXER_URL}/token/${curveId}/trades?limit=200`, { signal: AbortSignal.timeout(5000) });
+            const res = await fetch(
+              `${INDEXER_URL}/token/${curveId}/trades?limit=200`,
+              { signal: AbortSignal.timeout(5000) }
+            );
             if (res.ok) {
               const rows = await res.json();
               const all = rows.map(r => ({
-                kind:   r.event_type.includes('TokensPurchased') ? 'buy' : 'sell',
-                sui:    r.event_type.includes('TokensPurchased')
-                  ? Number(r.data.sui_in) / MIST_PER_SUI
+                kind:   r.event_type?.includes('TokensPurchased') ? 'buy' : 'sell',
+                sui:    r.event_type?.includes('TokensPurchased')
+                  ? Number(r.data.sui_in)  / MIST_PER_SUI
                   : Number(r.data.sui_out) / MIST_PER_SUI,
-                tokens: r.event_type.includes('TokensPurchased')
+                tokens: r.event_type?.includes('TokensPurchased')
                   ? Number(r.data.tokens_out) / 1e6
-                  : Number(r.data.tokens_in) / 1e6,
+                  : Number(r.data.tokens_in)  / 1e6,
                 who:    r.data.buyer || r.data.seller,
                 ts:     r.timestamp_ms ? Number(r.timestamp_ms) : null,
                 digest: r.data.tx_digest,
               }));
-              if (!cancelled) { setTrades(all); setLoading(false); }
+              if (!cancelled) {
+                setTrades(all);
+                setLoading(false);
+              }
               return;
             }
           } catch {}
         }
 
-        // Fall back to RPC — query all package versions
+        // RPC fallback
         const buyTypes  = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensPurchased`);
         const sellTypes = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensSold`);
-        const eventMap = await paginateMultipleEvents(client, [...buyTypes, ...sellTypes], { order: 'descending', maxPages: 20 });
+        const eventMap  = await paginateMultipleEvents(client, [...buyTypes, ...sellTypes], { order: 'descending', maxPages: 20 });
         if (cancelled) return;
+
         const all = [
           ...buyTypes.flatMap(t => (eventMap[t] || [])
             .filter(e => e.parsedJson?.curve_id === curveId)
             .map(e => ({
-              kind: 'buy',
-              sui: Number(e.parsedJson.sui_in) / MIST_PER_SUI,
+              kind:   'buy',
+              sui:    Number(e.parsedJson.sui_in)    / MIST_PER_SUI,
               tokens: Number(e.parsedJson.tokens_out) / 1e6,
-              who: e.parsedJson.buyer,
-              ts: e.timestampMs ? Number(e.timestampMs) : null,
+              who:    e.parsedJson.buyer,
+              ts:     e.timestampMs ? Number(e.timestampMs) : null,
               digest: e.id?.txDigest,
             }))),
           ...sellTypes.flatMap(t => (eventMap[t] || [])
             .filter(e => e.parsedJson?.curve_id === curveId)
             .map(e => ({
-              kind: 'sell',
-              sui: Number(e.parsedJson.sui_out) / MIST_PER_SUI,
+              kind:   'sell',
+              sui:    Number(e.parsedJson.sui_out)  / MIST_PER_SUI,
               tokens: Number(e.parsedJson.tokens_in) / 1e6,
-              who: e.parsedJson.seller,
-              ts: e.timestampMs ? Number(e.timestampMs) : null,
+              who:    e.parsedJson.seller,
+              ts:     e.timestampMs ? Number(e.timestampMs) : null,
               digest: e.id?.txDigest,
             }))),
         ].sort((a, b) => (b.ts || 0) - (a.ts || 0)).slice(0, 200);
-        if (!cancelled) { setTrades(all); setLoading(false); }
-      } catch { if (!cancelled) setLoading(false); }
+
+        if (!cancelled) {
+          setTrades(all);
+          setLoading(false);
+        }
+      } catch {
+        if (!cancelled) setLoading(false);
+      }
     }
+
+    setLoading(true);
     load();
-    return () => { cancelled = true; };
+    const interval = setInterval(load, POLL_MS);
+    return () => { cancelled = true; clearInterval(interval); };
   }, [curveId, client, refreshKey]);
 
   if (loading) return (
@@ -94,7 +109,12 @@ export default function TradeHistory({ curveId, symbol, refreshKey, creator = nu
     </div>
   );
 
-  if (trades.length === 0) return null;
+  if (trades.length === 0) return (
+    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+      <div className="text-[10px] font-mono text-white/30 tracking-widest mb-3">TRADE HISTORY · 0 TRADES</div>
+      <div className="text-xs font-mono text-white/20 text-center py-4">No trades yet</div>
+    </div>
+  );
 
   return (
     <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
@@ -125,8 +145,10 @@ export default function TradeHistory({ curveId, symbol, refreshKey, creator = nu
               <span className="text-white/30">{t.tokens.toFixed(0)} {symbol}</span>
               <span className="text-white/20">{timeAgo(t.ts)}</span>
               {t.digest && (
-                <a href={`https://testnet.suivision.xyz/txblock/${t.digest}`}
-                  target="_blank" rel="noreferrer"
+                <a
+                  href={`https://testnet.suivision.xyz/txblock/${t.digest}`}
+                  target="_blank"
+                  rel="noreferrer"
                   className="text-white/20 hover:text-lime-400 transition-colors"
                 >↗</a>
               )}
