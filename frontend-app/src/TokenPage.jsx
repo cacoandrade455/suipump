@@ -1,11 +1,13 @@
-// v19-tpsl
+// v20-tpsl-autonomous
 // TokenPage.jsx
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useCurrentAccount, useSignAndExecuteTransaction, useSuiClient } from '@mysten/dapp-kit';
 import { Transaction } from '@mysten/sui/transactions';
+import { SuiClient, getFullnodeUrl } from '@mysten/sui/client';
 import { ArrowLeft, Copy, Check, Share2, ExternalLink, Settings, Edit3, Clock, Zap, ShieldAlert, Plus, Trash2, Bell } from 'lucide-react';
 import { useTPSL, makeLevel } from './useTPSL.js';
+import { useTradeKey } from './useTradeKey.js';
 import PriceChart from './PriceChart.jsx';
 import TradeHistory from './TradeHistory.jsx';
 import HolderList from './HolderList.jsx';
@@ -820,22 +822,23 @@ function TradePanelContent({
 
 function TPSLPanel({
   account, curveId, tokenType, pkgId,
-  priceSui,           // current spot price per whole token in SUI
-  tokenBalance,       // current token balance (whole tokens)
+  priceSui,
+  tokenBalance,
   reserveMist, tokensRemaining, vSui, vTok,
   slippage,
+  keypair,        // Ed25519Keypair | null — if set, signs autonomously (no Slush popup)
 }) {
   const client = useSuiClient();
   const { mutate: signAndExecute } = useSignAndExecuteTransaction();
 
-  const [showConfig, setShowConfig]     = useState(false);
-  const [entryPrice, setEntryPrice]     = useState('');
+  const [showConfig, setShowConfig]       = useState(false);
+  const [entryPrice, setEntryPrice]       = useState('');
   const [pendingLevels, setPendingLevels] = useState([
     { type: 'tp', pct: '100',  sellPct: '50' },
     { type: 'sl', pct: '-20',  sellPct: '100' },
   ]);
-  const [triggerMsg, setTriggerMsg]     = useState(null); // { level, status }
-  const [selling, setSelling]           = useState(false);
+  const [triggerMsg, setTriggerMsg] = useState(null);
+  const [selling, setSelling]       = useState(false);
 
   // ── Build and sign the sell PTB ──────────────────────────────────────────
   const executeSell = useCallback(async (sellWholeTokens) => {
@@ -844,6 +847,12 @@ function TPSLPanel({
     setSelling(true);
     try {
       const tokInAtomic = BigInt(Math.floor(sellWholeTokens * 10 ** TOKEN_DECIMALS));
+
+      // Determine signer address — keypair address or connected wallet
+      const signerAddress = keypair
+        ? keypair.getPublicKey().toSuiAddress()
+        : account.address;
+
       const objForRef = await client.getObject({ id: curveId, options: { showOwner: true } });
       const isv = objForRef.data?.owner?.Shared?.initial_shared_version;
       const tx = new Transaction();
@@ -851,8 +860,9 @@ function TPSLPanel({
         ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: isv, mutable: true })
         : tx.object(curveId);
 
-      const coins = await client.getCoins({ owner: account.address, coinType: tokenType });
-      if (!coins.data.length) throw new Error('No token balance');
+      // Get token coins owned by the signer
+      const coins = await client.getCoins({ owner: signerAddress, coinType: tokenType });
+      if (!coins.data.length) throw new Error('No token balance in trading wallet');
       const coinObjs = coins.data.map(c => tx.object(c.coinObjectId));
       if (coinObjs.length > 1) tx.mergeCoins(coinObjs[0], coinObjs.slice(1));
       const [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(tokInAtomic)]);
@@ -872,8 +882,26 @@ function TPSLPanel({
         typeArguments: [tokenType],
         arguments: sellArgs,
       });
-      tx.transferObjects([suiOut], account.address);
+      tx.transferObjects([suiOut], signerAddress);
 
+      // ── Autonomous path (keypair) ────────────────────────────────────────
+      if (keypair) {
+        tx.setSender(signerAddress);
+        const autonomousClient = new SuiClient({ url: getFullnodeUrl('testnet') });
+        const builtTx = await tx.build({ client: autonomousClient });
+        const { signature } = await keypair.signTransaction(builtTx);
+        const result = await autonomousClient.executeTransactionBlock({
+          transactionBlock: builtTx,
+          signature,
+          options: { showEffects: true },
+        });
+        const success = result.effects?.status?.status === 'success';
+        setTriggerMsg(m => m ? { ...m, status: success ? 'done' : 'error', digest: result.digest } : m);
+        setSelling(false);
+        return;
+      }
+
+      // ── Slush fallback (no keypair) ──────────────────────────────────────
       signAndExecute({ transaction: tx }, {
         onSuccess: () => {
           setTriggerMsg(m => m ? { ...m, status: 'done' } : m);
@@ -888,7 +916,7 @@ function TPSLPanel({
       setTriggerMsg(m => m ? { ...m, status: 'error', error: err.message } : m);
       setSelling(false);
     }
-  }, [account, curveId, tokenType, pkgId, selling, client, signAndExecute, reserveMist, tokensRemaining, vSui, vTok, slippage]);
+  }, [account, curveId, tokenType, pkgId, selling, client, signAndExecute, reserveMist, tokensRemaining, vSui, vTok, slippage, keypair]);
 
   // ── onTrigger callback passed to useTPSL ────────────────────────────────
   const handleTrigger = useCallback(({ level, currentPriceSui }) => {
@@ -942,7 +970,7 @@ function TPSLPanel({
           {isActive && (
             <span className="flex items-center gap-1 text-[9px] font-mono text-lime-400/70">
               <span className="w-1.5 h-1.5 rounded-full bg-lime-400 animate-pulse inline-block" />
-              ACTIVE · TAB MUST STAY OPEN
+              {keypair ? 'AUTO · NO POPUP' : 'ACTIVE · TAB MUST STAY OPEN'}
             </span>
           )}
         </div>
@@ -1022,7 +1050,9 @@ function TPSLPanel({
             Selling {triggerMsg.sellTokens?.toFixed(0)} tokens ({triggerMsg.level.sellPct}%)
           </div>
           {triggerMsg.status === 'pending' && (
-            <div className="text-white/30 animate-pulse">Waiting for wallet signature…</div>
+            <div className="text-white/30 animate-pulse">
+              {keypair ? 'Auto-executing…' : 'Waiting for wallet signature…'}
+            </div>
           )}
           {triggerMsg.status === 'done' && (
             <div className="text-lime-400">Sold successfully ✓</div>
@@ -1175,6 +1205,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   const account  = useCurrentAccount();
   const client   = useSuiClient();
   const { mutate: signAndExecute } = useSignAndExecuteTransaction();
+  const { keypair: tradeKeypair, isReady: tradeKeyReady } = useTradeKey();
 
   const [suiUsd,          setSuiUsd]          = useState(0);
   const [curveState,      setCurveState]      = useState(null);
@@ -1497,6 +1528,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
             vSui={vSui}
             vTok={vTok}
             slippage={slippage}
+            keypair={tradeKeyReady ? tradeKeypair : null}
           />
           <VestingPanel curveId={curveId} tokenType={tokenType} packageId={pkgId} account={account} tokenBalance={tokenBalance} lang={lang} />
           {isCreator && (
