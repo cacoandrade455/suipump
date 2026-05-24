@@ -1,13 +1,15 @@
 // StrategiesModal.jsx
 // Slide-up modal accessible from the nav bar.
 // Tab 1: Trading Key — paste private key, sign with Slush to encrypt, store locally.
-// Tab 2: Active Strategies — overview of all TP/SL configs across all tokens.
+// Tab 2: Sniper — auto-buy new tokens matching filters + auto TP/SL.
+// Tab 3: Active — overview of all TP/SL configs + snipe log.
 
 import React, { useState, useEffect } from 'react';
 import { useCurrentAccount } from '@mysten/dapp-kit';
-import { X, Key, ShieldAlert, Eye, EyeOff, Trash2, CheckCircle2, Loader2, AlertTriangle, ChevronRight, Zap } from 'lucide-react';
+import { X, Key, ShieldAlert, Eye, EyeOff, Trash2, CheckCircle2, Loader2, AlertTriangle, ChevronRight, Zap, Crosshair, ToggleLeft, ToggleRight, ExternalLink } from 'lucide-react';
 import { useTradeKey } from './useTradeKey.js';
 import { loadTPSL, clearTPSL } from './useTPSL.js';
+import { useSniper, DEFAULT_SNIPER_CONFIG, loadSnipeLog } from './useSniper.js';
 
 const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
 
@@ -199,6 +201,301 @@ function TradingKeyTab() {
   );
 }
 
+// ── Sniper tab ────────────────────────────────────────────────────────────────
+function SniperTab({ keypair }) {
+  const account = useCurrentAccount();
+  const { config, updateConfig, enable, disable, log, clearLog, sniping, isActive } = useSniper({
+    walletAddress: account?.address,
+    keypair,
+  });
+
+  const [showAutoTPSL, setShowAutoTPSL] = useState(config.autoTPSL ?? true);
+
+  const handleToggle = () => {
+    if (isActive) disable();
+    else enable();
+  };
+
+  if (!account) {
+    return (
+      <div className="py-12 text-center text-[11px] font-mono text-white/30">
+        Connect your wallet to use the sniper
+      </div>
+    );
+  }
+
+  if (!keypair) {
+    return (
+      <div className="py-12 text-center space-y-2">
+        <Crosshair size={24} className="text-white/10 mx-auto" />
+        <div className="text-[11px] font-mono text-white/25">Trading key required</div>
+        <div className="text-[9px] font-mono text-white/15">Set up your trading key first → it signs snipe transactions autonomously</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+
+      {/* Enable toggle */}
+      <div className={`rounded-xl border p-3 flex items-center justify-between ${
+        isActive ? 'border-lime-400/25 bg-lime-950/10' : 'border-white/8 bg-white/[0.02]'
+      }`}>
+        <div className="flex items-center gap-2">
+          {sniping ? (
+            <Loader2 size={13} className="animate-spin text-lime-400" />
+          ) : (
+            <span className={`w-2 h-2 rounded-full ${isActive ? 'bg-lime-400 animate-pulse' : 'bg-white/15'}`} />
+          )}
+          <span className="text-[11px] font-mono font-bold text-white">
+            {sniping ? `Sniping…` : isActive ? 'Sniper Active' : 'Sniper Off'}
+          </span>
+          {isActive && !sniping && (
+            <span className="text-[9px] font-mono text-white/30">watching for new tokens</span>
+          )}
+        </div>
+        <button onClick={handleToggle} className="transition-colors">
+          {isActive
+            ? <ToggleRight size={22} className="text-lime-400" />
+            : <ToggleLeft  size={22} className="text-white/25" />
+          }
+        </button>
+      </div>
+
+      {/* Filters */}
+      <div className="space-y-3">
+        <div className="text-[9px] font-mono text-white/30 tracking-widest">FILTERS</div>
+
+        {/* Max SUI per snipe */}
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-[10px] font-mono text-white/50 flex-1">Max SUI per snipe</span>
+          <div className="relative w-24">
+            <input
+              type="number" min="0.1" step="0.1"
+              value={config.maxSuiPerSnipe}
+              onChange={e => updateConfig({ maxSuiPerSnipe: parseFloat(e.target.value) || 1 })}
+              className="w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-[11px] font-mono text-white text-right focus:outline-none focus:border-lime-400/40 transition-colors"
+            />
+            <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[8px] font-mono text-white/20 pointer-events-none">SUI</span>
+          </div>
+        </div>
+
+        {/* Max dev buy % */}
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-[10px] font-mono text-white/50 flex-1">Max dev buy</span>
+          <div className="relative w-24">
+            <input
+              type="number" min="0" max="100" step="1"
+              value={config.maxDevBuyPct}
+              onChange={e => updateConfig({ maxDevBuyPct: parseFloat(e.target.value) || 0 })}
+              className="w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-[11px] font-mono text-white text-right focus:outline-none focus:border-lime-400/40 transition-colors"
+            />
+            <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[8px] font-mono text-white/20 pointer-events-none">%</span>
+          </div>
+        </div>
+
+        {/* Min/max mcap */}
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] font-mono text-white/50 w-20 flex-shrink-0">Mcap range</span>
+          <input
+            type="number" min="0" placeholder="min SUI"
+            value={config.minMcapSui || ''}
+            onChange={e => updateConfig({ minMcapSui: parseFloat(e.target.value) || 0 })}
+            className="flex-1 bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-[11px] font-mono text-white placeholder-white/15 focus:outline-none focus:border-lime-400/40 transition-colors"
+          />
+          <span className="text-[9px] font-mono text-white/20">–</span>
+          <input
+            type="number" min="0" placeholder="max SUI"
+            value={config.maxMcapSui || ''}
+            onChange={e => updateConfig({ maxMcapSui: parseFloat(e.target.value) || 0 })}
+            className="flex-1 bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-[11px] font-mono text-white placeholder-white/15 focus:outline-none focus:border-lime-400/40 transition-colors"
+          />
+        </div>
+
+        {/* Keyword */}
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] font-mono text-white/50 w-20 flex-shrink-0">Must contain</span>
+          <input
+            type="text" placeholder="keyword (optional)"
+            value={config.keyword}
+            onChange={e => updateConfig({ keyword: e.target.value })}
+            className="flex-1 bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-[11px] font-mono text-white placeholder-white/15 focus:outline-none focus:border-lime-400/40 transition-colors"
+          />
+        </div>
+
+        {/* Exclude keyword */}
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] font-mono text-white/50 w-20 flex-shrink-0">Exclude</span>
+          <input
+            type="text" placeholder="skip if name contains…"
+            value={config.excludeKeyword}
+            onChange={e => updateConfig({ excludeKeyword: e.target.value })}
+            className="flex-1 bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-[11px] font-mono text-white placeholder-white/15 focus:outline-none focus:border-lime-400/40 transition-colors"
+          />
+        </div>
+
+        {/* Graduation target */}
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-[10px] font-mono text-white/50">Grad target</span>
+          <div className="flex gap-1">
+            {['any', 'cetus', 'turbos', 'deepbook'].map(v => (
+              <button
+                key={v}
+                onClick={() => updateConfig({ gradTarget: v })}
+                className={`px-2 py-1 rounded-lg text-[9px] font-mono transition-colors ${
+                  config.gradTarget === v
+                    ? 'bg-lime-400/10 border border-lime-400/30 text-lime-400'
+                    : 'border border-white/8 text-white/30 hover:text-white/60'
+                }`}
+              >
+                {v}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Slippage */}
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-[10px] font-mono text-white/50">Slippage</span>
+          <div className="flex gap-1">
+            {['1', '2', '5', '10'].map(v => (
+              <button
+                key={v}
+                onClick={() => updateConfig({ slippage: parseFloat(v) })}
+                className={`px-2.5 py-1 rounded-lg text-[9px] font-mono transition-colors ${
+                  config.slippage === parseFloat(v)
+                    ? 'bg-lime-400/10 border border-lime-400/30 text-lime-400'
+                    : 'border border-white/8 text-white/30 hover:text-white/60'
+                }`}
+              >
+                {v}%
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Auto TP/SL */}
+      <div className="rounded-xl border border-white/8 overflow-hidden">
+        <button
+          onClick={() => {
+            const next = !config.autoTPSL;
+            updateConfig({ autoTPSL: next });
+            setShowAutoTPSL(next);
+          }}
+          className="w-full flex items-center justify-between px-4 py-3"
+        >
+          <div className="flex items-center gap-2">
+            <ShieldAlert size={11} className={config.autoTPSL ? 'text-lime-400' : 'text-white/25'} />
+            <span className="text-[10px] font-mono font-bold text-white/60">AUTO TP/SL ON SNIPE</span>
+          </div>
+          {config.autoTPSL
+            ? <ToggleRight size={18} className="text-lime-400" />
+            : <ToggleLeft  size={18} className="text-white/25" />
+          }
+        </button>
+
+        {config.autoTPSL && (
+          <div className="px-4 pb-3 space-y-2.5 border-t border-white/5 pt-3">
+            <div className="text-[8px] font-mono text-white/20">Applied automatically after every successful snipe.</div>
+
+            {/* TP row */}
+            <div className="flex items-center gap-2">
+              <span className="text-[9px] font-mono text-lime-400 w-6">TP</span>
+              <div className="relative flex-1">
+                <input
+                  type="number" step="10"
+                  value={config.tpPct}
+                  onChange={e => updateConfig({ tpPct: parseFloat(e.target.value) || 100 })}
+                  className="w-full bg-white/5 border border-lime-400/20 rounded-lg px-2 py-1.5 text-[11px] font-mono text-white text-right focus:outline-none focus:border-lime-400/40"
+                />
+                <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[8px] font-mono text-white/20">%</span>
+              </div>
+              <span className="text-[9px] font-mono text-white/25">sell</span>
+              <div className="relative w-16">
+                <input
+                  type="number" min="1" max="100" step="5"
+                  value={config.tpSellPct}
+                  onChange={e => updateConfig({ tpSellPct: parseFloat(e.target.value) || 100 })}
+                  className="w-full bg-white/5 border border-lime-400/20 rounded-lg px-2 py-1.5 text-[11px] font-mono text-white text-right focus:outline-none focus:border-lime-400/40"
+                />
+                <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[8px] font-mono text-white/20">%</span>
+              </div>
+            </div>
+
+            {/* SL row */}
+            <div className="flex items-center gap-2">
+              <span className="text-[9px] font-mono text-red-400 w-6">SL</span>
+              <div className="relative flex-1">
+                <input
+                  type="number" step="5"
+                  value={config.slPct}
+                  onChange={e => updateConfig({ slPct: parseFloat(e.target.value) || -20 })}
+                  className="w-full bg-white/5 border border-red-400/20 rounded-lg px-2 py-1.5 text-[11px] font-mono text-white text-right focus:outline-none focus:border-red-400/40"
+                />
+                <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[8px] font-mono text-white/20">%</span>
+              </div>
+              <span className="text-[9px] font-mono text-white/25">sell</span>
+              <div className="relative w-16">
+                <input
+                  type="number" min="1" max="100" step="5"
+                  value={config.slSellPct}
+                  onChange={e => updateConfig({ slSellPct: parseFloat(e.target.value) || 100 })}
+                  className="w-full bg-white/5 border border-red-400/20 rounded-lg px-2 py-1.5 text-[11px] font-mono text-white text-right focus:outline-none focus:border-red-400/40"
+                />
+                <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[8px] font-mono text-white/20">%</span>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Snipe log */}
+      {log.length > 0 && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[9px] font-mono text-white/30 tracking-widest">RECENT SNIPES</span>
+            <button onClick={clearLog} className="text-[9px] font-mono text-white/20 hover:text-red-400 transition-colors">
+              clear
+            </button>
+          </div>
+          <div className="space-y-1.5 max-h-48 overflow-y-auto">
+            {log.map((entry, i) => (
+              <div key={i} className={`rounded-lg border px-3 py-2 text-[10px] font-mono flex items-center justify-between ${
+                entry.success ? 'border-lime-400/15 bg-lime-950/10' : 'border-red-400/15 bg-red-950/10'
+              }`}>
+                <div>
+                  <span className={entry.success ? 'text-white/70' : 'text-red-400/70'}>
+                    {entry.success ? '✓' : '✗'} {entry.name} <span className="text-lime-400/70">${entry.symbol}</span>
+                  </span>
+                  <div className="text-[8px] text-white/20 mt-0.5">
+                    {entry.suiSpent} SUI · {entry.autoTPSL ? 'TP/SL set' : 'no TP/SL'}
+                    {entry.error && ` · ${entry.error}`}
+                  </div>
+                </div>
+                {entry.digest && (
+                  <a
+                    href={`https://suiexplorer.com/txblock/${entry.digest}?network=testnet`}
+                    target="_blank" rel="noreferrer"
+                    className="text-white/20 hover:text-lime-400 transition-colors"
+                  >
+                    <ExternalLink size={10} />
+                  </a>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Tab-open warning */}
+      <div className="text-[8px] font-mono text-white/15 text-center">
+        Sniper runs while this tab is open · close tab = sniper stops
+      </div>
+    </div>
+  );
+}
+
 // ── Active strategies tab ─────────────────────────────────────────────────────
 function ActiveStrategiesTab() {
   const account = useCurrentAccount();
@@ -312,6 +609,7 @@ function ActiveStrategiesTab() {
 // ── Main modal ────────────────────────────────────────────────────────────────
 export default function StrategiesModal({ onClose }) {
   const [tab, setTab] = useState('key');
+  const { keypair, isReady } = useTradeKey();
 
   // Close on Escape
   useEffect(() => {
@@ -346,8 +644,9 @@ export default function StrategiesModal({ onClose }) {
         {/* Tabs */}
         <div className="flex border-b border-white/8">
           {[
-            { id: 'key',        label: '🔑 Trading Key' },
-            { id: 'strategies', label: '⚡ Active' },
+            { id: 'key',      label: '🔑 Key'     },
+            { id: 'sniper',   label: '🔫 Sniper'  },
+            { id: 'active',   label: '⚡ Active'  },
           ].map(t => (
             <button
               key={t.id}
@@ -365,8 +664,9 @@ export default function StrategiesModal({ onClose }) {
 
         {/* Content */}
         <div className="px-5 py-5 max-h-[70vh] overflow-y-auto">
-          {tab === 'key'        && <TradingKeyTab />}
-          {tab === 'strategies' && <ActiveStrategiesTab />}
+          {tab === 'key'    && <TradingKeyTab />}
+          {tab === 'sniper' && <SniperTab keypair={isReady ? keypair : null} />}
+          {tab === 'active' && <ActiveStrategiesTab />}
         </div>
       </div>
     </>
