@@ -40,9 +40,8 @@ function StatusIcon({ status }) {
 }
 
 // ── Trading key tab ───────────────────────────────────────────────────────────
-function TradingKeyTab() {
+function TradingKeyTab({ hasKey, keypair, status, error, saveKey, loadKey, removeKey, isReady }) {
   const account = useCurrentAccount();
-  const { hasKey, keypair, status, error, saveKey, loadKey, removeKey, isReady } = useTradeKey();
 
   const [input, setInput]       = useState('');
   const [showKey, setShowKey]   = useState(false);
@@ -609,7 +608,8 @@ function ActiveStrategiesTab() {
 // ── Main modal ────────────────────────────────────────────────────────────────
 export default function StrategiesModal({ onClose }) {
   const [tab, setTab] = useState('key');
-  const { keypair, isReady } = useTradeKey();
+  const tradeKey = useTradeKey(); // single instance — shared across all tabs
+  const { keypair, isReady } = tradeKey;
 
   // Close on Escape
   useEffect(() => {
@@ -664,7 +664,7 @@ export default function StrategiesModal({ onClose }) {
 
         {/* Content */}
         <div className="px-5 py-5 max-h-[70vh] overflow-y-auto">
-          {tab === 'key'    && <TradingKeyTab />}
+          {tab === 'key'    && <TradingKeyTab {...tradeKey} />}
           {tab === 'sniper' && <SniperTab keypair={isReady ? keypair : null} />}
           {tab === 'active' && <ActiveStrategiesTab />}
         </div>
