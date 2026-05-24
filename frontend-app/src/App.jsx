@@ -21,6 +21,7 @@ import { mistToSui, priceMistPerToken } from './curve.js';
 import { paginateEvents, paginateMultipleEvents } from './paginateEvents.js';
 import LiveFeedSidebar from './LiveFeedSidebar.jsx';
 import { useWatchlist } from './useWatchlist.js';
+import StrategiesModal from './StrategiesModal.jsx';
 
 const MIST_PER_SUI = 1e9;
 const TOTAL_SUPPLY_WHOLE = 1_000_000_000;
@@ -792,7 +793,7 @@ function FlagImg({ code }) {
   );
 }
 
-function Header({ onLaunch, lang, setLang, onToggleFeed, showFeed }) {
+function Header({ onLaunch, lang, setLang, onToggleFeed, showFeed, onStrategies }) {
   const account = useCurrentAccount();
   const { poolSui, tradeCount } = useStats();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -900,6 +901,15 @@ function Header({ onLaunch, lang, setLang, onToggleFeed, showFeed }) {
               <Plus size={12} /> {t(lang, 'launchToken')}
             </button>
           )}
+          {account && (
+            <button
+              onClick={onStrategies}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-lime-400/30 text-lime-400 text-[10px] font-mono font-bold hover:bg-lime-400/10 transition-all"
+              title="Trading Strategies"
+            >
+              <Zap size={11} /> STRATEGIES
+            </button>
+          )}
           <WalletButton size="md" lang={lang} />
         </div>
 
@@ -908,6 +918,11 @@ function Header({ onLaunch, lang, setLang, onToggleFeed, showFeed }) {
           {account && (
             <button onClick={onLaunch} className="flex items-center gap-1 px-3 py-1.5 bg-lime-400 text-black text-[10px] font-mono font-bold rounded-xl hover:bg-lime-300 transition-colors">
               <Plus size={11} /> {t(lang, 'launch')}
+            </button>
+          )}
+          {account && (
+            <button onClick={onStrategies} className="p-1.5 rounded-lg border border-lime-400/30 text-lime-400 hover:bg-lime-400/10 transition-colors" title="Strategies">
+              <Zap size={14} />
             </button>
           )}
           <WalletButton size="sm" lang={lang} />
@@ -1413,7 +1428,8 @@ function NotFoundPage({ onBack }) {
 
 export default function App() {
   const navigate = useNavigate();
-  const [showLaunch, setShowLaunch] = useState(false);
+  const [showLaunch, setShowLaunch]         = useState(false);
+  const [showStrategies, setShowStrategies] = useState(false);
   const [lang, setLang] = useState(() => localStorage.getItem('suipump_lang') || 'en');
 
   const handleLang = (code) => {
@@ -1433,7 +1449,7 @@ export default function App() {
         backgroundSize: '60px 60px',
       }} />
       <ScrollToTop />
-      <Header onLaunch={() => setShowLaunch(true)} lang={lang} setLang={handleLang} onToggleFeed={() => setShowFeed(o => !o)} showFeed={showFeed} />
+      <Header onLaunch={() => setShowLaunch(true)} lang={lang} setLang={handleLang} onToggleFeed={() => setShowFeed(o => !o)} showFeed={showFeed} onStrategies={() => setShowStrategies(true)} />
       <NetworkBanner />
       <main className="max-w-6xl mx-auto px-4 py-6">
         <Routes>
@@ -1473,6 +1489,9 @@ export default function App() {
           onLaunched={handleLaunched}
           lang={lang}
         />
+      )}
+      {showStrategies && (
+        <StrategiesModal onClose={() => setShowStrategies(false)} />
       )}
       {showFeed && (
         <LiveFeedSidebar tokens={allTokens} onClose={() => setShowFeed(false)} />
