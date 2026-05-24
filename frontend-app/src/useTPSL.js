@@ -45,7 +45,7 @@ export function clearTPSL(walletAddress, curveId) {
   } catch {}
 }
 
-function makeLevel(type, pct, sellPct) {
+export function makeLevel(type, pct, sellPct) {
   return {
     id:        `${type}_${pct}_${Date.now()}`,
     type,      // 'tp' | 'sl'
