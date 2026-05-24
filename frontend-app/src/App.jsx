@@ -114,7 +114,7 @@ function StrategiesLockedBanner({ tradeKey, onOpenStrategies }) {
       <div className="flex items-center gap-2.5 min-w-0">
         <Zap size={11} className="text-yellow-400/70 shrink-0" />
         <p className="text-[10px] font-mono text-yellow-300/60 leading-snug">
-          Autonomous trading strategies are paused. Unlock in strategies modal.
+          Autonomous trading strategies are <span className="font-bold text-yellow-200/80">paused</span>. Unlock in <span className="font-bold text-yellow-200/80">strategies modal</span>.
         </p>
       </div>
       <div className="flex items-center gap-2 shrink-0">
