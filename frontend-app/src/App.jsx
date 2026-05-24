@@ -1399,7 +1399,7 @@ function HomePage({ onLaunch, lang = 'en' }) {
 
 // ── Token page wrapper ────────────────────────────────────────────────────────
 
-function TokenPageWrapper({ lang }) {
+function TokenPageWrapper({ lang, tradeKey }) {
   const { curveId } = useParams();
   const navigate = useNavigate();
   const client = useSuiClient();
@@ -1441,7 +1441,7 @@ function TokenPageWrapper({ lang }) {
       <div className="h-3 bg-white/5 rounded w-32" />
     </div>
   );
-  return <TokenPage curveId={curveId} tokenType={tokenType} packageId={packageId} onBack={() => navigate('/')} lang={lang} />;
+  return <TokenPage curveId={curveId} tokenType={tokenType} packageId={packageId} onBack={() => navigate('/')} lang={lang} tradeKeypair={tradeKey?.keypair ?? null} tradeKeyReady={tradeKey?.isReady ?? false} />;
 }
 
 // ── App root ──────────────────────────────────────────────────────────────────
@@ -1497,7 +1497,7 @@ export default function App() {
       <main className="max-w-6xl mx-auto px-4 py-6">
         <Routes>
           <Route path="/" element={<HomePage onLaunch={() => setShowLaunch(true)} lang={lang} />} />
-          <Route path="/token/:curveId" element={<TokenPageWrapper lang={lang} />} />
+          <Route path="/token/:curveId" element={<TokenPageWrapper lang={lang} tradeKey={tradeKey} />} />
           <Route path="/airdrop" element={<AirdropPage onBack={() => navigate('/')} lang={lang} />} />
           <Route path="/stats" element={<StatsPage onBack={() => navigate('/')} lang={lang} />} />
           <Route path="/whitepaper" element={<WhitepaperPage onBack={() => navigate('/')} lang={lang} />} />

@@ -7,7 +7,6 @@ import { Transaction } from '@mysten/sui/transactions';
 import { SuiClient, getFullnodeUrl } from '@mysten/sui/client';
 import { ArrowLeft, Copy, Check, Share2, ExternalLink, Settings, Edit3, Clock, Zap, ShieldAlert, Plus, Trash2, Bell } from 'lucide-react';
 import { useTPSL, makeLevel } from './useTPSL.js';
-import { useTradeKey } from './useTradeKey.js';
 import PriceChart from './PriceChart.jsx';
 import TradeHistory from './TradeHistory.jsx';
 import HolderList from './HolderList.jsx';
@@ -1200,12 +1199,11 @@ function CommentsBlock({ curveId, packageId, lang }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function TokenPage({ curveId, tokenType, packageId: packageIdHint, onBack, lang = 'en' }) {
+export default function TokenPage({ curveId, tokenType, packageId: packageIdHint, onBack, lang = 'en', tradeKeypair = null, tradeKeyReady = false }) {
   const navigate = useNavigate();
   const account  = useCurrentAccount();
   const client   = useSuiClient();
   const { mutate: signAndExecute } = useSignAndExecuteTransaction();
-  const { keypair: tradeKeypair, isReady: tradeKeyReady } = useTradeKey();
 
   const [suiUsd,          setSuiUsd]          = useState(0);
   const [curveState,      setCurveState]      = useState(null);
