@@ -11,6 +11,7 @@ import { useTradeKey } from './useTradeKey.js';
 import { loadTPSL, clearTPSL } from './useTPSL.js';
 import { useSniper, DEFAULT_SNIPER_CONFIG, loadSnipeLog } from './useSniper.js';
 import { useDCA, INTERVAL_OPTIONS, loadDCAOrders } from './useDCA.js';
+import { useCopyTrade } from './useCopyTrade.js';
 
 const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
 
@@ -815,6 +816,204 @@ function DCATab({ keypair }) {
   );
 }
 
+// ── Copy Trade tab ────────────────────────────────────────────────────────────
+function CopyTradeTab({ keypair }) {
+  const account = useCurrentAccount();
+  const { targets, log, addTarget, removeTarget, toggleTarget, clearLog, isActive } = useCopyTrade({
+    walletAddress: account?.address,
+    keypair,
+  });
+
+  const [address,     setAddress]     = useState('');
+  const [label,       setLabel]       = useState('');
+  const [scaleSui,    setScaleSui]    = useState('1');
+  const [mirrorSells, setMirrorSells] = useState(false);
+  const [slippage,    setSlippage]    = useState('2');
+  const [formMsg,     setFormMsg]     = useState('');
+
+  const handleAdd = () => {
+    if (!address.trim() || !address.startsWith('0x')) {
+      setFormMsg('Enter a valid Sui wallet address (0x…)'); return;
+    }
+    const sui = parseFloat(scaleSui);
+    if (!sui || sui <= 0) { setFormMsg('Enter a valid SUI amount'); return; }
+    addTarget(address, label, sui, mirrorSells, parseFloat(slippage) || 2);
+    setAddress(''); setLabel('');
+    setFormMsg('Wallet added ✓');
+    setTimeout(() => setFormMsg(''), 2000);
+  };
+
+  if (!account) return (
+    <div className="py-12 text-center text-[11px] font-mono text-white/30">
+      Connect your wallet to use copy trading
+    </div>
+  );
+
+  if (!keypair) return (
+    <div className="py-12 text-center space-y-2">
+      <div className="text-[11px] font-mono text-white/25">Trading key required</div>
+      <div className="text-[9px] font-mono text-white/15">Set up your trading key first → it mirrors trades autonomously</div>
+    </div>
+  );
+
+  return (
+    <div className="space-y-4">
+
+      {/* Active targets */}
+      {targets.length > 0 && (
+        <div className="space-y-2">
+          <div className="text-[9px] font-mono text-white/30 tracking-widest">WATCHING</div>
+          {targets.map(t => (
+            <div key={t.address} className={`rounded-xl border px-3 py-2.5 flex items-center justify-between ${
+              t.enabled ? 'border-lime-400/15 bg-lime-950/10' : 'border-white/8 bg-white/[0.02]'
+            }`}>
+              <div className="min-w-0">
+                {t.label && (
+                  <div className="text-[11px] font-mono font-bold text-white truncate">{t.label}</div>
+                )}
+                <div className="text-[9px] font-mono text-white/30 truncate">
+                  {t.address.slice(0, 8)}…{t.address.slice(-6)}
+                </div>
+                <div className="text-[8px] font-mono text-white/20 mt-0.5">
+                  {t.scaleSui} SUI/buy{t.mirrorSells ? ' · mirror sells' : ''}  · {t.slippage}% slip
+                </div>
+              </div>
+              <div className="flex items-center gap-2 ml-3 flex-shrink-0">
+                <button onClick={() => toggleTarget(t.address)}>
+                  {t.enabled
+                    ? <ToggleRight size={18} className="text-lime-400" />
+                    : <ToggleLeft  size={18} className="text-white/25" />
+                  }
+                </button>
+                <button onClick={() => removeTarget(t.address)} className="text-white/20 hover:text-red-400 transition-colors">
+                  <Trash2 size={11} />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Add wallet form */}
+      <div className="space-y-3">
+        <div className="text-[9px] font-mono text-white/30 tracking-widest">ADD WALLET TO COPY</div>
+
+        <input
+          type="text" value={address}
+          onChange={e => setAddress(e.target.value)}
+          placeholder="0x… target wallet address"
+          className="w-full bg-white/[0.04] border border-white/10 rounded-xl px-3 py-2.5 text-[11px] font-mono text-white placeholder-white/15 focus:outline-none focus:border-lime-400/30 transition-colors"
+        />
+
+        <input
+          type="text" value={label}
+          onChange={e => setLabel(e.target.value)}
+          placeholder="Nickname (optional)"
+          className="w-full bg-white/[0.04] border border-white/10 rounded-xl px-3 py-2.5 text-[11px] font-mono text-white placeholder-white/15 focus:outline-none focus:border-lime-400/30 transition-colors"
+        />
+
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <div className="text-[9px] font-mono text-white/25 mb-1.5">SUI PER BUY</div>
+            <div className="relative">
+              <input
+                type="number" min="0.1" step="0.1"
+                value={scaleSui}
+                onChange={e => setScaleSui(e.target.value)}
+                className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-[11px] font-mono text-white focus:outline-none focus:border-lime-400/40 transition-colors"
+              />
+              <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[8px] font-mono text-white/20">SUI</span>
+            </div>
+          </div>
+          <div>
+            <div className="text-[9px] font-mono text-white/25 mb-1.5">SLIPPAGE</div>
+            <div className="flex gap-1">
+              {['1','2','5'].map(v => (
+                <button key={v} onClick={() => setSlippage(v)}
+                  className={`flex-1 py-2 rounded-lg text-[9px] font-mono border transition-colors ${
+                    slippage === v
+                      ? 'border-lime-400/40 text-lime-400 bg-lime-400/5'
+                      : 'border-white/8 text-white/30 hover:text-white/60'
+                  }`}
+                >{v}%</button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Mirror sells toggle */}
+        <button
+          onClick={() => setMirrorSells(s => !s)}
+          className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl border border-white/8 bg-white/[0.02]"
+        >
+          <span className="text-[10px] font-mono text-white/50">Mirror sells too</span>
+          {mirrorSells
+            ? <ToggleRight size={18} className="text-lime-400" />
+            : <ToggleLeft  size={18} className="text-white/25" />
+          }
+        </button>
+
+        <button
+          onClick={handleAdd}
+          disabled={!address.trim()}
+          className={`w-full py-2.5 rounded-xl text-[11px] font-mono font-bold transition-colors ${
+            !address.trim()
+              ? 'bg-white/5 text-white/20 cursor-not-allowed'
+              : 'bg-lime-400 text-black hover:bg-lime-300'
+          }`}
+        >
+          ADD WALLET
+        </button>
+
+        {formMsg && (
+          <div className={`text-[10px] font-mono text-center ${formMsg.includes('✓') ? 'text-lime-400' : 'text-red-400'}`}>
+            {formMsg}
+          </div>
+        )}
+      </div>
+
+      {/* Copy log */}
+      {log.length > 0 && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[9px] font-mono text-white/30 tracking-widest">COPY LOG</span>
+            <button onClick={clearLog} className="text-[9px] font-mono text-white/20 hover:text-red-400 transition-colors">clear</button>
+          </div>
+          <div className="space-y-1.5 max-h-48 overflow-y-auto">
+            {log.map((entry, i) => (
+              <div key={i} className={`rounded-lg border px-3 py-2 text-[10px] font-mono flex items-center justify-between ${
+                entry.success ? 'border-lime-400/15 bg-lime-950/10' : 'border-red-400/15 bg-red-950/10'
+              }`}>
+                <div>
+                  <span className={entry.success ? 'text-white/70' : 'text-red-400/70'}>
+                    {entry.success ? '✓' : '✗'} {entry.action.toUpperCase()} {entry.name || entry.curveId?.slice(0,6)+'…'}
+                    {entry.symbol && <span className="text-lime-400/70 ml-1">${entry.symbol}</span>}
+                  </span>
+                  <div className="text-[8px] text-white/20 mt-0.5">
+                    copying {entry.targetAddress?.slice(0,6)}…{entry.targetAddress?.slice(-4)}
+                    {entry.error && ` · ${entry.error}`}
+                  </div>
+                </div>
+                {entry.digest && (
+                  <a href={`https://suiexplorer.com/txblock/${entry.digest}?network=testnet`}
+                    target="_blank" rel="noreferrer"
+                    className="text-white/20 hover:text-lime-400 transition-colors ml-2">
+                    <ExternalLink size={10} />
+                  </a>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="text-[8px] font-mono text-white/15 text-center">
+        Copy trading runs while this tab is open · fixed SUI per buy regardless of target's size
+      </div>
+    </div>
+  );
+}
+
 // ── Active strategies tab ─────────────────────────────────────────────────────
 function ActiveStrategiesTab() {
   const account = useCurrentAccount();
@@ -967,6 +1166,7 @@ export default function StrategiesModal({ onClose }) {
             { id: 'key',    label: '🔑 Key'    },
             { id: 'sniper', label: '🔫 Sniper' },
             { id: 'dca',    label: '📅 DCA'    },
+            { id: 'copy',   label: '👁️ Copy'   },
             { id: 'active', label: '⚡ Active' },
           ].map(t => (
             <button
@@ -986,8 +1186,9 @@ export default function StrategiesModal({ onClose }) {
         {/* Content */}
         <div className="px-5 py-5 max-h-[70vh] overflow-y-auto">
           {tab === 'key'    && <TradingKeyTab {...tradeKey} />}
-          {tab === 'sniper' && <SniperTab keypair={isReady ? keypair : null} />}
-          {tab === 'dca'    && <DCATab    keypair={isReady ? keypair : null} />}
+          {tab === 'sniper' && <SniperTab     keypair={isReady ? keypair : null} />}
+          {tab === 'dca'    && <DCATab        keypair={isReady ? keypair : null} />}
+          {tab === 'copy'   && <CopyTradeTab  keypair={isReady ? keypair : null} />}
           {tab === 'active' && <ActiveStrategiesTab />}
         </div>
       </div>
