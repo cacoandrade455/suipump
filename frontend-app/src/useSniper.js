@@ -29,10 +29,9 @@ import { Transaction } from '@mysten/sui/transactions';
 import { saveTPSL, makeLevel } from './useTPSL.js';
 import {
   PACKAGE_ID_V8, MIST_PER_SUI,
-  VIRTUAL_SUI_V8, VIRTUAL_TOKENS_V8,
-  isV5OrLater, isV7OrLater,
+  isV5OrLater, isV7OrLater, curveShapeFor,
 } from './constants.js';
-import { buyQuote } from './curve.js';
+import { buyQuote, sellQuote } from './curve.js';
 
 const INDEXER_URL  = import.meta.env.VITE_INDEXER_URL || '';
 const SUI_CLOCK_ID = '0x6';
@@ -89,6 +88,12 @@ export const DEFAULT_SNIPER_CONFIG = {
   tpSellPct:      50,
   slPct:          -30,
   slSellPct:      100,
+  // Graduation snipe
+  gradSnipeEnabled:    false,
+  gradSnipeThreshold:  80,    // % progress to trigger buy
+  gradSnipeSuiAmount:  1,     // SUI to spend
+  gradSnipeSellOnGrad: true,  // auto-sell when Graduated event fires
+  gradSnipeSlippage:   5,     // higher slippage for fast execution
 };
 
 // ── Filter checker ────────────────────────────────────────────────────────────
@@ -162,8 +167,8 @@ export function useSniper({ walletAddress, keypair }) {
       const isv = objForRef.data?.owner?.Shared?.initial_shared_version;
       if (!isv) throw new Error('Could not resolve curve version');
 
-      const vSui = VIRTUAL_SUI_V8;
-      const vTok = VIRTUAL_TOKENS_V8;
+      const vSui  = curveShapeFor(pkgId).virtualSui;
+      const vTok  = curveShapeFor(pkgId).virtualTokens;
 
       // Get current reserve for quote
       const fields = objForRef.data?.content?.fields ?? {};
@@ -205,7 +210,7 @@ export function useSniper({ walletAddress, keypair }) {
       const success = result.effects?.status?.status === 'success';
 
       // Compute entry price
-      const entryPriceSui = (Number(reserveMist) / 1e9 + vSui) / 1_000_000_000;
+      const entryPriceSui = (Number(reserveMist) / 1e9 + curveShapeFor(pkgId).virtualSui) / 1_000_000_000;
 
       // Auto TP/SL
       if (success && cfg.autoTPSL) {
@@ -306,6 +311,124 @@ export function useSniper({ walletAddress, keypair }) {
       clearTimeout(timerRef.current);
     };
   }, [walletAddress, config.enabled, executeSnipe]);
+
+  // ── Graduation snipe ──────────────────────────────────────────────────────
+  // Phase 1: watch trades → buy when curve hits threshold %.
+  // Phase 2: watch Graduated events → sell if we hold tokens.
+
+  const gradBought   = useRef(new Set());
+  const gradEsRef    = useRef(null);
+  const gradTimerRef = useRef(null);
+
+  const executeGradSell = useCallback(async (curveId, tokenType, pkgId) => {
+    const kp = keypairRef.current;
+    if (!kp || !walletAddress) return;
+    try {
+      const client    = new SuiClient({ url: getFullnodeUrl('testnet') });
+      const myAddress = kp.getPublicKey().toSuiAddress();
+      const coins     = await client.getCoins({ owner: myAddress, coinType: tokenType });
+      if (!coins.data.length) return;
+      const cfg         = loadSniperConfig(walletAddress) ?? config;
+      const totalAtomic = coins.data.reduce((s, c) => s + BigInt(c.balance), 0n);
+      const objForRef   = await client.getObject({ id: curveId, options: { showOwner: true, showContent: true } });
+      const isv         = objForRef.data?.owner?.Shared?.initial_shared_version;
+      if (!isv) return;
+      const fields          = objForRef.data?.content?.fields ?? {};
+      const reserveMist     = BigInt(fields.sui_reserve    ?? 0);
+      const tokensRemaining = BigInt(fields.token_reserve  ?? 0);
+      const { virtualSui, virtualTokens } = curveShapeFor(pkgId);
+      const sq      = sellQuote(reserveMist, tokensRemaining, totalAtomic, virtualSui, virtualTokens);
+      const minOut  = sq?.suiOut != null ? BigInt(Math.floor(Number(sq.suiOut) * (1 - cfg.gradSnipeSlippage / 100))) : 0n;
+      const tx      = new Transaction();
+      tx.setSender(myAddress);
+      const curveRef = tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: isv, mutable: true });
+      const coinObjs = coins.data.map(c => tx.object(c.coinObjectId));
+      if (coinObjs.length > 1) tx.mergeCoins(coinObjs[0], coinObjs.slice(1));
+      const [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(totalAtomic)]);
+      const sellArgs = isV7OrLater(pkgId)
+        ? [curveRef, tokenCoin, tx.pure.u64(minOut), tx.pure.option('address', null)]
+        : [curveRef, tokenCoin, tx.pure.u64(minOut)];
+      const [suiOut] = tx.moveCall({ target: `${pkgId}::bonding_curve::sell`, typeArguments: [tokenType], arguments: sellArgs });
+      tx.transferObjects([suiOut], myAddress);
+      const builtTx       = await tx.build({ client });
+      const { signature } = await kp.signTransaction(builtTx);
+      await client.executeTransactionBlock({ transactionBlock: builtTx, signature, options: { showEffects: true } });
+      gradBought.current.delete(curveId);
+      const newLog = appendSnipeLog(walletAddress, { curveId, name: '?', symbol: '?', suiSpent: 0, success: true, type: 'grad_sell' });
+      setLog(newLog);
+    } catch {}
+  }, [walletAddress, config]);
+
+  useEffect(() => {
+    const cfg = loadSniperConfig(walletAddress) ?? config;
+    if (!walletAddress || !cfg?.gradSnipeEnabled) { gradEsRef.current?.close(); return; }
+
+    function connectGrad() {
+      const es = new EventSource(`${INDEXER_URL}/stream`);
+      gradEsRef.current = es;
+      es.onmessage = async (e) => {
+        try {
+          const event = JSON.parse(e.data);
+          const cfg2  = loadSniperConfig(walletAddress);
+          if (!cfg2?.gradSnipeEnabled || !keypairRef.current) return;
+          const d     = event.data ?? {};
+          const pkgId = event.eventType?.split('::')?.[0] ?? PACKAGE_ID_V8;
+
+          // Phase 2 — sell on graduation
+          if (event.type === 'CurveGraduated' || event.type === 'Graduated') {
+            const curveId   = d.curve_id ?? event.curveId;
+            const tokenType = d.token_type ?? d.type_name ?? null;
+            if (!curveId || !tokenType || !gradBought.current.has(curveId) || !cfg2.gradSnipeSellOnGrad) return;
+            await executeGradSell(curveId, tokenType, pkgId);
+            return;
+          }
+
+          // Phase 1 — buy near graduation threshold
+          const isTrade = event.type === 'TokensPurchased' || event.type === 'TokensBought' || event.type === 'TokensSold';
+          if (!isTrade) return;
+          const curveId   = d.curve_id ?? event.curveId;
+          const tokenType = d.token_type ?? d.type_name ?? null;
+          if (!curveId || !tokenType || gradBought.current.has(curveId)) return;
+          const reserveSui = Number(d.new_sui_reserve ?? d.sui_reserve ?? 0) / 1e9;
+          const { drainSui, virtualSui, virtualTokens } = curveShapeFor(pkgId);
+          if ((reserveSui / drainSui) * 100 < cfg2.gradSnipeThreshold) return;
+          gradBought.current.add(curveId);
+          const kp        = keypairRef.current;
+          const client    = new SuiClient({ url: getFullnodeUrl('testnet') });
+          const myAddress = kp.getPublicKey().toSuiAddress();
+          const suiInMist = BigInt(Math.floor(cfg2.gradSnipeSuiAmount * 1e9));
+          const objForRef = await client.getObject({ id: curveId, options: { showOwner: true, showContent: true } });
+          const isv       = objForRef.data?.owner?.Shared?.initial_shared_version;
+          if (!isv) { gradBought.current.delete(curveId); return; }
+          const fields          = objForRef.data?.content?.fields ?? {};
+          const reserveMist     = BigInt(fields.sui_reserve    ?? 0);
+          const tokensRemaining = BigInt(fields.token_reserve  ?? 0);
+          const quote  = buyQuote(reserveMist, tokensRemaining, suiInMist, virtualSui, virtualTokens);
+          const minOut = quote?.tokensOut != null ? BigInt(Math.floor(Number(quote.tokensOut) * (1 - cfg2.gradSnipeSlippage / 100))) : 0n;
+          const tx = new Transaction();
+          tx.setSender(myAddress);
+          const curveRef  = tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: isv, mutable: true });
+          const [payment] = tx.splitCoins(tx.gas, [tx.pure.u64(suiInMist)]);
+          const buyArgs   = isV5OrLater(pkgId)
+            ? [curveRef, payment, tx.pure.u64(minOut), tx.pure.option('address', null), tx.object(SUI_CLOCK_ID)]
+            : [curveRef, payment, tx.pure.u64(minOut)];
+          const [tokens, refund] = tx.moveCall({ target: `${pkgId}::bonding_curve::buy`, typeArguments: [tokenType], arguments: buyArgs });
+          tx.transferObjects([tokens, refund], myAddress);
+          const builtTx       = await tx.build({ client });
+          const { signature } = await kp.signTransaction(builtTx);
+          const result        = await client.executeTransactionBlock({ transactionBlock: builtTx, signature, options: { showEffects: true } });
+          const success = result.effects?.status?.status === 'success';
+          if (!success) gradBought.current.delete(curveId);
+          const newLog = appendSnipeLog(walletAddress, { curveId, name: d.name ?? '?', symbol: d.symbol ?? '?', suiSpent: cfg2.gradSnipeSuiAmount, success, type: 'grad_buy', digest: result.digest });
+          setLog(newLog);
+        } catch {}
+      };
+      es.onerror = () => { es.close(); gradTimerRef.current = setTimeout(connectGrad, 3000); };
+    }
+
+    connectGrad();
+    return () => { gradEsRef.current?.close(); clearTimeout(gradTimerRef.current); };
+  }, [walletAddress, config.gradSnipeEnabled, executeGradSell]);
 
   // ── Public API ────────────────────────────────────────────────────────────
 
