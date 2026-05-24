@@ -22,6 +22,7 @@ import { paginateEvents, paginateMultipleEvents } from './paginateEvents.js';
 import LiveFeedSidebar from './LiveFeedSidebar.jsx';
 import { useWatchlist } from './useWatchlist.js';
 import StrategiesModal from './StrategiesModal.jsx';
+import { useTradeKey } from './useTradeKey.js';
 
 const MIST_PER_SUI = 1e9;
 const TOTAL_SUPPLY_WHOLE = 1_000_000_000;
@@ -1480,6 +1481,7 @@ export default function App() {
   const handleLaunched = ({ curveId }) => { setShowLaunch(false); navigate(`/token/${curveId}`); };
   const [showFeed, setShowFeed] = useState(false);
   const { tokens: allTokens } = useTokenList();
+  const tradeKey = useTradeKey();
 
   return (
     <div className="min-h-screen bg-[#080808] text-white" style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}>
@@ -1532,7 +1534,7 @@ export default function App() {
         />
       )}
       {showStrategies && (
-        <StrategiesModal onClose={() => setShowStrategies(false)} />
+        <StrategiesModal onClose={() => setShowStrategies(false)} tradeKey={tradeKey} />
       )}
       {showFeed && (
         <LiveFeedSidebar tokens={allTokens} onClose={() => setShowFeed(false)} />
