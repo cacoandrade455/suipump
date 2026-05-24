@@ -109,6 +109,14 @@ function TradingKeyTab() {
         </p>
       </div>
 
+      {/* Local storage disclaimer */}
+      <div className="rounded-xl border border-white/5 bg-white/[0.02] px-4 py-3 flex items-start gap-2">
+        <span className="text-lime-400/50 text-[11px] mt-0.5">🔒</span>
+        <p className="text-[9px] font-mono text-white/35 leading-relaxed">
+          Your encrypted key is stored <span className="text-white/60 font-bold">exclusively in your browser's localStorage</span>. It is never transmitted to any server, never stored in our database, and never accessible to anyone but you. Clearing your browser data will remove it.
+        </p>
+      </div>
+
       {/* Current status */}
       {hasKey && (
         <div className={`rounded-xl border p-3 flex items-center justify-between ${
