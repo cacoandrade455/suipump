@@ -95,7 +95,45 @@ function NetworkBanner() {
   );
 }
 
-function ScrollToTop() {
+// ── Strategies locked banner ──────────────────────────────────────────────────
+// Shows when the user has a saved trading key but it's not yet unlocked
+// this session. Reminds them strategies won't execute until they unlock.
+
+function StrategiesLockedBanner({ tradeKey, onOpenStrategies }) {
+  const account    = useCurrentAccount();
+  const [dismissed, setDismissed] = useState(
+    () => { try { return sessionStorage.getItem('suipump_key_banner') === '1'; } catch { return false; } }
+  );
+
+  // Only show if: wallet connected, has saved key, key is NOT ready (locked)
+  if (!account || !tradeKey.hasKey || tradeKey.isReady || dismissed) return null;
+
+  return (
+    <div className="w-full bg-yellow-950/40 border-b border-yellow-500/20 px-4 py-2 flex items-center justify-between gap-3 sticky top-[57px] z-30">
+      <div className="flex items-center gap-2.5 min-w-0">
+        <Zap size={11} className="text-yellow-400/70 shrink-0" />
+        <p className="text-[10px] font-mono text-yellow-300/60 leading-snug">
+          Trading strategies are <span className="font-bold text-yellow-200/80">paused</span> — key locked. Unlock to resume TP/SL, sniper, DCA and copy trading.
+        </p>
+      </div>
+      <div className="flex items-center gap-2 shrink-0">
+        <button
+          onClick={() => { onOpenStrategies(); }}
+          className="text-[9px] font-mono font-bold text-yellow-400 hover:text-yellow-300 transition-colors px-2 py-1 rounded-lg border border-yellow-400/30 hover:border-yellow-400/60"
+        >
+          UNLOCK
+        </button>
+        <button
+          onClick={() => { try { sessionStorage.setItem('suipump_key_banner', '1'); } catch {} setDismissed(true); }}
+          className="text-yellow-400/40 hover:text-yellow-300 transition-colors"
+          aria-label="Dismiss"
+        >
+          <X size={12} />
+        </button>
+      </div>
+    </div>
+  );
+}
   const { pathname } = useLocation();
   useEffect(() => { window.scrollTo(0, 0); }, [pathname]);
   return null;
@@ -1451,6 +1489,7 @@ export default function App() {
       <ScrollToTop />
       <Header onLaunch={() => setShowLaunch(true)} lang={lang} setLang={handleLang} onToggleFeed={() => setShowFeed(o => !o)} showFeed={showFeed} onStrategies={() => setShowStrategies(true)} />
       <NetworkBanner />
+      <StrategiesLockedBanner tradeKey={tradeKey} onOpenStrategies={() => setShowStrategies(true)} />
       <main className="max-w-6xl mx-auto px-4 py-6">
         <Routes>
           <Route path="/" element={<HomePage onLaunch={() => setShowLaunch(true)} lang={lang} />} />
