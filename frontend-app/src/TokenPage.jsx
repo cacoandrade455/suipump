@@ -1,10 +1,11 @@
-// v18-quick-buy
+// v19-tpsl
 // TokenPage.jsx
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useCurrentAccount, useSignAndExecuteTransaction, useSuiClient } from '@mysten/dapp-kit';
 import { Transaction } from '@mysten/sui/transactions';
-import { ArrowLeft, Copy, Check, Share2, ExternalLink, Settings, Edit3, Clock, Zap } from 'lucide-react';
+import { ArrowLeft, Copy, Check, Share2, ExternalLink, Settings, Edit3, Clock, Zap, ShieldAlert, Plus, Trash2, Bell } from 'lucide-react';
+import { useTPSL, makeLevel } from './useTPSL.js';
 import PriceChart from './PriceChart.jsx';
 import TradeHistory from './TradeHistory.jsx';
 import HolderList from './HolderList.jsx';
@@ -812,6 +813,335 @@ function TradePanelContent({
   );
 }
 
+// ── TP/SL Panel ───────────────────────────────────────────────────────────────
+// Shown in the right column below the trade panel.
+// User sets take-profit and/or stop-loss levels with partial sell %.
+// When triggered, fires a sell PTB → Slush wallet signs.
+
+function TPSLPanel({
+  account, curveId, tokenType, pkgId,
+  priceSui,           // current spot price per whole token in SUI
+  tokenBalance,       // current token balance (whole tokens)
+  reserveMist, tokensRemaining, vSui, vTok,
+  slippage,
+}) {
+  const client = useSuiClient();
+  const { mutate: signAndExecute } = useSignAndExecuteTransaction();
+
+  const [showConfig, setShowConfig]     = useState(false);
+  const [entryPrice, setEntryPrice]     = useState('');
+  const [pendingLevels, setPendingLevels] = useState([
+    { type: 'tp', pct: '100',  sellPct: '50' },
+    { type: 'sl', pct: '-20',  sellPct: '100' },
+  ]);
+  const [triggerMsg, setTriggerMsg]     = useState(null); // { level, status }
+  const [selling, setSelling]           = useState(false);
+
+  // ── Build and sign the sell PTB ──────────────────────────────────────────
+  const executeSell = useCallback(async (sellWholeTokens) => {
+    if (!account || !curveId || !tokenType || !pkgId || selling) return;
+    if (sellWholeTokens <= 0) return;
+    setSelling(true);
+    try {
+      const tokInAtomic = BigInt(Math.floor(sellWholeTokens * 10 ** TOKEN_DECIMALS));
+      const objForRef = await client.getObject({ id: curveId, options: { showOwner: true } });
+      const isv = objForRef.data?.owner?.Shared?.initial_shared_version;
+      const tx = new Transaction();
+      const curveRef = isv
+        ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: isv, mutable: true })
+        : tx.object(curveId);
+
+      const coins = await client.getCoins({ owner: account.address, coinType: tokenType });
+      if (!coins.data.length) throw new Error('No token balance');
+      const coinObjs = coins.data.map(c => tx.object(c.coinObjectId));
+      if (coinObjs.length > 1) tx.mergeCoins(coinObjs[0], coinObjs.slice(1));
+      const [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(tokInAtomic)]);
+
+      const slippageNum = parseFloat(slippage) || 1;
+      const sq = sellQuote(reserveMist, tokensRemaining, tokInAtomic, vSui, vTok);
+      const minOut = sq?.suiOut != null
+        ? BigInt(Math.floor(Number(sq.suiOut) * (1 - slippageNum / 100)))
+        : 0n;
+
+      const sellArgs = isV7OrLater(pkgId)
+        ? [curveRef, tokenCoin, tx.pure.u64(minOut), tx.pure.option('address', null)]
+        : [curveRef, tokenCoin, tx.pure.u64(minOut)];
+
+      const [suiOut] = tx.moveCall({
+        target: `${pkgId}::bonding_curve::sell`,
+        typeArguments: [tokenType],
+        arguments: sellArgs,
+      });
+      tx.transferObjects([suiOut], account.address);
+
+      signAndExecute({ transaction: tx }, {
+        onSuccess: () => {
+          setTriggerMsg(m => m ? { ...m, status: 'done' } : m);
+          setSelling(false);
+        },
+        onError: (err) => {
+          setTriggerMsg(m => m ? { ...m, status: 'error', error: err.message } : m);
+          setSelling(false);
+        },
+      });
+    } catch (err) {
+      setTriggerMsg(m => m ? { ...m, status: 'error', error: err.message } : m);
+      setSelling(false);
+    }
+  }, [account, curveId, tokenType, pkgId, selling, client, signAndExecute, reserveMist, tokensRemaining, vSui, vTok, slippage]);
+
+  // ── onTrigger callback passed to useTPSL ────────────────────────────────
+  const handleTrigger = useCallback(({ level, currentPriceSui }) => {
+    const sellTokens = tokenBalance * (level.sellPct / 100);
+    setTriggerMsg({ level, currentPriceSui, status: 'pending', sellTokens });
+    executeSell(sellTokens);
+  }, [tokenBalance, executeSell]);
+
+  const { config, activate, deactivate, isActive } = useTPSL({
+    walletAddress:   account?.address,
+    curveId,
+    currentPriceSui: priceSui,
+    onTrigger:       handleTrigger,
+  });
+
+  // ── Helpers ──────────────────────────────────────────────────────────────
+  const updateLevel = (idx, field, val) => {
+    setPendingLevels(prev => prev.map((l, i) => i === idx ? { ...l, [field]: val } : l));
+  };
+  const addLevel = () => {
+    if (pendingLevels.length >= 4) return;
+    setPendingLevels(prev => [...prev, { type: 'tp', pct: '200', sellPct: '100' }]);
+  };
+  const removeLevel = (idx) => {
+    setPendingLevels(prev => prev.filter((_, i) => i !== idx));
+  };
+
+  const handleActivate = () => {
+    const ep = parseFloat(entryPrice) || priceSui;
+    if (!ep || ep <= 0) return;
+    const levels = pendingLevels
+      .filter(l => l.pct !== '' && l.sellPct !== '')
+      .map(l => makeLevel(l.type, parseFloat(l.pct), parseFloat(l.sellPct)));
+    if (!levels.length) return;
+    activate(ep, levels);
+    setShowConfig(false);
+  };
+
+  const pctColor = (type) => type === 'tp' ? 'text-lime-400' : 'text-red-400';
+  const pctBorder = (type) => type === 'tp' ? 'border-lime-400/30' : 'border-red-400/30';
+
+  if (!account) return null;
+
+  return (
+    <div className="bg-white/[0.03] border border-white/10 rounded-xl overflow-hidden">
+      {/* Header */}
+      <div className="px-4 py-3 flex items-center justify-between border-b border-white/5">
+        <div className="flex items-center gap-2">
+          <ShieldAlert size={11} className={isActive ? 'text-lime-400' : 'text-white/30'} />
+          <span className="text-[10px] font-mono tracking-widest text-white/35">TP / SL</span>
+          {isActive && (
+            <span className="flex items-center gap-1 text-[9px] font-mono text-lime-400/70">
+              <span className="w-1.5 h-1.5 rounded-full bg-lime-400 animate-pulse inline-block" />
+              ACTIVE · TAB MUST STAY OPEN
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          {isActive && (
+            <button onClick={deactivate}
+              className="text-[9px] font-mono text-red-400/60 hover:text-red-400 transition-colors">
+              CANCEL
+            </button>
+          )}
+          <button
+            onClick={() => setShowConfig(s => !s)}
+            className="text-[9px] font-mono text-lime-400/70 hover:text-lime-400 transition-colors"
+          >
+            {showConfig ? 'CLOSE' : isActive ? 'EDIT' : 'SET UP'}
+          </button>
+        </div>
+      </div>
+
+      {/* Active levels display */}
+      {isActive && !showConfig && (
+        <div className="px-4 py-3 space-y-2">
+          <div className="text-[9px] font-mono text-white/25 mb-1">
+            Entry: {config.entryPriceSui?.toFixed(8)} SUI · Now: {priceSui?.toFixed(8)} SUI
+          </div>
+          {config.levels?.map(level => {
+            const changePct = priceSui && config.entryPriceSui
+              ? ((priceSui - config.entryPriceSui) / config.entryPriceSui) * 100
+              : 0;
+            const progress = level.type === 'tp'
+              ? Math.min(100, Math.max(0, (changePct / level.pct) * 100))
+              : Math.min(100, Math.max(0, (Math.abs(Math.min(0, changePct)) / Math.abs(level.pct)) * 100));
+
+            return (
+              <div key={level.id} className={`rounded-lg border px-3 py-2 space-y-1.5 ${
+                level.triggered
+                  ? 'border-white/10 bg-white/[0.02] opacity-50'
+                  : level.type === 'tp' ? 'border-lime-400/20 bg-lime-950/10' : 'border-red-400/20 bg-red-950/10'
+              }`}>
+                <div className="flex items-center justify-between text-[10px] font-mono">
+                  <span className={level.type === 'tp' ? 'text-lime-400' : 'text-red-400'}>
+                    {level.type === 'tp' ? '▲ TP' : '▼ SL'} {level.pct > 0 ? '+' : ''}{level.pct}%
+                  </span>
+                  <span className="text-white/40">
+                    Sell {level.sellPct}% of position
+                  </span>
+                  {level.triggered && <span className="text-white/25 text-[9px]">TRIGGERED</span>}
+                </div>
+                {!level.triggered && (
+                  <div className="h-1 bg-white/5 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all ${level.type === 'tp' ? 'bg-lime-400/50' : 'bg-red-400/50'}`}
+                      style={{ width: `${progress}%` }}
+                    />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Trigger notification */}
+      {triggerMsg && (
+        <div className={`mx-4 mb-3 rounded-lg border px-3 py-2.5 text-[10px] font-mono space-y-1 ${
+          triggerMsg.status === 'done'    ? 'border-lime-400/30 bg-lime-950/20' :
+          triggerMsg.status === 'error'   ? 'border-red-400/30 bg-red-950/20' :
+          'border-white/10 bg-white/[0.02]'
+        }`}>
+          <div className="flex items-center gap-1.5">
+            <Bell size={10} className={triggerMsg.level.type === 'tp' ? 'text-lime-400' : 'text-red-400'} />
+            <span className="text-white/70 font-bold">
+              {triggerMsg.level.type === 'tp' ? 'Take-profit' : 'Stop-loss'} triggered
+            </span>
+          </div>
+          <div className="text-white/40">
+            Selling {triggerMsg.sellTokens?.toFixed(0)} tokens ({triggerMsg.level.sellPct}%)
+          </div>
+          {triggerMsg.status === 'pending' && (
+            <div className="text-white/30 animate-pulse">Waiting for wallet signature…</div>
+          )}
+          {triggerMsg.status === 'done' && (
+            <div className="text-lime-400">Sold successfully ✓</div>
+          )}
+          {triggerMsg.status === 'error' && (
+            <div className="text-red-400">{triggerMsg.error || 'Sell failed'}</div>
+          )}
+          <button onClick={() => setTriggerMsg(null)}
+            className="text-[9px] text-white/20 hover:text-white/50 transition-colors">
+            dismiss
+          </button>
+        </div>
+      )}
+
+      {/* Config form */}
+      {showConfig && (
+        <div className="px-4 py-3 space-y-3">
+          {/* Entry price */}
+          <div>
+            <div className="text-[9px] font-mono text-white/30 tracking-widest mb-1.5">ENTRY PRICE (SUI per token)</div>
+            <input
+              type="number" step="any" min="0"
+              value={entryPrice}
+              onChange={e => setEntryPrice(e.target.value)}
+              placeholder={priceSui ? priceSui.toFixed(8) : '0.00000000'}
+              className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-[11px] font-mono text-white placeholder-white/20 focus:outline-none focus:border-lime-400/40 transition-colors"
+            />
+            <button
+              onClick={() => setEntryPrice(priceSui?.toFixed(8) ?? '')}
+              className="mt-1 text-[9px] font-mono text-lime-400/60 hover:text-lime-400 transition-colors"
+            >
+              use current price
+            </button>
+          </div>
+
+          {/* Levels */}
+          <div className="space-y-2">
+            <div className="text-[9px] font-mono text-white/30 tracking-widest">LEVELS</div>
+            {pendingLevels.map((level, idx) => (
+              <div key={idx} className="flex items-center gap-2">
+                {/* TP / SL toggle */}
+                <button
+                  onClick={() => updateLevel(idx, 'type', level.type === 'tp' ? 'sl' : 'tp')}
+                  className={`w-9 py-1.5 rounded-lg text-[9px] font-mono font-bold border transition-colors flex-shrink-0 ${
+                    level.type === 'tp'
+                      ? 'border-lime-400/40 text-lime-400 bg-lime-400/5'
+                      : 'border-red-400/40 text-red-400 bg-red-400/5'
+                  }`}
+                >
+                  {level.type === 'tp' ? 'TP' : 'SL'}
+                </button>
+                {/* % trigger */}
+                <div className="flex-1 relative">
+                  <input
+                    type="number" step="1"
+                    value={level.pct}
+                    onChange={e => updateLevel(idx, 'pct', e.target.value)}
+                    placeholder={level.type === 'tp' ? '+100' : '-20'}
+                    className={`w-full bg-white/5 border rounded-lg px-2 py-1.5 text-[11px] font-mono text-center focus:outline-none transition-colors ${pctBorder(level.type)} focus:border-lime-400/50`}
+                  />
+                  <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[8px] font-mono text-white/20">%</span>
+                </div>
+                {/* Sell % */}
+                <div className="flex-1 relative">
+                  <input
+                    type="number" step="1" min="1" max="100"
+                    value={level.sellPct}
+                    onChange={e => updateLevel(idx, 'sellPct', e.target.value)}
+                    placeholder="100"
+                    className="w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-[11px] font-mono text-center focus:outline-none focus:border-lime-400/40 transition-colors"
+                  />
+                  <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[8px] font-mono text-white/20">sell%</span>
+                </div>
+                {/* Remove */}
+                <button onClick={() => removeLevel(idx)}
+                  className="text-white/20 hover:text-red-400 transition-colors flex-shrink-0">
+                  <Trash2 size={11} />
+                </button>
+              </div>
+            ))}
+            {pendingLevels.length < 4 && (
+              <button onClick={addLevel}
+                className="flex items-center gap-1 text-[9px] font-mono text-white/25 hover:text-lime-400 transition-colors">
+                <Plus size={10} /> Add level
+              </button>
+            )}
+          </div>
+
+          {/* Helper text */}
+          <div className="text-[8px] font-mono text-white/15 leading-relaxed">
+            TP = sell when price rises by %. SL = sell when price falls by % (enter negative). Sell % = portion of your balance to sell. Tab must stay open.
+          </div>
+
+          {/* Activate */}
+          <button
+            onClick={handleActivate}
+            disabled={!pendingLevels.length || !account}
+            className={`w-full py-2.5 rounded-lg text-[11px] font-mono font-bold transition-colors ${
+              !pendingLevels.length || !account
+                ? 'bg-white/5 text-white/20 cursor-not-allowed'
+                : 'bg-lime-400 text-black hover:bg-lime-300'
+            }`}
+          >
+            ACTIVATE TP/SL
+          </button>
+        </div>
+      )}
+
+      {/* Empty state */}
+      {!isActive && !showConfig && (
+        <div className="px-4 py-4 text-center">
+          <div className="text-[10px] font-mono text-white/20 mb-1">No active orders</div>
+          <div className="text-[9px] font-mono text-white/15">Auto-sell when price hits your targets</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Trades / Holders toggle block ─────────────────────────────────────────────
 
 function TradesHoldersBlock({ curveId, tokenType, suiUsd, lang, creator }) {
@@ -1155,6 +1485,19 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
         {/* Right column */}
         <div className="hidden lg:block space-y-4">
           <TradePanelContent {...tradePanelProps} />
+          <TPSLPanel
+            account={account}
+            curveId={curveId}
+            tokenType={tokenType}
+            pkgId={pkgId}
+            priceSui={priceSui}
+            tokenBalance={tokenBalance}
+            reserveMist={reserveMist}
+            tokensRemaining={tokensRemaining}
+            vSui={vSui}
+            vTok={vTok}
+            slippage={slippage}
+          />
           <VestingPanel curveId={curveId} tokenType={tokenType} packageId={pkgId} account={account} tokenBalance={tokenBalance} lang={lang} />
           {isCreator && (
             <CreatorToolsPanel curveId={curveId} tokenType={tokenType} packageIdHint={pkgId} account={account} curveState={curveState} currentDesc={desc} currentTwitter={twitter} currentTelegram={telegram} currentWebsite={website} currentDex={dex} lang={lang} />
