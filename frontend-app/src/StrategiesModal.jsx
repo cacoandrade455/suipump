@@ -1,14 +1,17 @@
-// StrategiesModal.jsx — 🔑 Key | 🔫 Sniper | 📅 DCA | 👁️ Copy | 🎓 Grad Snipe | ⚖️ Rebalance | ⚡ Active
+// StrategiesModal.jsx
+// Slide-up modal accessible from the nav bar.
+// Tab 1: Trading Key — paste private key, sign with Slush to encrypt, store locally.
+// Tab 2: Sniper — auto-buy new tokens matching filters + auto TP/SL.
+// Tab 3: Active — overview of all TP/SL configs + snipe log.
 
 import React, { useState, useEffect } from 'react';
 import { useCurrentAccount } from '@mysten/dapp-kit';
-import { X, Key, ShieldAlert, Eye, EyeOff, Trash2, CheckCircle2, Loader2, AlertTriangle, ChevronRight, Zap, Crosshair, ToggleLeft, ToggleRight, ExternalLink, RefreshCw } from 'lucide-react';
-import { useTradeKey } from './useTradeKey.js';
+import { X, Key, ShieldAlert, Eye, EyeOff, Trash2, CheckCircle2, Loader2, AlertTriangle, ChevronRight, Zap, Crosshair, ToggleLeft, ToggleRight, ExternalLink } from 'lucide-react';
+
 import { loadTPSL, clearTPSL } from './useTPSL.js';
 import { useSniper, DEFAULT_SNIPER_CONFIG, loadSnipeLog } from './useSniper.js';
 import { useDCA, INTERVAL_OPTIONS, loadDCAOrders } from './useDCA.js';
 import { useCopyTrade } from './useCopyTrade.js';
-import { useRebalance, REBALANCE_INTERVALS, DEFAULT_REBALANCE_CONFIG } from './useRebalance.js';
 
 const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
 
@@ -485,81 +488,6 @@ function SniperTab({ keypair }) {
           </div>
         </div>
       )}
-
-      {/* Graduation snipe section */}
-      <div className="rounded-xl border border-white/8 overflow-hidden">
-        <button
-          onClick={() => updateConfig({ gradSnipeEnabled: !config.gradSnipeEnabled })}
-          className="w-full flex items-center justify-between px-4 py-3"
-        >
-          <div className="flex items-center gap-2">
-            <span className="text-[11px]">🎓</span>
-            <span className="text-[10px] font-mono font-bold text-white/60">GRADUATION SNIPE</span>
-          </div>
-          {config.gradSnipeEnabled
-            ? <ToggleRight size={18} className="text-lime-400" />
-            : <ToggleLeft  size={18} className="text-white/25" />
-          }
-        </button>
-
-        {config.gradSnipeEnabled && (
-          <div className="px-4 pb-3 border-t border-white/5 pt-3 space-y-2.5">
-            <div className="text-[8px] font-mono text-white/20 leading-relaxed">
-              Buys tokens approaching graduation, auto-sells when they graduate to the DEX.
-            </div>
-
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-[10px] font-mono text-white/50 flex-1">Buy at progress</span>
-              <div className="relative w-24">
-                <input type="number" min="50" max="99" step="1"
-                  value={config.gradSnipeThreshold}
-                  onChange={e => updateConfig({ gradSnipeThreshold: parseFloat(e.target.value) || 80 })}
-                  className="w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-[11px] font-mono text-white text-right focus:outline-none focus:border-lime-400/40"
-                />
-                <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[8px] font-mono text-white/20">%</span>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-[10px] font-mono text-white/50 flex-1">SUI to spend</span>
-              <div className="relative w-24">
-                <input type="number" min="0.1" step="0.1"
-                  value={config.gradSnipeSuiAmount}
-                  onChange={e => updateConfig({ gradSnipeSuiAmount: parseFloat(e.target.value) || 1 })}
-                  className="w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-[11px] font-mono text-white text-right focus:outline-none focus:border-lime-400/40"
-                />
-                <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[8px] font-mono text-white/20">SUI</span>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-[10px] font-mono text-white/50 flex-1">Slippage</span>
-              <div className="flex gap-1">
-                {['2','5','10'].map(v => (
-                  <button key={v} onClick={() => updateConfig({ gradSnipeSlippage: parseFloat(v) })}
-                    className={`px-2.5 py-1 rounded-lg text-[9px] font-mono border transition-colors ${
-                      config.gradSnipeSlippage === parseFloat(v)
-                        ? 'border-lime-400/40 text-lime-400 bg-lime-400/5'
-                        : 'border-white/8 text-white/30 hover:text-white/60'
-                    }`}
-                  >{v}%</button>
-                ))}
-              </div>
-            </div>
-
-            <button
-              onClick={() => updateConfig({ gradSnipeSellOnGrad: !config.gradSnipeSellOnGrad })}
-              className="w-full flex items-center justify-between px-3 py-2 rounded-xl border border-white/8 bg-white/[0.02]"
-            >
-              <span className="text-[10px] font-mono text-white/50">Auto-sell on graduation</span>
-              {config.gradSnipeSellOnGrad
-                ? <ToggleRight size={16} className="text-lime-400" />
-                : <ToggleLeft  size={16} className="text-white/25" />
-              }
-            </button>
-          </div>
-        )}
-      </div>
 
       {/* Tab-open warning */}
       <div className="text-[8px] font-mono text-white/15 text-center">
@@ -1086,157 +1014,6 @@ function CopyTradeTab({ keypair }) {
   );
 }
 
-// ── Rebalance tab ─────────────────────────────────────────────────────────────
-function RebalanceTab({ keypair }) {
-  const account = useCurrentAccount();
-  const { config, updateConfig, checking, lastCheck, checkAndRebalance, clearLog, log, isActive } = useRebalance({
-    walletAddress: account?.address,
-    keypair,
-  });
-
-  if (!account) return (
-    <div className="py-12 text-center text-[11px] font-mono text-white/30">Connect your wallet to use rebalancing</div>
-  );
-  if (!keypair) return (
-    <div className="py-12 text-center space-y-2">
-      <div className="text-[11px] font-mono text-white/25">Trading key required</div>
-      <div className="text-[9px] font-mono text-white/15">Set up your trading key first → it sells overweight positions autonomously</div>
-    </div>
-  );
-
-  return (
-    <div className="space-y-4">
-
-      {/* Status */}
-      <div className={`rounded-xl border p-3 flex items-center justify-between ${
-        isActive ? 'border-lime-400/25 bg-lime-950/10' : 'border-white/8 bg-white/[0.02]'
-      }`}>
-        <div className="flex items-center gap-2">
-          {checking
-            ? <Loader2 size={13} className="animate-spin text-lime-400" />
-            : <span className={`w-2 h-2 rounded-full ${isActive ? 'bg-lime-400 animate-pulse' : 'bg-white/15'}`} />
-          }
-          <span className="text-[11px] font-mono font-bold text-white">
-            {checking ? 'Checking…' : isActive ? 'Rebalancer Active' : 'Rebalancer Off'}
-          </span>
-          {lastCheck && !checking && (
-            <span className="text-[8px] font-mono text-white/20">
-              last check {Math.round((Date.now() - lastCheck) / 1000)}s ago
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          {isActive && (
-            <button onClick={checkAndRebalance} disabled={checking}
-              className="text-white/25 hover:text-lime-400 transition-colors disabled:opacity-30">
-              <RefreshCw size={12} />
-            </button>
-          )}
-          <button onClick={() => updateConfig({ enabled: !config.enabled })}>
-            {isActive
-              ? <ToggleRight size={22} className="text-lime-400" />
-              : <ToggleLeft  size={22} className="text-white/25" />
-            }
-          </button>
-        </div>
-      </div>
-
-      {/* Config */}
-      <div className="space-y-3">
-        <div className="text-[9px] font-mono text-white/30 tracking-widest">SETTINGS</div>
-
-        <div className="flex items-center justify-between gap-3">
-          <span className="text-[10px] font-mono text-white/50 flex-1">Max allocation per token</span>
-          <div className="relative w-24">
-            <input type="number" min="5" max="100" step="5"
-              value={config.maxAllocPct}
-              onChange={e => updateConfig({ maxAllocPct: parseFloat(e.target.value) || 30 })}
-              className="w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-[11px] font-mono text-white text-right focus:outline-none focus:border-lime-400/40"
-            />
-            <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[8px] font-mono text-white/20">%</span>
-          </div>
-        </div>
-
-        <div>
-          <div className="text-[9px] font-mono text-white/25 mb-1.5">CHECK INTERVAL</div>
-          <div className="flex flex-wrap gap-1.5">
-            {REBALANCE_INTERVALS.map(opt => (
-              <button key={opt.ms} onClick={() => updateConfig({ checkIntervalMs: opt.ms })}
-                className={`px-2.5 py-1.5 rounded-lg text-[9px] font-mono border transition-colors ${
-                  config.checkIntervalMs === opt.ms
-                    ? 'border-lime-400/40 text-lime-400 bg-lime-400/5'
-                    : 'border-white/8 text-white/30 hover:text-white/60'
-                }`}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="flex items-center justify-between">
-          <span className="text-[9px] font-mono text-white/30">Slippage</span>
-          <div className="flex gap-1">
-            {['1','2','5'].map(v => (
-              <button key={v} onClick={() => updateConfig({ slippage: parseFloat(v) })}
-                className={`px-2.5 py-1 rounded-lg text-[9px] font-mono border transition-colors ${
-                  config.slippage === parseFloat(v)
-                    ? 'border-lime-400/40 text-lime-400 bg-lime-400/5'
-                    : 'border-white/8 text-white/30 hover:text-white/60'
-                }`}
-              >{v}%</button>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* Explainer */}
-      <div className="rounded-xl border border-white/5 bg-white/[0.01] px-4 py-3 text-[8px] font-mono text-white/20 leading-relaxed">
-        When any token exceeds {config.maxAllocPct}% of your total portfolio value, the excess is automatically sold back to SUI. Checks every {REBALANCE_INTERVALS.find(o => o.ms === config.checkIntervalMs)?.label ?? '5 min'}.
-      </div>
-
-      {/* Rebalance log */}
-      {log.length > 0 && (
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-[9px] font-mono text-white/30 tracking-widest">REBALANCE LOG</span>
-            <button onClick={clearLog} className="text-[9px] font-mono text-white/20 hover:text-red-400 transition-colors">clear</button>
-          </div>
-          <div className="space-y-1.5 max-h-40 overflow-y-auto">
-            {log.map((entry, i) => (
-              <div key={i} className={`rounded-lg border px-3 py-2 text-[10px] font-mono flex items-center justify-between ${
-                entry.success ? 'border-lime-400/15 bg-lime-950/10' : 'border-red-400/15 bg-red-950/10'
-              }`}>
-                <div>
-                  <span className={entry.success ? 'text-white/70' : 'text-red-400/70'}>
-                    {entry.success ? '✓' : '✗'} {entry.name || entry.curveId?.slice(0,6)+'…'}
-                    {entry.symbol && <span className="text-lime-400/70 ml-1">${entry.symbol}</span>}
-                  </span>
-                  <div className="text-[8px] text-white/20 mt-0.5">
-                    {entry.reason} · sold {entry.soldTokens?.toFixed(0)} tokens
-                    {entry.error && ` · ${entry.error}`}
-                  </div>
-                </div>
-                {entry.digest && (
-                  <a href={`https://suiexplorer.com/txblock/${entry.digest}?network=testnet`}
-                    target="_blank" rel="noreferrer"
-                    className="text-white/20 hover:text-lime-400 transition-colors ml-2">
-                    <ExternalLink size={10} />
-                  </a>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <div className="text-[8px] font-mono text-white/15 text-center">
-        Rebalancer runs while this tab is open · uses trading wallet balance
-      </div>
-    </div>
-  );
-}
-
 // ── Active strategies tab ─────────────────────────────────────────────────────
 function ActiveStrategiesTab() {
   const account = useCurrentAccount();
@@ -1348,9 +1125,9 @@ function ActiveStrategiesTab() {
 }
 
 // ── Main modal ────────────────────────────────────────────────────────────────
-export default function StrategiesModal({ onClose }) {
+export default function StrategiesModal({ onClose, tradeKey }) {
   const [tab, setTab] = useState('key');
-  const tradeKey = useTradeKey(); // single instance — shared across all tabs
+  // tradeKey is lifted to App.jsx — persists across navigation and modal open/close
   const { keypair, isReady } = tradeKey;
 
   // Close on Escape
@@ -1383,20 +1160,19 @@ export default function StrategiesModal({ onClose }) {
           </button>
         </div>
 
-        {/* Tabs — scrollable on mobile */}
-        <div className="flex border-b border-white/8 overflow-x-auto">
+        {/* Tabs */}
+        <div className="flex border-b border-white/8">
           {[
-            { id: 'key',     label: '🔑 Key'      },
-            { id: 'sniper',  label: '🔫 Sniper'   },
-            { id: 'dca',     label: '📅 DCA'      },
-            { id: 'copy',    label: '👁️ Copy'     },
-            { id: 'rebal',   label: '⚖️ Rebal'    },
-            { id: 'active',  label: '⚡ Active'   },
+            { id: 'key',    label: '🔑 Key'    },
+            { id: 'sniper', label: '🔫 Sniper' },
+            { id: 'dca',    label: '📅 DCA'    },
+            { id: 'copy',   label: '👁️ Copy'   },
+            { id: 'active', label: '⚡ Active' },
           ].map(t => (
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
-              className={`flex-shrink-0 flex-1 py-3 text-[9px] font-mono font-bold tracking-wider transition-colors ${
+              className={`flex-1 py-3 text-[10px] font-mono font-bold tracking-wider transition-colors ${
                 tab === t.id
                   ? 'text-lime-400 border-b-2 border-lime-400 bg-lime-400/5'
                   : 'text-white/30 hover:text-white/60'
@@ -1413,7 +1189,6 @@ export default function StrategiesModal({ onClose }) {
           {tab === 'sniper' && <SniperTab     keypair={isReady ? keypair : null} />}
           {tab === 'dca'    && <DCATab        keypair={isReady ? keypair : null} />}
           {tab === 'copy'   && <CopyTradeTab  keypair={isReady ? keypair : null} />}
-          {tab === 'rebal'  && <RebalanceTab  keypair={isReady ? keypair : null} />}
           {tab === 'active' && <ActiveStrategiesTab />}
         </div>
       </div>
