@@ -223,16 +223,17 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
 
       const res1 = await client.waitForTransaction({
         digest: res1raw.digest,
-        options: { showEffects: true, showObjectChanges: true },
+        include: { objectTypes: true },
       });
-      if (res1.effects.status.status !== 'success') throw new Error('Tx1 failed: ' + res1.effects.status.error);
+      if (res1.$kind === 'FailedTransaction') throw new Error('Tx1 failed: ' + res1.FailedTransaction.status.error);
 
-      const createdObjs = res1.objectChanges?.filter(c => c.type === 'created') ?? [];
-      const treasuryCapObj = createdObjs.find(o => o.objectType?.includes('TreasuryCap'));
-      if (!treasuryCapObj) throw new Error('TreasuryCap not found in Tx1 output');
+      // Find TreasuryCap in objectTypes map (objectId -> typeString)
+      const objectTypes1 = res1.Transaction.objectTypes ?? {};
+      const treasuryCapEntry = Object.entries(objectTypes1).find(([, t]) => t?.includes('TreasuryCap'));
+      if (!treasuryCapEntry) throw new Error('TreasuryCap not found in Tx1 output');
 
-      const treasuryCapId = treasuryCapObj.objectId;
-      const newTokenType = treasuryCapObj.objectType.match(/<(.+)>/)?.[1];
+      const treasuryCapId = treasuryCapEntry[0];
+      const newTokenType = treasuryCapEntry[1].match(/<(.+)>/)?.[1];
       if (!newTokenType) throw new Error('Could not parse token type');
 
       setTxStep('tx2');
@@ -339,13 +340,13 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
       const res2raw = await signAndExecute({ transaction: tx2 });
       const res2 = await client.waitForTransaction({
         digest: res2raw.digest,
-        options: { showEffects: true, showObjectChanges: true, showEvents: true },
+        include: { events: true },
       });
-      if (res2.effects.status.status !== 'success') throw new Error('Tx2 failed: ' + res2.effects.status.error);
+      if (res2.$kind === 'FailedTransaction') throw new Error('Tx2 failed: ' + res2.FailedTransaction.status.error);
       setTx2Digest(res2raw.digest);
 
-      const curveEvent = res2.events?.find(e => e.type?.includes('CurveCreated'));
-      const curveId = curveEvent?.parsedJson?.curve_id;
+      const curveEvent = res2.Transaction.events?.find(e => e.eventType?.includes('CurveCreated'));
+      const curveId = curveEvent?.json?.curve_id;
       setNewCurveId(curveId);
       setTxStep('done');
       if (onLaunched) onLaunched({ curveId, tokenType: newTokenType, name: tokenName, symbol: tokenSymbol });
