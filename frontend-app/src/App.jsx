@@ -459,8 +459,8 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch
       {/* Row 4  -  stats strip */}
       <div className="flex items-center justify-between text-[9px] font-mono">
         <div className="flex items-center gap-2 text-white/30">
-          {stats?.volume24h > 0 && (
-            <span className="text-lime-400/60">{fmt(stats.volume24h, 1)} SUI 24h</span>
+          {(stats?.volume ?? 0) > 0 && (
+            <span className="text-lime-400/60">{fmt(stats.volume, 1)} SUI vol</span>
           )}
           {stats?.trades > 0 && (
             <span>{stats.trades} trades</span>
@@ -1235,14 +1235,13 @@ function HomePage({ onLaunch, lang = 'en' }) {
 
   const SORT_OPTIONS = [
     { id: 'newest',     label: t(lang, 'newest') },
-    { id: 'oldest',     label: t(lang, 'oldest') },
     { id: 'trending',   label: t(lang, 'trending') },
     { id: 'last_trade', label: t(lang, 'lastTrade') },
-    { id: 'market_cap', label: t(lang, 'marketCap') },
     { id: 'volume',     label: t(lang, 'volumeSort') },
+    { id: 'market_cap', label: t(lang, 'marketCap') },
     { id: 'trades',     label: t(lang, 'tradesSort') },
-    { id: 'reserve',    label: t(lang, 'reserve') },
     { id: 'progress',   label: t(lang, 'progress') },
+    { id: 'oldest',     label: t(lang, 'oldest') },
     { id: 'watchlist',  label: '⭐ WATCHLIST' },
   ];
 
@@ -1274,17 +1273,31 @@ function HomePage({ onLaunch, lang = 'en' }) {
   const sorted = [...filtered].sort((a, b) => {
     const sa = tokenStats[a.curveId];
     const sb = tokenStats[b.curveId];
+    // Helper: compute mcap for a token from curveStates
+    const mcap = (curveId, pkgId) => {
+      const cs = curveStates[curveId];
+      if (!cs) return 0;
+      const shape = curveShapeFor(pkgId);
+      const totalPoolSui = cs.reserveSui + shape.virtualSui;
+      const priceSui = totalPoolSui / TOTAL_SUPPLY_WHOLE;
+      return priceSui * TOTAL_SUPPLY_WHOLE; // = totalPoolSui
+    };
     switch (sort) {
       case 'newest':     return (b.timestamp || 0) - (a.timestamp || 0);
       case 'oldest':     return (a.timestamp || 0) - (b.timestamp || 0);
-      case 'trending':   return (sb?.recentTrades || 0) - (sa?.recentTrades || 0);
+      case 'trending':   return (sb?.trades || sb?.recentTrades || 0) - (sa?.trades || sa?.recentTrades || 0);
       case 'last_trade': return (curveStates[b.curveId]?.lastTradeTime || 0) - (curveStates[a.curveId]?.lastTradeTime || 0);
-      case 'market_cap': return (curveStates[b.curveId]?.reserveSui || 0) - (curveStates[a.curveId]?.reserveSui || 0);
+      case 'market_cap': return mcap(b.curveId, b.packageId) - mcap(a.curveId, a.packageId);
       case 'volume':     return (sb?.volume || 0) - (sa?.volume || 0);
       case 'trades':     return (sb?.trades || 0) - (sa?.trades || 0);
       case 'reserve':    return (curveStates[b.curveId]?.reserveSui || 0) - (curveStates[a.curveId]?.reserveSui || 0);
       case 'progress':   return (curveStates[b.curveId]?.progress || 0) - (curveStates[a.curveId]?.progress || 0);
-      case 'watchlist':  return (isWatched(b.curveId) ? 1 : 0) - (isWatched(a.curveId) ? 1 : 0);
+      case 'watchlist':  {
+        const wa = isWatched(a.curveId) ? 1 : 0;
+        const wb = isWatched(b.curveId) ? 1 : 0;
+        if (wb !== wa) return wb - wa;
+        return (b.timestamp || 0) - (a.timestamp || 0); // secondary: newest first
+      }
       default: return 0;
     }
   });
