@@ -14,6 +14,7 @@
 // }
 
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { curveShapeFor } from './constants.js';
 
 const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
 
@@ -132,15 +133,10 @@ export function useTPSL({
           const newReserveMist = Number(d.new_sui_reserve ?? 0);
           if (!newReserveMist) return;
 
-          // We need the virtual SUI for this curve's package version.
-          // The event doesn't carry it but we can use a safe default (3500 for V8)
-          // or read it from the parent prop. We pass it through via curveVSui prop.
-          // For now derive from event.eventType package prefix:
-          const evtPkg = event.eventType?.split('::')?.[0] ?? '';
-          let vSuiWhole = 3500;
-          if (evtPkg.startsWith('0x2154')) vSuiWhole = 30000;
-          else if (evtPkg.startsWith('0x785c') || evtPkg.startsWith('0x21d5')) vSuiWhole = 10000;
-          else if (evtPkg.startsWith('0xfb8f')) vSuiWhole = 5000;
+          // Derive virtual SUI from the event's package ID via curveShapeFor
+          // This covers ALL package versions automatically including future ones
+          const evtPkg    = event.eventType?.split('::')?.[0] ?? '';
+          const vSuiWhole = curveShapeFor(evtPkg).virtualSui;
 
           const totalPoolSui = (vSuiWhole + newReserveMist / 1e9);
           const priceSui = totalPoolSui / 1_000_000_000; // per whole token
