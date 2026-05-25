@@ -9,7 +9,8 @@ import {
   PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8,
   COMMENT_FEE_MIST, isV7OrLater,
 } from './constants.js';
-import { paginateEvents } from './paginateEvents.js';
+
+const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
 
 function walletColor(addr) {
   if (!addr) return '#84cc16';
@@ -224,26 +225,57 @@ export default function Comments({ curveId, packageId }) {
 
     async function load() {
       try {
-        // Contract emits `Comment` (not `CommentPosted`). Query all versions.
-        const allEvents = [];
-        for (const pkg of ALL_PACKAGE_IDS) {
-          const eventType = `${pkg}::bonding_curve::Comment`;
-          const events = await paginateEvents(
-            client, { MoveEventType: eventType }, { order: 'ascending' }
-          ).catch(() => []);
-          allEvents.push(...events);
+        let comments = [];
+
+        // ── Indexer path (fast, filtered by curveId) ────────────────────────
+        if (INDEXER_URL) {
+          try {
+            const res = await fetch(
+              `${INDEXER_URL}/token/${curveId}/comments`,
+              { signal: AbortSignal.timeout(5000) }
+            );
+            if (res.ok) {
+              const rows = await res.json();
+              comments = rows.map(r => ({
+                id:        r.tx_digest + '_' + (r.event_seq ?? 0),
+                author:    r.data?.author  ?? r.author,
+                text:      r.data?.text    ?? r.text,
+                timestamp: r.timestamp_ms  ?? r.timestampMs ?? null,
+              })).sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+            }
+          } catch {}
         }
-        const filtered = allEvents
-          .filter(e => e.parsedJson?.curve_id === curveId)
-          .map(e => ({
-            id: e.id?.txDigest + '_' + e.id?.eventSeq,
-            author: e.parsedJson?.author,
-            text: e.parsedJson?.text,
-            timestamp: e.timestampMs ? Number(e.timestampMs) : null,
-          }))
-          .sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+
+        // ── RPC fallback — query Comment events filtered by curveId ─────────
+        if (comments.length === 0) {
+          const allEvents = [];
+          for (const pkg of ALL_PACKAGE_IDS) {
+            const eventType = `${pkg}::bonding_curve::Comment`;
+            // Use queryEvents directly with a limit — don't paginate all events globally
+            try {
+              const res = await client.queryEvents({
+                query: { MoveEventType: eventType },
+                limit: 50,
+                order: 'descending',
+              });
+              const filtered = (res.data ?? []).filter(
+                e => e.parsedJson?.curve_id === curveId
+              );
+              allEvents.push(...filtered);
+            } catch {}
+          }
+          comments = allEvents
+            .map(e => ({
+              id:        e.id?.txDigest + '_' + e.id?.eventSeq,
+              author:    e.parsedJson?.author,
+              text:      e.parsedJson?.text,
+              timestamp: e.timestampMs ? Number(e.timestampMs) : null,
+            }))
+            .sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+        }
+
         if (!cancelled) {
-          setComments(filtered);
+          setComments(comments);
           setLoading(false);
         }
       } catch {
