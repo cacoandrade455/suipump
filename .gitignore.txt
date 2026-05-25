@@ -1,0 +1,32 @@
+node_modules/
+
+# Sui build artifacts
+contracts/build/
+coin-template/build/**
+!coin-template/build/coin_template/
+!coin-template/build/coin_template/bytecode_modules/
+!coin-template/build/coin_template/bytecode_modules/template.mv
+
+# Frontend build output
+frontend-app/dist/
+
+# Environment files (never commit these)
+.env
+*.env
+*.secret
+
+# Windows junk
+Thumbs.db
+Desktop.ini
+
+coin-template/template.hex
+frontend/"scripts/sim_wallets.json" 
+"indexer/.env" 
+
+# Nexus agent signing key (local only, never commit)
+tool_keypair.json
+suipump-nexus-tools/tool_keypair.json
+suipump-nexus-tools/nexus_toolkit_config.json
+
+# Force-include compiled template bytecode (needed by agent bridge on Render)
+!coin-template/build/coin_template/bytecode_modules/template.mv

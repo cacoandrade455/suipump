@@ -7,6 +7,7 @@
 //   POST /sell   — sell tokens on a bonding curve
 //   POST /claim  — claim creator fees
 //   POST /launch — launch a new token (delegates to scripts/launch.js logic)
+//   POST /status — read curve state snapshot
 //
 // Environment:
 //   SUI_PRIVATE_KEY      — base64WithFlag Ed25519 key for the agent wallet
@@ -25,10 +26,10 @@ import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { Transaction } from '@mysten/sui/transactions';
 import { fromBase64 } from '@mysten/sui/utils';
 
-const __dirname    = path.dirname(fileURLToPath(import.meta.url));
+const __dirname     = path.dirname(fileURLToPath(import.meta.url));
 const execFileAsync = promisify(execFile);
-const PORT         = parseInt(process.env.PORT ?? '3030', 10);
-const INDEXER_URL  = process.env.SUIPUMP_INDEXER_URL ?? 'https://suipump-62s2.onrender.com';
+const PORT          = parseInt(process.env.PORT ?? '3030', 10);
+const INDEXER_URL   = process.env.SUIPUMP_INDEXER_URL ?? 'https://suipump-62s2.onrender.com';
 
 // ── Package IDs (all versions — read paths) ───────────────────────────────────
 const ALL_PACKAGE_IDS = [
@@ -62,7 +63,7 @@ const MIST_PER_SUI = 1_000_000_000n;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function loadKeypair(privateKey) {
-  const raw   = privateKey ?? process.env.SUI_PRIVATE_KEY;
+  const raw = privateKey ?? process.env.SUI_PRIVATE_KEY;
   if (!raw) throw new Error('No private key — set SUI_PRIVATE_KEY or pass privateKey in body');
   const bytes = fromBase64(raw);
   const seed  = (bytes.length === 65 || bytes.length === 33) ? bytes.slice(1) : bytes;
@@ -73,17 +74,9 @@ function makeClient(rpcUrl) {
   return new SuiClient({ url: rpcUrl ?? process.env.SUI_RPC_URL ?? getFullnodeUrl('testnet') });
 }
 
-async function getSharedVersion(client, objectId) {
-  const obj = await client.getObject({ id: objectId, options: { showOwner: true } });
-  const sv  = obj.data?.owner?.Shared?.initial_shared_version;
-  if (!sv) throw new Error(`Object ${objectId} is not shared or not found`);
-  return sv;
-}
-
 async function resolveCurve(client, curveId) {
   const obj = await client.getObject({ id: curveId, options: { showContent: true, showType: true, showOwner: true } });
   if (!obj.data) throw new Error(`Curve ${curveId} not found`);
-  // obj.data.type = "0xPKG::bonding_curve::Curve<0xCOIN::module::TOKEN>"
   const curveType = obj.data.type;
   const pkgId     = curveType?.split('::')[0];
   const tokenType = curveType?.match(/Curve<(.+)>$/)?.[1];
@@ -112,27 +105,42 @@ async function parseBody(req) {
 }
 
 // ── Handler: /buy ─────────────────────────────────────────────────────────────
-// Body: { curveId, suiAmount, minTokensOut?, referral?, privateKey?, rpcUrl? }
+// Body: { curveId, amountMist?, suiAmount?, minTokensOut?, referral?, privateKey?, rpcUrl? }
+//
+// FIELD RESOLUTION (accepts both for backwards compat):
+//   amountMist  — u64 MIST integer sent by the Rust tool (buy.rs)
+//   suiAmount   — float SUI sent by direct curl / manual calls
+// At least one must be present.
 async function handleBuy(body) {
-  const { curveId, suiAmount, minTokensOut, referral, privateKey, rpcUrl } = body;
-  if (!curveId)   throw new Error('curveId required');
-  if (!suiAmount) throw new Error('suiAmount required (in SUI, e.g. 0.5)');
+  const { curveId, amountMist, suiAmount, minTokensOut, referral, privateKey, rpcUrl } = body;
+  if (!curveId) throw new Error('curveId required');
 
-  const client  = makeClient(rpcUrl);
-  const keypair = loadKeypair(privateKey);
-  const address = keypair.toSuiAddress();
+  // Resolve spend amount to MIST bigint — accept either field
+  let suiMist;
+  if (amountMist != null) {
+    // Rust sends this as a u64 integer representing MIST
+    suiMist = BigInt(amountMist);
+  } else if (suiAmount != null) {
+    // Direct curl calls send float SUI
+    suiMist = BigInt(Math.floor(parseFloat(suiAmount) * Number(MIST_PER_SUI)));
+  } else {
+    throw new Error('amountMist (u64 MIST) or suiAmount (float SUI) required');
+  }
+
+  if (suiMist <= 0n) throw new Error('Spend amount must be > 0');
+
+  const client   = makeClient(rpcUrl);
+  const keypair  = loadKeypair(privateKey);
+  const address  = keypair.toSuiAddress();
 
   const { pkgId, tokenType, sharedVersion } = await resolveCurve(client, curveId);
 
-  const suiMist  = BigInt(Math.floor(parseFloat(suiAmount) * Number(MIST_PER_SUI)));
   const minOut   = BigInt(minTokensOut ?? 0);
   const isV5Plus = V5_PLUS.has(pkgId);
-  const isV7Plus = V7_PLUS.has(pkgId);
 
-  const tx      = new Transaction();
+  const tx       = new Transaction();
   const curveRef = tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: sharedVersion, mutable: true });
   const [payment] = tx.splitCoins(tx.gas, [tx.pure.u64(suiMist)]);
-
   const clockRef = tx.sharedObjectRef({ objectId: SUI_CLOCK_ID, initialSharedVersion: 1, mutable: false });
 
   const buyArgs = isV5Plus
@@ -147,7 +155,7 @@ async function handleBuy(body) {
     });
     tx.transferObjects([tokens, refund], address);
   } else {
-    // V4 buy returns (Coin<T>, Coin<SUI>) — transfer both results
+    // V4: buy returns a single result tuple — transfer directly
     const results = tx.moveCall({
       target: `${pkgId}::bonding_curve::buy`,
       typeArguments: [tokenType],
@@ -165,14 +173,13 @@ async function handleBuy(body) {
     throw new Error(`buy() failed: ${result.effects.status.error}`);
   }
 
-  // Parse token balance change
   const tokenChange = result.balanceChanges?.find(b =>
     b.owner?.AddressOwner === address && b.coinType !== '0x2::sui::SUI'
   );
 
   return {
-    txDigest:      result.digest,
-    suiSpent:      suiAmount,
+    txDigest:       result.digest,
+    suiSpent:       (Number(suiMist) / Number(MIST_PER_SUI)).toFixed(9),
     tokensReceived: tokenChange ? (Number(BigInt(tokenChange.amount)) / 1e6).toFixed(6) : 'unknown',
     tokenType,
   };
@@ -185,9 +192,9 @@ async function handleSell(body) {
   if (!curveId)     throw new Error('curveId required');
   if (!tokenAmount) throw new Error('tokenAmount required (in whole tokens, e.g. 1000)');
 
-  const client  = makeClient(rpcUrl);
-  const keypair = loadKeypair(privateKey);
-  const address = keypair.toSuiAddress();
+  const client   = makeClient(rpcUrl);
+  const keypair  = loadKeypair(privateKey);
+  const address  = keypair.toSuiAddress();
 
   const { pkgId, tokenType, sharedVersion } = await resolveCurve(client, curveId);
 
@@ -196,7 +203,6 @@ async function handleSell(body) {
   const isV5Plus  = V5_PLUS.has(pkgId);
   const isV7Plus  = V7_PLUS.has(pkgId);
 
-  // Collect + merge token coins
   const coins    = await client.getCoins({ owner: address, coinType: tokenType });
   if (!coins.data.length) throw new Error(`No ${tokenType} balance in agent wallet`);
 
@@ -244,14 +250,14 @@ async function handleSell(body) {
 }
 
 // ── Handler: /claim ───────────────────────────────────────────────────────────
-// Body: { curveId, tokenType?, privateKey?, rpcUrl? }
+// Body: { curveId, privateKey?, rpcUrl? }
 async function handleClaim(body) {
   const { curveId, privateKey, rpcUrl } = body;
   if (!curveId) throw new Error('curveId required');
 
-  const client  = makeClient(rpcUrl);
-  const keypair = loadKeypair(privateKey);
-  const address = keypair.toSuiAddress();
+  const client   = makeClient(rpcUrl);
+  const keypair  = loadKeypair(privateKey);
+  const address  = keypair.toSuiAddress();
 
   const { pkgId, tokenType, sharedVersion } = await resolveCurve(client, curveId);
 
@@ -271,7 +277,6 @@ async function handleClaim(body) {
   const tx       = new Transaction();
   const curveRef = tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: sharedVersion, mutable: true });
 
-  // claim_creator_fees is void — it transfers directly to payout recipients internally
   tx.moveCall({
     target: `${pkgId}::bonding_curve::claim_creator_fees`,
     typeArguments: [tokenType],
@@ -309,7 +314,6 @@ async function handleLaunch(body) {
 
   const scriptPath = path.resolve(__dirname, '../scripts/launch.js');
 
-  // Build CLI args for launch.js
   const dexMap = { 0: 'cetus', 1: 'deepbook', 2: 'turbos' };
   const dex    = dexMap[graduationTarget ?? 2] ?? 'turbos';
 
@@ -338,20 +342,17 @@ async function handleLaunch(body) {
 
   if (stderr && !stdout) throw new Error(stderr.trim());
 
-  // launch.js prints progress lines then a final summary — parse the last JSON line
   const lines  = stdout.trim().split('\n').filter(Boolean);
 
-  // Try to find a JSON line (launch.js may not emit one yet — parse from output)
   let result = null;
   for (let i = lines.length - 1; i >= 0; i--) {
     try { result = JSON.parse(lines[i]); break; } catch {}
   }
 
   if (!result) {
-    // launch.js doesn't emit JSON yet — extract key values from stdout
-    const digestMatch  = stdout.match(/digest[:\s]+([A-Za-z0-9]{40,})/i);
-    const curveMatch   = stdout.match(/curve[:\s]+(0x[a-f0-9]{60,})/i);
-    const typeMatch    = stdout.match(/token type[:\s]+(0x[^\s]+)/i);
+    const digestMatch = stdout.match(/digest[:\s]+([A-Za-z0-9]{40,})/i);
+    const curveMatch  = stdout.match(/curve[:\s]+(0x[a-f0-9]{60,})/i);
+    const typeMatch   = stdout.match(/token type[:\s]+(0x[^\s]+)/i);
     result = {
       txDigest:  digestMatch?.[1] ?? 'see logs',
       curveId:   curveMatch?.[1]  ?? 'see logs',
@@ -365,14 +366,11 @@ async function handleLaunch(body) {
 
 // ── Handler: /status ─────────────────────────────────────────────────────────
 // Body: { curveId, rpcUrl? }
-// Returns a snapshot of the curve state — reserve, price, graduation %, fees.
 async function handleStatus(body) {
   const { curveId, rpcUrl } = body;
   if (!curveId) throw new Error('curveId required');
 
   const client = makeClient(rpcUrl);
-
-  // Fetch curve object
   const obj = await client.getObject({ id: curveId, options: { showContent: true, showType: true } });
   if (!obj.data) throw new Error(`Curve ${curveId} not found`);
 
@@ -380,43 +378,33 @@ async function handleStatus(body) {
   const tokenType = obj.data.type?.match(/Curve<(.+)>$/)?.[1];
   const pkgId     = obj.data.type?.split('::')?.[0];
 
-  // Raw values
-  const suiReserveMist    = BigInt(fields.sui_reserve    ?? 0);
-  const tokenReserveAtomic = BigInt(fields.token_reserve ?? 0);
-  const creatorFeesMist   = BigInt(fields.creator_fees   ?? 0);
-  const protocolFeesMist  = BigInt(fields.protocol_fees  ?? 0);
-  const airdropFeesMist   = BigInt(fields.airdrop_fees   ?? 0);
-  const graduated         = fields.graduated === true || fields.graduated === 'true';
-  const paused            = fields.paused    === true || fields.paused    === 'true';
-  const gradTarget        = Number(fields.graduation_target ?? 0);
+  const suiReserveMist     = BigInt(fields.sui_reserve    ?? 0);
+  const tokenReserveAtomic = BigInt(fields.token_reserve  ?? 0);
+  const creatorFeesMist    = BigInt(fields.creator_fees   ?? 0);
+  const protocolFeesMist   = BigInt(fields.protocol_fees  ?? 0);
+  const airdropFeesMist    = BigInt(fields.airdrop_fees   ?? 0);
+  const graduated          = fields.graduated  ?? false;
+  const paused             = fields.paused     ?? false;
+  const gradTarget         = fields.graduation_target ?? 0;
 
-  // V8/V9 constants
-  const VIRTUAL_SUI_RESERVE   = 4_369_000_000_000n;  // V9 (3_500 for V8 and earlier)
-  const VIRTUAL_TOKEN_RESERVE = 1_073_000_000_000_000n;
-  const GRAD_THRESHOLD_MIST   = 12_305_000_000_000n;  // V9 (9_000 for V8 and earlier)
-  const CURVE_SUPPLY          = 800_000_000_000_000n;
-  const TOTAL_SUPPLY          = 1_000_000_000_000_000n;
+  const VS_MIST            = 3_500n * MIST_PER_SUI;
+  const VT_ATOMIC          = 1_000_000_000_000n; // 1M tokens * 1e6
+  const GRAD_THRESHOLD_MIST = 9_000n * MIST_PER_SUI;
 
-  // Effective reserves
-  const effectiveSui    = suiReserveMist + VIRTUAL_SUI_RESERVE;
-  const tokensSold      = CURVE_SUPPLY - tokenReserveAtomic;
-  const effectiveTokens = VIRTUAL_TOKEN_RESERVE - tokensSold;
-
-  // Current price in SUI per 1 human token
-  const priceInSui = effectiveTokens > 0n
-    ? Number(effectiveSui) / Number(effectiveTokens) * 1_000_000 / 1_000_000_000
+  const effectiveSui   = suiReserveMist + VS_MIST;
+  const effectiveTok   = tokenReserveAtomic + VT_ATOMIC;
+  const priceInSui     = effectiveTok > 0n
+    ? Number(effectiveSui) / Number(effectiveTok)
+    : 0;
+  const totalSupply    = 1_000_000_000n * 1_000_000n; // 1B * 1e6
+  const mcapSui        = priceInSui * Number(totalSupply);
+  const gradPct        = suiReserveMist > 0n
+    ? (Number(suiReserveMist) / Number(GRAD_THRESHOLD_MIST)) * 100
     : 0;
 
-  // Market cap
-  const mcapSui = priceInSui * 1_000_000_000; // price * total supply (1B tokens)
+  const dexNames = { 0: 'Cetus', 1: 'DeepBook', 2: 'Turbos' };
 
-  // Graduation progress
-  const gradPct = graduated ? 100 :
-    Math.min(100, Number(suiReserveMist) / Number(GRAD_THRESHOLD_MIST) * 100);
-
-  const dexNames = ['Cetus', 'DeepBook', 'Turbos'];
-
-  // Also try indexer for richer data (name, symbol, trade count)
+  // Enrich from indexer (best-effort)
   let name = fields.name ?? null;
   let symbol = null;
   let tradeCount = null;
@@ -424,8 +412,8 @@ async function handleStatus(body) {
     const r = await fetch(`${INDEXER_URL}/token/${curveId}`);
     if (r.ok) {
       const d = await r.json();
-      name      = d.name      ?? name;
-      symbol    = d.symbol    ?? null;
+      name       = d.name       ?? name;
+      symbol     = d.symbol     ?? null;
       tradeCount = d.tradeCount ?? d.trade_count ?? null;
     }
   } catch {}
@@ -439,11 +427,11 @@ async function handleStatus(body) {
     graduated,
     paused,
     graduationTarget:    dexNames[gradTarget] ?? 'Unknown',
-    suiReserveSui:       Number(suiReserveMist)    / 1e9,
+    suiReserveSui:       Number(suiReserveMist)     / 1e9,
     tokenRemainingHuman: Number(tokenReserveAtomic) / 1e6,
-    creatorFeesSui:      Number(creatorFeesMist)   / 1e9,
-    protocolFeesSui:     Number(protocolFeesMist)  / 1e9,
-    airdropFeesSui:      Number(airdropFeesMist)   / 1e9,
+    creatorFeesSui:      Number(creatorFeesMist)    / 1e9,
+    protocolFeesSui:     Number(protocolFeesMist)   / 1e9,
+    airdropFeesSui:      Number(airdropFeesMist)    / 1e9,
     priceInSui:          priceInSui.toFixed(10),
     mcapSui:             mcapSui.toFixed(2),
     gradThresholdSui:    Number(GRAD_THRESHOLD_MIST) / 1e9,
@@ -762,7 +750,40 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`[bridge] SuiPump bridge listening on port ${PORT}`);
   console.log(`[bridge] Indexer: ${INDEXER_URL}`);
-  console.log(`[bridge] Endpoints: /buy /sell /claim /launch /status /strategy /health`);
+  console.log(`[bridge] Endpoints: /buy /sell /claim /launch /status /health`);
 });
 
 export { handleBuy, handleSell, handleClaim, handleLaunch };
+# Dependencies
+node_modules/
+
+# Sui build artifacts
+contracts/build/
+coin-template/build/**
+!coin-template/build/coin_template/
+!coin-template/build/coin_template/bytecode_modules/
+!coin-template/build/coin_template/bytecode_modules/template.mv
+
+# Frontend build output
+frontend-app/dist/
+
+# Environment files (never commit these)
+.env
+*.env
+*.secret
+
+# Windows junk
+Thumbs.db
+Desktop.ini
+
+coin-template/template.hex
+frontend/"scripts/sim_wallets.json" 
+"indexer/.env" 
+
+# Nexus agent signing key (local only, never commit)
+tool_keypair.json
+suipump-nexus-tools/tool_keypair.json
+suipump-nexus-tools/nexus_toolkit_config.json
+
+# Force-include compiled template bytecode (needed by agent bridge on Render)
+!coin-template/build/coin_template/bytecode_modules/template.mv

@@ -4,9 +4,13 @@ import { useCurrentAccount, useCurrentClient, useDAppKit } from '@mysten/dapp-ki
 import { Transaction } from '@mysten/sui/transactions';
 import { Send, Reply, ChevronDown, ChevronUp } from 'lucide-react';
 import {
-  ALL_PACKAGE_IDS, PACKAGE_ID_V7, COMMENT_FEE_MIST, isV7OrLater,
+  ALL_PACKAGE_IDS,
+  PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6,
+  PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8,
+  COMMENT_FEE_MIST, isV7OrLater,
 } from './constants.js';
-import { paginateEvents } from './paginateEvents.js';
+
+const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
 
 function walletColor(addr) {
   if (!addr) return '#84cc16';
@@ -249,26 +253,57 @@ export default function Comments({ curveId, packageId }) {
 
     async function load() {
       try {
-        // Contract emits `Comment` (not `CommentPosted`). Query all versions.
-        const allEvents = [];
-        for (const pkg of ALL_PACKAGE_IDS) {
-          const eventType = `${pkg}::bonding_curve::Comment`;
-          const events = await paginateEvents(
-            client, { MoveEventType: eventType }, { order: 'ascending' }
-          ).catch(() => []);
-          allEvents.push(...events);
+        let comments = [];
+
+        // ── Indexer path (fast, filtered by curveId) ────────────────────────
+        if (INDEXER_URL) {
+          try {
+            const res = await fetch(
+              `${INDEXER_URL}/token/${curveId}/comments`,
+              { signal: AbortSignal.timeout(5000) }
+            );
+            if (res.ok) {
+              const rows = await res.json();
+              comments = rows.map(r => ({
+                id:        r.tx_digest + '_' + (r.event_seq ?? 0),
+                author:    r.data?.author  ?? r.author,
+                text:      r.data?.text    ?? r.text,
+                timestamp: r.timestamp_ms  ?? r.timestampMs ?? null,
+              })).sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+            }
+          } catch {}
         }
-        const filtered = allEvents
-          .filter(e => e.parsedJson?.curve_id === curveId)
-          .map(e => ({
-            id: e.id?.txDigest + '_' + e.id?.eventSeq,
-            author: e.parsedJson?.author,
-            text: e.parsedJson?.text,
-            timestamp: e.timestampMs ? Number(e.timestampMs) : null,
-          }))
-          .sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+
+        // ── RPC fallback — query Comment events filtered by curveId ─────────
+        if (comments.length === 0) {
+          const allEvents = [];
+          for (const pkg of ALL_PACKAGE_IDS) {
+            const eventType = `${pkg}::bonding_curve::Comment`;
+            // Use queryEvents directly with a limit — don't paginate all events globally
+            try {
+              const res = await client.queryEvents({
+                query: { MoveEventType: eventType },
+                limit: 50,
+                order: 'descending',
+              });
+              const filtered = (res.data ?? []).filter(
+                e => e.parsedJson?.curve_id === curveId
+              );
+              allEvents.push(...filtered);
+            } catch {}
+          }
+          comments = allEvents
+            .map(e => ({
+              id:        e.id?.txDigest + '_' + e.id?.eventSeq,
+              author:    e.parsedJson?.author,
+              text:      e.parsedJson?.text,
+              timestamp: e.timestampMs ? Number(e.timestampMs) : null,
+            }))
+            .sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+        }
+
         if (!cancelled) {
-          setComments(filtered);
+          setComments(comments);
           setLoading(false);
         }
       } catch {
@@ -301,19 +336,37 @@ export default function Comments({ curveId, packageId }) {
 
     try {
       const tx = new Transaction();
-      const pkg = packageId || PACKAGE_ID_V7;
+
+      // ALWAYS resolve package from curve object type — the prop may be stale
+      // or incorrect if TokenPage hasn't finished loading yet.
+      let pkg;
+      try {
+        const obj = await client.getObject({ id: curveId, options: { showType: true, showOwner: true } });
+        const typeStr = obj.data?.type ?? '';
+        const m = typeStr.match(/^(0x[0-9a-fA-F]+)::bonding_curve::Curve/);
+        pkg = m ? m[1] : null;
+      } catch {}
+      // Fall back to prop, then to V8 as last resort
+      if (!pkg) pkg = packageId;
+      if (!pkg) pkg = PACKAGE_ID_V8;
 
       if (isV7OrLater(pkg)) {
-        // V7: post_comment(&mut Curve, payment: Coin<SUI>, text)
-        // Curve is a shared object — must use sharedObjectRef, not tx.object.
-        const objForRef = await client.getObject({ objectId: curveId });
-        const initialSharedVersion = objForRef.object?.owner?.Shared?.initialSharedVersion;
+        // V7/V8: post_comment<T>(&mut Curve<T>, payment: Coin<SUI>, text: String)
+        // Requires typeArguments with the token type T.
+        const objForRef = await client.getObject({ id: curveId, options: { showOwner: true, showType: true } });
+        const initialSharedVersion = objForRef.data?.owner?.Shared?.initial_shared_version;
         const curveRef = initialSharedVersion
           ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion, mutable: true })
           : tx.object(curveId);
+        // Extract token type T from curve type string "0xPKG::bonding_curve::Curve<TOKEN_TYPE>"
+        const typeStr = objForRef.data?.type ?? '';
+        const tokenTypeMatch = typeStr.match(/Curve<(.+)>$/);
+        const tokenType = tokenTypeMatch ? tokenTypeMatch[1] : null;
+        if (!tokenType) throw new Error('Could not determine token type for comment');
         const [feeCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(COMMENT_FEE_MIST)]);
         tx.moveCall({
           target: `${pkg}::bonding_curve::post_comment`,
+          typeArguments: [tokenType],
           arguments: [curveRef, feeCoin, tx.pure.string(trimmed)],
         });
       } else {

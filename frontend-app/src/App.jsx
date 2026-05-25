@@ -21,6 +21,8 @@ import { mistToSui, priceMistPerToken } from './curve.js';
 import { paginateEvents, paginateMultipleEvents } from './paginateEvents.js';
 import LiveFeedSidebar from './LiveFeedSidebar.jsx';
 import { useWatchlist } from './useWatchlist.js';
+import StrategiesModal from './StrategiesModal.jsx';
+import { useTradeKey } from './useTradeKey.js';
 
 const MIST_PER_SUI = 1e9;
 const TOTAL_SUPPLY_WHOLE = 1_000_000_000;
@@ -90,6 +92,46 @@ function NetworkBanner() {
       >
         <X size={13} />
       </button>
+    </div>
+  );
+}
+
+// ── Strategies locked banner ──────────────────────────────────────────────────
+// Shows when the user has a saved trading key but it's not yet unlocked
+// this session. Reminds them strategies won't execute until they unlock.
+
+function StrategiesLockedBanner({ tradeKey, onOpenStrategies }) {
+  const account    = useCurrentAccount();
+  const [dismissed, setDismissed] = useState(
+    () => { try { return sessionStorage.getItem('suipump_key_banner') === '1'; } catch { return false; } }
+  );
+
+  // Only show if: wallet connected, has saved key, key is NOT ready (locked)
+  if (!account || !tradeKey.hasKey || tradeKey.isReady || dismissed) return null;
+
+  return (
+    <div className="w-full bg-yellow-950/40 border-b border-yellow-500/20 px-4 py-2 flex items-center justify-between gap-3 sticky top-[57px] z-30">
+      <div className="flex items-center gap-2.5 min-w-0">
+        <Zap size={11} className="text-yellow-400/70 shrink-0" />
+        <p className="text-[10px] font-mono text-yellow-300/60 leading-snug">
+          Autonomous trading strategies are <span className="font-bold text-yellow-200/80">paused</span>. Unlock in <span className="font-bold text-yellow-200/80">strategies modal</span>.
+        </p>
+      </div>
+      <div className="flex items-center gap-2 shrink-0">
+        <button
+          onClick={() => { onOpenStrategies(); }}
+          className="text-[9px] font-mono font-bold text-yellow-400 hover:text-yellow-300 transition-colors px-2 py-1 rounded-lg border border-yellow-400/30 hover:border-yellow-400/60"
+        >
+          UNLOCK
+        </button>
+        <button
+          onClick={() => { try { sessionStorage.setItem('suipump_key_banner', '1'); } catch {} setDismissed(true); }}
+          className="text-yellow-400/40 hover:text-yellow-300 transition-colors"
+          aria-label="Dismiss"
+        >
+          <X size={12} />
+        </button>
+      </div>
     </div>
   );
 }
@@ -417,8 +459,8 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch
       {/* Row 4  -  stats strip */}
       <div className="flex items-center justify-between text-[9px] font-mono">
         <div className="flex items-center gap-2 text-white/30">
-          {stats?.volume24h > 0 && (
-            <span className="text-lime-400/60">{fmt(stats.volume24h, 1)} SUI 24h</span>
+          {(stats?.volume ?? 0) > 0 && (
+            <span className="text-lime-400/60">{fmt(stats.volume, 1)} SUI vol</span>
           )}
           {stats?.trades > 0 && (
             <span>{stats.trades} trades</span>
@@ -793,7 +835,7 @@ function FlagImg({ code }) {
   );
 }
 
-function Header({ onLaunch, lang, setLang, onToggleFeed, showFeed }) {
+function Header({ onLaunch, lang, setLang, onToggleFeed, showFeed, onStrategies }) {
   const account = useCurrentAccount();
   const { poolSui, tradeCount } = useStats();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -875,7 +917,7 @@ function Header({ onLaunch, lang, setLang, onToggleFeed, showFeed }) {
               className="p-1.5 rounded-lg text-white/30 hover:text-white transition-colors" title="X / Twitter">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
             </a>
-            <a href="https://discord.gg/TwpXG7q4Ee" target="_blank" rel="noreferrer"
+            <a href="https://discord.gg/UZ4wzDcEPN" target="_blank" rel="noreferrer"
               className="p-1.5 rounded-lg text-white/30 hover:text-white transition-colors" title="Discord">
               <MessageCircle size={13} />
             </a>
@@ -901,6 +943,15 @@ function Header({ onLaunch, lang, setLang, onToggleFeed, showFeed }) {
               <Plus size={12} /> {t(lang, 'launchToken')}
             </button>
           )}
+          {account && (
+            <button
+              onClick={onStrategies}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-lime-400/30 text-lime-400 text-[10px] font-mono font-bold hover:bg-lime-400/10 transition-all"
+              title="Trading Strategies"
+            >
+              <Zap size={11} /> STRATEGIES
+            </button>
+          )}
           <WalletButton size="md" lang={lang} />
         </div>
 
@@ -909,6 +960,11 @@ function Header({ onLaunch, lang, setLang, onToggleFeed, showFeed }) {
           {account && (
             <button onClick={onLaunch} className="flex items-center gap-1 px-3 py-1.5 bg-lime-400 text-black text-[10px] font-mono font-bold rounded-xl hover:bg-lime-300 transition-colors">
               <Plus size={11} /> {t(lang, 'launch')}
+            </button>
+          )}
+          {account && (
+            <button onClick={onStrategies} className="p-1.5 rounded-lg border border-lime-400/30 text-lime-400 hover:bg-lime-400/10 transition-colors" title="Strategies">
+              <Zap size={14} />
             </button>
           )}
           <WalletButton size="sm" lang={lang} />
@@ -964,7 +1020,7 @@ function Header({ onLaunch, lang, setLang, onToggleFeed, showFeed }) {
             <a href="https://x.com/SuiPump_SUMP" target="_blank" rel="noreferrer" className="flex items-center gap-2 text-sm font-mono text-white/40 hover:text-white transition-colors">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg> X
             </a>
-            <a href="https://discord.gg/TwpXG7q4Ee" target="_blank" rel="noreferrer" className="flex items-center gap-2 text-sm font-mono text-white/40 hover:text-white transition-colors">
+            <a href="https://discord.gg/UZ4wzDcEPN" target="_blank" rel="noreferrer" className="flex items-center gap-2 text-sm font-mono text-white/40 hover:text-white transition-colors">
               <MessageCircle size={14} /> Discord
             </a>
             <a href="https://t.me/SuiPump_SUMP" target="_blank" rel="noreferrer" className="flex items-center gap-2 text-sm font-mono text-white/40 hover:text-white transition-colors">
@@ -1180,14 +1236,13 @@ function HomePage({ onLaunch, lang = 'en' }) {
 
   const SORT_OPTIONS = [
     { id: 'newest',     label: t(lang, 'newest') },
-    { id: 'oldest',     label: t(lang, 'oldest') },
     { id: 'trending',   label: t(lang, 'trending') },
     { id: 'last_trade', label: t(lang, 'lastTrade') },
-    { id: 'market_cap', label: t(lang, 'marketCap') },
     { id: 'volume',     label: t(lang, 'volumeSort') },
+    { id: 'market_cap', label: t(lang, 'marketCap') },
     { id: 'trades',     label: t(lang, 'tradesSort') },
-    { id: 'reserve',    label: t(lang, 'reserve') },
     { id: 'progress',   label: t(lang, 'progress') },
+    { id: 'oldest',     label: t(lang, 'oldest') },
     { id: 'watchlist',  label: '⭐ WATCHLIST' },
   ];
 
@@ -1219,17 +1274,31 @@ function HomePage({ onLaunch, lang = 'en' }) {
   const sorted = [...filtered].sort((a, b) => {
     const sa = tokenStats[a.curveId];
     const sb = tokenStats[b.curveId];
+    // Helper: compute mcap for a token from curveStates
+    const mcap = (curveId, pkgId) => {
+      const cs = curveStates[curveId];
+      if (!cs) return 0;
+      const shape = curveShapeFor(pkgId);
+      const totalPoolSui = cs.reserveSui + shape.virtualSui;
+      const priceSui = totalPoolSui / TOTAL_SUPPLY_WHOLE;
+      return priceSui * TOTAL_SUPPLY_WHOLE; // = totalPoolSui
+    };
     switch (sort) {
       case 'newest':     return (b.timestamp || 0) - (a.timestamp || 0);
       case 'oldest':     return (a.timestamp || 0) - (b.timestamp || 0);
-      case 'trending':   return (sb?.recentTrades || 0) - (sa?.recentTrades || 0);
+      case 'trending':   return (sb?.trades || sb?.recentTrades || 0) - (sa?.trades || sa?.recentTrades || 0);
       case 'last_trade': return (curveStates[b.curveId]?.lastTradeTime || 0) - (curveStates[a.curveId]?.lastTradeTime || 0);
-      case 'market_cap': return (curveStates[b.curveId]?.reserveSui || 0) - (curveStates[a.curveId]?.reserveSui || 0);
+      case 'market_cap': return mcap(b.curveId, b.packageId) - mcap(a.curveId, a.packageId);
       case 'volume':     return (sb?.volume || 0) - (sa?.volume || 0);
       case 'trades':     return (sb?.trades || 0) - (sa?.trades || 0);
       case 'reserve':    return (curveStates[b.curveId]?.reserveSui || 0) - (curveStates[a.curveId]?.reserveSui || 0);
       case 'progress':   return (curveStates[b.curveId]?.progress || 0) - (curveStates[a.curveId]?.progress || 0);
-      case 'watchlist':  return (isWatched(b.curveId) ? 1 : 0) - (isWatched(a.curveId) ? 1 : 0);
+      case 'watchlist':  {
+        const wa = isWatched(a.curveId) ? 1 : 0;
+        const wb = isWatched(b.curveId) ? 1 : 0;
+        if (wb !== wa) return wb - wa;
+        return (b.timestamp || 0) - (a.timestamp || 0); // secondary: newest first
+      }
       default: return 0;
     }
   });
@@ -1344,7 +1413,7 @@ function HomePage({ onLaunch, lang = 'en' }) {
 
 // ── Token page wrapper ────────────────────────────────────────────────────────
 
-function TokenPageWrapper({ lang }) {
+function TokenPageWrapper({ lang, tradeKey }) {
   const { curveId } = useParams();
   const navigate = useNavigate();
   const client = useCurrentClient();
@@ -1386,7 +1455,7 @@ function TokenPageWrapper({ lang }) {
       <div className="h-3 bg-white/5 rounded w-32" />
     </div>
   );
-  return <TokenPage curveId={curveId} tokenType={tokenType} packageId={packageId} onBack={() => navigate('/')} lang={lang} />;
+  return <TokenPage curveId={curveId} tokenType={tokenType} packageId={packageId} onBack={() => navigate('/')} lang={lang} tradeKeypair={tradeKey?.keypair ?? null} tradeKeyReady={tradeKey?.isReady ?? false} />;
 }
 
 // ── App root ──────────────────────────────────────────────────────────────────
@@ -1414,7 +1483,8 @@ function NotFoundPage({ onBack }) {
 
 export default function App() {
   const navigate = useNavigate();
-  const [showLaunch, setShowLaunch] = useState(false);
+  const [showLaunch, setShowLaunch]         = useState(false);
+  const [showStrategies, setShowStrategies] = useState(false);
   const [lang, setLang] = useState(() => localStorage.getItem('suipump_lang') || 'en');
 
   const handleLang = (code) => {
@@ -1425,6 +1495,7 @@ export default function App() {
   const handleLaunched = ({ curveId }) => { setShowLaunch(false); navigate(`/token/${curveId}`); };
   const [showFeed, setShowFeed] = useState(false);
   const { tokens: allTokens } = useTokenList();
+  const tradeKey = useTradeKey();
 
   return (
     <div className="min-h-screen bg-[#080808] text-white" style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}>
@@ -1434,12 +1505,13 @@ export default function App() {
         backgroundSize: '60px 60px',
       }} />
       <ScrollToTop />
-      <Header onLaunch={() => setShowLaunch(true)} lang={lang} setLang={handleLang} onToggleFeed={() => setShowFeed(o => !o)} showFeed={showFeed} />
+      <Header onLaunch={() => setShowLaunch(true)} lang={lang} setLang={handleLang} onToggleFeed={() => setShowFeed(o => !o)} showFeed={showFeed} onStrategies={() => setShowStrategies(true)} />
       <NetworkBanner />
+      <StrategiesLockedBanner tradeKey={tradeKey} onOpenStrategies={() => setShowStrategies(true)} />
       <main className="max-w-6xl mx-auto px-4 py-6">
         <Routes>
           <Route path="/" element={<HomePage onLaunch={() => setShowLaunch(true)} lang={lang} />} />
-          <Route path="/token/:curveId" element={<TokenPageWrapper lang={lang} />} />
+          <Route path="/token/:curveId" element={<TokenPageWrapper lang={lang} tradeKey={tradeKey} />} />
           <Route path="/airdrop" element={<AirdropPage onBack={() => navigate('/')} lang={lang} />} />
           <Route path="/stats" element={<StatsPage onBack={() => navigate('/')} lang={lang} />} />
           <Route path="/whitepaper" element={<WhitepaperPage onBack={() => navigate('/')} lang={lang} />} />
@@ -1454,7 +1526,7 @@ export default function App() {
           <a href="https://x.com/SuiPump_SUMP" target="_blank" rel="noreferrer" className="text-white/25 hover:text-white/60 transition-colors">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
           </a>
-          <a href="https://discord.gg/TwpXG7q4Ee" target="_blank" rel="noreferrer" className="text-white/25 hover:text-white/60 transition-colors">
+          <a href="https://discord.gg/UZ4wzDcEPN" target="_blank" rel="noreferrer" className="text-white/25 hover:text-white/60 transition-colors">
             <MessageCircle size={12} />
           </a>
           <a href="https://t.me/SuiPump_SUMP" target="_blank" rel="noreferrer" className="text-white/25 hover:text-white/60 transition-colors">
@@ -1474,6 +1546,9 @@ export default function App() {
           onLaunched={handleLaunched}
           lang={lang}
         />
+      )}
+      {showStrategies && (
+        <StrategiesModal onClose={() => setShowStrategies(false)} tradeKey={tradeKey} />
       )}
       {showFeed && (
         <LiveFeedSidebar tokens={allTokens} onClose={() => setShowFeed(false)} />

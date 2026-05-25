@@ -2,39 +2,25 @@
 // Polls the DB every 30s for curves that have crossed the graduation threshold
 // and fires the appropriate graduation script automatically.
 //
-// This runs as part of the indexer process — imported and called from index.js.
-// It uses the admin keypair to sign graduation transactions.
-//
-// Graduation targets:
-//   0 = Cetus    (mainnet only — skipped on testnet)
-//   1 = DeepBook (uses graduate_deepbook_full logic)
-//   2 = Turbos   (uses graduate_turbos_full logic)
-//
-// MIGRATION NOTE (gRPC):
-//   SuiClient (JSON-RPC) → SuiGrpcClient (gRPC)
-//   getObject → core.getObject
-//   getCoinMetadata → core.getCoinMetadata (via GraphQL fallback)
-//   signAndExecuteTransaction → core.signAndExecuteTransaction
+// IMPORTANT: grpcClient is passed in from index.js which uses GrpcTransport
+// (Node.js native @grpc/grpc-js). Do NOT create a new SuiGrpcClient here
+// with GrpcWebFetchTransport (browser-only fetch) — that causes "fetch failed".
 
 import { Transaction } from '@mysten/sui/transactions';
-import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { fromBase64 } from '@mysten/sui/utils';
+import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { pool } from './db.js';
 
+const NETWORK     = process.env.NETWORK         ?? 'testnet';
+const GRAPHQL_URL = process.env.SUI_GRAPHQL_URL ?? 'https://graphql.' + NETWORK + '.sui.io/graphql';
+const graphqlClient = new SuiGraphQLClient({ url: GRAPHQL_URL });
+
 // ── Config ────────────────────────────────────────────────────────────────────
-const NETWORK  = process.env.NETWORK   ?? 'testnet';
-const GRPC_URL = process.env.SUI_GRPC_URL ?? `https://fullnode.${NETWORK}.sui.io:443`;
 
-const client = new SuiGrpcClient({
-  network: NETWORK,
-  baseUrl:  GRPC_URL,
-});
-
-// All SuiPump package IDs — dispatcher uses the curve's own package
 const PACKAGES = {
   V4:   '0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8',
   V5:   '0x785c0604cb6c60a8547501e307d2b0ca7a586ff912c8abff4edfb88db65b7236',
@@ -59,6 +45,7 @@ const POLL_INTERVAL_MS    = 30_000;
 const inProgress = new Set();
 
 // ── Keypair ───────────────────────────────────────────────────────────────────
+
 function loadKeypair() {
   if (process.env.SUI_PRIVATE_KEY) {
     const raw  = fromBase64(process.env.SUI_PRIVATE_KEY);
@@ -72,42 +59,34 @@ function loadKeypair() {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-async function getSharedVersion(objectId) {
+
+async function getSharedVersion(client, objectId) {
   const { object } = await client.core.getObject({ objectId, include: { owner: true } });
   return object?.owner?.$kind === 'Shared'
     ? object.owner.Shared.initialSharedVersion
     : undefined;
 }
 
-function resolvePackageId(tokenType) {
-  for (const [, pkgId] of Object.entries(PACKAGES)) {
-    if (tokenType.startsWith(pkgId)) return pkgId;
-  }
-  return PACKAGES.V8;
-}
-
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // ── Step 1: graduate() ────────────────────────────────────────────────────────
-async function callGraduate(curveId, tokenType, pkgId, keypair) {
+
+async function callGraduate(client, curveId, tokenType, pkgId, keypair) {
   console.log(`  [auto-grad] graduate() → ${curveId.slice(0, 12)}…`);
 
-  const sv = await getSharedVersion(curveId);
+  const sv = await getSharedVersion(client, curveId);
   const tx = new Transaction();
 
-  // V8/V8_1: graduate() takes &mut CoinMetadata<T> as shared ref
-  // V7: graduate() takes CoinMetadata<T> by value
-  // V4-V6: graduate() takes no metadata
   if (pkgId === PACKAGES.V8 || pkgId === PACKAGES.V8_1) {
     const meta   = await client.core.getCoinMetadata({ coinType: tokenType });
     const metaId = meta?.id;
     if (!metaId) throw new Error(`CoinMetadata not found for ${tokenType}`);
-    const metaSv = await getSharedVersion(metaId);
+    const metaSv = await getSharedVersion(client, metaId);
     tx.moveCall({
       target: `${pkgId}::bonding_curve::graduate`,
       typeArguments: [tokenType],
       arguments: [
-        tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: sv,    mutable: true }),
+        tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: sv,     mutable: true }),
         tx.sharedObjectRef({ objectId: metaId,  initialSharedVersion: metaSv, mutable: true }),
       ],
     });
@@ -144,10 +123,11 @@ async function callGraduate(curveId, tokenType, pkgId, keypair) {
 }
 
 // ── Step 2: claim_graduation_funds() ─────────────────────────────────────────
-async function claimGraduationFunds(curveId, tokenType, pkgId, adminCapId, keypair) {
+
+async function claimGraduationFunds(client, curveId, tokenType, pkgId, adminCapId, keypair) {
   console.log(`  [auto-grad] claim_graduation_funds()…`);
 
-  const sv = await getSharedVersion(curveId);
+  const sv = await getSharedVersion(client, curveId);
   const tx = new Transaction();
 
   const [suiCoin] = tx.moveCall({
@@ -161,7 +141,7 @@ async function claimGraduationFunds(curveId, tokenType, pkgId, adminCapId, keypa
   tx.transferObjects([suiCoin], keypair.toSuiAddress());
 
   const res = await client.core.signAndExecuteTransaction({
-    signer: keypair, transaction: tx, include: { effects: true, objectChanges: true },
+    signer: keypair, transaction: tx, include: { effects: true },
   });
   if (res.effects?.status !== 'Success') {
     throw new Error(`claim_graduation_funds() failed: ${JSON.stringify(res.effects?.status)}`);
@@ -172,15 +152,14 @@ async function claimGraduationFunds(curveId, tokenType, pkgId, adminCapId, keypa
 }
 
 // ── Step 3: DEX pool creation ─────────────────────────────────────────────────
-async function createDexPool(curveId, tokenType, pkgId, graduationTarget, keypair) {
+
+async function createDexPool(client, curveId, tokenType, pkgId, graduationTarget, keypair) {
   const target = Number(graduationTarget ?? 0);
 
   if (target === 0) {
     console.log(`  [auto-grad] Cetus graduation — mainnet only, skipping DEX pool creation`);
-    console.log(`  [auto-grad] ⚠ Notify admin to create Cetus pool manually for ${curveId}`);
     return null;
   }
-
   if (target === 2) {
     console.log(`  [auto-grad] Creating Turbos pool…`);
     try {
@@ -188,11 +167,9 @@ async function createDexPool(curveId, tokenType, pkgId, graduationTarget, keypai
       return await graduateToTurbos({ curveId, tokenType, pkgId, keypair, client });
     } catch (err) {
       console.error(`  [auto-grad] Turbos pool creation failed:`, err.message);
-      console.error(`  [auto-grad] ⚠ Admin must create Turbos pool manually for ${curveId}`);
       return null;
     }
   }
-
   if (target === 1) {
     console.log(`  [auto-grad] Creating DeepBook pool…`);
     try {
@@ -200,14 +177,14 @@ async function createDexPool(curveId, tokenType, pkgId, graduationTarget, keypai
       return await graduateToDeepBook({ curveId, tokenType, pkgId, keypair, client });
     } catch (err) {
       console.error(`  [auto-grad] DeepBook pool creation failed:`, err.message);
-      console.error(`  [auto-grad] ⚠ Admin must create DeepBook pool manually for ${curveId}`);
       return null;
     }
   }
 }
 
 // ── Main graduation flow ──────────────────────────────────────────────────────
-async function graduateCurve(curveId, curveData) {
+
+async function graduateCurve(client, curveId, curveData) {
   if (inProgress.has(curveId)) return;
   inProgress.add(curveId);
 
@@ -231,15 +208,11 @@ async function graduateCurve(curveId, curveData) {
   console.log(`\n  [auto-grad] 🎓 Graduating ${curveData.name ?? curveId} (target: ${['Cetus','DeepBook','Turbos'][gradTarget]})`);
 
   try {
-    await callGraduate(curveId, tokenType, pkgId, keypair);
-    await claimGraduationFunds(curveId, tokenType, pkgId, adminCapId, keypair);
-    await createDexPool(curveId, tokenType, pkgId, gradTarget, keypair);
-
-    await pool.query(
-      `UPDATE curves SET graduated = true WHERE curve_id = $1`,
-      [curveId]
-    );
-    console.log(`  [auto-grad] ✅ ${curveData.name ?? curveId} fully graduated`);
+    await callGraduate(client, curveId, tokenType, pkgId, keypair);
+    await claimGraduationFunds(client, curveId, tokenType, pkgId, adminCapId, keypair);
+    await createDexPool(client, curveId, tokenType, pkgId, gradTarget, keypair);
+    await pool.query(`UPDATE curves SET graduated = true WHERE curve_id = $1`, [curveId]);
+    console.log(`  [auto-grad] ✓ ${curveData.name ?? curveId} fully graduated`);
   } catch (err) {
     console.error(`  [auto-grad] ✗ Graduation failed for ${curveId}:`, err.message);
   } finally {
@@ -248,7 +221,9 @@ async function graduateCurve(curveId, curveData) {
 }
 
 // ── Watcher loop ──────────────────────────────────────────────────────────────
-export async function startGraduationWatcher() {
+// grpcClient is passed in from index.js (uses GrpcTransport, not GrpcWebFetchTransport)
+
+export async function startGraduationWatcher(grpcClient) {
   console.log('  [auto-grad] Graduation watcher started — polling every 30s');
 
   await pool.query(`ALTER TABLE curves ADD COLUMN IF NOT EXISTS graduated BOOLEAN DEFAULT false`);
@@ -266,12 +241,8 @@ export async function startGraduationWatcher() {
         if (inProgress.has(row.curve_id)) continue;
 
         try {
-          const { object } = await client.core.getObject({
-            objectId: row.curve_id,
-            include: { content: true },
-          });
-
-          const fields = object?.asMoveObject?.contents?.fields;
+          const obj = await graphqlClient.getObject({ objectId: row.curve_id });
+          const fields = obj?.object?.asMoveObject?.contents?.fields;
           if (!fields) continue;
 
           if (fields.graduated === true) {
@@ -281,7 +252,7 @@ export async function startGraduationWatcher() {
 
           const suiReserve = BigInt(fields.sui_reserve ?? 0);
           if (suiReserve >= GRAD_THRESHOLD_MIST) {
-            graduateCurve(row.curve_id, {
+            graduateCurve(grpcClient, row.curve_id, {
               ...row,
               token_type:        row.token_type        || fields.token_type,
               graduation_target: row.graduation_target ?? fields.graduation_target ?? 0,
