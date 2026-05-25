@@ -291,16 +291,22 @@ export default function Comments({ curveId, packageId }) {
       if (!pkg) pkg = PACKAGE_ID_V8;
 
       if (isV7OrLater(pkg)) {
-        // V7: post_comment(&mut Curve, payment: Coin<SUI>, text)
-        // Curve is a shared object — must use sharedObjectRef, not tx.object.
-        const objForRef = await client.getObject({ id: curveId, options: { showOwner: true } });
+        // V7/V8: post_comment<T>(&mut Curve<T>, payment: Coin<SUI>, text: String)
+        // Requires typeArguments with the token type T.
+        const objForRef = await client.getObject({ id: curveId, options: { showOwner: true, showType: true } });
         const initialSharedVersion = objForRef.data?.owner?.Shared?.initial_shared_version;
         const curveRef = initialSharedVersion
           ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion, mutable: true })
           : tx.object(curveId);
+        // Extract token type T from curve type string "0xPKG::bonding_curve::Curve<TOKEN_TYPE>"
+        const typeStr = objForRef.data?.type ?? '';
+        const tokenTypeMatch = typeStr.match(/Curve<(.+)>$/);
+        const tokenType = tokenTypeMatch ? tokenTypeMatch[1] : null;
+        if (!tokenType) throw new Error('Could not determine token type for comment');
         const [feeCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(COMMENT_FEE_MIST)]);
         tx.moveCall({
           target: `${pkg}::bonding_curve::post_comment`,
+          typeArguments: [tokenType],
           arguments: [curveRef, feeCoin, tx.pure.string(trimmed)],
         });
       } else {
