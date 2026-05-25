@@ -25,7 +25,7 @@
 // }]
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { SuiClient, getFullnodeUrl } from '@mysten/sui/client';
+import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { Transaction } from '@mysten/sui/transactions';
 import { saveTPSL, makeLevel } from './useTPSL.js';
 import {
@@ -94,7 +94,7 @@ export function useDCA({ walletAddress, keypair }) {
     let logEntry = { ts: Date.now(), suiSpent: suiPerTranche, success: false };
 
     try {
-      const client = new SuiClient({ url: getFullnodeUrl('testnet') });
+      const client = new SuiGraphQLClient({ url: 'https://graphql.testnet.sui.io/graphql' });
 
       const objForRef = await client.getObject({
         id: order.curveId,
@@ -133,14 +133,13 @@ export function useDCA({ walletAddress, keypair }) {
 
       const builtTx           = await tx.build({ client });
       const { signature }     = await kp.signTransaction(builtTx);
-      const result            = await client.executeTransactionBlock({
-        transactionBlock: builtTx,
+      const result            = await client.executeTransaction({
+        transaction: builtTx,
         signature,
-        options: { showEffects: true },
       });
 
-      const success = result.effects?.status?.status === 'success';
-      logEntry = { ...logEntry, success, digest: result.digest };
+      const success = result?.errors == null;
+      logEntry = { ...logEntry, success, digest: result?.data?.executeTransaction?.digest };
 
       // Auto TP/SL on first tranche only (entry price set once)
       if (success && order.autoTPSL && order.executed === 0) {
