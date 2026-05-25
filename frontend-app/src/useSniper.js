@@ -24,7 +24,7 @@
 // }
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { SuiClient, getFullnodeUrl } from '@mysten/sui/client';
+import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { Transaction } from '@mysten/sui/transactions';
 import { saveTPSL, makeLevel } from './useTPSL.js';
 import {
@@ -159,8 +159,8 @@ export function useSniper({ walletAddress, keypair }) {
     const suiInMist = BigInt(Math.floor(cfg.maxSuiPerSnipe * 1e9));
 
     try {
-      // Create a fresh SuiClient for signing (keypair path)
-      const client = new SuiClient({ url: getFullnodeUrl('testnet') });
+      // Create a fresh SuiGraphQLClient for signing (keypair path)
+      const client = new SuiGraphQLClient({ url: 'https://graphql.testnet.sui.io/graphql' });
 
       // Get curve shared object ref
       const objForRef = await client.getObject({ id: curveId, options: { showOwner: true, showContent: true } });
@@ -200,14 +200,13 @@ export function useSniper({ walletAddress, keypair }) {
       // Build + sign + execute
       const builtTx = await tx.build({ client });
       const { signature } = await kp.signTransaction(builtTx);
-      const result = await client.executeTransactionBlock({
-        transactionBlock: builtTx,
+      const result = await client.executeTransaction({
+        transaction: builtTx,
         signature,
-        options: { showEffects: true },
       });
 
-      const digest  = result.digest;
-      const success = result.effects?.status?.status === 'success';
+      const digest  = result?.data?.executeTransaction?.digest;
+      const success = result?.errors == null;
 
       // Compute entry price
       const entryPriceSui = (Number(reserveMist) / 1e9 + curveShapeFor(pkgId).virtualSui) / 1_000_000_000;
@@ -324,7 +323,7 @@ export function useSniper({ walletAddress, keypair }) {
     const kp = keypairRef.current;
     if (!kp || !walletAddress) return;
     try {
-      const client    = new SuiClient({ url: getFullnodeUrl('testnet') });
+      const client    = new SuiGraphQLClient({ url: 'https://graphql.testnet.sui.io/graphql' });
       const myAddress = kp.getPublicKey().toSuiAddress();
       const coins     = await client.getCoins({ owner: myAddress, coinType: tokenType });
       if (!coins.data.length) return;
@@ -352,7 +351,7 @@ export function useSniper({ walletAddress, keypair }) {
       tx.transferObjects([suiOut], myAddress);
       const builtTx       = await tx.build({ client });
       const { signature } = await kp.signTransaction(builtTx);
-      await client.executeTransactionBlock({ transactionBlock: builtTx, signature, options: { showEffects: true } });
+      await client.executeTransaction({ transaction: builtTx, signature });
       gradBought.current.delete(curveId);
       const newLog = appendSnipeLog(walletAddress, { curveId, name: '?', symbol: '?', suiSpent: 0, success: true, type: 'grad_sell' });
       setLog(newLog);
@@ -394,7 +393,7 @@ export function useSniper({ walletAddress, keypair }) {
           if ((reserveSui / drainSui) * 100 < cfg2.gradSnipeThreshold) return;
           gradBought.current.add(curveId);
           const kp        = keypairRef.current;
-          const client    = new SuiClient({ url: getFullnodeUrl('testnet') });
+          const client    = new SuiGraphQLClient({ url: 'https://graphql.testnet.sui.io/graphql' });
           const myAddress = kp.getPublicKey().toSuiAddress();
           const suiInMist = BigInt(Math.floor(cfg2.gradSnipeSuiAmount * 1e9));
           const objForRef = await client.getObject({ id: curveId, options: { showOwner: true, showContent: true } });
@@ -416,10 +415,10 @@ export function useSniper({ walletAddress, keypair }) {
           tx.transferObjects([tokens, refund], myAddress);
           const builtTx       = await tx.build({ client });
           const { signature } = await kp.signTransaction(builtTx);
-          const result        = await client.executeTransactionBlock({ transactionBlock: builtTx, signature, options: { showEffects: true } });
-          const success = result.effects?.status?.status === 'success';
+          const result        = await client.executeTransaction({ transaction: builtTx, signature });
+          const success = result?.errors == null;
           if (!success) gradBought.current.delete(curveId);
-          const newLog = appendSnipeLog(walletAddress, { curveId, name: d.name ?? '?', symbol: d.symbol ?? '?', suiSpent: cfg2.gradSnipeSuiAmount, success, type: 'grad_buy', digest: result.digest });
+          const newLog = appendSnipeLog(walletAddress, { curveId, name: d.name ?? '?', symbol: d.symbol ?? '?', suiSpent: cfg2.gradSnipeSuiAmount, success, type: 'grad_buy', digest: result?.data?.executeTransaction?.digest });
           setLog(newLog);
         } catch {}
       };
