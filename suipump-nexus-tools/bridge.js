@@ -21,7 +21,7 @@ import { promisify } from 'node:util';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { SuiClient, getFullnodeUrl } from '@mysten/sui/client';
+import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { Transaction } from '@mysten/sui/transactions';
 import { fromBase64 } from '@mysten/sui/utils';
@@ -71,7 +71,7 @@ function loadKeypair(privateKey) {
 }
 
 function makeClient(rpcUrl) {
-  return new SuiClient({ url: rpcUrl ?? process.env.SUI_RPC_URL ?? getFullnodeUrl('testnet') });
+  return new SuiGraphQLClient({ url: rpcUrl ?? process.env.SUI_GRAPHQL_URL ?? 'https://graphql.testnet.sui.io/graphql' });
 }
 
 async function resolveCurve(client, curveId) {
@@ -166,19 +166,19 @@ async function handleBuy(body) {
 
   const result = await client.signAndExecuteTransaction({
     signer: keypair, transaction: tx,
-    options: { showEffects: true, showBalanceChanges: true },
+    include: { balanceChanges: true },
   });
 
-  if (result.effects.status.status !== 'success') {
-    throw new Error(`buy() failed: ${result.effects.status.error}`);
+  if (result.$kind === 'FailedTransaction') {
+    throw new Error(`buy() failed: ${result.FailedTransaction.status.error}`);
   }
 
-  const tokenChange = result.balanceChanges?.find(b =>
-    b.owner?.AddressOwner === address && b.coinType !== '0x2::sui::SUI'
+  const tokenChange = result.Transaction.balanceChanges?.find(b =>
+    b.address === address && b.coinType !== '0x2::sui::SUI'
   );
 
   return {
-    txDigest:       result.digest,
+    txDigest:       result.Transaction.digest,
     suiSpent:       (Number(suiMist) / Number(MIST_PER_SUI)).toFixed(9),
     tokensReceived: tokenChange ? (Number(BigInt(tokenChange.amount)) / 1e6).toFixed(6) : 'unknown',
     tokenType,
@@ -231,19 +231,19 @@ async function handleSell(body) {
 
   const result = await client.signAndExecuteTransaction({
     signer: keypair, transaction: tx,
-    options: { showEffects: true, showBalanceChanges: true },
+    include: { balanceChanges: true },
   });
 
-  if (result.effects.status.status !== 'success') {
-    throw new Error(`sell() failed: ${result.effects.status.error}`);
+  if (result.$kind === 'FailedTransaction') {
+    throw new Error(`sell() failed: ${result.FailedTransaction.status.error}`);
   }
 
-  const suiChange = result.balanceChanges?.find(b =>
-    b.owner?.AddressOwner === address && b.coinType === '0x2::sui::SUI'
+  const suiChange = result.Transaction.balanceChanges?.find(b =>
+    b.address === address && b.coinType === '0x2::sui::SUI'
   );
 
   return {
-    txDigest:    result.digest,
+    txDigest:    result.Transaction.digest,
     tokensSold:  tokenAmount,
     suiReceived: suiChange ? (Number(BigInt(suiChange.amount)) / 1e9).toFixed(6) : 'unknown',
   };
@@ -285,19 +285,19 @@ async function handleClaim(body) {
 
   const result = await client.signAndExecuteTransaction({
     signer: keypair, transaction: tx,
-    options: { showEffects: true, showBalanceChanges: true },
+    include: { balanceChanges: true },
   });
 
-  if (result.effects.status.status !== 'success') {
-    throw new Error(`claim_creator_fees() failed: ${result.effects.status.error}`);
+  if (result.$kind === 'FailedTransaction') {
+    throw new Error(`claim_creator_fees() failed: ${result.FailedTransaction.status.error}`);
   }
 
-  const suiChange = result.balanceChanges?.find(b =>
-    b.owner?.AddressOwner === address && b.coinType === '0x2::sui::SUI'
+  const suiChange = result.Transaction.balanceChanges?.find(b =>
+    b.address === address && b.coinType === '0x2::sui::SUI'
   );
 
   return {
-    txDigest:   result.digest,
+    txDigest:   result.Transaction.digest,
     suiClaimed: suiChange ? (Number(BigInt(suiChange.amount)) / 1e9).toFixed(6) : 'unknown',
   };
 }
@@ -330,7 +330,7 @@ async function handleLaunch(body) {
   const env = {
     ...process.env,
     SUI_PRIVATE_KEY: pk,
-    SUI_RPC_URL: rpcUrl ?? process.env.SUI_RPC_URL ?? getFullnodeUrl('testnet'),
+    SUI_GRAPHQL_URL: rpcUrl ?? process.env.SUI_GRAPHQL_URL ?? 'https://graphql.testnet.sui.io/graphql',
   };
 
   console.log(`[bridge] /launch: ${symbol} via ${dex}`);
