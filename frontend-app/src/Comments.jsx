@@ -277,20 +277,18 @@ export default function Comments({ curveId, packageId }) {
     try {
       const tx = new Transaction();
 
-      // Resolve the correct package ID for this token.
-      // packageId is passed from TokenPage (already resolved via resolvePackageId).
-      // If somehow missing, fetch from the curve object type string.
-      let pkg = packageId;
-      if (!pkg) {
-        try {
-          const obj = await client.getObject({ id: curveId, options: { showType: true } });
-          const typeStr = obj.data?.type ?? '';
-          const m = typeStr.match(/^(0x[0-9a-fA-F]+)::bonding_curve::Curve/);
-          pkg = m ? m[1] : PACKAGE_ID_V8;
-        } catch {
-          pkg = PACKAGE_ID_V8;
-        }
-      }
+      // ALWAYS resolve package from curve object type — the prop may be stale
+      // or incorrect if TokenPage hasn't finished loading yet.
+      let pkg;
+      try {
+        const obj = await client.getObject({ id: curveId, options: { showType: true, showOwner: true } });
+        const typeStr = obj.data?.type ?? '';
+        const m = typeStr.match(/^(0x[0-9a-fA-F]+)::bonding_curve::Curve/);
+        pkg = m ? m[1] : null;
+      } catch {}
+      // Fall back to prop, then to V8 as last resort
+      if (!pkg) pkg = packageId;
+      if (!pkg) pkg = PACKAGE_ID_V8;
 
       if (isV7OrLater(pkg)) {
         // V7: post_comment(&mut Curve, payment: Coin<SUI>, text)
