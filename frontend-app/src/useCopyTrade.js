@@ -17,7 +17,7 @@
 // }
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { SuiClient, getFullnodeUrl } from '@mysten/sui/client';
+import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { Transaction } from '@mysten/sui/transactions';
 import { curveShapeFor, isV5OrLater, isV7OrLater } from './constants.js';
 import { buyQuote, sellQuote } from './curve.js';
@@ -79,7 +79,7 @@ export function useCopyTrade({ walletAddress, keypair }) {
     let logEntry = { targetAddress: target.address, action: 'buy', curveId, name, symbol, suiAmount: target.scaleSui, success: false };
 
     try {
-      const client = new SuiClient({ url: getFullnodeUrl('testnet') });
+      const client = new SuiGraphQLClient({ url: 'https://graphql.testnet.sui.io/graphql' });
       const objForRef = await client.getObject({ id: curveId, options: { showOwner: true, showContent: true } });
       const isv = objForRef.data?.owner?.Shared?.initial_shared_version;
       if (!isv) throw new Error('Could not resolve curve version');
@@ -112,13 +112,12 @@ export function useCopyTrade({ walletAddress, keypair }) {
 
       const builtTx       = await tx.build({ client });
       const { signature } = await kp.signTransaction(builtTx);
-      const result        = await client.executeTransactionBlock({
-        transactionBlock: builtTx,
+      const result        = await client.executeTransaction({
+        transaction: builtTx,
         signature,
-        options: { showEffects: true },
       });
 
-      logEntry = { ...logEntry, success: result.effects?.status?.status === 'success', digest: result.digest };
+      logEntry = { ...logEntry, success: result?.errors == null, digest: result?.data?.executeTransaction?.digest };
     } catch (err) {
       logEntry = { ...logEntry, success: false, error: err.message };
     }
@@ -136,7 +135,7 @@ export function useCopyTrade({ walletAddress, keypair }) {
     let logEntry = { targetAddress: target.address, action: 'sell', curveId, name, symbol, suiAmount: 0, success: false };
 
     try {
-      const client = new SuiClient({ url: getFullnodeUrl('testnet') });
+      const client = new SuiGraphQLClient({ url: 'https://graphql.testnet.sui.io/graphql' });
 
       // Get our token balance
       const coins = await client.getCoins({ owner: myAddress, coinType: tokenType });
@@ -179,14 +178,13 @@ export function useCopyTrade({ walletAddress, keypair }) {
 
       const builtTx       = await tx.build({ client });
       const { signature } = await kp.signTransaction(builtTx);
-      const result        = await client.executeTransactionBlock({
-        transactionBlock: builtTx,
+      const result        = await client.executeTransaction({
+        transaction: builtTx,
         signature,
-        options: { showEffects: true },
       });
 
       const suiReceived = Number(quote?.suiOut ?? 0) / 1e9;
-      logEntry = { ...logEntry, success: result.effects?.status?.status === 'success', digest: result.digest, suiAmount: suiReceived };
+      logEntry = { ...logEntry, success: result?.errors == null, digest: result?.data?.executeTransaction?.digest, suiAmount: suiReceived };
     } catch (err) {
       logEntry = { ...logEntry, success: false, error: err.message };
     }
