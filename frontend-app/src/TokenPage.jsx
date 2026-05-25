@@ -4,7 +4,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useCurrentAccount, useSignAndExecuteTransaction, useSuiClient } from '@mysten/dapp-kit';
 import { Transaction } from '@mysten/sui/transactions';
-import { SuiClient, getFullnodeUrl } from '@mysten/sui/client';
+import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { ArrowLeft, Copy, Check, Share2, ExternalLink, Settings, Edit3, Clock, Zap, ShieldAlert, Plus, Trash2, Bell } from 'lucide-react';
 import { useTPSL, makeLevel } from './useTPSL.js';
 import PriceChart from './PriceChart.jsx';
@@ -886,16 +886,15 @@ function TPSLPanel({
       // ── Autonomous path (keypair) ────────────────────────────────────────
       if (keypair) {
         tx.setSender(signerAddress);
-        const autonomousClient = new SuiClient({ url: getFullnodeUrl('testnet') });
+        const autonomousClient = new SuiGraphQLClient({ url: 'https://graphql.testnet.sui.io/graphql' });
         const builtTx = await tx.build({ client: autonomousClient });
         const { signature } = await keypair.signTransaction(builtTx);
-        const result = await autonomousClient.executeTransactionBlock({
-          transactionBlock: builtTx,
+        const result = await autonomousClient.executeTransaction({
+          transaction: builtTx,
           signature,
-          options: { showEffects: true },
         });
-        const success = result.effects?.status?.status === 'success';
-        setTriggerMsg(m => m ? { ...m, status: success ? 'done' : 'error', digest: result.digest } : m);
+        const success = result?.errors == null;
+        setTriggerMsg(m => m ? { ...m, status: success ? 'done' : 'error', digest: result?.data?.executeTransaction?.digest } : m);
         setSelling(false);
         return;
       }
