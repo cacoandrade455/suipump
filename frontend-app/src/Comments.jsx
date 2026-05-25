@@ -4,7 +4,10 @@ import { useCurrentAccount, useSuiClient, useSignAndExecuteTransaction } from '@
 import { Transaction } from '@mysten/sui/transactions';
 import { Send, Reply, ChevronDown, ChevronUp } from 'lucide-react';
 import {
-  ALL_PACKAGE_IDS, PACKAGE_ID_V7, COMMENT_FEE_MIST, isV7OrLater,
+  ALL_PACKAGE_IDS,
+  PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6,
+  PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8,
+  COMMENT_FEE_MIST, isV7OrLater,
 } from './constants.js';
 import { paginateEvents } from './paginateEvents.js';
 
@@ -273,7 +276,21 @@ export default function Comments({ curveId, packageId }) {
 
     try {
       const tx = new Transaction();
-      const pkg = packageId || PACKAGE_ID_V7;
+
+      // Resolve the correct package ID for this token.
+      // packageId is passed from TokenPage (already resolved via resolvePackageId).
+      // If somehow missing, fetch from the curve object type string.
+      let pkg = packageId;
+      if (!pkg) {
+        try {
+          const obj = await client.getObject({ id: curveId, options: { showType: true } });
+          const typeStr = obj.data?.type ?? '';
+          const m = typeStr.match(/^(0x[0-9a-fA-F]+)::bonding_curve::Curve/);
+          pkg = m ? m[1] : PACKAGE_ID_V8;
+        } catch {
+          pkg = PACKAGE_ID_V8;
+        }
+      }
 
       if (isV7OrLater(pkg)) {
         // V7: post_comment(&mut Curve, payment: Coin<SUI>, text)
