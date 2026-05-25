@@ -13,7 +13,7 @@
 // }
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { SuiClient, getFullnodeUrl } from '@mysten/sui/client';
+import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { Transaction } from '@mysten/sui/transactions';
 import { curveShapeFor, isV7OrLater } from './constants.js';
 import { sellQuote } from './curve.js';
@@ -109,7 +109,7 @@ export function useRebalance({ walletAddress, keypair }) {
       } catch {}
 
       // Get current token prices from indexer stats
-      const client = new SuiClient({ url: getFullnodeUrl('testnet') });
+      const client = new SuiGraphQLClient({ url: 'https://graphql.testnet.sui.io/graphql' });
       const posWithValue = [];
 
       for (const pos of positions) {
@@ -205,13 +205,12 @@ export function useRebalance({ walletAddress, keypair }) {
 
           const builtTx       = await tx.build({ client });
           const { signature } = await kp.signTransaction(builtTx);
-          const result        = await client.executeTransactionBlock({
-            transactionBlock: builtTx,
+          const result        = await client.executeTransaction({
+            transaction: builtTx,
             signature,
-            options: { showEffects: true },
           });
 
-          logEntry = { ...logEntry, success: result.effects?.status?.status === 'success', digest: result.digest };
+          logEntry = { ...logEntry, success: result?.errors == null, digest: result?.data?.executeTransaction?.digest };
         } catch (err) {
           logEntry = { ...logEntry, success: false, error: err.message };
         } finally {
