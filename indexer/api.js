@@ -128,6 +128,28 @@ app.get('/token/:curveId/trades', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── Token comments ────────────────────────────────────────────────────────────
+
+app.get('/token/:curveId/comments', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT tx_digest, event_seq, timestamp_ms, data
+       FROM events
+       WHERE curve_id = $1
+         AND event_type LIKE '%::bonding_curve::Comment'
+       ORDER BY timestamp_ms ASC`,
+      [req.params.curveId]
+    );
+    res.json(result.rows.map(r => ({
+      tx_digest:    r.tx_digest,
+      event_seq:    r.event_seq,
+      timestamp_ms: r.timestamp_ms,
+      author:       r.data?.author,
+      text:         r.data?.text,
+    })));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ── OHLC chart data ───────────────────────────────────────────────────────────
 
 app.get('/token/:curveId/ohlc', async (req, res) => {
