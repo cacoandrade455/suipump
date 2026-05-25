@@ -1,10 +1,12 @@
-// v17-creator-tools
+// v20-tpsl-autonomous
 // TokenPage.jsx
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useCurrentAccount, useCurrentClient, useDAppKit } from '@mysten/dapp-kit-react';
 import { Transaction } from '@mysten/sui/transactions';
-import { ArrowLeft, Copy, Check, Share2, ExternalLink, Settings, Edit3, Clock } from 'lucide-react';
+import { SuiClient, getFullnodeUrl } from '@mysten/sui/client';
+import { ArrowLeft, Copy, Check, Share2, ExternalLink, Settings, Edit3, Clock, Zap, ShieldAlert, Plus, Trash2, Bell } from 'lucide-react';
+import { useTPSL, makeLevel } from './useTPSL.js';
 import PriceChart from './PriceChart.jsx';
 import TradeHistory from './TradeHistory.jsx';
 import HolderList from './HolderList.jsx';
@@ -15,22 +17,22 @@ import { buyQuote, sellQuote } from './curve.js';
 import { t } from './i18n.js';
 
 // BCS helpers
-// Option<address> none = single 0x00 byte (BCS enum variant 0)
-function bcsOptionNone() {
-  return new Uint8Array([0]);
-}
+function bcsOptionNone() { return new Uint8Array([0]); }
 function bcsOptionSomeAddress(addr) {
   const hex = addr.replace('0x', '').padStart(64, '0');
   const bytes = new Uint8Array(33);
-  bytes[0] = 1; // some variant
+  bytes[0] = 1;
   for (let i = 0; i < 32; i++) bytes[i + 1] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
   return bytes;
 }
 
 // ── constants ─────────────────────────────────────────────────────────────────
-const TOKEN_DECIMALS    = 6;
+const TOKEN_DECIMALS     = 6;
 const TOTAL_SUPPLY_WHOLE = 1_000_000_000;
-const SUI_CLOCK_ID      = '0x6';
+const SUI_CLOCK_ID       = '0x6';
+
+// Quick-buy preset amounts (whole SUI, no fractions — SUI is cheap)
+const QUICK_BUY_AMOUNTS = ['1', '10', '50', '100', '500'];
 
 function mistToSui(mist) {
   if (mist == null) return 0;
@@ -87,34 +89,11 @@ function parseDescription(raw) {
   const descPart = raw.slice(0, idx);
   try {
     const links = JSON.parse(raw.slice(idx + 2));
-    return {
-      desc:     descPart,
-      twitter:  links.twitter  || '',
-      telegram: links.telegram || '',
-      website:  links.website  || '',
-      dex:      links.dex      || 'cetus',
-    };
+    return { desc: descPart, twitter: links.twitter || '', telegram: links.telegram || '', website: links.website || '', dex: links.dex || 'cetus' };
   } catch {
     const parts = raw.split('||');
-    return {
-      desc:     parts[0]?.trim() || '',
-      twitter:  parts[1]?.trim() || '',
-      telegram: parts[2]?.trim() || '',
-      website:  parts[3]?.trim() || '',
-      dex:      'cetus',
-    };
+    return { desc: parts[0]?.trim() || '', twitter: parts[1]?.trim() || '', telegram: parts[2]?.trim() || '', website: parts[3]?.trim() || '', dex: 'cetus' };
   }
-}
-
-function encodeDescription(desc, links) {
-  const hasLinks = links.telegram || links.twitter || links.website || links.dex;
-  if (!hasLinks) return desc;
-  const obj = {};
-  if (links.telegram) obj.telegram = links.telegram.trim();
-  if (links.twitter)  obj.twitter  = links.twitter.trim();
-  if (links.website)  obj.website  = links.website.trim();
-  if (links.dex)      obj.dex      = links.dex;
-  return `${desc}||${JSON.stringify(obj)}`;
 }
 
 function isPlaceholderIcon(url) {
@@ -127,7 +106,6 @@ function isPlaceholderDesc(desc) {
   return desc.startsWith('Template description placeholder') || desc.startsWith('Template Coin');
 }
 
-// Determine which package a token belongs to by checking its type string
 function getTokenPackageId(tokenType) {
   if (!tokenType) return null;
   if (PACKAGE_ID_V8_1 && tokenType.startsWith(PACKAGE_ID_V8_1)) return PACKAGE_ID_V8_1;
@@ -139,7 +117,6 @@ function getTokenPackageId(tokenType) {
   return null;
 }
 
-// Derive package ID — tokenType wins if recognized, else use packageIdHint from App
 function resolvePackageId(tokenType, packageIdHint) {
   const fromType = getTokenPackageId(tokenType);
   if (fromType) return fromType;
@@ -157,12 +134,62 @@ function resolvePackageId(tokenType, packageIdHint) {
 
 const SLIPPAGE_PRESETS = ['0.5', '1', '2', '5'];
 
-// ── Creator Tools Panel (v5 only) ─────────────────────────────────────────────
+// ── Target Return Calculator ──────────────────────────────────────────────────
+// Given current curve state + a buy amount, shows what mcap the token needs to
+// reach for 2x / 5x / 10x returns after fees on both sides.
+// Uses binary search on future SUI reserve to find the sell price that yields
+// the target proceeds. Fully deterministic curve math — no RPC needed.
+function calcReturnTargets(reserveMist, tokensRemaining, suiInMist, vSui, vTok, suiUsd) {
+  if (!reserveMist || !tokensRemaining || !suiInMist || suiInMist <= 0n) return null;
+
+  const buyResult = buyQuote(reserveMist, tokensRemaining, suiInMist, vSui, vTok);
+  if (!buyResult?.tokensOut || buyResult.tokensOut <= 0n) return null;
+
+  const tokensReceived  = buyResult.tokensOut;
+  const suiSpent        = suiInMist;
+  const newReserveMist  = reserveMist + buyResult.actualSwap + buyResult.fees.lp;
+  const newTokensRemaining = tokensRemaining - tokensReceived;
+  const DRAIN_MIST      = BigInt(9000) * BigInt(MIST_PER_SUI);
+
+  function sellProceedsAtReserve(futureSuiReserve) {
+    try {
+      const result = sellQuote(futureSuiReserve, newTokensRemaining, tokensReceived, vSui, vTok);
+      return result?.suiOut ?? 0n;
+    } catch { return 0n; }
+  }
+
+  function findReserveForMultiplier(multiplier) {
+    // target: sell proceeds >= multiplier * suiSpent
+    const targetProceeds = (suiSpent * BigInt(Math.round(multiplier * 100))) / 100n;
+    if (sellProceedsAtReserve(DRAIN_MIST) < targetProceeds) return null; // not reachable before grad
+    let lo = newReserveMist;
+    let hi = DRAIN_MIST;
+    for (let i = 0; i < 64; i++) {
+      const mid = (lo + hi) / 2n;
+      if (sellProceedsAtReserve(mid) >= targetProceeds) hi = mid;
+      else lo = mid;
+      if (hi - lo < 1_000_000n) break; // 0.001 SUI precision
+    }
+    return hi;
+  }
+
+  return [2, 5, 10].map(mult => {
+    const reserveNeeded = findReserveForMultiplier(mult);
+    if (!reserveNeeded) return { mult, reachable: false };
+    const soldAtTarget = BigInt(800_000_000) * 10n ** 6n - newTokensRemaining;
+    const priceAtTarget = Number(priceMistPerToken(reserveNeeded, soldAtTarget, vSui, vTok)) / 1e9;
+    const mcapSui = priceAtTarget * TOTAL_SUPPLY_WHOLE;
+    return {
+      mult,
+      reachable:  true,
+      reserveSui: Number(reserveNeeded) / 1e9,
+      mcapSui,
+      mcapUsd:    mcapSui * suiUsd,
+    };
+  });
+}
 
 // ── Vesting panel (V7+) ───────────────────────────────────────────────────────
-// Shows on-chain VestingLocks for this token, lets the beneficiary claim
-// vested tokens, and lets a holder lock more of their own tokens retroactively.
-
 const VEST_MODE_LABEL = { 0: 'Cliff', 1: 'Linear', 2: 'Monthly' };
 const VEST_DURATIONS_MS = {
   '7d':   7   * 24 * 60 * 60 * 1000,
@@ -172,14 +199,13 @@ const VEST_DURATIONS_MS = {
 };
 const MONTH_MS = 30 * 24 * 60 * 60 * 1000;
 
-// Mirror of the contract's vested_amount — keeps the UI honest.
 function vestedAmount(total, startMs, durationMs, mode, nowMs) {
   if (nowMs <= startMs) return 0;
   const elapsed = nowMs - startMs;
   if (elapsed >= durationMs) return total;
-  if (mode === 0) return 0;                                  // cliff
-  if (mode === 1) return Math.floor(total * elapsed / durationMs); // linear
-  const totalMonths   = Math.floor(durationMs / MONTH_MS);   // monthly
+  if (mode === 0) return 0;
+  if (mode === 1) return Math.floor(total * elapsed / durationMs);
+  const totalMonths   = Math.floor(durationMs / MONTH_MS);
   const elapsedMonths = Math.floor(elapsed / MONTH_MS);
   return Math.floor(total * elapsedMonths / totalMonths);
 }
@@ -216,61 +242,32 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
     }).catch(err => callbacks?.onError?.(err));
   }
 
-  const [locks, setLocks] = React.useState([]);
-  const [loading, setLoading] = React.useState(true);
-  const [busy, setBusy] = React.useState(false);
-  const [msg, setMsg] = React.useState('');
-
-  // Retroactive-lock form
+  const [locks, setLocks]             = React.useState([]);
+  const [loading, setLoading]         = React.useState(true);
+  const [busy, setBusy]               = React.useState(false);
+  const [msg, setMsg]                 = React.useState('');
   const [showLockForm, setShowLockForm] = React.useState(false);
-  const [lockAmount, setLockAmount] = React.useState('');
-  const [lockMode, setLockMode] = React.useState(0);
+  const [lockAmount, setLockAmount]   = React.useState('');
+  const [lockMode, setLockMode]       = React.useState(0);
   const [lockDuration, setLockDuration] = React.useState('30d');
 
-  const isV7 = isV7OrLater(packageId);
-  // The vesting module (lock_tokens / claim_vested / TokensLocked) lives in the
-  // SuiPump V7 package — NOT the token's own coin-template package. `packageId`
-  // here is the token's package and must NOT be used to address vesting calls.
+  const isV7      = isV7OrLater(packageId);
   const vestingPkg = PACKAGE_ID_V7;
 
-  // Load VestingLock objects for this curve, owned/claimable by this wallet.
   const loadLocks = useCallback(async () => {
     if (!isV7 || !curveId || !account || !vestingPkg) { setLoading(false); return; }
     try {
-      // VestingLock is shared; find via TokensLocked events for this curve.
-      // TokensLocked is always emitted by the SuiPump V7 package.
-      const ev = await client.queryEvents({
-        query: { MoveEventType: `${vestingPkg}::bonding_curve::TokensLocked` },
-        limit: 200, order: 'descending',
-      }).catch(() => ({ data: [] }));
-
-      const mine = ev.data
-        .filter(e => e.parsedJson?.curve_id === curveId &&
-                     e.parsedJson?.beneficiary === account.address)
-        .map(e => e.parsedJson?.lock_id)
-        .filter(Boolean);
-
+      const ev = await client.queryEvents({ query: { MoveEventType: `${vestingPkg}::bonding_curve::TokensLocked` }, limit: 200, order: 'descending' }).catch(() => ({ data: [] }));
+      const mine = ev.data.filter(e => e.parsedJson?.curve_id === curveId && e.parsedJson?.beneficiary === account.address).map(e => e.parsedJson?.lock_id).filter(Boolean);
       const out = [];
       for (const lockId of mine) {
-        const obj = await client.getObject({ objectId: lockId, include: { json: true } }).catch(() => null);
-        const f = obj?.object?.json;
+        const obj = await client.getObject({ id: lockId, options: { showContent: true } }).catch(() => null);
+        const f = obj?.data?.content?.fields;
         if (!f) continue;
-        out.push({
-          id: lockId,
-          total:      Number(f.total_amount),
-          claimed:    Number(f.claimed),
-          remaining:  Number(f.locked),
-          startMs:    Number(f.start_ms),
-          durationMs: Number(f.duration_ms),
-          mode:       Number(f.mode),
-        });
+        out.push({ id: lockId, total: Number(f.total_amount), claimed: Number(f.claimed), remaining: Number(f.locked), startMs: Number(f.start_ms), durationMs: Number(f.duration_ms), mode: Number(f.mode) });
       }
       setLocks(out);
-    } catch {
-      // leave locks as-is
-    } finally {
-      setLoading(false);
-    }
+    } catch {} finally { setLoading(false); }
   }, [isV7, curveId, account, client, vestingPkg, tokenType]);
 
   useEffect(() => { loadLocks(); }, [loadLocks]);
@@ -282,22 +279,14 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
       const objForRef = await client.getObject({ objectId: lockId });
       const isv = objForRef.object?.owner?.Shared?.initialSharedVersion;
       const tx = new Transaction();
-      const lockRef = isv
-        ? tx.sharedObjectRef({ objectId: lockId, initialSharedVersion: isv, mutable: true })
-        : tx.object(lockId);
-      const [claimed] = tx.moveCall({
-        target: `${vestingPkg}::bonding_curve::claim_vested`,
-        typeArguments: [tokenType],
-        arguments: [lockRef, tx.object(SUI_CLOCK_ID)],
-      });
+      const lockRef = isv ? tx.sharedObjectRef({ objectId: lockId, initialSharedVersion: isv, mutable: true }) : tx.object(lockId);
+      const [claimed] = tx.moveCall({ target: `${vestingPkg}::bonding_curve::claim_vested`, typeArguments: [tokenType], arguments: [lockRef, tx.object(SUI_CLOCK_ID)] });
       tx.transferObjects([claimed], account.address);
       signAndExecute({ transaction: tx }, {
         onSuccess: () => { setMsg('Claimed ✓'); setBusy(false); setTimeout(() => { setMsg(''); loadLocks(); }, 1500); },
-        onError: (e) => { setMsg(e.message || 'Claim failed'); setBusy(false); },
+        onError:   (e) => { setMsg(e.message || 'Claim failed'); setBusy(false); },
       });
-    } catch (e) {
-      setMsg(e.message || 'Claim failed'); setBusy(false);
-    }
+    } catch (e) { setMsg(e.message || 'Claim failed'); setBusy(false); }
   };
 
   const handleLock = async () => {
@@ -308,48 +297,25 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
     setBusy(true); setMsg('');
     try {
       const atomic = BigInt(Math.floor(amt * 10 ** TOKEN_DECIMALS));
-      const coins = await client.listCoins({ owner: account.address, coinType: tokenType });
-      if (coins.objects.length === 0) throw new Error('No token balance');
-
-      const objForRef = await client.getObject({ objectId: curveId });
-      const isv = objForRef.object?.owner?.Shared?.initialSharedVersion;
-      const tx = new Transaction();
-      const curveRef = isv
-        ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: isv, mutable: false })
-        : tx.object(curveId);
-
-      const coinObjs = coins.objects.map(c => tx.object(c.objectId));
+      const coins  = await client.getCoins({ owner: account.address, coinType: tokenType });
+      if (!coins.data.length) throw new Error('No token balance');
+      const objForRef = await client.getObject({ id: curveId, options: { showOwner: true } });
+      const isv = objForRef.data?.owner?.Shared?.initial_shared_version;
+      const tx  = new Transaction();
+      const curveRef = isv ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: isv, mutable: false }) : tx.object(curveId);
+      const coinObjs = coins.data.map(c => tx.object(c.coinObjectId));
       let tokenCoin;
-      if (coinObjs.length === 1) {
-        [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(atomic)]);
-      } else {
-        tx.mergeCoins(coinObjs[0], coinObjs.slice(1));
-        [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(atomic)]);
-      }
+      if (coinObjs.length === 1) { [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(atomic)]); }
+      else { tx.mergeCoins(coinObjs[0], coinObjs.slice(1)); [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(atomic)]); }
       const durationMs = VEST_DURATIONS_MS[lockDuration] ?? VEST_DURATIONS_MS['30d'];
-      tx.moveCall({
-        target: `${vestingPkg}::bonding_curve::lock_tokens`,
-        typeArguments: [tokenType],
-        arguments: [
-          curveRef, tokenCoin,
-          tx.pure.u8(lockMode),
-          tx.pure.u64(durationMs),
-          tx.object(SUI_CLOCK_ID),
-        ],
-      });
+      tx.moveCall({ target: `${vestingPkg}::bonding_curve::lock_tokens`, typeArguments: [tokenType], arguments: [curveRef, tokenCoin, tx.pure.u8(lockMode), tx.pure.u64(durationMs), tx.object(SUI_CLOCK_ID)] });
       signAndExecute({ transaction: tx }, {
-        onSuccess: () => {
-          setMsg('Locked ✓'); setBusy(false); setLockAmount(''); setShowLockForm(false);
-          setTimeout(() => { setMsg(''); loadLocks(); }, 1500);
-        },
-        onError: (e) => { setMsg(e.message || 'Lock failed'); setBusy(false); },
+        onSuccess: () => { setMsg('Locked ✓'); setBusy(false); setLockAmount(''); setShowLockForm(false); setTimeout(() => { setMsg(''); loadLocks(); }, 1500); },
+        onError:   (e) => { setMsg(e.message || 'Lock failed'); setBusy(false); },
       });
-    } catch (e) {
-      setMsg(e.message || 'Lock failed'); setBusy(false);
-    }
+    } catch (e) { setMsg(e.message || 'Lock failed'); setBusy(false); }
   };
 
-  // Don't render for non-V7 tokens, or when there's nothing to show/do.
   if (!isV7) return null;
   if (loading) return null;
   if (locks.length === 0 && !account) return null;
@@ -360,49 +326,21 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
     <div className="bg-white/[0.03] border border-white/10 rounded-xl overflow-hidden">
       <div className="px-4 py-3 border-b border-white/10 flex items-center justify-between">
         <span className="text-[10px] font-mono text-white/35 tracking-widest">VESTING LOCKS</span>
-        {account && (
-          <button
-            onClick={() => setShowLockForm(o => !o)}
-            className="text-[10px] font-mono text-lime-400 hover:text-lime-300 transition-colors"
-          >
-            {showLockForm ? 'Cancel' : '+ Lock tokens'}
-          </button>
-        )}
+        {account && <button onClick={() => setShowLockForm(o => !o)} className="text-[10px] font-mono text-lime-400 hover:text-lime-300 transition-colors">{showLockForm ? 'Cancel' : '+ Lock tokens'}</button>}
       </div>
-
-      {/* Retroactive lock form */}
       {showLockForm && (
         <div className="px-4 py-3 border-b border-white/10 space-y-3">
-          <p className="text-[9px] font-mono text-white/25 leading-relaxed">
-            Lock tokens you already hold. Terms are immutable once set — you
-            cannot shorten or cancel the lock.
-          </p>
+          <p className="text-[9px] font-mono text-white/25 leading-relaxed">Lock tokens you already hold. Terms are immutable once set.</p>
           <div>
             <div className="text-[9px] tracking-widest text-white/30 mb-1.5">AMOUNT</div>
-            <input
-              type="number" value={lockAmount}
-              onChange={e => { setLockAmount(e.target.value); setMsg(''); }}
-              placeholder={`0 — you hold ${tokenBalance}`}
-              min="0"
-              className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-lime-400/50"
-            />
+            <input type="number" value={lockAmount} onChange={e => { setLockAmount(e.target.value); setMsg(''); }} placeholder={`0 — you hold ${tokenBalance}`} min="0" className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-lime-400/50" />
           </div>
           <div>
             <div className="text-[9px] tracking-widest text-white/30 mb-1.5">MODE</div>
             <div className="grid grid-cols-3 gap-1.5">
               {[{ v: 0, l: 'Cliff' }, { v: 1, l: 'Linear' }, { v: 2, l: 'Monthly' }].map(({ v, l }) => {
                 const disabled = v === 2 && lockDuration === '7d';
-                return (
-                  <button
-                    key={v} disabled={disabled}
-                    onClick={() => setLockMode(v)}
-                    className={`py-2 rounded-lg text-[10px] font-mono transition-colors ${
-                      disabled ? 'bg-white/5 text-white/15 cursor-not-allowed'
-                      : lockMode === v ? 'bg-lime-400 text-black'
-                      : 'bg-white/5 text-white/40 hover:text-white/70'
-                    }`}
-                  >{l}</button>
-                );
+                return <button key={v} disabled={disabled} onClick={() => setLockMode(v)} className={`py-2 rounded-lg text-[10px] font-mono transition-colors ${disabled ? 'bg-white/5 text-white/15 cursor-not-allowed' : lockMode === v ? 'bg-lime-400 text-black' : 'bg-white/5 text-white/40 hover:text-white/70'}`}>{l}</button>;
               })}
             </div>
           </div>
@@ -410,39 +348,15 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
             <div className="text-[9px] tracking-widest text-white/30 mb-1.5">DURATION</div>
             <div className="grid grid-cols-4 gap-1.5">
               {['7d', '30d', '180d', '365d'].map(d => (
-                <button
-                  key={d}
-                  onClick={() => {
-                    setLockDuration(d);
-                    if (d === '7d' && lockMode === 2) setLockMode(0);
-                  }}
-                  className={`py-2 rounded-lg text-[10px] font-mono transition-colors ${
-                    lockDuration === d ? 'bg-lime-400 text-black'
-                    : 'bg-white/5 text-white/40 hover:text-white/70'
-                  }`}
-                >{d}</button>
+                <button key={d} onClick={() => { setLockDuration(d); if (d === '7d' && lockMode === 2) setLockMode(0); }} className={`py-2 rounded-lg text-[10px] font-mono transition-colors ${lockDuration === d ? 'bg-lime-400 text-black' : 'bg-white/5 text-white/40 hover:text-white/70'}`}>{d}</button>
               ))}
             </div>
           </div>
-          <button
-            onClick={handleLock}
-            disabled={busy || !lockAmount}
-            className={`w-full py-2.5 rounded-lg text-[11px] font-mono transition-colors ${
-              busy || !lockAmount
-                ? 'bg-white/5 text-white/25 cursor-not-allowed'
-                : 'bg-lime-400 hover:bg-lime-300 text-black'
-            }`}
-          >
-            {busy ? 'Locking…' : 'Lock tokens'}
-          </button>
+          <button onClick={handleLock} disabled={busy || !lockAmount} className={`w-full py-2.5 rounded-lg text-[11px] font-mono transition-colors ${busy || !lockAmount ? 'bg-white/5 text-white/25 cursor-not-allowed' : 'bg-lime-400 hover:bg-lime-300 text-black'}`}>{busy ? 'Locking…' : 'Lock tokens'}</button>
         </div>
       )}
-
-      {/* Existing locks */}
       {locks.length === 0 ? (
-        <div className="py-6 text-center text-white/35 text-xs font-mono">
-          No locks for this token.
-        </div>
+        <div className="py-6 text-center text-white/35 text-xs font-mono">No locks for this token.</div>
       ) : (
         <div className="divide-y divide-white/5">
           {locks.map(lk => {
@@ -453,30 +367,15 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
             return (
               <div key={lk.id} className="px-4 py-3 space-y-2">
                 <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-mono text-white/50">
-                    {VEST_MODE_LABEL[lk.mode]} · {Math.round(lk.durationMs / 86400000)}d
-                  </span>
-                  <span className="text-[10px] font-mono text-white/40">
-                    {whole(lk.remaining)} locked
-                  </span>
+                  <span className="text-[10px] font-mono text-white/50">{VEST_MODE_LABEL[lk.mode]} · {Math.round(lk.durationMs / 86400000)}d</span>
+                  <span className="text-[10px] font-mono text-white/40">{whole(lk.remaining)} locked</span>
                 </div>
-                {/* Progress bar */}
                 <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
                   <div className="h-full bg-lime-400" style={{ width: `${Math.min(100, pct)}%` }} />
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-[9px] font-mono text-white/30">
-                    {pct.toFixed(1)}% vested · {whole(lk.claimed)} claimed
-                  </span>
-                  <button
-                    onClick={() => handleClaim(lk.id)}
-                    disabled={busy || claimable <= 0}
-                    className={`text-[10px] font-mono px-2.5 py-1 rounded transition-colors ${
-                      busy || claimable <= 0
-                        ? 'bg-white/5 text-white/20 cursor-not-allowed'
-                        : 'bg-lime-400 hover:bg-lime-300 text-black'
-                    }`}
-                  >
+                  <span className="text-[9px] font-mono text-white/30">{pct.toFixed(1)}% vested · {whole(lk.claimed)} claimed</span>
+                  <button onClick={() => handleClaim(lk.id)} disabled={busy || claimable <= 0} className={`text-[10px] font-mono px-2.5 py-1 rounded transition-colors ${busy || claimable <= 0 ? 'bg-white/5 text-white/20 cursor-not-allowed' : 'bg-lime-400 hover:bg-lime-300 text-black'}`}>
                     {claimable > 0 ? `Claim ${whole(claimable)}` : 'Nothing vested'}
                   </button>
                 </div>
@@ -485,218 +384,82 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
           })}
         </div>
       )}
-
-      {msg && (
-        <div className="px-4 py-2 border-t border-white/10 text-[10px] font-mono text-lime-400">
-          {msg}
-        </div>
-      )}
+      {msg && <div className="px-4 py-2 border-t border-white/10 text-[10px] font-mono text-lime-400">{msg}</div>}
     </div>
   );
 }
 
+// ── Creator Tools Panel ───────────────────────────────────────────────────────
+
 function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveState, currentDesc, currentTwitter, currentTelegram, currentWebsite, currentDex, lang }) {
-  const client = useCurrentClient();
-  const dAppKit_signAndExecutePanel = useDAppKit();
-  const signAndExecutePanel = (args, callbacks) => {
-    dAppKit_signAndExecutePanel.signAndExecuteTransaction({
-      ...args,
-      include: { effects: true, events: true, objectTypes: true },
-    }).then(result => {
-      if (result.FailedTransaction) {
-        const err = new Error(result.FailedTransaction.effects?.status?.error?.message || 'Transaction failed');
-        callbacks?.onError?.(err);
-      } else {
-        // Mimic the old shape (digest/effects/objectChanges/events)
-        const tx = result.Transaction;
-        const compat = {
-          digest: tx.digest,
-          effects: tx.effects,
-          events: tx.events,
-          // changedObjects with idOperation==="Created" mapped to old objectChanges shape
-          objectChanges: (tx.effects?.changedObjects ?? []).map(c => ({
-            type: c.idOperation === 'Created' ? 'created' :
-                  c.idOperation === 'Deleted' ? 'deleted' : 'mutated',
-            objectId: c.objectId,
-            objectType: tx.objectTypes?.[c.objectId] || '',
-            owner: c.outputOwner,
-          })),
-        };
-        callbacks?.onSuccess?.(compat);
-      }
-    }).catch(err => callbacks?.onError?.(err));
-  }
-  const pkgId = resolvePackageId(tokenType, packageIdHint);
+  const client = useSuiClient();
+  const { mutate: signAndExecutePanel } = useSignAndExecuteTransaction();
+  const pkgId   = resolvePackageId(tokenType, packageIdHint);
   const isV5Token = isV5OrLater(pkgId);
   const isV6Token = !!(PACKAGE_ID_V6 && pkgId === PACKAGE_ID_V6);
   const isV7Token = isV7OrLater(pkgId);
-  // V8+ tokens have shared (not frozen) CoinMetadata — update_metadata works
-  // V8+ tokens have shared (not frozen) CoinMetadata — update_metadata works
   const isV8Token = isV8OrLater(pkgId);
-  // V7+ has a real on-chain update_metadata; V6 and earlier do not.
   const metadataPkg = pkgId === PACKAGE_ID_V8_1 ? PACKAGE_ID_V8_1 : isV8Token ? PACKAGE_ID_V8 : PACKAGE_ID_V7;
-
-  // INTERIM (pre-V8): the on-chain update_metadata path is broken because the
-  // V7 coin template freezes CoinMetadata at launch, so it can never be passed
-  // by &mut. The metadata tab is hidden until the V8 contract ships (template
-  // shares metadata + graduate() takes &mut). Flip this to true once V8 is
-  // deployed and constants.js points the active package at V8.
   const METADATA_UPDATE_ENABLED = true;
 
-  const [tab, setTab] = useState('links'); // 'links' | 'metadata'
-  const [msg, setMsg] = useState('');
+  const [tab,  setTab]  = useState('links');
+  const [msg,  setMsg]  = useState('');
   const [busy, setBusy] = useState(false);
-
-  // Social links editor state
-  const [links, setLinks] = useState({
-    desc:     currentDesc     || '',
-    twitter:  currentTwitter  || '',
-    telegram: currentTelegram || '',
-    website:  currentWebsite  || '',
-    dex:      currentDex      || 'cetus',
-  });
-
-  // Metadata update state (v5 only)
-  const [meta, setMeta] = useState({
-    name:        '',
-    symbol:      '',
-    description: '',
-    iconUrl:     '',
-  });
-  const [iconUploading, setIconUploading] = useState(false);
+  const [links, setLinks] = useState({ desc: currentDesc || '', twitter: currentTwitter || '', telegram: currentTelegram || '', website: currentWebsite || '', dex: currentDex || 'cetus' });
+  const [meta,  setMeta]  = useState({ name: '', symbol: '', description: '', iconUrl: '' });
+  const [iconUploading, setIconUploading]   = useState(false);
   const [iconUploadError, setIconUploadError] = useState(null);
 
-  // Pending metadata unlock time from on-chain curve state
-  // v6 has no pending_metadata — timelock removed
-  const pendingUnlocksAt = null;
-  const timelockExpired = false;
-  const timelockRemaining = 0;
+  const showMsg = (m) => { setMsg(m); setTimeout(() => setMsg(''), 4000); };
 
-  const showMsg = (m, isError = false) => {
-    setMsg(m);
-    setTimeout(() => setMsg(''), 4000);
-  };
-
-  // Get CreatorCap for this curve
   const getCapId = async () => {
-    const ownedObjs = await client.listOwnedObjects({
-              owner: account.address,
-              type: `${pkgId}::bonding_curve::CreatorCap`,
-              include: { json: true },
-            });
-    const capObj = ownedObjs.objects?.find(o => o.json?.curve_id === curveId)
-      ?? ownedObjs.objects?.[0];
+    const ownedObjs = await client.getOwnedObjects({ owner: account.address, filter: { StructType: `${pkgId}::bonding_curve::CreatorCap` }, options: { showContent: true } });
+    const capObj = ownedObjs.data?.find(o => o.data?.content?.fields?.curve_id === curveId) ?? ownedObjs.data?.[0];
     if (!capObj) throw new Error('CreatorCap not found in wallet');
     return capObj.objectId;
   };
 
   const getCurveRef = async (tx) => {
-    const objForRef = await client.getObject({ objectId: curveId });
-    const initialSharedVersion = objForRef.object?.owner?.Shared?.initialSharedVersion;
-    return initialSharedVersion
-      ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion, mutable: true })
-      : tx.object(curveId);
+    const objForRef = await client.getObject({ id: curveId, options: { showOwner: true } });
+    const isv = objForRef.data?.owner?.Shared?.initial_shared_version;
+    return isv ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: isv, mutable: true }) : tx.object(curveId);
   };
 
-  // Queue social links / description update
-  // V6 (testnet): localStorage override — no on-chain call needed
-  // V4/V5: would call queue_metadata_update (not implemented for testnet, use localStorage)
   const handleQueueLinks = () => {
-    if (!links.desc && !links.twitter && !links.telegram && !links.website) {
-      showMsg('Fill in at least one field', true); return;
-    }
-    const key = `suipump_links_${curveId}`;
-    const override = {
-      updatedAt: Date.now(),
-      desc:      links.desc.trim()     || null,
-      twitter:   links.twitter.trim()  || null,
-      telegram:  links.telegram.trim() || null,
-      website:   links.website.trim()  || null,
-      dex:       links.dex             || 'cetus',
-    };
-    localStorage.setItem(key, JSON.stringify(override));
+    if (!links.desc && !links.twitter && !links.telegram && !links.website) { showMsg('Fill in at least one field'); return; }
+    localStorage.setItem(`suipump_links_${curveId}`, JSON.stringify({ updatedAt: Date.now(), desc: links.desc.trim() || null, twitter: links.twitter.trim() || null, telegram: links.telegram.trim() || null, website: links.website.trim() || null, dex: links.dex || 'cetus' }));
     showMsg('Links updated! ✅');
     setTimeout(() => window.location.reload(), 1200);
   };
 
-  // Update token metadata on-chain — V7 update_metadata.
-  // Instant, one-time, only within 24h of launch. The contract enforces all
-  // of this; the UI mirrors it. Permanently changes the real CoinMetadata.
   const handleUpdateMetadata = async () => {
-    if (!meta.name && !meta.symbol && !meta.description && !meta.iconUrl) {
-      showMsg('Fill in at least one field', true); return;
-    }
-    if (!isV7Token || !metadataPkg) {
-      showMsg('On-chain metadata update is V7 only', true); return;
-    }
-    // 24h window — contract also enforces this; check here for a clean message.
-    const windowClosesAt = curveState?.created_at_ms
-      ? Number(curveState.created_at_ms) + 24 * 60 * 60 * 1000 : 0;
-    if (windowClosesAt > 0 && Date.now() >= windowClosesAt) {
-      showMsg('24h window has closed', true); return;
-    }
-    if (curveState?.metadata_updated === true) {
-      showMsg('Already updated — one time only', true); return;
-    }
-
+    if (!meta.name && !meta.symbol && !meta.description && !meta.iconUrl) { showMsg('Fill in at least one field'); return; }
+    if (!isV7Token || !metadataPkg) { showMsg('On-chain metadata update is V7 only'); return; }
+    const windowClosesAt = curveState?.created_at_ms ? Number(curveState.created_at_ms) + 24 * 60 * 60 * 1000 : 0;
+    if (windowClosesAt > 0 && Date.now() >= windowClosesAt) { showMsg('24h window has closed'); return; }
+    if (curveState?.metadata_updated === true) { showMsg('Already updated — one time only'); return; }
     setBusy(true); setMsg('');
     try {
-      // The CoinMetadata object — update_metadata takes it by &mut.
       const coinMeta = await client.getCoinMetadata({ coinType: tokenType });
       const metadataId = coinMeta?.id;
       if (!metadataId) throw new Error('CoinMetadata object not found');
-
-      // CoinMetadata is a shared object — to pass it as &mut it MUST go in as a
-      // sharedObjectRef with mutable:true. A plain tx.object() can't be borrowed
-      // mutably and fails with InvalidObjectByMutRef. (Owned metadata is rare,
-      // but handle it too.)
-      const metaObj = await client.getObject({ objectId: metadataId });
-      const metaSharedVersion = metaObj.object?.owner?.Shared?.initialSharedVersion;
-
+      const metaObj = await client.getObject({ id: metadataId, options: { showOwner: true } });
+      const metaSharedVersion = metaObj.data?.owner?.Shared?.initial_shared_version;
       const capId = await getCapId();
-
       const tx = new Transaction();
       const curveRef = await getCurveRef(tx);
-      const metadataRef = metaSharedVersion
-        ? tx.sharedObjectRef({ objectId: metadataId, initialSharedVersion: metaSharedVersion, mutable: true })
-        : tx.object(metadataId);
-
-      // Option args: pure.option('string'/'ascii', value|null).
-      // name + description are String; symbol + icon_url are ascii String.
-      const nameArg = tx.pure.option('string', meta.name.trim() || null);
-      const symbolArg = tx.pure.option('string', meta.symbol.trim() || null);
-      const descArg = tx.pure.option('string', meta.description.trim() || null);
-      const iconArg = tx.pure.option('string', meta.iconUrl.trim() || null);
-
+      const metadataRef = metaSharedVersion ? tx.sharedObjectRef({ objectId: metadataId, initialSharedVersion: metaSharedVersion, mutable: true }) : tx.object(metadataId);
       tx.moveCall({
         target: `${metadataPkg}::bonding_curve::update_metadata`,
         typeArguments: [tokenType],
-        arguments: [
-          tx.object(capId),
-          curveRef,
-          metadataRef,
-          nameArg, symbolArg, descArg, iconArg,
-          tx.object(SUI_CLOCK_ID),
-        ],
+        arguments: [tx.object(capId), curveRef, metadataRef, tx.pure.option('string', meta.name.trim() || null), tx.pure.option('string', meta.symbol.trim() || null), tx.pure.option('string', meta.description.trim() || null), tx.pure.option('string', meta.iconUrl.trim() || null), tx.object(SUI_CLOCK_ID)],
       });
-
       signAndExecutePanel({ transaction: tx }, {
-        onSuccess: () => {
-          showMsg('Metadata updated on-chain ✅');
-          setBusy(false);
-          setTimeout(() => window.location.reload(), 1400);
-        },
-        onError: (e) => {
-          showMsg(e.message || 'Update failed', true);
-          setBusy(false);
-        },
+        onSuccess: () => { showMsg('Metadata updated on-chain ✅'); setBusy(false); setTimeout(() => window.location.reload(), 1400); },
+        onError:   (e) => { showMsg(e.message || 'Update failed'); setBusy(false); },
       });
-    } catch (e) {
-      showMsg(e.message || 'Update failed', true);
-      setBusy(false);
-    }
+    } catch (e) { showMsg(e.message || 'Update failed'); setBusy(false); }
   };
-
 
   return (
     <div className="bg-white/[0.03] border border-lime-400/20 rounded-xl p-4 space-y-3">
@@ -706,200 +469,74 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
           <span className="text-[9px] font-mono tracking-widest text-lime-400/70">CREATOR TOOLS</span>
         </div>
         <div className="flex gap-1">
-          {['links', ...((METADATA_UPDATE_ENABLED && (isV6Token || isV7Token || isV8Token)) ? ['metadata'] : [])].map(t => (
-            <button
-              key={t}
-              onClick={() => setTab(t)}
-              className={`px-2.5 py-1 rounded-lg text-[9px] font-mono transition-colors ${
-                tab === t
-                  ? 'bg-lime-400/10 text-lime-400 border border-lime-400/30'
-                  : 'text-white/30 hover:text-white/60'
-              }`}
-            >
-              {t.toUpperCase()}
-            </button>
+          {['links', ...((METADATA_UPDATE_ENABLED && (isV6Token || isV7Token || isV8Token)) ? ['metadata'] : [])].map(tabName => (
+            <button key={tabName} onClick={() => setTab(tabName)} className={`px-2.5 py-1 rounded-lg text-[9px] font-mono transition-colors ${tab === tabName ? 'bg-lime-400/10 text-lime-400 border border-lime-400/30' : 'text-white/30 hover:text-white/60'}`}>{tabName.toUpperCase()}</button>
           ))}
         </div>
       </div>
 
-      {/* Social Links Tab */}
       {tab === 'links' && (
         <div className="space-y-2.5">
-          <div className="text-[9px] font-mono text-white/25">
-            {'Update your social links — saved instantly'}
-          </div>
-          <textarea
-            value={links.desc}
-            onChange={e => setLinks(l => ({ ...l, desc: e.target.value }))}
-            placeholder="Token description…"
-            rows={2}
-            className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 transition-colors resize-none"
-          />
-          {[
-            { key: 'twitter',  placeholder: 'https://x.com/yourtoken' },
-            { key: 'telegram', placeholder: 'https://t.me/yourtoken' },
-            { key: 'website',  placeholder: 'https://yourtoken.xyz' },
-          ].map(({ key, placeholder }) => (
-            <input
-              key={key}
-              value={links[key]}
-              onChange={e => setLinks(l => ({ ...l, [key]: e.target.value }))}
-              placeholder={placeholder}
-              className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 transition-colors"
-            />
+          <div className="text-[9px] font-mono text-white/25">Update your social links — saved instantly</div>
+          <textarea value={links.desc} onChange={e => setLinks(l => ({ ...l, desc: e.target.value }))} placeholder="Token description…" rows={2} className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 transition-colors resize-none" />
+          {[{ key: 'twitter', placeholder: 'https://x.com/yourtoken' }, { key: 'telegram', placeholder: 'https://t.me/yourtoken' }, { key: 'website', placeholder: 'https://yourtoken.xyz' }].map(({ key, placeholder }) => (
+            <input key={key} value={links[key]} onChange={e => setLinks(l => ({ ...l, [key]: e.target.value }))} placeholder={placeholder} className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 transition-colors" />
           ))}
-          {/* Pending timelock indicator */}
-          {pendingUnlocksAt && !timelockExpired && (
-            <div className="flex items-center gap-1.5 rounded-lg bg-white/5 border border-white/10 px-3 py-2">
-              <Clock size={10} className="text-white/40" />
-              <span className="text-[9px] font-mono text-white/40">Update pending — unlocks in ~{timelockRemaining}h</span>
-              <button
-                onClick={handleApplyMetadata}
-                disabled={!timelockExpired || busy}
-                className="ml-auto text-[9px] font-mono text-white/20 cursor-not-allowed"
-              >
-                APPLY
-              </button>
-            </div>
-          )}
-          {pendingUnlocksAt && timelockExpired && (
-            <button
-              onClick={handleApplyMetadata}
-              disabled={busy}
-              className="w-full py-2 rounded-lg bg-lime-400/10 border border-lime-400/30 text-lime-400 text-[10px] font-mono hover:bg-lime-400/20 transition-colors"
-            >
-              {busy ? 'APPLYING…' : '✅ APPLY PENDING UPDATE'}
-            </button>
-          )}
-          <button
-            onClick={isV5Token ? handleQueueLinks : handleQueueLinks}
-            disabled={busy}
-            className={`w-full py-2 rounded-lg text-[10px] font-mono font-bold transition-colors ${
-              busy
-                ? 'bg-white/5 text-white/20 cursor-not-allowed'
-                : 'bg-lime-400/10 border border-lime-400/30 text-lime-400 hover:bg-lime-400/20'
-            }`}
-          >
-            {busy ? 'SAVING…' : 'UPDATE LINKS'}
-          </button>
+          <button onClick={handleQueueLinks} disabled={busy} className={`w-full py-2 rounded-lg text-[10px] font-mono font-bold transition-colors ${busy ? 'bg-white/5 text-white/20 cursor-not-allowed' : 'bg-lime-400/10 border border-lime-400/30 text-lime-400 hover:bg-lime-400/20'}`}>{busy ? 'SAVING…' : 'UPDATE LINKS'}</button>
         </div>
       )}
 
-      {/* Metadata Tab — hidden pre-V8 (see METADATA_UPDATE_ENABLED) */}
       {METADATA_UPDATE_ENABLED && tab === 'metadata' && (isV6Token || isV7Token || isV8Token) && (() => {
-        const windowClosesAt = curveState?.created_at_ms
-          ? Number(curveState.created_at_ms) + 24 * 60 * 60 * 1000 : 0;
-        const nowMs = Date.now();
+        const windowClosesAt = curveState?.created_at_ms ? Number(curveState.created_at_ms) + 24 * 60 * 60 * 1000 : 0;
+        const nowMs      = Date.now();
         const windowOpen = windowClosesAt > 0 && nowMs < windowClosesAt;
-        const hoursLeft = windowOpen ? Math.ceil((windowClosesAt - nowMs) / (1000 * 60 * 60)) : 0;
-        // V7: one-time flag is the on-chain curve.metadata_updated field.
-        // V6: no on-chain field — fall back to the localStorage marker.
-        const alreadyUpdated = isV7Token
-          ? curveState?.metadata_updated === true
-          : JSON.parse(localStorage.getItem(`suipump_meta_${curveId}`) || '{}').used === true;
-
+        const hoursLeft  = windowOpen ? Math.ceil((windowClosesAt - nowMs) / (1000 * 60 * 60)) : 0;
+        const alreadyUpdated = isV7Token ? curveState?.metadata_updated === true : JSON.parse(localStorage.getItem(`suipump_meta_${curveId}`) || '{}').used === true;
         return (
           <div className="space-y-2.5">
             {alreadyUpdated ? (
-              <div className="rounded-lg bg-white/5 border border-white/10 px-3 py-3 text-[9px] font-mono text-white/40 text-center">
-                ✅ Metadata already updated — one-time change used
-              </div>
+              <div className="rounded-lg bg-white/5 border border-white/10 px-3 py-3 text-[9px] font-mono text-white/40 text-center">✅ Metadata already updated — one-time change used</div>
             ) : !windowOpen ? (
-              <div className="rounded-lg bg-white/5 border border-white/10 px-3 py-3 text-[9px] font-mono text-white/40 text-center">
-                🔒 24h update window has closed
-              </div>
+              <div className="rounded-lg bg-white/5 border border-white/10 px-3 py-3 text-[9px] font-mono text-white/40 text-center">🔒 24h update window has closed</div>
             ) : (
               <>
                 <div className="flex items-center justify-between">
-                  <div className="text-[9px] font-mono text-white/25">
-                    {isV7Token ? 'On-chain · one-time only' : 'Instant · one-time only'} · {hoursLeft}h remaining
-                  </div>
-                  <div className="flex items-center gap-1 text-[9px] font-mono text-lime-400/60">
-                    <Clock size={9} />
-                    {hoursLeft}h left
-                  </div>
+                  <div className="text-[9px] font-mono text-white/25">{isV7Token ? 'On-chain · one-time only' : 'Instant · one-time only'} · {hoursLeft}h remaining</div>
+                  <div className="flex items-center gap-1 text-[9px] font-mono text-lime-400/60"><Clock size={9} />{hoursLeft}h left</div>
                 </div>
-                {[
-                  { key: 'name',        placeholder: 'New token name (optional)' },
-                  { key: 'symbol',      placeholder: 'NEW SYMBOL (optional)' },
-                  { key: 'description', placeholder: 'New description (optional)' },
-                ].map(({ key, placeholder }) => (
-                  <input
-                    key={key}
-                    value={meta[key]}
-                    onChange={e => setMeta(m => ({ ...m, [key]: e.target.value }))}
-                    placeholder={placeholder}
-                    className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 transition-colors"
-                  />
+                {[{ key: 'name', placeholder: 'New token name (optional)' }, { key: 'symbol', placeholder: 'NEW SYMBOL (optional)' }, { key: 'description', placeholder: 'New description (optional)' }].map(({ key, placeholder }) => (
+                  <input key={key} value={meta[key]} onChange={e => setMeta(m => ({ ...m, [key]: e.target.value }))} placeholder={placeholder} className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 transition-colors" />
                 ))}
-                {/* Icon upload */}
                 <div className="space-y-1.5">
                   <div className="flex gap-2 items-center">
                     <label className="flex-1 flex items-center gap-2 bg-white/5 border border-white/10 rounded-xl px-3 py-2 cursor-pointer hover:border-lime-400/40 transition-colors">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-white/40 shrink-0"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-                      <span className="text-xs font-mono text-white/40 truncate">
-                        {iconUploading ? 'Uploading…' : meta.iconUrl ? 'Image uploaded ✓' : 'Upload icon image'}
-                      </span>
-                      <input
-                        type="file" accept="image/*" className="hidden"
-                        onChange={async (e) => {
-                          const file = e.target.files?.[0];
-                          if (!file) return;
-                          setIconUploading(true);
-                          setIconUploadError(null);
-                          try {
-                            const fd = new FormData();
-                            fd.append('image', file);
-                            const res = await fetch('https://api.imgur.com/3/image', {
-                              method: 'POST',
-                              headers: { Authorization: 'Client-ID 546c25a59c58ad7' },
-                              body: fd,
-                            });
-                            const json = await res.json();
-                            if (!json.success) throw new Error(json.data?.error || 'Upload failed');
-                            setMeta(m => ({ ...m, iconUrl: json.data.link }));
-                          } catch (err) {
-                            setIconUploadError(err.message);
-                          } finally {
-                            setIconUploading(false);
-                          }
-                        }}
-                      />
+                      <span className="text-xs font-mono text-white/40 truncate">{iconUploading ? 'Uploading…' : meta.iconUrl ? 'Image uploaded ✓' : 'Upload icon image'}</span>
+                      <input type="file" accept="image/*" className="hidden" onChange={async (e) => {
+                        const file = e.target.files?.[0]; if (!file) return;
+                        setIconUploading(true); setIconUploadError(null);
+                        try {
+                          const fd = new FormData(); fd.append('image', file);
+                          const res = await fetch('https://api.imgur.com/3/image', { method: 'POST', headers: { Authorization: 'Client-ID 546c25a59c58ad7' }, body: fd });
+                          const json = await res.json();
+                          if (!json.success) throw new Error(json.data?.error || 'Upload failed');
+                          setMeta(m => ({ ...m, iconUrl: json.data.link }));
+                        } catch (err) { setIconUploadError(err.message); } finally { setIconUploading(false); }
+                      }} />
                     </label>
-                    {meta.iconUrl && (
-                      <img src={meta.iconUrl} alt="preview" className="w-9 h-9 rounded-lg object-cover border border-white/10" />
-                    )}
+                    {meta.iconUrl && <img src={meta.iconUrl} alt="preview" className="w-9 h-9 rounded-lg object-cover border border-white/10" />}
                   </div>
                   {iconUploadError && <div className="text-[9px] font-mono text-red-400">{iconUploadError}</div>}
-                  <input
-                    value={meta.iconUrl}
-                    onChange={e => setMeta(m => ({ ...m, iconUrl: e.target.value }))}
-                    placeholder="or paste URL (https://i.imgur.com/...) (optional)"
-                    className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 transition-colors"
-                  />
+                  <input value={meta.iconUrl} onChange={e => setMeta(m => ({ ...m, iconUrl: e.target.value }))} placeholder="or paste URL (optional)" className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 transition-colors" />
                 </div>
-                <button
-                  onClick={handleUpdateMetadata}
-                  disabled={busy}
-                  className={`w-full py-2 rounded-lg text-[10px] font-mono font-bold transition-colors ${
-                    busy
-                      ? 'bg-white/5 text-white/20 cursor-not-allowed'
-                      : 'bg-lime-400 text-black hover:bg-lime-300'
-                  }`}
-                >
-                  {busy ? 'UPDATING…' : (isV7Token ? 'UPDATE ON-CHAIN' : 'UPDATE NOW (INSTANT)')}
-                </button>
+                <button onClick={handleUpdateMetadata} disabled={busy} className={`w-full py-2 rounded-lg text-[10px] font-mono font-bold transition-colors ${busy ? 'bg-white/5 text-white/20 cursor-not-allowed' : 'bg-lime-400 text-black hover:bg-lime-300'}`}>{busy ? 'UPDATING…' : (isV7Token ? 'UPDATE ON-CHAIN' : 'UPDATE NOW (INSTANT)')}</button>
               </>
             )}
           </div>
         );
       })()}
 
-      {msg && (
-        <div className={`text-[10px] font-mono text-center ${msg.includes('✅') || msg.includes('⏳') || msg.includes('🎉') ? 'text-lime-400' : 'text-red-400'}`}>
-          {msg}
-        </div>
-      )}
+      {msg && <div className={`text-[10px] font-mono text-center ${msg.includes('✅') || msg.includes('🎉') ? 'text-lime-400' : 'text-red-400'}`}>{msg}</div>}
     </div>
   );
 }
@@ -907,55 +544,25 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
 // ── Trade Panel ───────────────────────────────────────────────────────────────
 
 function TradePanelContent({
-  lang,
-  side, setSide, amount, setAmount,
-  slippage, setSlippage,
-  quote, txStatus, txMsg,
+  lang, side, setSide, amount, setAmount,
+  slippage, setSlippage, quote, txStatus, txMsg,
   account, onExecute, priceSui, priceUsd, suiUsd, symbol, graduated,
-  suiBalance, tokenBalance,
-  isCreator, creatorFeesMist, curveId: panelCurveId, tokenType: panelTokenType,
-  packageIdHint: panelPkgHint,
-  curveState,
+  suiBalance, tokenBalance, isCreator, creatorFeesMist,
+  curveId: panelCurveId, tokenType: panelTokenType, packageIdHint: panelPkgHint, curveState,
+  // curve math for return calculator
+  reserveMist, tokensRemaining, vSui, vTok,
 }) {
-  const dAppKit_signAndExecutePanel = useDAppKit();
-  const signAndExecutePanel = (args, callbacks) => {
-    dAppKit_signAndExecutePanel.signAndExecuteTransaction({
-      ...args,
-      include: { effects: true, events: true, objectTypes: true },
-    }).then(result => {
-      if (result.FailedTransaction) {
-        const err = new Error(result.FailedTransaction.effects?.status?.error?.message || 'Transaction failed');
-        callbacks?.onError?.(err);
-      } else {
-        // Mimic the old shape (digest/effects/objectChanges/events)
-        const tx = result.Transaction;
-        const compat = {
-          digest: tx.digest,
-          effects: tx.effects,
-          events: tx.events,
-          // changedObjects with idOperation==="Created" mapped to old objectChanges shape
-          objectChanges: (tx.effects?.changedObjects ?? []).map(c => ({
-            type: c.idOperation === 'Created' ? 'created' :
-                  c.idOperation === 'Deleted' ? 'deleted' : 'mutated',
-            objectId: c.objectId,
-            objectType: tx.objectTypes?.[c.objectId] || '',
-            owner: c.outputOwner,
-          })),
-        };
-        callbacks?.onSuccess?.(compat);
-      }
-    }).catch(err => callbacks?.onError?.(err));
-  }
-  const client2 = useCurrentClient();
-  const [claiming, setClaiming] = useState(false);
-  const [claimMsg, setClaimMsg] = useState('');
-  const [showSlippage, setShowSlippage] = useState(false);
+  const { mutate: signAndExecutePanel } = useSignAndExecuteTransaction();
+  const client2 = useSuiClient();
+  const [claiming,       setClaiming]       = useState(false);
+  const [claimMsg,       setClaimMsg]       = useState('');
+  const [showSlippage,   setShowSlippage]   = useState(false);
   const [customSlippage, setCustomSlippage] = useState('');
-  const isPending = txStatus === 'pending';
-  const pkgId = resolvePackageId(panelTokenType, panelPkgHint);
-
+  const [showReturnCalc, setShowReturnCalc] = useState(false);
+  const isPending  = txStatus === 'pending';
+  const pkgId      = resolvePackageId(panelTokenType, panelPkgHint);
   const slippageNum = parseFloat(slippage) || 0;
-  const isCustom = !SLIPPAGE_PRESETS.includes(slippage);
+  const isCustom   = !SLIPPAGE_PRESETS.includes(slippage);
 
   const handleSlippagePreset = (v) => { setSlippage(v); setCustomSlippage(''); };
   const handleCustomSlippage = (v) => {
@@ -965,60 +572,60 @@ function TradePanelContent({
     if (!isNaN(n) && n >= 0 && n <= 50) setSlippage(clean);
   };
 
+  // ── Quick-buy: set amount then immediately fire the trade ─────────────────
+  // We need to call executeTrade with the new amount value, not the stale closure.
+  // Solution: set amount first, then re-invoke onExecute after React flushes state.
+  // onExecute reads `amount` from its parent closure — we bypass this by passing
+  // the amount directly via a temporary ref that executeTrade reads on next tick.
+  const quickBuyAmountRef = React.useRef(null);
+
+  const handleQuickBuy = useCallback((suiAmt) => {
+    if (!account || isPending || !curveState) return;
+    quickBuyAmountRef.current = suiAmt;
+    setAmount(suiAmt);
+    // Give React one tick to propagate the amount state, then fire
+    setTimeout(() => {
+      onExecute();
+      quickBuyAmountRef.current = null;
+    }, 30);
+  }, [account, isPending, curveState, setAmount, onExecute]);
+
   const handleClaim = async () => {
     if (!account || !panelCurveId || !panelTokenType || claiming) return;
-    setClaiming(true);
-    setClaimMsg('');
+    setClaiming(true); setClaimMsg('');
     try {
-      const ownedObjs = await client2.listOwnedObjects({
-              owner: account.address,
-              type: `${pkgId}::bonding_curve::CreatorCap`,
-              include: { json: true },
-            });
-      const capObj = ownedObjs.objects?.find(o => {
-        const fields = o.json;
-        return fields?.curve_id === panelCurveId;
-      }) ?? ownedObjs.objects?.[0];
+      const ownedObjs = await client2.getOwnedObjects({ owner: account.address, filter: { StructType: `${pkgId}::bonding_curve::CreatorCap` }, options: { showContent: true } });
+      const capObj = ownedObjs.data?.find(o => o.data?.content?.fields?.curve_id === panelCurveId) ?? ownedObjs.data?.[0];
       if (!capObj) throw new Error('CreatorCap not found in wallet');
-      const capId = capObj.objectId;
-
-      const objForRef = await client2.getObject({ objectId: panelCurveId });
-      const initialSharedVersion = objForRef.object?.owner?.Shared?.initialSharedVersion;
+      const capId = capObj.data?.objectId;
+      const objForRef = await client2.getObject({ id: panelCurveId, options: { showOwner: true } });
+      const isv = objForRef.data?.owner?.Shared?.initial_shared_version;
       const tx = new Transaction();
-      const curveRef = initialSharedVersion
-        ? tx.sharedObjectRef({ objectId: panelCurveId, initialSharedVersion, mutable: true })
-        : tx.object(panelCurveId);
-      tx.moveCall({
-        target: `${pkgId}::bonding_curve::claim_creator_fees`,
-        typeArguments: [panelTokenType],
-        arguments: [tx.object(capId), curveRef],
+      const curveRef = isv ? tx.sharedObjectRef({ objectId: panelCurveId, initialSharedVersion: isv, mutable: true }) : tx.object(panelCurveId);
+      tx.moveCall({ target: `${pkgId}::bonding_curve::claim_creator_fees`, typeArguments: [panelTokenType], arguments: [tx.object(capId), curveRef] });
+      signAndExecutePanel({ transaction: tx }, {
+        onSuccess: () => { setClaimMsg('Fees claimed! 🎉'); setClaiming(false); setTimeout(() => setClaimMsg(''), 3000); },
+        onError:   (err) => { setClaimMsg(err.message || 'Claim failed'); setClaiming(false); setTimeout(() => setClaimMsg(''), 4000); },
       });
-      signAndExecutePanel(
-        { transaction: tx },
-        {
-          onSuccess: () => { setClaimMsg('Fees claimed! 🎉'); setClaiming(false); setTimeout(() => setClaimMsg(''), 3000); },
-          onError: (err) => { setClaimMsg(err.message || 'Claim failed'); setClaiming(false); setTimeout(() => setClaimMsg(''), 4000); },
-        }
-      );
-    } catch (err) {
-      setClaimMsg(err.message || 'Claim failed');
-      setClaiming(false);
-    }
+    } catch (err) { setClaimMsg(err.message || 'Claim failed'); setClaiming(false); }
   };
+
+  // ── Return targets (memoized — only recalculate when inputs change) ────────
+  const returnTargets = React.useMemo(() => {
+    if (!showReturnCalc || side !== 'buy' || !amount || parseFloat(amount) <= 0) return null;
+    if (!reserveMist || !tokensRemaining || !vSui || !vTok) return null;
+    try {
+      const suiInMist = BigInt(Math.floor(parseFloat(amount) * Number(MIST_PER_SUI)));
+      return calcReturnTargets(reserveMist, tokensRemaining, suiInMist, vSui, vTok, suiUsd);
+    } catch { return null; }
+  }, [showReturnCalc, side, amount, reserveMist, tokensRemaining, vSui, vTok, suiUsd]);
 
   return (
     <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 space-y-4">
-      {/* Header row with slippage toggle */}
+      {/* Header */}
       <div className="flex items-center justify-between">
         <div className="text-[10px] font-mono text-white/35 tracking-widest">{t(lang, 'trade')}</div>
-        <button
-          onClick={() => setShowSlippage(s => !s)}
-          className={`flex items-center gap-1.5 px-2 py-1 rounded-lg text-[10px] font-mono transition-colors ${
-            showSlippage
-              ? 'bg-lime-400/10 border border-lime-400/30 text-lime-400'
-              : 'text-white/35 hover:text-white/60'
-          }`}
-        >
+        <button onClick={() => setShowSlippage(s => !s)} className={`flex items-center gap-1.5 px-2 py-1 rounded-lg text-[10px] font-mono transition-colors ${showSlippage ? 'bg-lime-400/10 border border-lime-400/30 text-lime-400' : 'text-white/35 hover:text-white/60'}`}>
           <Settings size={10} />
           {slippageNum === 0 ? 'NO SLIPPAGE' : `${slippage}% ${t(lang, 'slippage')}`}
         </button>
@@ -1030,27 +637,10 @@ function TradePanelContent({
           <div className="text-[9px] font-mono text-white/35 tracking-widest">SLIPPAGE TOLERANCE</div>
           <div className="flex gap-1.5">
             {SLIPPAGE_PRESETS.map(v => (
-              <button
-                key={v}
-                onClick={() => handleSlippagePreset(v)}
-                className={`flex-1 py-1.5 text-[10px] font-mono rounded-lg border transition-colors ${
-                  slippage === v && !isCustom
-                    ? 'bg-lime-400/10 border-lime-400/30 text-lime-400'
-                    : 'border-white/10 text-white/40 hover:border-white/25 hover:text-white/60'
-                }`}
-              >
-                {v}%
-              </button>
+              <button key={v} onClick={() => handleSlippagePreset(v)} className={`flex-1 py-1.5 text-[10px] font-mono rounded-lg border transition-colors ${slippage === v && !isCustom ? 'bg-lime-400/10 border-lime-400/30 text-lime-400' : 'border-white/10 text-white/40 hover:border-white/25 hover:text-white/60'}`}>{v}%</button>
             ))}
-            <input
-              type="number" min="0" max="50" step="0.1"
-              value={customSlippage}
-              onChange={e => handleCustomSlippage(e.target.value)}
-              placeholder="—"
-              className={`w-14 py-1.5 text-[10px] font-mono rounded-lg border text-center bg-transparent transition-colors ${
-                isCustom ? 'border-lime-400/30 text-lime-400' : 'border-white/10 text-white/40'
-              } focus:outline-none focus:border-lime-400/50`}
-            />
+            <input type="number" min="0" max="50" step="0.1" value={customSlippage} onChange={e => handleCustomSlippage(e.target.value)} placeholder="—"
+              className={`w-14 py-1.5 text-[10px] font-mono rounded-lg border text-center bg-transparent transition-colors ${isCustom ? 'border-lime-400/30 text-lime-400' : 'border-white/10 text-white/40'} focus:outline-none focus:border-lime-400/50`} />
           </div>
         </div>
       )}
@@ -1060,26 +650,10 @@ function TradePanelContent({
         <div className="space-y-2 pb-2 border-b border-white/5">
           <div className="flex items-center justify-between">
             <div className="text-[10px] font-mono text-white/35">{t(lang, 'creatorFees')}</div>
-            <div className="text-xs font-mono text-lime-400">
-              {fmt(Number(creatorFeesMist) / 1e9, 4)} SUI
-            </div>
+            <div className="text-xs font-mono text-lime-400">{fmt(Number(creatorFeesMist) / 1e9, 4)} SUI</div>
           </div>
-          <button
-            onClick={handleClaim}
-            disabled={claiming}
-            className={`w-full py-2 rounded-lg text-[10px] font-mono font-bold transition-colors ${
-              claiming
-                ? 'bg-white/5 text-white/20 cursor-not-allowed'
-                : 'bg-lime-400/10 border border-lime-400/30 text-lime-400 hover:bg-lime-400/20'
-            }`}
-          >
-            {claiming ? 'CLAIMING…' : t(lang, 'claimFees')}
-          </button>
-          {claimMsg && (
-            <div className={`text-[10px] font-mono text-center ${claimMsg.includes('🎉') ? 'text-lime-400' : 'text-red-400'}`}>
-              {claimMsg}
-            </div>
-          )}
+          <button onClick={handleClaim} disabled={claiming} className={`w-full py-2 rounded-lg text-[10px] font-mono font-bold transition-colors ${claiming ? 'bg-white/5 text-white/20 cursor-not-allowed' : 'bg-lime-400/10 border border-lime-400/30 text-lime-400 hover:bg-lime-400/20'}`}>{claiming ? 'CLAIMING…' : t(lang, 'claimFees')}</button>
+          {claimMsg && <div className={`text-[10px] font-mono text-center ${claimMsg.includes('🎉') ? 'text-lime-400' : 'text-red-400'}`}>{claimMsg}</div>}
         </div>
       )}
 
@@ -1087,9 +661,7 @@ function TradePanelContent({
       <div className="grid grid-cols-2 gap-2 pt-1 border-t border-white/5">
         <div>
           <div className="text-[10px] font-mono text-white/35 mb-0.5">{t(lang, 'price')}</div>
-          <div className="text-white/70 text-xs font-mono">
-            {suiUsd > 0 ? `$${priceUsd.toFixed(6)}` : `${fmt(priceSui, 6)} SUI`}
-          </div>
+          <div className="text-white/70 text-xs font-mono">{suiUsd > 0 ? `$${priceUsd.toFixed(6)}` : `${fmt(priceSui, 6)} SUI`}</div>
         </div>
         <div>
           <div className="text-[10px] font-mono text-white/35 mb-0.5">{t(lang, 'inSui')}</div>
@@ -1101,76 +673,76 @@ function TradePanelContent({
       {graduated ? (
         <div className="text-center py-4 text-xs font-mono text-lime-400/70">
           🎓 {t(lang, 'graduationComplete')}
-          <a href="https://app.cetus.zone" target="_blank" rel="noreferrer"
-            className="block mt-2 text-lime-400 hover:text-lime-300 underline">
-            {t(lang, 'viewOnCetus')} ↗
-          </a>
+          <a href="https://app.cetus.zone" target="_blank" rel="noreferrer" className="block mt-2 text-lime-400 hover:text-lime-300 underline">{t(lang, 'viewOnCetus')} ↗</a>
         </div>
       ) : (
         <>
           {/* Buy / Sell toggle */}
           <div className="flex rounded-lg overflow-hidden border border-white/10">
-            <button onClick={() => setSide('buy')}
-              className={`flex-1 py-2.5 text-xs font-mono font-bold transition-colors ${side === 'buy' ? 'bg-lime-400 text-black' : 'text-white/50 hover:text-white/80'}`}>
-              {t(lang, 'buy')}
-            </button>
-            <button onClick={() => setSide('sell')}
-              className={`flex-1 py-2.5 text-xs font-mono font-bold transition-colors ${side === 'sell' ? 'bg-red-500 text-white' : 'text-white/50 hover:text-white/80'}`}>
-              {t(lang, 'sell')}
-            </button>
+            <button onClick={() => setSide('buy')}  className={`flex-1 py-2.5 text-xs font-mono font-bold transition-colors ${side === 'buy'  ? 'bg-lime-400 text-black' : 'text-white/50 hover:text-white/80'}`}>{t(lang, 'buy')}</button>
+            <button onClick={() => setSide('sell')} className={`flex-1 py-2.5 text-xs font-mono font-bold transition-colors ${side === 'sell' ? 'bg-red-500 text-white' : 'text-white/50 hover:text-white/80'}`}>{t(lang, 'sell')}</button>
           </div>
 
-          {/* Amount input */}
+          {/* Amount input + preset buttons */}
           <div className="space-y-1.5">
             <div className="text-[10px] font-mono text-white/35">
-              {side === 'buy' ? t(lang, 'amount') : `${t(lang, 'amount')} ($${symbol})`}
+              {side === 'buy' ? t(lang, 'amount') : `AMOUNT ($${symbol})`}
             </div>
             <div className="flex gap-2">
-              <input
-                type="number" min="0" step="any" value={amount}
-                onChange={e => setAmount(e.target.value)}
+              <input type="number" min="0" step="any" value={amount} onChange={e => setAmount(e.target.value)}
                 placeholder={side === 'buy' ? '0.00' : '0'}
-                className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-sm font-mono text-white placeholder-white/20 focus:outline-none focus:border-lime-400/50 focus:bg-lime-400/5 transition-colors"
-              />
-              <button
-                onClick={() => {
-                  if (side === 'buy') {
-                    const max = Math.max(0, suiBalance - 0.1);
-                    setAmount(max > 0 ? max.toFixed(4) : '0');
-                  } else {
-                    setAmount(tokenBalance > 1 ? (tokenBalance - 1).toFixed(0) : tokenBalance > 0 ? tokenBalance.toFixed(0) : '0');
-                  }
-                }}
-                className="px-3 py-2.5 text-[10px] font-mono text-white/40 hover:text-lime-400 border border-white/10 rounded-lg hover:border-lime-400/30 transition-colors"
-              >
+                className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-sm font-mono text-white placeholder-white/20 focus:outline-none focus:border-lime-400/50 focus:bg-lime-400/5 transition-colors" />
+              <button onClick={() => {
+                if (side === 'buy') { const max = Math.max(0, suiBalance - 0.1); setAmount(max > 0 ? max.toFixed(4) : '0'); }
+                else { setAmount(tokenBalance > 1 ? (tokenBalance - 1).toFixed(0) : tokenBalance > 0 ? tokenBalance.toFixed(0) : '0'); }
+              }} className="px-3 py-2.5 text-[10px] font-mono text-white/40 hover:text-lime-400 border border-white/10 rounded-lg hover:border-lime-400/30 transition-colors">
                 {t(lang, 'max')}
               </button>
             </div>
+
             {side === 'buy' ? (
-              <div className="flex gap-1.5">
-                {['1', '10', '50', '100'].map(v => (
-                  <button key={v} onClick={() => setAmount(v)}
-                    className="flex-1 py-1 text-[9px] font-mono text-white/30 hover:text-lime-400 border border-white/10 rounded-md hover:border-lime-400/30 transition-colors">
-                    {v}
-                  </button>
-                ))}
+              <div className="space-y-1.5">
+                {/* Quick-buy label */}
+                <div className="flex items-center gap-1 text-[9px] font-mono text-white/20 tracking-widest">
+                  <Zap size={8} className="text-lime-400/40" />
+                  QUICK BUY — tap to buy instantly
+                </div>
+                {/* Quick-buy buttons — one click sets amount + fires trade immediately */}
+                <div className="flex gap-1.5">
+                  {QUICK_BUY_AMOUNTS.map(v => (
+                    <button key={v}
+                      disabled={!account || isPending || !curveState}
+                      onClick={() => handleQuickBuy(v)}
+                      className={`flex-1 py-2 text-[11px] font-mono font-bold rounded-lg border transition-all duration-100 ${
+                        !account || isPending || !curveState
+                          ? 'border-white/5 text-white/15 cursor-not-allowed'
+                          : 'border-lime-400/40 text-lime-400 bg-lime-400/5 hover:bg-lime-400/15 hover:border-lime-400 active:scale-95 active:bg-lime-400/25'
+                      }`}>
+                      {v}
+                    </button>
+                  ))}
+                </div>
+                <div className="text-[9px] font-mono text-white/20">Balance: {fmt(suiBalance, 3)} SUI</div>
               </div>
             ) : tokenBalance > 0 ? (
-              <div className="flex gap-1.5">
-                {[25, 50, 75, 100].map(pct => (
-                  <button key={pct} onClick={() => setAmount(pct === 100 && tokenBalance > 1 ? (tokenBalance - 1).toFixed(0) : ((tokenBalance * pct) / 100).toFixed(0))}
-                    className="flex-1 py-1 text-[9px] font-mono text-white/30 hover:text-lime-400 border border-white/10 rounded-md hover:border-lime-400/30 transition-colors">
-                    {pct}%
-                  </button>
-                ))}
+              <div className="space-y-1">
+                <div className="flex gap-1.5">
+                  {[25, 50, 75, 100].map(pct => (
+                    <button key={pct}
+                      onClick={() => setAmount(pct === 100 && tokenBalance > 1 ? (tokenBalance - 1).toFixed(0) : ((tokenBalance * pct) / 100).toFixed(0))}
+                      className="flex-1 py-1 text-[9px] font-mono text-white/30 hover:text-lime-400 border border-white/10 rounded-md hover:border-lime-400/30 transition-colors">
+                      {pct}%
+                    </button>
+                  ))}
+                </div>
+                <div className="text-[9px] font-mono text-white/20">Balance: {fmt(tokenBalance, 0)} ${symbol}</div>
               </div>
-            ) : null}
-            <div className="text-[9px] font-mono text-white/20">
-              {side === 'buy' ? `Balance: ${fmt(suiBalance, 3)} SUI` : `Balance: ${fmt(tokenBalance, 0)} $${symbol}`}
-            </div>
+            ) : (
+              <div className="text-[9px] font-mono text-white/20">Balance: 0 ${symbol}</div>
+            )}
           </div>
 
-          {/* Quote */}
+          {/* Quote box */}
           {quote && (
             <div className="bg-white/[0.02] border border-white/5 rounded-lg p-3 space-y-1.5">
               {side === 'buy' ? (
@@ -1181,9 +753,7 @@ function TradePanelContent({
                   </div>
                   <div className="flex justify-between text-[10px] font-mono">
                     <span className="text-white/35">{t(lang, 'priceImpact')}</span>
-                    <span className={Number(quote.priceImpact) > 5 ? 'text-red-400' : 'text-white/50'}>
-                      {Number(quote.priceImpact).toFixed(2)}%
-                    </span>
+                    <span className={Number(quote.priceImpact) > 5 ? 'text-red-400' : 'text-white/50'}>{Number(quote.priceImpact).toFixed(2)}%</span>
                   </div>
                 </>
               ) : (
@@ -1194,9 +764,7 @@ function TradePanelContent({
                   </div>
                   <div className="flex justify-between text-[10px] font-mono">
                     <span className="text-white/35">{t(lang, 'priceImpact')}</span>
-                    <span className={Number(quote.priceImpact) > 5 ? 'text-red-400' : 'text-white/50'}>
-                      {Number(quote.priceImpact).toFixed(2)}%
-                    </span>
+                    <span className={Number(quote.priceImpact) > 5 ? 'text-red-400' : 'text-white/50'}>{Number(quote.priceImpact).toFixed(2)}%</span>
                   </div>
                 </>
               )}
@@ -1204,33 +772,428 @@ function TradePanelContent({
                 <span className="text-white/35">{t(lang, 'fee')}</span>
                 <span className="text-white/50">1%</span>
               </div>
+
+              {/* Return calculator toggle — buy side only */}
+              {side === 'buy' && (
+                <button onClick={() => setShowReturnCalc(s => !s)}
+                  className="w-full mt-0.5 pt-1.5 border-t border-white/5 text-[9px] font-mono text-white/25 hover:text-lime-400/60 transition-colors flex items-center justify-center gap-1">
+                  <Zap size={8} />
+                  {showReturnCalc ? 'HIDE RETURN TARGETS' : 'SHOW RETURN TARGETS'}
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Return targets panel */}
+          {showReturnCalc && side === 'buy' && (
+            <div className="bg-white/[0.02] border border-lime-400/10 rounded-lg p-3 space-y-2">
+              <div className="text-[9px] font-mono text-lime-400/50 tracking-widest flex items-center gap-1">
+                <Zap size={8} /> RETURN TARGETS
+              </div>
+              {!returnTargets ? (
+                <div className="text-[10px] font-mono text-white/25">Enter a buy amount above to see targets</div>
+              ) : (
+                <div className="space-y-2">
+                  {returnTargets.map(tgt => (
+                    <div key={tgt.mult} className="flex items-center justify-between">
+                      <span className={`text-[11px] font-mono font-bold ${tgt.mult === 2 ? 'text-lime-400' : tgt.mult === 5 ? 'text-white/80' : 'text-white/60'}`}>
+                        {tgt.mult}x
+                      </span>
+                      {tgt.reachable ? (
+                        <div className="text-right text-[10px] font-mono">
+                          <span className="text-white/60">
+                            {suiUsd > 0 ? `MC ${fmtUsd(tgt.mcapSui, suiUsd)}` : `MC ${fmt(tgt.mcapSui, 0)} SUI`}
+                          </span>
+                          <span className="text-white/25 ml-2 text-[9px]">
+                            @ {fmt(tgt.reserveSui, 0)} SUI raised
+                          </span>
+                        </div>
+                      ) : (
+                        <span className="text-[10px] font-mono text-white/20">not reachable before grad</span>
+                      )}
+                    </div>
+                  ))}
+                  <div className="text-[8px] font-mono text-white/15 pt-1 border-t border-white/5">
+                    sell full position · both fees included · estimate only
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
           {/* Execute button */}
-          <button
-            onClick={onExecute}
-            disabled={!account || isPending || !amount || parseFloat(amount) <= 0}
+          <button onClick={onExecute} disabled={!account || isPending || !amount || parseFloat(amount) <= 0}
             className={`w-full py-3 rounded-xl text-sm font-mono font-bold transition-colors ${
               !account || isPending || !amount || parseFloat(amount) <= 0
                 ? 'bg-white/5 text-white/20 cursor-not-allowed'
-                : side === 'buy'
-                  ? 'bg-lime-400 text-black hover:bg-lime-300'
-                  : 'bg-red-500 text-white hover:bg-red-400'
-            }`}
-          >
+                : side === 'buy' ? 'bg-lime-400 text-black hover:bg-lime-300' : 'bg-red-500 text-white hover:bg-red-400'
+            }`}>
             {isPending ? '⏳ …' : !account ? 'Connect wallet' : side === 'buy' ? t(lang, 'buy') : t(lang, 'sell')}
           </button>
 
-          {/* TX status */}
           {txStatus && txMsg && (
-            <div className={`text-[10px] font-mono text-center py-1 ${
-              txStatus === 'success' ? 'text-lime-400' : txStatus === 'error' ? 'text-red-400' : 'text-white/40'
-            }`}>
+            <div className={`text-[10px] font-mono text-center py-1 ${txStatus === 'success' ? 'text-lime-400' : txStatus === 'error' ? 'text-red-400' : 'text-white/40'}`}>
               {txMsg}
             </div>
           )}
         </>
+      )}
+    </div>
+  );
+}
+
+// ── TP/SL Panel ───────────────────────────────────────────────────────────────
+// Shown in the right column below the trade panel.
+// User sets take-profit and/or stop-loss levels with partial sell %.
+// When triggered, fires a sell PTB → Slush wallet signs.
+
+function TPSLPanel({
+  account, curveId, tokenType, pkgId,
+  priceSui,
+  tokenBalance,
+  reserveMist, tokensRemaining, vSui, vTok,
+  slippage,
+  keypair,        // Ed25519Keypair | null — if set, signs autonomously (no Slush popup)
+}) {
+  const client = useSuiClient();
+  const { mutate: signAndExecute } = useSignAndExecuteTransaction();
+
+  const [showConfig, setShowConfig]       = useState(false);
+  const [entryPrice, setEntryPrice]       = useState('');
+  const [pendingLevels, setPendingLevels] = useState([
+    { type: 'tp', pct: '100',  sellPct: '50' },
+    { type: 'sl', pct: '-20',  sellPct: '100' },
+  ]);
+  const [triggerMsg, setTriggerMsg] = useState(null);
+  const [selling, setSelling]       = useState(false);
+
+  // ── Build and sign the sell PTB ──────────────────────────────────────────
+  const executeSell = useCallback(async (sellWholeTokens) => {
+    if (!account || !curveId || !tokenType || !pkgId || selling) return;
+    if (sellWholeTokens <= 0) return;
+    setSelling(true);
+    try {
+      const tokInAtomic = BigInt(Math.floor(sellWholeTokens * 10 ** TOKEN_DECIMALS));
+
+      // Determine signer address — keypair address or connected wallet
+      const signerAddress = keypair
+        ? keypair.getPublicKey().toSuiAddress()
+        : account.address;
+
+      const objForRef = await client.getObject({ id: curveId, options: { showOwner: true } });
+      const isv = objForRef.data?.owner?.Shared?.initial_shared_version;
+      const tx = new Transaction();
+      const curveRef = isv
+        ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: isv, mutable: true })
+        : tx.object(curveId);
+
+      // Get token coins owned by the signer
+      const coins = await client.getCoins({ owner: signerAddress, coinType: tokenType });
+      if (!coins.data.length) throw new Error('No token balance in trading wallet');
+      const coinObjs = coins.data.map(c => tx.object(c.coinObjectId));
+      if (coinObjs.length > 1) tx.mergeCoins(coinObjs[0], coinObjs.slice(1));
+      const [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(tokInAtomic)]);
+
+      const slippageNum = parseFloat(slippage) || 1;
+      const sq = sellQuote(reserveMist, tokensRemaining, tokInAtomic, vSui, vTok);
+      const minOut = sq?.suiOut != null
+        ? BigInt(Math.floor(Number(sq.suiOut) * (1 - slippageNum / 100)))
+        : 0n;
+
+      const sellArgs = isV7OrLater(pkgId)
+        ? [curveRef, tokenCoin, tx.pure.u64(minOut), tx.pure.option('address', null)]
+        : [curveRef, tokenCoin, tx.pure.u64(minOut)];
+
+      const [suiOut] = tx.moveCall({
+        target: `${pkgId}::bonding_curve::sell`,
+        typeArguments: [tokenType],
+        arguments: sellArgs,
+      });
+      tx.transferObjects([suiOut], signerAddress);
+
+      // ── Autonomous path (keypair) ────────────────────────────────────────
+      if (keypair) {
+        tx.setSender(signerAddress);
+        const autonomousClient = new SuiClient({ url: getFullnodeUrl('testnet') });
+        const builtTx = await tx.build({ client: autonomousClient });
+        const { signature } = await keypair.signTransaction(builtTx);
+        const result = await autonomousClient.executeTransactionBlock({
+          transactionBlock: builtTx,
+          signature,
+          options: { showEffects: true },
+        });
+        const success = result.effects?.status?.status === 'success';
+        setTriggerMsg(m => m ? { ...m, status: success ? 'done' : 'error', digest: result.digest } : m);
+        setSelling(false);
+        return;
+      }
+
+      // ── Slush fallback (no keypair) ──────────────────────────────────────
+      signAndExecute({ transaction: tx }, {
+        onSuccess: () => {
+          setTriggerMsg(m => m ? { ...m, status: 'done' } : m);
+          setSelling(false);
+        },
+        onError: (err) => {
+          setTriggerMsg(m => m ? { ...m, status: 'error', error: err.message } : m);
+          setSelling(false);
+        },
+      });
+    } catch (err) {
+      setTriggerMsg(m => m ? { ...m, status: 'error', error: err.message } : m);
+      setSelling(false);
+    }
+  }, [account, curveId, tokenType, pkgId, selling, client, signAndExecute, reserveMist, tokensRemaining, vSui, vTok, slippage, keypair]);
+
+  // ── onTrigger callback passed to useTPSL ────────────────────────────────
+  const handleTrigger = useCallback(({ level, currentPriceSui }) => {
+    const sellTokens = tokenBalance * (level.sellPct / 100);
+    setTriggerMsg({ level, currentPriceSui, status: 'pending', sellTokens });
+    executeSell(sellTokens);
+  }, [tokenBalance, executeSell]);
+
+  const { config, activate, deactivate, isActive } = useTPSL({
+    walletAddress:   account?.address,
+    curveId,
+    currentPriceSui: priceSui,
+    onTrigger:       handleTrigger,
+  });
+
+  // ── Helpers ──────────────────────────────────────────────────────────────
+  const updateLevel = (idx, field, val) => {
+    setPendingLevels(prev => prev.map((l, i) => i === idx ? { ...l, [field]: val } : l));
+  };
+  const addLevel = () => {
+    if (pendingLevels.length >= 4) return;
+    setPendingLevels(prev => [...prev, { type: 'tp', pct: '200', sellPct: '100' }]);
+  };
+  const removeLevel = (idx) => {
+    setPendingLevels(prev => prev.filter((_, i) => i !== idx));
+  };
+
+  const handleActivate = () => {
+    const ep = parseFloat(entryPrice) || priceSui;
+    if (!ep || ep <= 0) return;
+    const levels = pendingLevels
+      .filter(l => l.pct !== '' && l.sellPct !== '')
+      .map(l => makeLevel(l.type, parseFloat(l.pct), parseFloat(l.sellPct)));
+    if (!levels.length) return;
+    activate(ep, levels);
+    setShowConfig(false);
+  };
+
+  const pctColor = (type) => type === 'tp' ? 'text-lime-400' : 'text-red-400';
+  const pctBorder = (type) => type === 'tp' ? 'border-lime-400/30' : 'border-red-400/30';
+
+  if (!account) return null;
+
+  return (
+    <div className="bg-white/[0.03] border border-white/10 rounded-xl overflow-hidden">
+      {/* Header */}
+      <div className="px-4 py-3 flex items-center justify-between border-b border-white/5">
+        <div className="flex items-center gap-2">
+          <ShieldAlert size={11} className={isActive ? 'text-lime-400' : 'text-white/30'} />
+          <span className="text-[10px] font-mono tracking-widest text-white/35">TP / SL</span>
+          {isActive && (
+            <span className="flex items-center gap-1 text-[9px] font-mono text-lime-400/70">
+              <span className="w-1.5 h-1.5 rounded-full bg-lime-400 animate-pulse inline-block" />
+              {keypair ? 'AUTO · NO POPUP' : 'ACTIVE · TAB MUST STAY OPEN'}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          {isActive && (
+            <button onClick={deactivate}
+              className="text-[9px] font-mono text-red-400/60 hover:text-red-400 transition-colors">
+              CANCEL
+            </button>
+          )}
+          <button
+            onClick={() => setShowConfig(s => !s)}
+            className="text-[9px] font-mono text-lime-400/70 hover:text-lime-400 transition-colors"
+          >
+            {showConfig ? 'CLOSE' : isActive ? 'EDIT' : 'SET UP'}
+          </button>
+        </div>
+      </div>
+
+      {/* Active levels display */}
+      {isActive && !showConfig && (
+        <div className="px-4 py-3 space-y-2">
+          <div className="text-[9px] font-mono text-white/25 mb-1">
+            Entry: {config.entryPriceSui?.toFixed(8)} SUI · Now: {priceSui?.toFixed(8)} SUI
+          </div>
+          {config.levels?.map(level => {
+            const changePct = priceSui && config.entryPriceSui
+              ? ((priceSui - config.entryPriceSui) / config.entryPriceSui) * 100
+              : 0;
+            const progress = level.type === 'tp'
+              ? Math.min(100, Math.max(0, (changePct / level.pct) * 100))
+              : Math.min(100, Math.max(0, (Math.abs(Math.min(0, changePct)) / Math.abs(level.pct)) * 100));
+
+            return (
+              <div key={level.id} className={`rounded-lg border px-3 py-2 space-y-1.5 ${
+                level.triggered
+                  ? 'border-white/10 bg-white/[0.02] opacity-50'
+                  : level.type === 'tp' ? 'border-lime-400/20 bg-lime-950/10' : 'border-red-400/20 bg-red-950/10'
+              }`}>
+                <div className="flex items-center justify-between text-[10px] font-mono">
+                  <span className={level.type === 'tp' ? 'text-lime-400' : 'text-red-400'}>
+                    {level.type === 'tp' ? '▲ TP' : '▼ SL'} {level.pct > 0 ? '+' : ''}{level.pct}%
+                  </span>
+                  <span className="text-white/40">
+                    Sell {level.sellPct}% of position
+                  </span>
+                  {level.triggered && <span className="text-white/25 text-[9px]">TRIGGERED</span>}
+                </div>
+                {!level.triggered && (
+                  <div className="h-1 bg-white/5 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all ${level.type === 'tp' ? 'bg-lime-400/50' : 'bg-red-400/50'}`}
+                      style={{ width: `${progress}%` }}
+                    />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Trigger notification */}
+      {triggerMsg && (
+        <div className={`mx-4 mb-3 rounded-lg border px-3 py-2.5 text-[10px] font-mono space-y-1 ${
+          triggerMsg.status === 'done'    ? 'border-lime-400/30 bg-lime-950/20' :
+          triggerMsg.status === 'error'   ? 'border-red-400/30 bg-red-950/20' :
+          'border-white/10 bg-white/[0.02]'
+        }`}>
+          <div className="flex items-center gap-1.5">
+            <Bell size={10} className={triggerMsg.level.type === 'tp' ? 'text-lime-400' : 'text-red-400'} />
+            <span className="text-white/70 font-bold">
+              {triggerMsg.level.type === 'tp' ? 'Take-profit' : 'Stop-loss'} triggered
+            </span>
+          </div>
+          <div className="text-white/40">
+            Selling {triggerMsg.sellTokens?.toFixed(0)} tokens ({triggerMsg.level.sellPct}%)
+          </div>
+          {triggerMsg.status === 'pending' && (
+            <div className="text-white/30 animate-pulse">
+              {keypair ? 'Auto-executing…' : 'Waiting for wallet signature…'}
+            </div>
+          )}
+          {triggerMsg.status === 'done' && (
+            <div className="text-lime-400">Sold successfully ✓</div>
+          )}
+          {triggerMsg.status === 'error' && (
+            <div className="text-red-400">{triggerMsg.error || 'Sell failed'}</div>
+          )}
+          <button onClick={() => setTriggerMsg(null)}
+            className="text-[9px] text-white/20 hover:text-white/50 transition-colors">
+            dismiss
+          </button>
+        </div>
+      )}
+
+      {/* Config form */}
+      {showConfig && (
+        <div className="px-4 py-3 space-y-3">
+          {/* Entry price */}
+          <div>
+            <div className="text-[9px] font-mono text-white/30 tracking-widest mb-1.5">ENTRY PRICE (SUI per token)</div>
+            <input
+              type="number" step="any" min="0"
+              value={entryPrice}
+              onChange={e => setEntryPrice(e.target.value)}
+              placeholder={priceSui ? priceSui.toFixed(8) : '0.00000000'}
+              className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-[11px] font-mono text-white placeholder-white/20 focus:outline-none focus:border-lime-400/40 transition-colors"
+            />
+            <button
+              onClick={() => setEntryPrice(priceSui?.toFixed(8) ?? '')}
+              className="mt-1 text-[9px] font-mono text-lime-400/60 hover:text-lime-400 transition-colors"
+            >
+              use current price
+            </button>
+          </div>
+
+          {/* Levels */}
+          <div className="space-y-2">
+            <div className="text-[9px] font-mono text-white/30 tracking-widest">LEVELS</div>
+            {pendingLevels.map((level, idx) => (
+              <div key={idx} className="flex items-center gap-2">
+                {/* TP / SL toggle */}
+                <button
+                  onClick={() => updateLevel(idx, 'type', level.type === 'tp' ? 'sl' : 'tp')}
+                  className={`w-9 py-1.5 rounded-lg text-[9px] font-mono font-bold border transition-colors flex-shrink-0 ${
+                    level.type === 'tp'
+                      ? 'border-lime-400/40 text-lime-400 bg-lime-400/5'
+                      : 'border-red-400/40 text-red-400 bg-red-400/5'
+                  }`}
+                >
+                  {level.type === 'tp' ? 'TP' : 'SL'}
+                </button>
+                {/* % trigger */}
+                <div className="flex-1 relative">
+                  <input
+                    type="number" step="1"
+                    value={level.pct}
+                    onChange={e => updateLevel(idx, 'pct', e.target.value)}
+                    placeholder={level.type === 'tp' ? '+100' : '-20'}
+                    className={`w-full bg-white/5 border rounded-lg px-2 py-1.5 text-[11px] font-mono text-center focus:outline-none transition-colors ${pctBorder(level.type)} focus:border-lime-400/50`}
+                  />
+                  <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[8px] font-mono text-white/20">%</span>
+                </div>
+                {/* Sell % */}
+                <div className="flex-1 relative">
+                  <input
+                    type="number" step="1" min="1" max="100"
+                    value={level.sellPct}
+                    onChange={e => updateLevel(idx, 'sellPct', e.target.value)}
+                    placeholder="100"
+                    className="w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-[11px] font-mono text-center focus:outline-none focus:border-lime-400/40 transition-colors"
+                  />
+                  <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[8px] font-mono text-white/20">sell%</span>
+                </div>
+                {/* Remove */}
+                <button onClick={() => removeLevel(idx)}
+                  className="text-white/20 hover:text-red-400 transition-colors flex-shrink-0">
+                  <Trash2 size={11} />
+                </button>
+              </div>
+            ))}
+            {pendingLevels.length < 4 && (
+              <button onClick={addLevel}
+                className="flex items-center gap-1 text-[9px] font-mono text-white/25 hover:text-lime-400 transition-colors">
+                <Plus size={10} /> Add level
+              </button>
+            )}
+          </div>
+
+          {/* Helper text */}
+          <div className="text-[8px] font-mono text-white/15 leading-relaxed">
+            TP = sell when price rises by %. SL = sell when price falls by % (enter negative). Sell % = portion of your balance to sell. Tab must stay open.
+          </div>
+
+          {/* Activate */}
+          <button
+            onClick={handleActivate}
+            disabled={!pendingLevels.length || !account}
+            className={`w-full py-2.5 rounded-lg text-[11px] font-mono font-bold transition-colors ${
+              !pendingLevels.length || !account
+                ? 'bg-white/5 text-white/20 cursor-not-allowed'
+                : 'bg-lime-400 text-black hover:bg-lime-300'
+            }`}
+          >
+            ACTIVATE TP/SL
+          </button>
+        </div>
+      )}
+
+      {/* Empty state */}
+      {!isActive && !showConfig && (
+        <div className="px-4 py-4 text-center">
+          <div className="text-[10px] font-mono text-white/20 mb-1">No active orders</div>
+          <div className="text-[9px] font-mono text-white/15">Auto-sell when price hits your targets</div>
+        </div>
       )}
     </div>
   );
@@ -1243,26 +1206,15 @@ function TradesHoldersBlock({ curveId, tokenType, suiUsd, lang, creator }) {
   return (
     <div className="space-y-0">
       <div className="flex bg-white/[0.03] border border-white/10 rounded-t-xl overflow-hidden">
-        <button onClick={() => setTab('trades')}
-          className={`flex-1 py-3 text-xs font-mono font-bold tracking-wider transition-colors ${tab === 'trades' ? 'text-lime-400 bg-lime-400/5 border-b-2 border-lime-400' : 'text-white/40 hover:text-white/70'}`}>
-          TRADES
-        </button>
-        <button onClick={() => setTab('holders')}
-          className={`flex-1 py-3 text-xs font-mono font-bold tracking-wider transition-colors ${tab === 'holders' ? 'text-lime-400 bg-lime-400/5 border-b-2 border-lime-400' : 'text-white/40 hover:text-white/70'}`}>
-          {t(lang, 'holders')}
-        </button>
+        <button onClick={() => setTab('trades')}  className={`flex-1 py-3 text-xs font-mono font-bold tracking-wider transition-colors ${tab === 'trades'  ? 'text-lime-400 bg-lime-400/5 border-b-2 border-lime-400' : 'text-white/40 hover:text-white/70'}`}>TRADES</button>
+        <button onClick={() => setTab('holders')} className={`flex-1 py-3 text-xs font-mono font-bold tracking-wider transition-colors ${tab === 'holders' ? 'text-lime-400 bg-lime-400/5 border-b-2 border-lime-400' : 'text-white/40 hover:text-white/70'}`}>{t(lang, 'holders')}</button>
       </div>
       <div className="[&>div]:rounded-t-none [&>div]:border-t-0">
-        {tab === 'trades'
-          ? <TradeHistory curveId={curveId} suiUsd={suiUsd} creator={creator} />
-          : <HolderList curveId={curveId} tokenType={tokenType} suiUsd={suiUsd} creator={creator} />
-        }
+        {tab === 'trades' ? <TradeHistory curveId={curveId} suiUsd={suiUsd} creator={creator} /> : <HolderList curveId={curveId} tokenType={tokenType} suiUsd={suiUsd} creator={creator} />}
       </div>
     </div>
   );
 }
-
-// ── Comments wrapper ──────────────────────────────────────────────────────────
 
 function CommentsBlock({ curveId, packageId, lang }) {
   return (
@@ -1275,56 +1227,27 @@ function CommentsBlock({ curveId, packageId, lang }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function TokenPage({ curveId, tokenType, packageId: packageIdHint, onBack, lang = 'en' }) {
+export default function TokenPage({ curveId, tokenType, packageId: packageIdHint, onBack, lang = 'en', tradeKeypair = null, tradeKeyReady = false }) {
   const navigate = useNavigate();
-  const account = useCurrentAccount();
-  const client = useCurrentClient();
-  const dAppKit_signAndExecute = useDAppKit();
-  const signAndExecute = (args, callbacks) => {
-    dAppKit_signAndExecute.signAndExecuteTransaction({
-      ...args,
-      include: { effects: true, events: true, objectTypes: true },
-    }).then(result => {
-      if (result.FailedTransaction) {
-        const err = new Error(result.FailedTransaction.effects?.status?.error?.message || 'Transaction failed');
-        callbacks?.onError?.(err);
-      } else {
-        // Mimic the old shape (digest/effects/objectChanges/events)
-        const tx = result.Transaction;
-        const compat = {
-          digest: tx.digest,
-          effects: tx.effects,
-          events: tx.events,
-          // changedObjects with idOperation==="Created" mapped to old objectChanges shape
-          objectChanges: (tx.effects?.changedObjects ?? []).map(c => ({
-            type: c.idOperation === 'Created' ? 'created' :
-                  c.idOperation === 'Deleted' ? 'deleted' : 'mutated',
-            objectId: c.objectId,
-            objectType: tx.objectTypes?.[c.objectId] || '',
-            owner: c.outputOwner,
-          })),
-        };
-        callbacks?.onSuccess?.(compat);
-      }
-    }).catch(err => callbacks?.onError?.(err));
-  }
+  const account  = useCurrentAccount();
+  const client   = useSuiClient();
+  const { mutate: signAndExecute } = useSignAndExecuteTransaction();
 
-  const [suiUsd, setSuiUsd]               = useState(0);
-  const [curveState, setCurveState]       = useState(null);
-  const [metadata, setMetadata]           = useState(null);
-  const [iconUrl, setIconUrl]             = useState(null);
+  const [suiUsd,          setSuiUsd]          = useState(0);
+  const [curveState,      setCurveState]      = useState(null);
+  const [metadata,        setMetadata]        = useState(null);
+  const [iconUrl,         setIconUrl]         = useState(null);
   const [curveCreatedData, setCurveCreatedData] = useState(null);
-
-  const [suiBalance, setSuiBalance]       = useState(0);
-  const [tokenBalance, setTokenBalance]   = useState(0);
-  const [side, setSide]                   = useState('buy');
-  const [amount, setAmount]               = useState('');
-  const [slippage, setSlippage]           = useState('1');
-  const [txStatus, setTxStatus]           = useState(null);
-  const [txMsg, setTxMsg]                 = useState('');
-  const [copied, setCopied]               = useState(false);
-  const [shared, setShared]               = useState(false);
-  const [linkCopied, setLinkCopied]       = useState(false);
+  const [suiBalance,      setSuiBalance]      = useState(0);
+  const [tokenBalance,    setTokenBalance]    = useState(0);
+  const [side,            setSide]            = useState('buy');
+  const [amount,          setAmount]          = useState('');
+  const [slippage,        setSlippage]        = useState('1');
+  const [txStatus,        setTxStatus]        = useState(null);
+  const [txMsg,           setTxMsg]           = useState('');
+  const [copied,          setCopied]          = useState(false);
+  const [shared,          setShared]          = useState(false);
+  const [linkCopied,      setLinkCopied]      = useState(false);
 
   // ── data loading ──────────────────────────────────────────────────────────
 
@@ -1351,35 +1274,18 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   useEffect(() => {
     if (!tokenType) return;
     let cancelled = false;
-    const pkgId = getTokenPackageId(tokenType);
-
-    client.getCoinMetadata({ coinType: tokenType })
-      .then(m => {
-        if (!cancelled) {
-          setMetadata(m);
-          const icon = m?.iconUrl;
-          if (icon && !isPlaceholderIcon(icon)) setIconUrl(icon);
-        }
-      }).catch(() => {});
-
-    // Fetch CurveCreated event — try all package IDs
+    client.getCoinMetadata({ coinType: tokenType }).then(m => {
+      if (!cancelled) { setMetadata(m); const icon = m?.iconUrl; if (icon && !isPlaceholderIcon(icon)) setIconUrl(icon); }
+    }).catch(() => {});
     (async () => {
       try {
-        // Search every package version — a curve's CurveCreated event lives
-        // on whichever SuiPump package launched it.
-        const packageIds = [PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8]
-          .filter(Boolean)
-          .filter((v, i, a) => a.indexOf(v) === i);
+        const packageIds = [PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i);
         let found = null;
         for (const pid of packageIds) {
           if (found) break;
           let cursor = null;
           for (let page = 0; page < 10 && !found; page++) {
-            const res = await client.queryEvents({
-              query: { MoveEventType: `${pid}::bonding_curve::CurveCreated` },
-              limit: 50,
-              cursor: cursor || undefined,
-            });
+            const res = await client.queryEvents({ query: { MoveEventType: `${pid}::bonding_curve::CurveCreated` }, limit: 50, cursor: cursor || undefined });
             found = res.data?.find(e => e.parsedJson?.curve_id === curveId);
             if (!res.hasNextPage) break;
             cursor = res.cursor;
@@ -1411,47 +1317,28 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
 
   // ── derived state ─────────────────────────────────────────────────────────
 
-  const pkgId          = resolvePackageId(tokenType, packageIdHint);
-  const isV5Token      = isV5OrLater(pkgId);
-  // Per-version curve shape: V4=30k, V5/V6=9k, V7=3.5k virtual SUI.
-  // Using the wrong shape would mis-price every quote and chart point.
-  const vSui           = (pkgId === PACKAGE_ID_V8 || pkgId === PACKAGE_ID_V8_1) ? VIRTUAL_SUI_V8
-                       : pkgId === PACKAGE_ID_V7 ? VIRTUAL_SUI_V7
-                       : (pkgId === PACKAGE_ID_V6 || pkgId === PACKAGE_ID_V5) ? VIRTUAL_SUI_V5
-                       : VIRTUAL_SUI_V4;
-  const vTok           = (pkgId === PACKAGE_ID_V8 || pkgId === PACKAGE_ID_V8_1) ? VIRTUAL_TOKENS_V8
-                       : pkgId === PACKAGE_ID_V7 ? VIRTUAL_TOKENS_V7
-                       : (pkgId === PACKAGE_ID_V6 || pkgId === PACKAGE_ID_V5) ? VIRTUAL_TOKENS_V5
-                       : VIRTUAL_TOKENS_V4;
-  const drainSui       = (pkgId === PACKAGE_ID_V8 || pkgId === PACKAGE_ID_V8_1) ? DRAIN_SUI_V8
-                       : pkgId === PACKAGE_ID_V7 ? DRAIN_SUI_V7
-                       : (pkgId === PACKAGE_ID_V6 || pkgId === PACKAGE_ID_V5) ? DRAIN_SUI_V5
-                       : DRAIN_SUI_V4;
-  const reserveMist    = curveState ? BigInt(curveState.sui_reserve) : 0n;
+  const pkgId    = resolvePackageId(tokenType, packageIdHint);
+  const vSui     = (pkgId === PACKAGE_ID_V8 || pkgId === PACKAGE_ID_V8_1) ? VIRTUAL_SUI_V8 : pkgId === PACKAGE_ID_V7 ? VIRTUAL_SUI_V7 : (pkgId === PACKAGE_ID_V6 || pkgId === PACKAGE_ID_V5) ? VIRTUAL_SUI_V5 : VIRTUAL_SUI_V4;
+  const vTok     = (pkgId === PACKAGE_ID_V8 || pkgId === PACKAGE_ID_V8_1) ? VIRTUAL_TOKENS_V8 : pkgId === PACKAGE_ID_V7 ? VIRTUAL_TOKENS_V7 : (pkgId === PACKAGE_ID_V6 || pkgId === PACKAGE_ID_V5) ? VIRTUAL_TOKENS_V5 : VIRTUAL_TOKENS_V4;
+  const drainSui = (pkgId === PACKAGE_ID_V8 || pkgId === PACKAGE_ID_V8_1) ? DRAIN_SUI_V8 : pkgId === PACKAGE_ID_V7 ? DRAIN_SUI_V7 : (pkgId === PACKAGE_ID_V6 || pkgId === PACKAGE_ID_V5) ? DRAIN_SUI_V5 : DRAIN_SUI_V4;
+
+  const reserveMist     = curveState ? BigInt(curveState.sui_reserve) : 0n;
   const tokensRemaining = curveState ? BigInt(curveState.token_reserve) : 0n;
-  const tokensSold     = BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS) - tokensRemaining;
-  const progress       = Math.min(100, (mistToSui(reserveMist) / drainSui) * 100);
-  const priceMist      = curveState ? priceMistPerToken(reserveMist, tokensSold, vSui, vTok) : 0n;
-  const priceSui       = Number(priceMist) / 1e9;
-  const priceUsd       = priceSui * suiUsd;
-  const marketCapSui   = priceSui * TOTAL_SUPPLY_WHOLE;
-  const graduated      = curveState?.graduated ?? false;
+  const tokensSold      = BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS) - tokensRemaining;
+  const progress        = Math.min(100, (mistToSui(reserveMist) / drainSui) * 100);
+  const priceMist       = curveState ? priceMistPerToken(reserveMist, tokensSold, vSui, vTok) : 0n;
+  const priceSui        = Number(priceMist) / 1e9;
+  const priceUsd        = priceSui * suiUsd;
+  const marketCapSui    = priceSui * TOTAL_SUPPLY_WHOLE;
+  const graduated       = curveState?.graduated ?? false;
   const creatorFeesMist = curveState ? BigInt(curveState.creator_fees ?? 0) : 0n;
   const creatorAddr     = curveState?.creator ?? null;
 
-  // Apply localStorage overrides (testnet only — v7 will be on-chain)
-  const _metaOverride = (() => {
-    try { return JSON.parse(localStorage.getItem(`suipump_meta_${curveId}`) || '{}'); }
-    catch { return {}; }
-  })();
-  const _linksOverride = (() => {
-    try { return JSON.parse(localStorage.getItem(`suipump_links_${curveId}`) || '{}'); }
-    catch { return {}; }
-  })();
+  const _metaOverride  = (() => { try { return JSON.parse(localStorage.getItem(`suipump_meta_${curveId}`)  || '{}'); } catch { return {}; } })();
+  const _linksOverride = (() => { try { return JSON.parse(localStorage.getItem(`suipump_links_${curveId}`) || '{}'); } catch { return {}; } })();
 
   const name   = _metaOverride.name   || curveCreatedData?.name   || metadata?.name   || '';
   const symbol = _metaOverride.symbol || curveCreatedData?.symbol || metadata?.symbol || '';
-
   const _rawDesc = (_metaOverride.description || _linksOverride.desc || metadata?.description || '').trim();
   const rawDesc  = isPlaceholderDesc(_rawDesc) ? '' : _rawDesc;
   const _parsed  = parseDescription(rawDesc);
@@ -1460,58 +1347,30 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   const telegram = _linksOverride.telegram || _parsed.telegram;
   const website  = _linksOverride.website  || _parsed.website;
   const dex      = _linksOverride.dex      || _parsed.dex;
-
-  // Override iconUrl from localStorage if set
   const _overrideIcon = _metaOverride.iconUrl || null;
 
-  // Creator check — query CreatorCap from both packages
   const [isCreator, setIsCreator] = React.useState(false);
   React.useEffect(() => {
     if (!account?.address || !curveId || !client) { setIsCreator(false); return; }
     let cancelled = false;
     const checkPkg = async (pid) => {
-      const res = await client.listOwnedObjects({
-              owner: account.address,
-              type: `${pid}::bonding_curve::CreatorCap`,
-              include: { json: true },
-            });
-      return res.data?.some(o => o.object?.json?.curve_id === curveId);
+      const res = await client.getOwnedObjects({ owner: account.address, filter: { StructType: `${pid}::bonding_curve::CreatorCap` }, options: { showContent: true } });
+      return res.data?.some(o => o.data?.content?.fields?.curve_id === curveId);
     };
-    Promise.all([
-      checkPkg(PACKAGE_ID_V4),
-      ...(PACKAGE_ID_V5 ? [checkPkg(PACKAGE_ID_V5)] : []),
-      ...(PACKAGE_ID_V6 ? [checkPkg(PACKAGE_ID_V6)] : []),
-      ...(PACKAGE_ID_V7 ? [checkPkg(PACKAGE_ID_V7)] : []),
-      ...(PACKAGE_ID_V8_1 ? [checkPkg(PACKAGE_ID_V8_1)] : []),
-      ...(PACKAGE_ID_V8 ? [checkPkg(PACKAGE_ID_V8)] : []),
-    ]).then(results => {
-      if (!cancelled) setIsCreator(results.some(Boolean));
-    }).catch(() => {});
+    Promise.all([checkPkg(PACKAGE_ID_V4), ...(PACKAGE_ID_V5 ? [checkPkg(PACKAGE_ID_V5)] : []), ...(PACKAGE_ID_V6 ? [checkPkg(PACKAGE_ID_V6)] : []), ...(PACKAGE_ID_V7 ? [checkPkg(PACKAGE_ID_V7)] : []), ...(PACKAGE_ID_V8_1 ? [checkPkg(PACKAGE_ID_V8_1)] : []), ...(PACKAGE_ID_V8 ? [checkPkg(PACKAGE_ID_V8)] : [])])
+      .then(results => { if (!cancelled) setIsCreator(results.some(Boolean)); }).catch(() => {});
     return () => { cancelled = true; };
   }, [account?.address, curveId, client]);
 
   // ── actions ───────────────────────────────────────────────────────────────
 
-  const handleCopy = () => {
-    if (curveId) { navigator.clipboard.writeText(curveId); setCopied(true); setTimeout(() => setCopied(false), 1500); }
-  };
-
+  const handleCopy = () => { if (curveId) { navigator.clipboard.writeText(curveId); setCopied(true); setTimeout(() => setCopied(false), 1500); } };
   const handleShare = () => {
     const url = `${window.location.origin}/token/${curveId}`;
-    if (navigator.share) {
-      navigator.share({ title: `${name} ($${symbol}) on SuiPump`, url });
-    } else {
-      navigator.clipboard.writeText(url);
-    }
-    setShared(true);
-    setTimeout(() => setShared(false), 1500);
+    if (navigator.share) { navigator.share({ title: `${name} ($${symbol}) on SuiPump`, url }); } else { navigator.clipboard.writeText(url); }
+    setShared(true); setTimeout(() => setShared(false), 1500);
   };
-
-  const handleCopyLink = () => {
-    navigator.clipboard.writeText(`${window.location.origin}/token/${curveId}`);
-    setLinkCopied(true);
-    setTimeout(() => setLinkCopied(false), 1500);
-  };
+  const handleCopyLink = () => { navigator.clipboard.writeText(`${window.location.origin}/token/${curveId}`); setLinkCopied(true); setTimeout(() => setLinkCopied(false), 1500); };
 
   const quoteTrade = useCallback(() => {
     if (!amount || parseFloat(amount) <= 0 || !curveState) return null;
@@ -1528,9 +1387,9 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
 
   const executeTrade = useCallback(async () => {
     if (!account || !curveState || !curveId || !tokenType) return;
+    // Read amount from state (may have been set by quick-buy just before this fires)
     const amtFloat = parseFloat(amount);
     if (!amtFloat || amtFloat <= 0) return;
-    // Must know which package this token belongs to before firing tx
     if (!pkgId) return;
 
     setTxStatus('pending');
@@ -1550,96 +1409,66 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
       if (side === 'buy') {
         const suiInMist = BigInt(Math.floor(amtFloat * Number(MIST_PER_SUI)));
         const [payment] = tx.splitCoins(tx.gas, [tx.pure.u64(suiInMist)]);
-        const quote = buyQuote(reserveMist, tokensRemaining, suiInMist, vSui, vTok);
-        const minOut = quote?.tokensOut != null
-          ? BigInt(Math.floor(Number(quote.tokensOut) * (1 - slippageNum / 100)))
-          : 0n;
-
+        const bq = buyQuote(reserveMist, tokensRemaining, suiInMist, vSui, vTok);
+        const minOut = bq?.tokensOut != null ? BigInt(Math.floor(Number(bq.tokensOut) * (1 - slippageNum / 100))) : 0n;
         const buyArgs = isV5
           ? [curveRef, payment, tx.pure.u64(minOut), tx.pure.option('address', null), tx.object(SUI_CLOCK_ID)]
           : [curveRef, payment, tx.pure.u64(minOut)];
-
-        const [tokens, refund] = tx.moveCall({
-          target: `${pkgId}::bonding_curve::buy`,
-          typeArguments: [tokenType],
-          arguments: buyArgs,
-        });
+        const [tokens, refund] = tx.moveCall({ target: `${pkgId}::bonding_curve::buy`, typeArguments: [tokenType], arguments: buyArgs });
         tx.transferObjects([tokens, refund], account.address);
       } else {
         const tokInAtomic = BigInt(Math.floor(amtFloat * 10 ** TOKEN_DECIMALS));
         const coins = await client.listCoins({ owner: account.address, coinType: tokenType });
         const coinObjs = coins.objects.map(c => tx.object(c.objectId));
         let tokenCoin;
-        if (coinObjs.length === 0) throw new Error('No token balance');
-        if (coinObjs.length === 1) {
-          [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(tokInAtomic)]);
-        } else {
-          tx.mergeCoins(coinObjs[0], coinObjs.slice(1));
-          [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(tokInAtomic)]);
-        }
-        const quote = sellQuote(reserveMist, tokensRemaining, tokInAtomic, vSui, vTok);
-        const minOut = quote?.suiOut != null
-          ? BigInt(Math.floor(Number(quote.suiOut) * (1 - slippageNum / 100)))
-          : 0n;
-        // V7 sell takes a referral arg; V4/V5/V6 sell does not.
+        if (!coinObjs.length) throw new Error('No token balance');
+        if (coinObjs.length === 1) { [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(tokInAtomic)]); }
+        else { tx.mergeCoins(coinObjs[0], coinObjs.slice(1)); [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(tokInAtomic)]); }
+        const sq = sellQuote(reserveMist, tokensRemaining, tokInAtomic, vSui, vTok);
+        const minOut = sq?.suiOut != null ? BigInt(Math.floor(Number(sq.suiOut) * (1 - slippageNum / 100))) : 0n;
         const sellArgs = isV7OrLater(pkgId)
           ? [curveRef, tokenCoin, tx.pure.u64(minOut), tx.pure.option('address', null)]
           : [curveRef, tokenCoin, tx.pure.u64(minOut)];
-        const [suiOut] = tx.moveCall({
-          target: `${pkgId}::bonding_curve::sell`,
-          typeArguments: [tokenType],
-          arguments: sellArgs,
-        });
+        const [suiOut] = tx.moveCall({ target: `${pkgId}::bonding_curve::sell`, typeArguments: [tokenType], arguments: sellArgs });
         tx.transferObjects([suiOut], account.address);
       }
 
-      signAndExecute(
-        { transaction: tx },
-        {
-          onSuccess: () => {
-            setTxStatus('success');
-            setTxMsg(side === 'buy' ? 'Buy successful! 🎉' : 'Sell successful!');
-            setAmount('');
-            setTimeout(() => { setTxStatus(null); setTxMsg(''); }, 3000);
-          },
-          onError: (err) => {
-            setTxStatus('error');
-            setTxMsg(err.message || 'Transaction failed');
-            setTimeout(() => { setTxStatus(null); setTxMsg(''); }, 4000);
-          },
-        }
-      );
+      signAndExecute({ transaction: tx }, {
+        onSuccess: () => { setTxStatus('success'); setTxMsg(side === 'buy' ? 'Buy successful! 🎉' : 'Sell successful!'); setAmount(''); setTimeout(() => { setTxStatus(null); setTxMsg(''); }, 3000); },
+        onError:   (err) => { setTxStatus('error'); setTxMsg(err.message || 'Transaction failed'); setTimeout(() => { setTxStatus(null); setTxMsg(''); }, 4000); },
+      });
     } catch (err) {
-      setTxStatus('error');
-      setTxMsg(err.message || 'Transaction failed');
+      setTxStatus('error'); setTxMsg(err.message || 'Transaction failed');
       setTimeout(() => { setTxStatus(null); setTxMsg(''); }, 4000);
     }
   }, [account, curveState, curveId, tokenType, side, amount, slippage, client, signAndExecute, reserveMist, tokensRemaining, pkgId, vSui, vTok]);
 
   const quote = quoteTrade();
+  const scrollToTop = () => window.scrollTo({ top: 0, behavior: 'smooth' });
+
+  // Shared props for both mobile and desktop trade panel instances
+  const tradePanelProps = {
+    lang, side, setSide, amount, setAmount, slippage, setSlippage,
+    quote, txStatus, txMsg, account, onExecute: executeTrade,
+    priceSui, priceUsd, suiUsd, symbol, graduated,
+    suiBalance, tokenBalance, isCreator, creatorFeesMist,
+    curveId, tokenType, packageIdHint: pkgId, curveState,
+    reserveMist, tokensRemaining, vSui, vTok,
+  };
 
   // ── render ────────────────────────────────────────────────────────────────
-  const scrollToTop = () => window.scrollTo({ top: 0, behavior: 'smooth' });
 
   return (
     <div className="min-h-screen" style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}>
-      {/* Back */}
-      <button
-        onClick={onBack || (() => navigate('/'))}
-        className="flex items-center gap-2 text-white/50 hover:text-lime-400 transition-colors text-xs font-mono mb-4 group"
-      >
+      <button onClick={onBack || (() => navigate('/'))} className="flex items-center gap-2 text-white/50 hover:text-lime-400 transition-colors text-xs font-mono mb-4 group">
         <ArrowLeft size={14} className="group-hover:-translate-x-0.5 transition-transform" />
         {t(lang, 'backToHome')}
       </button>
 
-      {/* Graduation banner */}
       {graduated && (
         <div className="mb-4 px-4 py-3 bg-lime-400/10 border border-lime-400/30 rounded-xl text-xs font-mono text-lime-400 flex items-center justify-between">
           <span>🎓 {t(lang, 'graduationComplete')}</span>
-          <a href="https://app.cetus.zone" target="_blank" rel="noreferrer"
-            className="flex items-center gap-1 text-lime-400 hover:text-lime-300 underline">
-            {t(lang, 'viewOnCetus')} <ExternalLink size={10} />
-          </a>
+          <a href="https://app.cetus.zone" target="_blank" rel="noreferrer" className="flex items-center gap-1 text-lime-400 hover:text-lime-300 underline">{t(lang, 'viewOnCetus')} <ExternalLink size={10} /></a>
         </div>
       )}
 
@@ -1649,228 +1478,94 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
           {/* Token header */}
           <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4">
             <div className="flex items-start gap-3">
-              {/* Icon */}
               <div className="w-12 h-12 rounded-xl overflow-hidden flex-shrink-0 bg-white/5 flex items-center justify-center text-xl">
-                {(_overrideIcon || iconUrl) ? (
-                  <img src={_overrideIcon || iconUrl} alt={symbol} className="w-full h-full object-cover"
-                    onError={e => { e.target.style.display='none'; e.target.nextSibling.style.display='flex'; }} />
-                ) : null}
+                {(_overrideIcon || iconUrl) ? <img src={_overrideIcon || iconUrl} alt={symbol} className="w-full h-full object-cover" onError={e => { e.target.style.display='none'; e.target.nextSibling.style.display='flex'; }} /> : null}
                 <span style={{ display: (_overrideIcon || iconUrl) ? 'none' : 'flex' }} className="text-2xl items-center justify-center w-full h-full">🔥</span>
               </div>
-
-              {/* Name + CA + social */}
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
                   <h1 className="text-white font-bold text-lg">{name}</h1>
                   <span className="text-lime-400 text-sm font-mono">${symbol}</span>
                 </div>
-
-                {/* Contract address row */}
                 <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
-                  <span className="text-white/35 text-[10px] font-mono truncate max-w-[180px]">
-                    {curveId ? `${curveId.slice(0, 6)}...${curveId.slice(-4)}` : ''}
-                  </span>
-                  <button onClick={handleCopy}
-                    className="text-white/35 hover:text-lime-400 transition-colors flex items-center gap-1 text-[10px] font-mono">
-                    {copied ? <Check size={10} /> : <Copy size={10} />}
-                    {copied ? t(lang, 'copied') : t(lang, 'copyCA')}
-                  </button>
-                  <button onClick={handleShare}
-                    className="text-white/35 hover:text-lime-400 transition-colors flex items-center gap-1 text-[10px] font-mono">
-                    <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
-                    {shared ? t(lang, 'share') + '!' : t(lang, 'share')}
-                  </button>
-                  <button onClick={handleCopyLink}
-                    className="text-white/35 hover:text-lime-400 transition-colors flex items-center gap-1 text-[10px] font-mono">
-                    {linkCopied ? <Check size={10} /> : <Share2 size={10} />}
-                    {linkCopied ? 'COPIED!' : 'SHARE LINK'}
-                  </button>
+                  <span className="text-white/35 text-[10px] font-mono truncate max-w-[180px]">{curveId ? `${curveId.slice(0, 6)}...${curveId.slice(-4)}` : ''}</span>
+                  <button onClick={handleCopy} className="text-white/35 hover:text-lime-400 transition-colors flex items-center gap-1 text-[10px] font-mono">{copied ? <Check size={10} /> : <Copy size={10} />}{copied ? t(lang, 'copied') : t(lang, 'copyCA')}</button>
+                  <button onClick={handleShare} className="text-white/35 hover:text-lime-400 transition-colors flex items-center gap-1 text-[10px] font-mono"><svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>{shared ? t(lang, 'share') + '!' : t(lang, 'share')}</button>
+                  <button onClick={handleCopyLink} className="text-white/35 hover:text-lime-400 transition-colors flex items-center gap-1 text-[10px] font-mono">{linkCopied ? <Check size={10} /> : <Share2 size={10} />}{linkCopied ? 'COPIED!' : 'SHARE LINK'}</button>
                 </div>
-
-                {/* Social links */}
                 <div className="flex items-center gap-3 mt-1.5 flex-wrap">
-                  {twitter && (
-                    <a href={twitter.startsWith('http') ? twitter : `https://${twitter}`}
-                      target="_blank" rel="noreferrer"
-                      className="flex items-center gap-1 text-[10px] font-mono text-white/35 hover:text-lime-400 transition-colors">
-                      <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
-                      Twitter
-                    </a>
-                  )}
-                  {telegram && (
-                    <a href={telegram.startsWith('http') ? telegram : `https://${telegram}`}
-                      target="_blank" rel="noreferrer"
-                      className="flex items-center gap-1 text-[10px] font-mono text-white/35 hover:text-lime-400 transition-colors">
-                      <ExternalLink size={9} /> Telegram
-                    </a>
-                  )}
-                  {website && (
-                    <a href={website.startsWith('http') ? website : `https://${website}`}
-                      target="_blank" rel="noreferrer"
-                      className="flex items-center gap-1 text-[10px] font-mono text-white/35 hover:text-lime-400 transition-colors">
-                      <ExternalLink size={9} /> Website
-                    </a>
-                  )}
+                  {twitter  && <a href={twitter.startsWith('http')  ? twitter  : `https://${twitter}`}  target="_blank" rel="noreferrer" className="flex items-center gap-1 text-[10px] font-mono text-white/35 hover:text-lime-400 transition-colors"><svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>Twitter</a>}
+                  {telegram && <a href={telegram.startsWith('http') ? telegram : `https://${telegram}`} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-[10px] font-mono text-white/35 hover:text-lime-400 transition-colors"><ExternalLink size={9} /> Telegram</a>}
+                  {website  && <a href={website.startsWith('http')  ? website  : `https://${website}`}  target="_blank" rel="noreferrer" className="flex items-center gap-1 text-[10px] font-mono text-white/35 hover:text-lime-400 transition-colors"><ExternalLink size={9} /> Website</a>}
                 </div>
               </div>
-
-              {/* Price + mcap */}
               <div className="text-right shrink-0">
-                <div className="text-white text-sm font-mono font-bold">
-                  {suiUsd > 0 ? `$${priceUsd.toFixed(6)}` : `${fmt(priceSui, 6)} SUI`}
-                </div>
+                <div className="text-white text-sm font-mono font-bold">{suiUsd > 0 ? `$${priceUsd.toFixed(6)}` : `${fmt(priceSui, 6)} SUI`}</div>
                 <div className="text-white/35 text-[10px] font-mono">{t(lang, 'price')}</div>
-                <div className="text-white/70 text-xs font-mono mt-1">
-                  {suiUsd > 0 ? fmtUsd(marketCapSui, suiUsd) : `${fmt(marketCapSui)} SUI`}
-                </div>
+                <div className="text-white/70 text-xs font-mono mt-1">{suiUsd > 0 ? fmtUsd(marketCapSui, suiUsd) : `${fmt(marketCapSui)} SUI`}</div>
                 <div className="text-white/35 text-[10px] font-mono">{t(lang, 'mcap')}</div>
               </div>
             </div>
-
-            {/* Description */}
-            {desc && (
-              <p className="mt-3 text-xs font-mono text-white/40 leading-relaxed">{desc}</p>
-            )}
-
-            {/* Progress bar */}
+            {desc && <p className="mt-3 text-xs font-mono text-white/40 leading-relaxed">{desc}</p>}
             <div className="mt-4">
               <div className="flex justify-between text-[10px] font-mono text-white/35 mb-1.5">
                 <span>{t(lang, 'bondingCurveProgress')}</span>
                 <span className="text-lime-400">{progress.toFixed(1)}%</span>
               </div>
               <div className="h-2 bg-white/5 rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-gradient-to-r from-lime-600 to-lime-400 rounded-full transition-all duration-500"
-                  style={{ width: `${progress}%` }}
-                />
+                <div className="h-full bg-gradient-to-r from-lime-600 to-lime-400 rounded-full transition-all duration-500" style={{ width: `${progress}%` }} />
               </div>
               <div className="flex items-center justify-between text-[10px] font-mono text-white/25 mt-1">
                 <span>{fmt(mistToSui(reserveMist))} {t(lang, 'suiRaised')}</span>
                 <span>{fmt(drainSui)} {t(lang, 'suiTarget')}</span>
               </div>
             </div>
-
-            {/* Graduation target badge */}
             {!graduated && (
               <div className="mt-3 flex items-center gap-1.5">
                 <span className="text-[8px] font-mono text-white/20 tracking-widest">GRADUATES TO</span>
-                <span className={`text-[9px] font-mono px-2 py-0.5 rounded-full border ${
-                  dex === 'deepbook'
-                    ? 'border-blue-400/30 text-blue-400/70 bg-blue-400/5'
-                    : dex === 'turbos'
-                    ? 'border-purple-400/30 text-purple-400/70 bg-purple-400/5'
-                    : 'border-lime-400/30 text-lime-400/70 bg-lime-400/5'
-                }`}>
+                <span className={`text-[9px] font-mono px-2 py-0.5 rounded-full border ${dex === 'deepbook' ? 'border-blue-400/30 text-blue-400/70 bg-blue-400/5' : dex === 'turbos' ? 'border-purple-400/30 text-purple-400/70 bg-purple-400/5' : 'border-lime-400/30 text-lime-400/70 bg-lime-400/5'}`}>
                   {dex === 'deepbook' ? '⚡ DeepBook' : dex === 'turbos' ? '🔄 Turbos' : '🌊 Cetus'}
                 </span>
               </div>
             )}
           </div>
 
-          {/* Chart */}
           <PriceChart curveId={curveId} tokenType={tokenType} suiUsd={suiUsd} />
+          <AIAnalysis curveId={curveId} tokenType={tokenType} name={name} symbol={symbol} progress={progress} reserveSui={mistToSui(reserveMist)} creatorFeesSui={Number(creatorFeesMist) / 1e9} graduated={graduated} tokensSoldWhole={Number(tokensSold) / 10 ** TOKEN_DECIMALS} />
 
-          {/* AI Analysis */}
-          <AIAnalysis
-            curveId={curveId}
-            tokenType={tokenType}
-            name={name}
-            symbol={symbol}
-            progress={progress}
-            reserveSui={mistToSui(reserveMist)}
-            creatorFeesSui={Number(creatorFeesMist) / 1e9}
-            graduated={graduated}
-            tokensSoldWhole={Number(tokensSold) / 10 ** TOKEN_DECIMALS}
-          />
+          <div className="lg:hidden"><TradePanelContent {...tradePanelProps} /></div>
 
-          {/* Buy/Sell panel — mobile only (desktop shows in right column) */}
-          <div className="lg:hidden">
-            <TradePanelContent
-              lang={lang}
-              side={side} setSide={setSide}
-              amount={amount} setAmount={setAmount}
-              slippage={slippage} setSlippage={setSlippage}
-              quote={quote}
-              txStatus={txStatus} txMsg={txMsg}
-              account={account}
-              onExecute={executeTrade}
-              priceSui={priceSui} priceUsd={priceUsd} suiUsd={suiUsd}
-              symbol={symbol}
-              graduated={graduated}
-              suiBalance={suiBalance} tokenBalance={tokenBalance}
-              isCreator={isCreator} creatorFeesMist={creatorFeesMist}
-              curveId={curveId} tokenType={tokenType}
-              packageIdHint={pkgId}
-              curveState={curveState}
-            />
-          </div>
-
-          {/* Trades / Holders */}
           <TradesHoldersBlock curveId={curveId} tokenType={tokenType} suiUsd={suiUsd} lang={lang} creator={creatorAddr} />
-
-          {/* Comments */}
           <CommentsBlock curveId={curveId} packageId={pkgId} lang={lang} />
         </div>
 
-        {/* Right column — hidden on mobile, shown on desktop */}
+        {/* Right column */}
         <div className="hidden lg:block space-y-4">
-          <TradePanelContent
-            lang={lang}
-            side={side} setSide={setSide}
-            amount={amount} setAmount={setAmount}
-            slippage={slippage} setSlippage={setSlippage}
-            quote={quote}
-            txStatus={txStatus} txMsg={txMsg}
+          <TradePanelContent {...tradePanelProps} />
+          <TPSLPanel
             account={account}
-            onExecute={executeTrade}
-            priceSui={priceSui} priceUsd={priceUsd} suiUsd={suiUsd}
-            symbol={symbol}
-            graduated={graduated}
-            suiBalance={suiBalance} tokenBalance={tokenBalance}
-            isCreator={isCreator} creatorFeesMist={creatorFeesMist}
-            curveId={curveId} tokenType={tokenType}
-            packageIdHint={pkgId}
-            curveState={curveState}
-          />
-
-          {/* Vesting locks — V7+; visible to anyone holding/locking tokens */}
-          <VestingPanel
             curveId={curveId}
             tokenType={tokenType}
-            packageId={pkgId}
-            account={account}
+            pkgId={pkgId}
+            priceSui={priceSui}
             tokenBalance={tokenBalance}
-            lang={lang}
+            reserveMist={reserveMist}
+            tokensRemaining={tokensRemaining}
+            vSui={vSui}
+            vTok={vTok}
+            slippage={slippage}
+            keypair={tradeKeyReady ? tradeKeypair : null}
           />
-
-          {/* Creator Tools — visible to creator only */}
+          <VestingPanel curveId={curveId} tokenType={tokenType} packageId={pkgId} account={account} tokenBalance={tokenBalance} lang={lang} />
           {isCreator && (
-            <CreatorToolsPanel
-              curveId={curveId}
-              tokenType={tokenType}
-              packageIdHint={pkgId}
-              account={account}
-              curveState={curveState}
-              currentDesc={desc}
-              currentTwitter={twitter}
-              currentTelegram={telegram}
-              currentWebsite={website}
-              currentDex={dex}
-              lang={lang}
-            />
+            <CreatorToolsPanel curveId={curveId} tokenType={tokenType} packageIdHint={pkgId} account={account} curveState={curveState} currentDesc={desc} currentTwitter={twitter} currentTelegram={telegram} currentWebsite={website} currentDex={dex} lang={lang} />
           )}
         </div>
       </div>
 
-      {/* Back to top — mobile only */}
       <div className="sm:hidden fixed bottom-6 right-4 z-50">
-        <button
-          onClick={scrollToTop}
-          className="bg-white/10 hover:bg-white/20 border border-white/20 rounded-full p-3 text-white/60 hover:text-white transition-colors backdrop-blur-sm"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-            <polyline points="18 15 12 9 6 15"/>
-          </svg>
+        <button onClick={scrollToTop} className="bg-white/10 hover:bg-white/20 border border-white/20 rounded-full p-3 text-white/60 hover:text-white transition-colors backdrop-blur-sm">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="18 15 12 9 6 15"/></svg>
         </button>
       </div>
     </div>

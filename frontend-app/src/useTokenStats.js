@@ -1,227 +1,180 @@
-// useTokenStats.js  v17-dual-package
-// Per-token stats computed from on-chain events + holder count via coin query.
-// Queries events from ALL package IDs (v4 + v5) via paginateMultipleEvents.
-// Returns map: { [curveId]: { volume, trades, reserveSui, pctChange, recentTrades,
-//   lastTradeTime, lastPrice, firstPrice, volume24h, commentCount, devBuyMist,
-//   sparkline24h, holderCount } }
-
+// useTokenStats.js
+// Loads all token stats from indexer on mount, then updates in real-time
+// via SSE — only re-fetches stats for the specific curve that traded.
 import { useState, useEffect, useRef } from 'react';
-import { useCurrentClient } from '@mysten/dapp-kit-react';
-import { ALL_PACKAGE_IDS } from './constants.js'; // ALL_PACKAGE_IDS includes v4, v5, v6
-import { paginateMultipleEvents } from './paginateEvents.js';
+import { useSuiClient } from '@mysten/dapp-kit';
 
-const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
-
+const INDEXER_URL  = import.meta.env.VITE_INDEXER_URL || '';
 const MIST_PER_SUI = 1e9;
-const ONE_HOUR_MS  = 60 * 60 * 1000;
-const ONE_DAY_MS   = 24 * 60 * 60 * 1000;
 
-// Holder count requires cross-owner queries which aren't supported in gRPC.
-// The indexer computes holder counts from trade events and serves them via
-// /tokens/stats. This function is kept for API compatibility but returns null.
-async function fetchHolderCount(_client, _coinType) {
-  return null;
+// ── Holder count (still RPC, runs every 60s — not on critical path) ───────────
+async function fetchHolderCount(client, coinType) {
+  const holders = new Set();
+  let cursor = null;
+  let pages  = 0;
+  while (pages < 20) {
+    let result;
+    try {
+      result = await client.getAllCoins({ coinType, cursor, limit: 50 });
+    } catch { break; }
+    for (const coin of result.data) {
+      if (coin.balance && coin.balance !== '0') {
+        holders.add(coin.coinObjectId);
+        if (coin.owner) {
+          const ownerAddr = typeof coin.owner === 'string'
+            ? coin.owner
+            : coin.owner?.AddressOwner ?? coin.owner?.ObjectOwner ?? null;
+          if (ownerAddr) holders.add(ownerAddr);
+        }
+      }
+    }
+    if (!result.hasNextPage) break;
+    cursor = result.nextCursor;
+    pages++;
+  }
+  return holders.size;
+}
+
+function mapIndexerRow(s, holderCounts) {
+  return {
+    volume:        s.volume_sui,
+    trades:        s.trades,
+    buys:          s.buys,
+    sells:         s.sells,
+    recentTrades:  s.recent_trades,
+    lastTradeTime: s.last_trade_time,
+    lastPrice:     s.last_price,
+    firstPrice:    s.first_price,
+    volume24h:     s.volume_24h,
+    commentCount:  s.comment_count,
+    pctChange:     s.first_price && s.last_price && s.first_price > 0
+      ? ((s.last_price - s.first_price) / s.first_price) * 100
+      : null,
+    sparkline24h:  s.sparkline24h || [],
+    holderCount:   holderCounts[s.curve_id] ?? 0,
+    devBuyMist:    0,
+  };
 }
 
 export function useTokenStats(tokens) {
-  const client = useCurrentClient();
-  const [stats, setStats]         = useState({});
-  const holderCountsRef           = useRef({});
-  const prevTokenIds              = useRef('');
+  const client          = useSuiClient();
+  const [stats, setStats] = useState({});
+  const holderCountsRef = useRef({});
+  const esRef           = useRef(null);
+  const timerRef        = useRef(null);
 
-  // ── Main stats loop — runs every 30s ────────────────────────────────────────
+  // ── Initial load ──────────────────────────────────────────────────────────
   useEffect(() => {
     if (!tokens || tokens.length === 0) return;
+    if (!INDEXER_URL) return;
 
-    const ids = tokens.map(t => t.curveId).join(',');
-    if (ids === prevTokenIds.current) return;
-    prevTokenIds.current = ids;
-
-    let cancelled = false;
-
-    async function load() {
-      // Try indexer first — single call covers all packages
-      if (INDEXER_URL) {
-        try {
-          const res = await fetch(
-            `${INDEXER_URL}/tokens/stats`,
-            { signal: AbortSignal.timeout(5000) }
-          );
-          if (res.ok) {
-            const indexerStats = await res.json();
-            if (!cancelled) {
-              const map = {};
-              for (const s of indexerStats) {
-                map[s.curve_id] = {
-                  volume:        s.volume_sui,
-                  trades:        s.trades,
-                  buys:          s.buys,
-                  sells:         s.sells,
-                  recentTrades:  s.recent_trades,
-                  lastTradeTime: s.last_trade_time,
-                  lastPrice:     s.last_price,
-                  firstPrice:    s.first_price,
-                  volume24h:     s.volume_24h,
-                  commentCount:  s.comment_count,
-                  pctChange:     s.first_price && s.last_price && s.first_price > 0
-                    ? ((s.last_price - s.first_price) / s.first_price) * 100
-                    : null,
-                  sparkline24h:  s.sparkline24h || [],
-                  holderCount:   holderCountsRef.current[s.curve_id] ?? null,
-                  devBuyMist:    0,
-                  reserveSui:    0,
-                };
-              }
-              setStats(map);
-            }
-            return;
-          }
-        } catch {}
-      }
-
-      // Fall back to RPC — query all event types across ALL package IDs
-      try {
-        // Build event type list for every package version
-        const eventTypes = ALL_PACKAGE_IDS.flatMap(pkgId => [
-          `${pkgId}::bonding_curve::TokensPurchased`,
-          `${pkgId}::bonding_curve::TokensSold`,
-          `${pkgId}::bonding_curve::CommentPosted`,
-          `${pkgId}::bonding_curve::CurveCreated`,
-        ]);
-
-        const eventMap = await paginateMultipleEvents(
-          client,
-          eventTypes,
-          { order: 'descending', maxPages: 100, pageSize: 100 }
-        );
-
-        if (cancelled) return;
-
-        // Merge events across all package versions by type suffix
-        const buysData     = ALL_PACKAGE_IDS.flatMap(p => eventMap[`${p}::bonding_curve::TokensPurchased`]  || []);
-        const sellsData    = ALL_PACKAGE_IDS.flatMap(p => eventMap[`${p}::bonding_curve::TokensSold`]       || []);
-        const commentsData = ALL_PACKAGE_IDS.flatMap(p => eventMap[`${p}::bonding_curve::CommentPosted`]    || []);
-        const createdData  = ALL_PACKAGE_IDS.flatMap(p => eventMap[`${p}::bonding_curve::CurveCreated`]     || []);
-
-        const now = Date.now();
+    fetch(`${INDEXER_URL}/tokens/stats`, { signal: AbortSignal.timeout(8000) })
+      .then(r => r.ok ? r.json() : [])
+      .then(rows => {
         const map = {};
+        for (const s of rows) {
+          map[s.curve_id] = mapIndexerRow(s, holderCountsRef.current);
+        }
+        setStats(map);
+      })
+      .catch(() => {});
+  }, [tokens?.length]);
 
-        const ensure = (curveId) => {
-          if (!map[curveId]) {
-            map[curveId] = {
-              volume: 0, trades: 0, recentTrades: 0,
-              firstPrice: null, lastPrice: null, reserveSui: 0,
-              lastTradeTime: null,
-              volume24h: 0,
-              commentCount: 0,
-              devBuyMist: 0,
-              sparkline24h: [],
-              holderCount: holderCountsRef.current[curveId] ?? null,
+  // ── SSE: update stats for any curve that gets a new trade ─────────────────
+  useEffect(() => {
+    if (!INDEXER_URL) return;
+
+    function connect() {
+      // Subscribe to all events (no curveId filter)
+      const es = new EventSource(`${INDEXER_URL}/stream`);
+      esRef.current = es;
+
+      es.onmessage = (e) => {
+        try {
+          const event = JSON.parse(e.data);
+          if (event.type === 'connected') return;
+
+          const isTrade = event.type === 'TokensPurchased' ||
+                          event.type === 'TokensBought'    ||
+                          event.type === 'TokensSold';
+          if (!isTrade || !event.curveId) return;
+
+          const curveId = event.curveId;
+          const isBuy   = event.type !== 'TokensSold';
+          const d       = event.data ?? {};
+          const sui     = Number(isBuy ? d.sui_in ?? 0 : d.sui_out ?? 0) / MIST_PER_SUI;
+          const tok     = Number(isBuy ? d.tokens_out ?? 0 : d.tokens_in ?? 0) / 1e6;
+
+          // Update stats inline immediately
+          setStats(prev => {
+            const cur = prev[curveId] ?? {
+              volume: 0, trades: 0, buys: 0, sells: 0,
+              recentTrades: 0, lastTradeTime: null,
+              lastPrice: null, firstPrice: null,
+              volume24h: 0, commentCount: 0, pctChange: null,
+              sparkline24h: [], holderCount: 0, devBuyMist: 0,
             };
-          }
-          return map[curveId];
-        };
+            const price      = tok > 0 ? sui / tok : cur.lastPrice;
+            const now        = Date.now();
+            const oneDayAgo  = now - 86_400_000;
+            const tsMs       = event.ts ?? now;
+            const inDay      = tsMs > oneDayAgo;
+            const pctChange  = cur.firstPrice && price && cur.firstPrice > 0
+              ? ((price - cur.firstPrice) / cur.firstPrice) * 100
+              : cur.pctChange;
 
-        // ── Buys ──────────────────────────────────────────────────────────
-        for (const evt of buysData) {
-          const j = evt.parsedJson;
-          if (!j?.curve_id) continue;
-          const s      = ensure(j.curve_id);
-          const suiIn  = Number(j.sui_in ?? 0) / MIST_PER_SUI;
-          const ts     = evt.timestampMs ? Number(evt.timestampMs) : 0;
-          s.volume    += suiIn;
-          s.trades    += 1;
-          if (ts && now - ts < ONE_HOUR_MS) s.recentTrades += 1;
-          if (ts && now - ts < ONE_DAY_MS)  s.volume24h    += suiIn;
-          if (ts && s.lastTradeTime === null) s.lastTradeTime = ts;
-          const tokensOut = Number(j.tokens_out ?? 0) / 1e6;
-          if (tokensOut > 0) {
-            const price = suiIn / tokensOut;
-            if (s.lastPrice === null) s.lastPrice = price;
-            s.firstPrice = price;
-            if (ts && now - ts < ONE_DAY_MS) {
-              s.sparkline24h.push({ t: ts, p: price });
-            }
-          }
-        }
+            return {
+              ...prev,
+              [curveId]: {
+                ...cur,
+                volume:        cur.volume + sui,
+                trades:        cur.trades + 1,
+                buys:          isBuy ? cur.buys + 1 : cur.buys,
+                sells:         isBuy ? cur.sells : cur.sells + 1,
+                recentTrades:  cur.recentTrades + 1,
+                lastTradeTime: tsMs,
+                lastPrice:     price ?? cur.lastPrice,
+                firstPrice:    cur.firstPrice ?? price,
+                volume24h:     inDay ? cur.volume24h + sui : cur.volume24h,
+                pctChange,
+                sparkline24h:  inDay && price
+                  ? [...(cur.sparkline24h || []), { t: tsMs, p: price }].slice(-100)
+                  : cur.sparkline24h,
+              },
+            };
+          });
 
-        // ── Sells ─────────────────────────────────────────────────────────
-        for (const evt of sellsData) {
-          const j = evt.parsedJson;
-          if (!j?.curve_id) continue;
-          const s       = ensure(j.curve_id);
-          const suiOut  = Number(j.sui_out ?? 0) / MIST_PER_SUI;
-          const ts      = evt.timestampMs ? Number(evt.timestampMs) : 0;
-          s.volume     += suiOut;
-          s.trades     += 1;
-          if (ts && now - ts < ONE_HOUR_MS) s.recentTrades += 1;
-          if (ts && now - ts < ONE_DAY_MS)  s.volume24h    += suiOut;
-          if (ts && s.lastTradeTime === null) s.lastTradeTime = ts;
-          const tokensIn = Number(j.tokens_in ?? 0) / 1e6;
-          if (tokensIn > 0) {
-            const price = suiOut / tokensIn;
-            if (s.lastPrice === null) s.lastPrice = price;
-            s.firstPrice = price;
-            if (ts && now - ts < ONE_DAY_MS) {
-              s.sparkline24h.push({ t: ts, p: price });
-            }
-          }
-        }
+          // Also re-fetch the full stats for this curve from indexer
+          // to get accurate server-computed values (runs in background)
+          fetch(`${INDEXER_URL}/token/${curveId}/stats`)
+            .then(r => r.ok ? r.json() : null)
+            .then(s => {
+              if (!s) return;
+              setStats(prev => ({
+                ...prev,
+                [curveId]: mapIndexerRow(s, holderCountsRef.current),
+              }));
+            })
+            .catch(() => {});
 
-        // Fix lastTradeTime — take max across both streams per curve
-        for (const curveId of Object.keys(map)) {
-          const s = map[curveId];
-          let latestTs = s.lastTradeTime ?? 0;
-          for (const evt of [...buysData, ...sellsData]) {
-            if (evt.parsedJson?.curve_id !== curveId) continue;
-            const ts = evt.timestampMs ? Number(evt.timestampMs) : 0;
-            if (ts > latestTs) latestTs = ts;
-          }
-          s.lastTradeTime = latestTs || null;
-          s.sparkline24h.sort((a, b) => a.t - b.t);
-        }
+        } catch {}
+      };
 
-        // ── Comments ──────────────────────────────────────────────────────
-        for (const evt of commentsData) {
-          const j = evt.parsedJson;
-          if (!j?.curve_id) continue;
-          ensure(j.curve_id).commentCount += 1;
-        }
-
-        // ── Dev buy ───────────────────────────────────────────────────────
-        for (const evt of createdData) {
-          const j = evt.parsedJson;
-          if (!j?.curve_id) continue;
-          const s = ensure(j.curve_id);
-          if (j.dev_buy_sui_in) s.devBuyMist = Number(j.dev_buy_sui_in);
-        }
-
-        // ── % change ──────────────────────────────────────────────────────
-        for (const s of Object.values(map)) {
-          if (s.firstPrice && s.lastPrice && s.firstPrice > 0) {
-            s.pctChange = ((s.lastPrice - s.firstPrice) / s.firstPrice) * 100;
-          } else {
-            s.pctChange = null;
-          }
-        }
-
-        if (!cancelled) setStats(map);
-      } catch (err) {
-        console.error('useTokenStats error:', err);
-      }
+      es.onerror = () => {
+        es.close();
+        timerRef.current = setTimeout(connect, 3_000);
+      };
     }
 
-    load();
-    const interval = setInterval(load, 30_000);
-    return () => { cancelled = true; clearInterval(interval); };
-  }, [tokens, client]);
+    connect();
+    return () => { esRef.current?.close(); clearTimeout(timerRef.current); };
+  }, []);
 
-  // ── Holder count loop — runs every 60s ──────────────────────────────────────
+  // ── Holder count (RPC, 60s) ───────────────────────────────────────────────
   useEffect(() => {
     if (!tokens || tokens.length === 0) return;
     const queryable = tokens.filter(t => t.tokenType);
     if (queryable.length === 0) return;
-
     let cancelled = false;
 
     async function loadHolders() {
@@ -233,14 +186,9 @@ export function useTokenStats(tokens) {
           holderCountsRef.current[token.curveId] = count;
           setStats(prev => {
             if (!prev[token.curveId]) return prev;
-            return {
-              ...prev,
-              [token.curveId]: { ...prev[token.curveId], holderCount: count },
-            };
+            return { ...prev, [token.curveId]: { ...prev[token.curveId], holderCount: count } };
           });
-        } catch {
-          // Non-fatal
-        }
+        } catch {}
         await new Promise(r => setTimeout(r, 300));
       }
     }
