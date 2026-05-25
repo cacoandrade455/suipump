@@ -30,8 +30,7 @@ import { Transaction } from '@mysten/sui/transactions';
 import { saveTPSL, makeLevel } from './useTPSL.js';
 import {
   PACKAGE_ID_V8, MIST_PER_SUI,
-  VIRTUAL_SUI_V8, VIRTUAL_TOKENS_V8,
-  isV5OrLater, isV7OrLater,
+  isV5OrLater, isV7OrLater, curveShapeFor,
 } from './constants.js';
 import { buyQuote } from './curve.js';
 
@@ -108,8 +107,8 @@ export function useDCA({ walletAddress, keypair }) {
       const reserveMist    = BigInt(fields.sui_reserve    ?? 0);
       const tokensRemaining = BigInt(fields.token_reserve ?? 0);
 
-      const vSui  = VIRTUAL_SUI_V8;
-      const vTok  = VIRTUAL_TOKENS_V8;
+      const vSui  = curveShapeFor(order.pkgId).virtualSui;
+      const vTok  = curveShapeFor(order.pkgId).virtualTokens;
       const quote = buyQuote(reserveMist, tokensRemaining, suiInMist, vSui, vTok);
       const minOut = quote?.tokensOut != null
         ? BigInt(Math.floor(Number(quote.tokensOut) * (1 - order.slippage / 100)))
@@ -145,7 +144,7 @@ export function useDCA({ walletAddress, keypair }) {
 
       // Auto TP/SL on first tranche only (entry price set once)
       if (success && order.autoTPSL && order.executed === 0) {
-        const entryPriceSui = (Number(reserveMist) / 1e9 + vSui) / 1_000_000_000;
+        const entryPriceSui = (Number(reserveMist) / 1e9 + curveShapeFor(order.pkgId).virtualSui) / 1_000_000_000;
         const levels = [];
         if (order.tpPct) levels.push(makeLevel('tp', order.tpPct, order.tpSellPct));
         if (order.slPct) levels.push(makeLevel('sl', order.slPct, order.slSellPct));
