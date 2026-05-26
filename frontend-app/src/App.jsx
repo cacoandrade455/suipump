@@ -27,6 +27,7 @@ import { useTradeKey } from './useTradeKey.js';
 import { useSniper } from './useSniper.js';
 import { useDCA } from './useDCA.js';
 import { useCopyTrade } from './useCopyTrade.js';
+import { useRebalance } from './useRebalance.js';
 
 const MIST_PER_SUI = 1e9;
 const TOTAL_SUPPLY_WHOLE = 1_000_000_000;
@@ -1165,6 +1166,7 @@ export default function App() {
   const sniper    = useSniper({    walletAddress: account?.address, keypair: tradeKey.isReady ? tradeKey.keypair : null });
   const dca       = useDCA({       walletAddress: account?.address, keypair: tradeKey.isReady ? tradeKey.keypair : null });
   const copyTrade = useCopyTrade({ walletAddress: account?.address, keypair: tradeKey.isReady ? tradeKey.keypair : null });
+  const rebalance = useRebalance({  walletAddress: account?.address, keypair: tradeKey.isReady ? tradeKey.keypair : null });
 
   return (
     <div className="min-h-screen bg-[#080808] text-white" style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}>
@@ -1222,6 +1224,7 @@ export default function App() {
           sniper={sniper}
           dca={dca}
           copyTrade={copyTrade}
+          rebalance={rebalance}
         />
       )}
       {showFeed && (

@@ -1,16 +1,13 @@
+// v2-fixed
 // useRebalance.js
-// Monitors the user's trading wallet portfolio via the indexer.
-// When any token's value exceeds maxAllocPct% of total portfolio value,
-// sells the excess back to SUI using the trading keypair.
+// Monitors the trading wallet portfolio via indexer.
+// When any token exceeds maxAllocPct% of total value, sells the excess.
 //
-// Storage key: suipump_rebalance_${walletAddress}
-// Schema: {
-//   enabled: boolean,
-//   maxAllocPct: number,     // max % any single token can be of total portfolio
-//   checkIntervalMs: number, // how often to check (default: 60s)
-//   slippage: number,
-//   log: [{ ts, curveId, name, symbol, soldTokens, reason, success, digest?, error? }]
-// }
+// Fixes vs v1:
+//  - getObject (1.x API) → indexer fetch for ISV
+//  - getCoins → listCoins (2.x), result.objects not result.data
+//  - c.coinObjectId → c.objectId
+//  - signature → signatures: [signature]
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
@@ -19,17 +16,16 @@ import { curveShapeFor, isV7OrLater } from './constants.js';
 import { sellQuote } from './curve.js';
 
 const INDEXER_URL    = import.meta.env.VITE_INDEXER_URL || '';
-const SUI_CLOCK_ID   = '0x6';
 const TOKEN_DECIMALS = 6;
 const REBAL_KEY      = (addr) => `suipump_rebalance_${addr}`;
 const MAX_LOG        = 30;
 
 export const REBALANCE_INTERVALS = [
-  { label: '1 min',   ms: 60_000 },
-  { label: '5 min',   ms: 300_000 },
-  { label: '15 min',  ms: 900_000 },
-  { label: '30 min',  ms: 1_800_000 },
-  { label: '1 hour',  ms: 3_600_000 },
+  { label: '1 min',  ms: 60_000 },
+  { label: '5 min',  ms: 300_000 },
+  { label: '15 min', ms: 900_000 },
+  { label: '30 min', ms: 1_800_000 },
+  { label: '1 hour', ms: 3_600_000 },
 ];
 
 export const DEFAULT_REBALANCE_CONFIG = {
@@ -73,10 +69,7 @@ export function useRebalance({ walletAddress, keypair }) {
   const firingRef                 = useRef(new Set());
 
   useEffect(() => { keypairRef.current = keypair; }, [keypair]);
-
-  useEffect(() => {
-    saveRebalanceConfig(walletAddress, config);
-  }, [config, walletAddress]);
+  useEffect(() => { saveRebalanceConfig(walletAddress, config); }, [config, walletAddress]);
 
   // ── Check and rebalance ───────────────────────────────────────────────────
   const checkAndRebalance = useCallback(async () => {
@@ -93,52 +86,45 @@ export function useRebalance({ walletAddress, keypair }) {
       const myAddress = kp.getPublicKey().toSuiAddress();
 
       // Fetch portfolio from indexer
-      const res = await fetch(`${INDEXER_URL}/trader/${myAddress}`, {
-        signal: AbortSignal.timeout(8000),
-      });
+      const res = await fetch(`${INDEXER_URL}/trader/${myAddress}`, { signal: AbortSignal.timeout(8000) });
       if (!res.ok) throw new Error('Failed to fetch portfolio');
       const positions = await res.json();
       if (!positions.length) { setChecking(false); return; }
 
-      // Fetch current SUI price for value calculations
-      let suiUsd = 0;
-      try {
-        const pr = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=SUIUSDT', { signal: AbortSignal.timeout(3000) });
-        const pj = await pr.json();
-        suiUsd = parseFloat(pj.price) || 0;
-      } catch {}
-
-      // Get current token prices from indexer stats
       const client = new SuiGraphQLClient({ url: '/api/rpc' });
       const posWithValue = [];
 
       for (const pos of positions) {
         if (!pos.curve_id || !pos.token_type) continue;
         try {
-          const IURL_R = import.meta.env.VITE_INDEXER_URL || '';
-          const rData = await fetch(`${IURL_R}/token/${pos.curve_id}`, { signal: AbortSignal.timeout(4000) }).then(r => r.ok ? r.json() : null).catch(() => null);
-          const reserveMistNum = rData ? Math.round((rData.stats?.reserve_sui ?? rData.reserve_sui ?? 0) * 1e9) : 0;
-          const fields = { sui_reserve: reserveMistNum, token_reserve: Math.round((rData?.stats?.token_reserve ?? rData?.token_reserve ?? 800_000_000) * 1e6) };
-          const reserveMist    = Number(fields.sui_reserve ?? 0);
-          const { virtualSui } = curveShapeFor(pos.package_id);
-          const totalPoolSui   = reserveMist / 1e9 + virtualSui;
-          const priceSui       = totalPoolSui / 1_000_000_000;
+          // Fetch curve data from indexer (ISV + reserves)
+          const curveData = await fetch(`${INDEXER_URL}/token/${pos.curve_id}`, { signal: AbortSignal.timeout(4000) })
+            .then(r => r.ok ? r.json() : null).catch(() => null);
+          if (!curveData) continue;
 
-          // Get actual token balance
-          const coins = await client.getCoins({ owner: myAddress, coinType: pos.token_type });
-          const balanceAtomic = coins.data.reduce((s, c) => s + Number(c.balance), 0);
+          const reserveMistNum = Math.round((curveData.stats?.reserve_sui ?? curveData.reserve_sui ?? 0) * 1e9);
+          const tokenReserveNum = Math.round((curveData.stats?.token_reserve ?? curveData.token_reserve ?? 800_000_000) * 1e6);
+          const { virtualSui } = curveShapeFor(pos.package_id);
+          const priceSui = (reserveMistNum / 1e9 + virtualSui) / 1_000_000_000;
+
+          // Get actual token balance — SuiGraphQLClient 2.x: listCoins, result.objects
+          const coinsRes = await client.listCoins({ owner: myAddress, coinType: pos.token_type });
+          const coins    = coinsRes?.objects ?? coinsRes?.data ?? [];
+          const balanceAtomic = coins.reduce((s, c) => s + Number(c.balance ?? c.coinBalance ?? 0), 0);
           const balanceWhole  = balanceAtomic / 10 ** TOKEN_DECIMALS;
           const valueSui      = balanceWhole * priceSui;
 
-          if (valueSui > 0) {
+          if (valueSui > 0.001) {
             posWithValue.push({
               ...pos,
-              balanceAtomic: BigInt(balanceAtomic),
+              balanceAtomic:   BigInt(balanceAtomic),
               balanceWhole,
               valueSui,
               priceSui,
-              reserveMist: BigInt(Math.round(reserveMist)),
-              tokensRemaining: BigInt(fields.token_reserve ?? 0),
+              reserveMist:     BigInt(reserveMistNum),
+              tokensRemaining: BigInt(tokenReserveNum),
+              isv:             curveData.initialSharedVersion ?? curveData.initial_shared_version ?? null,
+              coins,
             });
           }
         } catch {}
@@ -146,51 +132,45 @@ export function useRebalance({ walletAddress, keypair }) {
 
       if (!posWithValue.length) { setChecking(false); return; }
 
-      // Total portfolio value in SUI
       const totalValueSui = posWithValue.reduce((s, p) => s + p.valueSui, 0);
 
-      // Check each position
       for (const pos of posWithValue) {
         const allocPct = (pos.valueSui / totalValueSui) * 100;
         if (allocPct <= cfg.maxAllocPct) continue;
         if (firingRef.current.has(pos.curve_id)) continue;
 
-        // How many tokens to sell to bring allocation down to maxAllocPct
-        const targetValueSui  = totalValueSui * (cfg.maxAllocPct / 100);
-        const excessValueSui  = pos.valueSui - targetValueSui;
-        const tokensToSell    = Math.floor(excessValueSui / pos.priceSui * 10 ** TOKEN_DECIMALS);
+        const targetValueSui = totalValueSui * (cfg.maxAllocPct / 100);
+        const excessValueSui = pos.valueSui - targetValueSui;
+        const tokensToSell   = Math.floor(excessValueSui / pos.priceSui * 10 ** TOKEN_DECIMALS);
         if (tokensToSell <= 0) continue;
 
         firingRef.current.add(pos.curve_id);
 
         let logEntry = {
-          curveId: pos.curve_id,
-          name:    pos.name   ?? '',
-          symbol:  pos.symbol ?? '',
+          curveId:    pos.curve_id,
+          name:       pos.name   ?? '',
+          symbol:     pos.symbol ?? '',
           soldTokens: tokensToSell / 10 ** TOKEN_DECIMALS,
-          reason:  `${allocPct.toFixed(1)}% → ${cfg.maxAllocPct}%`,
-          success: false,
+          reason:     `${allocPct.toFixed(1)}% → ${cfg.maxAllocPct}%`,
+          success:    false,
         };
 
         try {
-          const objForRef = await client.getObject({ id: pos.curve_id, options: { showOwner: true } });
-          const isv = objForRef.data?.owner?.Shared?.initial_shared_version;
-          if (!isv) throw new Error('Could not resolve curve version');
+          if (!pos.isv) throw new Error('Could not resolve curve version');
 
           const tokInAtomic = BigInt(tokensToSell);
-          const sq = sellQuote(pos.reserveMist, pos.tokensRemaining, tokInAtomic,
-            curveShapeFor(pos.package_id).virtualSui,
-            curveShapeFor(pos.package_id).virtualTokens);
+          const shape = curveShapeFor(pos.package_id);
+          const sq    = sellQuote(pos.reserveMist, pos.tokensRemaining, tokInAtomic, shape.virtualSui, shape.virtualTokens);
           const minOut = sq?.suiOut != null
             ? BigInt(Math.floor(Number(sq.suiOut) * (1 - cfg.slippage / 100)))
             : 0n;
 
           const tx = new Transaction();
           tx.setSender(myAddress);
-          const curveRef = tx.sharedObjectRef({ objectId: pos.curve_id, initialSharedVersion: isv, mutable: true });
+          const curveRef = tx.sharedObjectRef({ objectId: pos.curve_id, initialSharedVersion: pos.isv, mutable: true });
 
-          const coins    = await client.getCoins({ owner: myAddress, coinType: pos.token_type });
-          const coinObjs = coins.data.map(c => tx.object(c.coinObjectId));
+          // Use coins fetched above — SuiGraphQLClient 2.x: objectId not coinObjectId
+          const coinObjs = pos.coins.map(c => tx.object(c.objectId ?? c.coinObjectId));
           if (coinObjs.length > 1) tx.mergeCoins(coinObjs[0], coinObjs.slice(1));
           const [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(tokInAtomic)]);
 
@@ -209,7 +189,7 @@ export function useRebalance({ walletAddress, keypair }) {
           const { signature } = await kp.signTransaction(builtTx);
           const result        = await client.executeTransaction({
             transaction: builtTx,
-            signatures: [signature],
+            signatures:  [signature],
           });
 
           logEntry = { ...logEntry, success: result?.errors == null, digest: result?.data?.executeTransaction?.digest };
@@ -256,7 +236,7 @@ export function useRebalance({ walletAddress, keypair }) {
     lastCheck,
     checkAndRebalance,
     clearLog,
-    log: config.log ?? [],
+    log:      config.log ?? [],
     isActive: config.enabled && !!keypair,
   };
 }
