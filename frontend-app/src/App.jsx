@@ -1013,7 +1013,11 @@ function HomePage({ onLaunch, lang = 'en' }) {
               <span className="text-white">LAUNCH. PUMP. BUILD.</span> <span className="text-lime-400">EARN.</span>
             </p>
           </div>
-          {!account && (
+          {account ? (
+            <button onClick={onLaunch} className="flex items-center gap-2 px-8 py-3 bg-lime-400 text-black text-sm font-mono font-bold tracking-widest hover:bg-lime-300 transition-colors rounded-2xl">
+              <Plus size={14} /> LAUNCH A TOKEN
+            </button>
+          ) : (
             <>
               <ConnectWalletHero lang={lang} />
               <MobileWalletButtons />
