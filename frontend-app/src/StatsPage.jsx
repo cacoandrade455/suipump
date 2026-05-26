@@ -1,12 +1,11 @@
 // StatsPage.jsx
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, TrendingUp, Flame, Gift, Coins, Trophy, Zap, BarChart3 } from 'lucide-react';
-import { PACKAGE_ID, ALL_PACKAGE_IDS, DRAIN_SUI_APPROX } from './constants.js';
+import { ArrowLeft, TrendingUp, Flame, Gift, Coins, Users, Zap, BarChart3, Trophy, Droplets } from 'lucide-react';
+import { ALL_PACKAGE_IDS } from './constants.js';
 import { useTokenList } from './useTokenList.js';
-import { paginateMultipleEvents } from './paginateEvents.js';
 
-const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
+const INDEXER_URL  = import.meta.env.VITE_INDEXER_URL || '';
 const MIST_PER_SUI = 1e9;
 
 async function fetchSuiUsd() {
@@ -28,7 +27,7 @@ function fmt(n, d = 2) {
   if (n >= 1e9) return (n / 1e9).toFixed(d) + 'B';
   if (n >= 1e6) return (n / 1e6).toFixed(d) + 'M';
   if (n >= 1e3) return (n / 1e3).toFixed(d) + 'k';
-  return n.toFixed(d);
+  return Number.isInteger(n) ? n.toString() : n.toFixed(d);
 }
 
 function fmtUsd(sui, suiUsd, d = 2) {
@@ -46,8 +45,10 @@ function StatCard({ icon, label, valueSui, valueUsd, accent = false, sub }) {
         {icon} {label}
       </div>
       {valueUsd ? (
-        <><div className={`text-2xl font-bold font-mono ${accent ? 'text-lime-400' : 'text-white'}`}>{valueUsd}</div>
-        <div className="text-xs font-mono text-white/30">{valueSui}</div></>
+        <>
+          <div className={`text-2xl font-bold font-mono ${accent ? 'text-lime-400' : 'text-white'}`}>{valueUsd}</div>
+          <div className="text-xs font-mono text-white/30">{valueSui}</div>
+        </>
       ) : (
         <div className={`text-2xl font-bold font-mono ${accent ? 'text-lime-400' : 'text-white'}`}>{valueSui}</div>
       )}
@@ -58,10 +59,20 @@ function StatCard({ icon, label, valueSui, valueUsd, accent = false, sub }) {
 
 export default function StatsPage({ onBack }) {
   const navigate = useNavigate();
-  const { tokens } = useTokenList();
-  const [suiUsd, setSuiUsd] = useState(0);
+  const [suiUsd,  setSuiUsd]  = useState(0);
   const [loading, setLoading] = useState(true);
-  const [data, setData] = useState({ volume: null, protocolFees: null, tradeCount: null, buyCount: null, sellCount: null, tokenCount: null, topTokens: [] });
+  const [data, setData] = useState({
+    volume:         null,
+    protocolFees:   null,
+    creatorFees:    null,
+    s1Pool:         null,
+    tradeCount:     null,
+    buyCount:       null,
+    sellCount:      null,
+    tokenCount:     null,
+    graduatedCount: null,
+    uniqueWallets:  null,
+  });
 
   useEffect(() => {
     fetchSuiUsd().then(setSuiUsd);
@@ -72,56 +83,100 @@ export default function StatsPage({ onBack }) {
   useEffect(() => {
     let cancelled = false;
     async function load() {
-      if (INDEXER_URL) {
-        try {
-          const res = await fetch(`${INDEXER_URL}/stats`, { signal: AbortSignal.timeout(5000) });
-          if (res.ok) {
-            const d = await res.json();
-            if (!cancelled) {
-              setData({ volume: d.totalVolume, protocolFees: d.protocolFeesSui, tradeCount: d.totalTrades, buyCount: d.totalBuys ?? null, sellCount: d.totalSells ?? null, tokenCount: d.tokenCount ?? null, topTokens: [] });
-              setLoading(false);
-              return;
-            }
-          }
-        } catch {}
-      }
-      // RPC fallback
+      if (!INDEXER_URL) { setLoading(false); return; }
       try {
-        const buyTypes  = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensPurchased`);
-        const sellTypes = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensSold`);
-        const eventMap = {}; // RPC fallback removed (CORS blocked)
-        const allBuys  = buyTypes.flatMap(t => eventMap[t] ?? []);
-        const allSells = sellTypes.flatMap(t => eventMap[t] ?? []);
-        let volume = 0;
-        for (const e of allBuys)  volume += Number(e.parsedJson?.sui_in  ?? 0) / MIST_PER_SUI;
-        for (const e of allSells) volume += Number(e.parsedJson?.sui_out ?? 0) / MIST_PER_SUI;
-        if (!cancelled) {
-          setData({ volume, protocolFees: volume * 0.005, tradeCount: allBuys.length + allSells.length, buyCount: allBuys.length, sellCount: allSells.length, tokenCount: tokens.length, topTokens: [] });
+        const res = await fetch(`${INDEXER_URL}/stats`, { signal: AbortSignal.timeout(5000) });
+        if (res.ok && !cancelled) {
+          const d = await res.json();
+          const vol = d.totalVolume ?? 0;
+          setData({
+            volume:         vol,
+            protocolFees:   d.protocolFeesSui   ?? vol * 0.005,
+            creatorFees:    d.creatorFeesSui     ?? null,
+            s1Pool:         d.s1PoolSui          ?? null,
+            tradeCount:     d.totalTrades        ?? null,
+            buyCount:       d.totalBuys          ?? null,
+            sellCount:      d.totalSells         ?? null,
+            tokenCount:     d.tokenCount         ?? null,
+            graduatedCount: d.graduatedCount     ?? null,
+            uniqueWallets:  d.uniqueWallets      ?? null,
+          });
           setLoading(false);
         }
       } catch { if (!cancelled) setLoading(false); }
     }
     load();
     return () => { cancelled = true; };
-  }, [tokens.length]);
+  }, []);
 
   return (
     <div className="min-h-screen" style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}>
-      <button onClick={onBack || (() => navigate('/'))} className="flex items-center gap-2 text-white/50 hover:text-lime-400 transition-colors text-xs font-mono mb-6 group">
+      <button
+        onClick={onBack || (() => navigate('/'))}
+        className="flex items-center gap-2 text-white/50 hover:text-lime-400 transition-colors text-xs font-mono mb-6 group"
+      >
         <ArrowLeft size={14} className="group-hover:-translate-x-0.5 transition-transform" />Back
       </button>
+
       <div className="flex items-center gap-3 mb-6">
         <BarChart3 size={20} className="text-lime-400" />
         <h1 className="text-xl font-bold text-white font-mono">Protocol Stats</h1>
       </div>
+
       {loading ? (
         <div className="text-center text-white/20 text-xs font-mono py-12">Loading…</div>
       ) : (
         <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-          <StatCard icon={<TrendingUp size={10} />} label="TOTAL VOLUME" valueSui={`${fmt(data.volume)} SUI`} valueUsd={fmtUsd(data.volume, suiUsd)} accent />
-          <StatCard icon={<Coins size={10} />} label="PROTOCOL FEES" valueSui={`${fmt(data.protocolFees)} SUI`} valueUsd={fmtUsd(data.protocolFees, suiUsd)} />
-          <StatCard icon={<Zap size={10} />} label="TOTAL TRADES" valueSui={fmt(data.tradeCount, 0)} sub={data.buyCount != null ? `${fmt(data.buyCount, 0)} buys · ${fmt(data.sellCount, 0)} sells` : undefined} />
-          {data.tokenCount != null && <StatCard icon={<Flame size={10} />} label="TOKENS LAUNCHED" valueSui={fmt(data.tokenCount, 0)} />}
+          <StatCard
+            icon={<TrendingUp size={10} />}
+            label="TOTAL VOLUME"
+            valueSui={`${fmt(data.volume)} SUI`}
+            valueUsd={fmtUsd(data.volume, suiUsd)}
+            accent
+          />
+          <StatCard
+            icon={<Zap size={10} />}
+            label="TOTAL TRADES"
+            valueSui={fmt(data.tradeCount, 0)}
+            sub={data.buyCount != null && data.sellCount != null
+              ? `${fmt(data.buyCount, 0)} buys · ${fmt(data.sellCount, 0)} sells`
+              : undefined}
+          />
+          <StatCard
+            icon={<Flame size={10} />}
+            label="TOKENS LAUNCHED"
+            valueSui={fmt(data.tokenCount, 0)}
+            sub={data.graduatedCount != null ? `${fmt(data.graduatedCount, 0)} graduated` : undefined}
+          />
+          <StatCard
+            icon={<Coins size={10} />}
+            label="PROTOCOL FEES"
+            valueSui={`${fmt(data.protocolFees)} SUI`}
+            valueUsd={fmtUsd(data.protocolFees, suiUsd)}
+          />
+          {data.creatorFees != null && (
+            <StatCard
+              icon={<Trophy size={10} />}
+              label="CREATOR FEES"
+              valueSui={`${fmt(data.creatorFees)} SUI`}
+              valueUsd={fmtUsd(data.creatorFees, suiUsd)}
+            />
+          )}
+          {data.s1Pool != null && (
+            <StatCard
+              icon={<Gift size={10} />}
+              label="S1 AIRDROP POOL"
+              valueSui={`${fmt(data.s1Pool)} SUI`}
+              valueUsd={fmtUsd(data.s1Pool, suiUsd)}
+            />
+          )}
+          {data.uniqueWallets != null && (
+            <StatCard
+              icon={<Users size={10} />}
+              label="UNIQUE WALLETS"
+              valueSui={fmt(data.uniqueWallets, 0)}
+            />
+          )}
         </div>
       )}
     </div>

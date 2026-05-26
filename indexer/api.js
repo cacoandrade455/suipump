@@ -93,17 +93,31 @@ app.get('/stats', async (req, res) => {
   try {
     const stats = await getGlobalStats();
     const protocolFeesSui = stats.totalVolume * 0.005;
+    const creatorFeesSui  = stats.totalVolume * 0.004; // 40% of 1% fee
     const s1PoolSui       = protocolFeesSui * 0.5;
-    const buySellRes = await pool.query(
-      'SELECT COALESCE(SUM(buys),0) AS total_buys, COALESCE(SUM(sells),0) AS total_sells FROM token_stats'
-    );
+
+    const [buySellRes, uniqueWalletsRes, graduatedRes] = await Promise.all([
+      pool.query('SELECT COALESCE(SUM(buys),0) AS total_buys, COALESCE(SUM(sells),0) AS total_sells FROM token_stats'),
+      pool.query(`
+        SELECT COUNT(DISTINCT wallet) AS cnt FROM (
+          SELECT data->>'buyer'  AS wallet FROM events WHERE event_type LIKE '%TokensPurchased' OR event_type LIKE '%TokensBought'
+          UNION
+          SELECT data->>'seller' AS wallet FROM events WHERE event_type LIKE '%TokensSold'
+        ) w WHERE wallet IS NOT NULL AND wallet != ''
+      `),
+      pool.query(`SELECT COUNT(*) AS cnt FROM curves WHERE graduated = true`),
+    ]);
+
     res.json({
       totalVolume:    stats.totalVolume,
       totalTrades:    stats.totalTrades,
       totalBuys:      Number(buySellRes.rows[0].total_buys),
       totalSells:     Number(buySellRes.rows[0].total_sells),
       tokenCount:     stats.tokenCount,
+      graduatedCount: Number(graduatedRes.rows[0].cnt),
+      uniqueWallets:  Number(uniqueWalletsRes.rows[0].cnt),
       protocolFeesSui,
+      creatorFeesSui,
       s1PoolSui,
     });
   } catch (err) { res.status(500).json({ error: err.message }); }
