@@ -408,19 +408,15 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
   };
 
   const getCapId = async () => {
-    // Use indexer to find CreatorCap object ID — avoids CORS on graphql endpoint
-    const IURL_CAP = import.meta.env.VITE_INDEXER_URL || '';
-    if (IURL_CAP) {
+    // Search all package versions for a CreatorCap matching this curve
+    for (const pid of ALL_PACKAGE_IDS) {
       try {
-        const res = await fetch(`${IURL_CAP}/token/${curveId}/creator-cap?owner=${account.address}`, { signal: AbortSignal.timeout(5000) });
-        if (res.ok) { const d = await res.json(); if (d.objectId) return d.objectId; }
+        const ownedObjs = await client.listOwnedObjects({ owner: account.address, type: `${pid}::bonding_curve::CreatorCap`, include: { json: true } });
+        const capObj = ownedObjs.objects?.find(o => o.json?.curve_id === curveId) ?? null;
+        if (capObj) return capObj.objectId;
       } catch {}
     }
-    // Fallback to direct RPC (may be blocked by CORS in browser)
-    const ownedObjs = await client.listOwnedObjects({ owner: account.address, type: `${pkgId}::bonding_curve::CreatorCap`, include: { json: true } });
-    const capObj = ownedObjs.objects?.find(o => o.json?.curve_id === curveId) ?? ownedObjs.objects?.[0];
-    if (!capObj) throw new Error('CreatorCap not found in wallet');
-    return capObj.objectId;
+    throw new Error('CreatorCap not found in wallet');
   };
 
   const getCurveRef = async (tx) => {
@@ -1508,19 +1504,18 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   React.useEffect(() => {
     if (!account?.address || !curveId || !client) { setIsCreator(false); return; }
     let cancelled = false;
-    const checkPkg = async (pid) => {
-      // Use indexer to check creator status — avoids CORS
-      const IURL_IC = import.meta.env.VITE_INDEXER_URL || '';
-      if (IURL_IC) {
+    // Gate on cap ownership — not creator address. Disappears automatically after transfer.
+    async function checkCapOwnership() {
+      for (const pid of ALL_PACKAGE_IDS) {
         try {
-          const res = await fetch(`${IURL_IC}/token/${curveId}`, { signal: AbortSignal.timeout(3000) });
-          if (res.ok) { const d = await res.json(); return d.creator?.toLowerCase() === account.address?.toLowerCase(); }
+          const ownedObjs = await client.listOwnedObjects({ owner: account.address, type: `${pid}::bonding_curve::CreatorCap`, include: { json: true } });
+          const capObj = ownedObjs.objects?.find(o => o.json?.curve_id === curveId) ?? null;
+          if (capObj) { if (!cancelled) setIsCreator(true); return; }
         } catch {}
       }
-      return false;
-    };
-    checkPkg(PACKAGE_ID_V4)
-      .then(result => { if (!cancelled) setIsCreator(result); }).catch(() => {});
+      if (!cancelled) setIsCreator(false);
+    }
+    checkCapOwnership();
     return () => { cancelled = true; };
   }, [account?.address, curveId, client]);
 
