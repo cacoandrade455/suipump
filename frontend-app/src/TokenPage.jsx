@@ -634,11 +634,11 @@ function TradePanelContent({
       )}
 
       {/* Creator fee claim */}
-      {isCreator && Number(creatorFeesMist) > 0 && (
+      {isCreator && (
         <div className="space-y-2 pb-2 border-b border-white/5">
           <div className="flex items-center justify-between">
             <div className="text-[10px] font-mono text-white/35">{t(lang, 'creatorFees')}</div>
-            <div className="text-xs font-mono text-lime-400">{fmt(Number(creatorFeesMist) / 1e9, 4)} SUI</div>
+            {Number(creatorFeesMist) > 0 && <div className="text-xs font-mono text-lime-400">{fmt(Number(creatorFeesMist) / 1e9, 4)} SUI</div>}
           </div>
           <button onClick={handleClaim} disabled={claiming} className={`w-full py-2 rounded-lg text-[10px] font-mono font-bold transition-colors ${claiming ? 'bg-white/5 text-white/20 cursor-not-allowed' : 'bg-lime-400/10 border border-lime-400/30 text-lime-400 hover:bg-lime-400/20'}`}>{claiming ? 'CLAIMING…' : t(lang, 'claimFees')}</button>
           {claimMsg && <div className={`text-[10px] font-mono text-center ${claimMsg.includes('🎉') ? 'text-lime-400' : 'text-red-400'}`}>{claimMsg}</div>}
