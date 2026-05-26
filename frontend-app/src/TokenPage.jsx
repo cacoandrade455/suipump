@@ -279,7 +279,18 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
       const coins  = await client.listCoins({ owner: account.address, coinType: tokenType });
       if (!coins.objects.length) throw new Error('No token balance');
       const tx  = new Transaction();
-      const curveRef = initialSharedVersion ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion, mutable: false }) : tx.object(curveId);
+      // Always use sharedObjectRef for the curve — tx.object() on a shared object causes TypeMismatch
+      let isv = initialSharedVersion ?? curveState?.initial_shared_version ?? null;
+      if (!isv) {
+        // Fetch ISV from indexer as last resort
+        try {
+          const _IURL = import.meta.env.VITE_INDEXER_URL || '';
+          const r = await fetch(`${_IURL}/token/${curveId}`, { signal: AbortSignal.timeout(3000) });
+          if (r.ok) { const d = await r.json(); isv = d.initialSharedVersion ?? d.initial_shared_version ?? null; }
+        } catch {}
+      }
+      if (!isv) throw new Error('Could not resolve curve shared version');
+      const curveRef = tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: isv, mutable: false });
       const coinObjs = coins.objects.map(c => tx.object(c.objectId));
       let tokenCoin;
       if (coinObjs.length === 1) { [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(atomic)]); }
@@ -310,6 +321,14 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
           <div>
             <div className="text-[9px] tracking-widest text-white/30 mb-1.5">AMOUNT</div>
             <input type="number" value={lockAmount} onChange={e => { setLockAmount(e.target.value); setMsg(''); }} placeholder={`0 — you hold ${tokenBalance}`} min="0" className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-lime-400/50" />
+            <div className="flex gap-1.5 mt-1.5">
+              {[50, 75, 100].map(pct => (
+                <button key={pct} onClick={() => setLockAmount(((tokenBalance * pct) / 100).toFixed(0))}
+                  className="flex-1 py-1 rounded text-[9px] font-mono text-white/40 bg-white/5 border border-white/10 hover:text-lime-400 hover:border-lime-400/30 transition-colors">
+                  {pct}%
+                </button>
+              ))}
+            </div>
           </div>
           <div>
             <div className="text-[9px] tracking-widest text-white/30 mb-1.5">MODE</div>
