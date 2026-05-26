@@ -863,6 +863,7 @@ function TradePanelContent({
 function TPSLPanel({
   account, curveId, tokenType, pkgId,
   priceSui,
+  latestOhlcPoint,
   tokenBalance,
   reserveMist, tokensRemaining, vSui, vTok,
   slippage,
@@ -973,7 +974,7 @@ function TPSLPanel({
     walletAddress:   account?.address,
     curveId,
     currentPriceSui: priceSui,
-    latestOhlcPoint: feedOhlc.length > 0 ? feedOhlc[feedOhlc.length - 1] : null,
+    latestOhlcPoint: latestOhlcPoint ?? null,
     onTrigger:       handleTrigger,
   });
 
@@ -1253,6 +1254,10 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   const client   = useCurrentClient();
   const dAppKit  = useDAppKit();
 
+  // ── Shared SSE feed — one connection for chart + trades ──────────────────
+  // Must be declared before any hook that consumes feedOhlc/feedTrades
+  const { trades: feedTrades, ohlc: feedOhlc, loading: feedLoading, connected: feedConnected } = useTokenPageFeed(curveId);
+
   const [suiUsd,          setSuiUsd]          = useState(0);
   const [curveState,      setCurveState]      = useState(null);
   const [metadata,        setMetadata]        = useState(null);
@@ -1268,9 +1273,6 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   const [copied,          setCopied]          = useState(false);
   const [shared,          setShared]          = useState(false);
   const [linkCopied,      setLinkCopied]      = useState(false);
-
-  // ── Shared SSE feed — one connection for chart + trades ──────────────────
-  const { trades: feedTrades, ohlc: feedOhlc, loading: feedLoading, connected: feedConnected } = useTokenPageFeed(curveId);
 
   // ── data loading ──────────────────────────────────────────────────────────
 
@@ -1656,6 +1658,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
             tokenType={tokenType}
             pkgId={pkgId}
             priceSui={priceSui}
+            latestOhlcPoint={feedOhlc.length > 0 ? feedOhlc[feedOhlc.length - 1] : null}
             tokenBalance={tokenBalance}
             reserveMist={reserveMist}
             tokensRemaining={tokensRemaining}
