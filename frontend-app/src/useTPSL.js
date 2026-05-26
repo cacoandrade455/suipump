@@ -1,22 +1,10 @@
 // useTPSL.js — Take-Profit / Stop-Loss hook
-// Monitors current token price via the SSE stream.
-// When a TP or SL level is hit, calls onTrigger({ reason, pct, level })
-// so the parent can prompt the user's Slush wallet to execute the sell.
+// Price updates arrive via latestOhlcPoint prop from TokenPage (shared SSE feed).
+// No internal SSE connection — zero extra connections per page.
 //
 // Storage: localStorage key = `suipump_tpsl_${walletAddress}_${curveId}`
-// Schema:
-// {
-//   enabled: boolean,
-//   entryPriceSui: number,        // price per whole token in SUI at time of set
-//   levels: [
-//     { id, type: 'tp'|'sl', pct: number, sellPct: number, triggered: boolean }
-//   ]
-// }
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { curveShapeFor } from './constants.js';
-
-const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
 
 // ── Storage helpers ───────────────────────────────────────────────────────────
 
@@ -57,17 +45,17 @@ export function makeLevel(type, pct, sellPct) {
 }
 
 // ── Main hook ─────────────────────────────────────────────────────────────────
+// latestOhlcPoint: { time, price, kind } | null — latest point from shared SSE feed
+// currentPriceSui: number — derived price from curveState (handles tab-open case)
 
 export function useTPSL({
   walletAddress,
   curveId,
-  currentPriceSui,   // number — current price per whole token in SUI
-  onTrigger,         // ({ level, currentPriceSui }) => void — called when a level hits
+  currentPriceSui,    // number — fallback for tab-open / pre-SSE case
+  latestOhlcPoint,    // { time, price, kind } | null — from useTokenPageFeed
+  onTrigger,          // ({ level, currentPriceSui }) => void
 }) {
   const [config, setConfig] = useState(() => loadTPSL(walletAddress, curveId));
-  const esRef    = useRef(null);
-  const timerRef = useRef(null);
-  // Prevent double-triggers on the same level across re-renders
   const triggeredRef = useRef(new Set());
 
   // ── Persist to localStorage whenever config changes ───────────────────────
@@ -75,7 +63,7 @@ export function useTPSL({
     if (config) saveTPSL(walletAddress, curveId, config);
   }, [config, walletAddress, curveId]);
 
-  // ── Price check: called on every SSE price update ────────────────────────
+  // ── Level checker ─────────────────────────────────────────────────────────
   const checkLevels = useCallback((priceSui) => {
     if (!config?.enabled || !config.entryPriceSui || !priceSui) return;
     const entry = config.entryPriceSui;
@@ -84,15 +72,11 @@ export function useTPSL({
       if (level.triggered || triggeredRef.current.has(level.id)) return;
 
       const changePct = ((priceSui - entry) / entry) * 100;
-
-      let hit = false;
-      if (level.type === 'tp' && changePct >= level.pct) hit = true;
-      if (level.type === 'sl' && changePct <= level.pct) hit = true;
+      const hit = (level.type === 'tp' && changePct >= level.pct) ||
+                  (level.type === 'sl' && changePct <= level.pct);
 
       if (hit) {
         triggeredRef.current.add(level.id);
-        // Mark triggered in storage before calling onTrigger
-        // so a page refresh doesn't re-fire it
         setConfig(prev => {
           if (!prev) return prev;
           const updated = {
@@ -109,56 +93,12 @@ export function useTPSL({
     });
   }, [config, walletAddress, curveId, onTrigger]);
 
-  // ── SSE subscription ──────────────────────────────────────────────────────
+  // ── React to new SSE price point from shared feed ─────────────────────────
   useEffect(() => {
-    if (!curveId || !INDEXER_URL || !config?.enabled) return;
+    if (latestOhlcPoint?.price > 0) checkLevels(latestOhlcPoint.price);
+  }, [latestOhlcPoint, checkLevels]);
 
-    function connect() {
-      const es = new EventSource(`${INDEXER_URL}/stream?curveId=${curveId}`);
-      esRef.current = es;
-
-      es.onmessage = (e) => {
-        try {
-          const event = JSON.parse(e.data);
-          if (event.type === 'connected') return;
-          const isTrade =
-            event.type === 'TokensPurchased' ||
-            event.type === 'TokensBought'    ||
-            event.type === 'TokensSold';
-          if (!isTrade) return;
-
-          // Compute spot price from event data using the same formula as PriceChart
-          // price = (virtual_sui + new_sui_reserve) / total_supply
-          const d = event.data ?? {};
-          const newReserveMist = Number(d.new_sui_reserve ?? 0);
-          if (!newReserveMist) return;
-
-          // Derive virtual SUI from the event's package ID via curveShapeFor
-          // This covers ALL package versions automatically including future ones
-          const evtPkg    = event.eventType?.split('::')?.[0] ?? '';
-          const vSuiWhole = curveShapeFor(evtPkg).virtualSui;
-
-          const totalPoolSui = (vSuiWhole + newReserveMist / 1e9);
-          const priceSui = totalPoolSui / 1_000_000_000; // per whole token
-
-          checkLevels(priceSui);
-        } catch {}
-      };
-
-      es.onerror = () => {
-        es.close();
-        timerRef.current = setTimeout(connect, 3000);
-      };
-    }
-
-    connect();
-    return () => {
-      esRef.current?.close();
-      clearTimeout(timerRef.current);
-    };
-  }, [curveId, config?.enabled, checkLevels]);
-
-  // ── Also check on every currentPriceSui prop change (handles tab-open case) ─
+  // ── Fallback: check on curveState price change (tab-open / pre-SSE) ───────
   useEffect(() => {
     if (currentPriceSui > 0) checkLevels(currentPriceSui);
   }, [currentPriceSui, checkLevels]);
@@ -186,11 +126,11 @@ export function useTPSL({
   }, []);
 
   return {
-    config,         // current TP/SL config or null
-    activate,       // (entryPriceSui, levels[]) => void
-    deactivate,     // () => void
-    dismissLevel,   // (levelId) => void
-    makeLevel,      // helper: makeLevel(type, pct, sellPct)
+    config,
+    activate,
+    deactivate,
+    dismissLevel,
+    makeLevel,
     isActive: !!config?.enabled,
   };
 }

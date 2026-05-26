@@ -104,57 +104,29 @@ export function useRealtimeFeed(curveId = null) {
 }
 
 // ── useTokenPageFeed ──────────────────────────────────────────────────────────
-// Combines initial HTTP fetch + SSE stream for a single token page.
-// Handles initial load + real-time updates in one hook.
+// Single SSE connection + parallel HTTP backfill for a token page.
+// SSE and HTTP fetch start simultaneously — loading clears as soon as either
+// resolves, so the first trade event from SSE renders instantly with no gate.
+// Trades are deduplicated by tx_digest+ts so HTTP backfill never doubles SSE events.
+// Exposes latestOhlcPoint so useTPSL can consume price updates without its own connection.
 
 export function useTokenPageFeed(curveId) {
-  const [trades,    setTrades]    = useState([]);
-  const [ohlc,      setOhlc]      = useState([]);
-  const [loading,   setLoading]   = useState(true);
-  const [connected, setConnected] = useState(false);
-  const esRef    = useRef(null);
-  const timerRef = useRef(null);
+  const [trades,          setTrades]          = useState([]);
+  const [ohlc,            setOhlc]            = useState([]);
+  const [loading,         setLoading]         = useState(true);
+  const [connected,       setConnected]       = useState(false);
+  const [latestOhlcPoint, setLatestOhlcPoint] = useState(null);
 
-  // Initial HTTP fetch
+  const esRef       = useRef(null);
+  const timerRef    = useRef(null);
+  const seenRef     = useRef(new Set());   // tx_digest+ts dedup
+  const loadingRef  = useRef(true);        // mirror of loading for use inside closures
+
   useEffect(() => {
     if (!curveId || !INDEXER_URL) return;
     let cancelled = false;
 
-    async function fetchInitial() {
-      try {
-        const [tradesRes, ohlcRes] = await Promise.all([
-          fetch(`${INDEXER_URL}/token/${curveId}/trades?limit=200`),
-          fetch(`${INDEXER_URL}/token/${curveId}/ohlc`),
-        ]);
-        if (tradesRes.ok) {
-          const rows = await tradesRes.json();
-          if (!cancelled) {
-            setTrades(rows.map(r => ({
-              kind:     r.event_type?.includes('TokensPurchased') ? 'buy' : 'sell',
-              sui:      r.event_type?.includes('TokensPurchased') ? Number(r.data.sui_in) / MIST_PER_SUI : Number(r.data.sui_out) / MIST_PER_SUI,
-              tokens:   r.event_type?.includes('TokensPurchased') ? Number(r.data.tokens_out) / 1e6      : Number(r.data.tokens_in)  / 1e6,
-              who:      r.data.buyer ?? r.data.seller,
-              ts:       r.timestamp_ms ? Number(r.timestamp_ms) : null,
-              curveId,
-            })));
-          }
-        }
-        if (ohlcRes.ok) {
-          const points = await ohlcRes.json();
-          if (!cancelled) setOhlc(points);
-        }
-      } catch {}
-      if (!cancelled) setLoading(false);
-    }
-
-    fetchInitial();
-    return () => { cancelled = true; };
-  }, [curveId]);
-
-  // SSE stream for real-time updates
-  useEffect(() => {
-    if (!curveId || !INDEXER_URL) return;
-
+    // ── SSE — starts immediately, clears loading on first trade ──────────────
     function connect() {
       const es = new EventSource(`${INDEXER_URL}/stream?curveId=${curveId}`);
       esRef.current = es;
@@ -171,9 +143,22 @@ export function useTokenPageFeed(curveId) {
                           event.type === 'TokensSold';
           if (!isTrade) return;
 
-          const isBuy = event.type !== 'TokensSold';
-          const d     = event.data ?? {};
+          // Clear loading on first SSE trade — no need to wait for HTTP
+          if (loadingRef.current) {
+            loadingRef.current = false;
+            if (!cancelled) setLoading(false);
+          }
+
+          const isBuy  = event.type !== 'TokensSold';
+          const d      = event.data ?? {};
+          const dedupKey = `${d.tx_digest ?? event.ts}_${event.ts}`;
+
+          // Skip if HTTP backfill already delivered this trade
+          if (seenRef.current.has(dedupKey)) return;
+          seenRef.current.add(dedupKey);
+
           const trade = {
+            id:      dedupKey,
             kind:    isBuy ? 'buy' : 'sell',
             sui:     isBuy ? Number(d.sui_in  ?? 0) / MIST_PER_SUI : Number(d.sui_out ?? 0) / MIST_PER_SUI,
             tokens:  isBuy ? Number(d.tokens_out ?? 0) / 1e6       : Number(d.tokens_in  ?? 0) / 1e6,
@@ -182,12 +167,15 @@ export function useTokenPageFeed(curveId) {
             curveId,
           };
 
-          setTrades(prev => [trade, ...prev].slice(0, MAX_TRADES));
+          if (!cancelled) setTrades(prev => [trade, ...prev].slice(0, MAX_TRADES));
 
-          // Append OHLC point
+          // OHLC point for chart + TP/SL
           if (trade.tokens > 0) {
-            const price = trade.sui / trade.tokens;
-            setOhlc(prev => [...prev, { time: Math.floor(trade.ts / 1000), price, kind: trade.kind }]);
+            const pt = { time: Math.floor(event.ts / 1000), price: trade.sui / trade.tokens, kind: trade.kind };
+            if (!cancelled) {
+              setOhlc(prev => [...prev, pt]);
+              setLatestOhlcPoint(pt);
+            }
           }
         } catch {}
       };
@@ -200,11 +188,69 @@ export function useTokenPageFeed(curveId) {
     }
 
     connect();
+
+    // ── HTTP backfill — runs in parallel, merges with SSE trades ─────────────
+    async function fetchBackfill() {
+      try {
+        const [tradesRes, ohlcRes] = await Promise.all([
+          fetch(`${INDEXER_URL}/token/${curveId}/trades?limit=200`),
+          fetch(`${INDEXER_URL}/token/${curveId}/ohlc`),
+        ]);
+
+        if (tradesRes.ok && !cancelled) {
+          const rows = await tradesRes.json();
+          const items = rows.map(r => {
+            const isBuy = r.event_type?.includes('TokensPurchased');
+            const key   = `${r.tx_digest ?? r.curve_id}_${r.timestamp_ms}`;
+            seenRef.current.add(key);
+            return {
+              id:     key,
+              kind:   isBuy ? 'buy' : 'sell',
+              sui:    Number(isBuy ? r.data.sui_in ?? 0 : r.data.sui_out ?? 0) / MIST_PER_SUI,
+              tokens: Number(isBuy ? r.data.tokens_out ?? 0 : r.data.tokens_in ?? 0) / 1e6,
+              who:    r.data.buyer ?? r.data.seller,
+              ts:     r.timestamp_ms ? Number(r.timestamp_ms) : null,
+              curveId,
+            };
+          });
+          // Merge: backfill provides history, SSE may have already added recent trades.
+          // Replace state with backfill, then re-append any SSE trades not in backfill.
+          if (!cancelled) {
+            setTrades(prev => {
+              const backfillKeys = new Set(items.map(t => t.id));
+              const sseOnly = prev.filter(t => !backfillKeys.has(t.id));
+              return [...sseOnly, ...items].slice(0, MAX_TRADES);
+            });
+          }
+        }
+
+        if (ohlcRes.ok && !cancelled) {
+          const points = await ohlcRes.json();
+          if (!cancelled) setOhlc(prev => {
+            // Merge: keep SSE points that are newer than the last HTTP point
+            const lastHttpTime = points.length > 0 ? points[points.length - 1].time : 0;
+            const sseNewer = prev.filter(p => p.time > lastHttpTime);
+            return [...points, ...sseNewer];
+          });
+        }
+      } catch {}
+
+      // Always clear loading after backfill attempt even if SSE hasn't fired yet
+      if (!cancelled && loadingRef.current) {
+        loadingRef.current = false;
+        setLoading(false);
+      }
+    }
+
+    fetchBackfill();
+
     return () => {
+      cancelled = true;
       esRef.current?.close();
       clearTimeout(timerRef.current);
+      seenRef.current.clear();
     };
   }, [curveId]);
 
-  return { trades, ohlc, loading, connected, setTrades, setOhlc };
+  return { trades, ohlc, loading, connected, latestOhlcPoint, setTrades, setOhlc };
 }

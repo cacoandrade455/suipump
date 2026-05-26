@@ -973,6 +973,7 @@ function TPSLPanel({
     walletAddress:   account?.address,
     curveId,
     currentPriceSui: priceSui,
+    latestOhlcPoint: feedOhlc.length > 0 ? feedOhlc[feedOhlc.length - 1] : null,
     onTrigger:       handleTrigger,
   });
 
