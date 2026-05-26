@@ -248,9 +248,10 @@ function TokenCard({ token, stats, curveState: curveStateProp, isCrown, suiUsd =
   // Price from tokenStats last_price (most up-to-date from SSE)
   const pricePerWhole  = stats?.lastPrice ?? 0;
   const marketCapSui   = pricePerWhole * TOTAL_SUPPLY_WHOLE;
-  // Fallback: compute from reserve if stats not loaded yet
-  const tokensSold     = BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS);
-  const priceMist      = pricePerWhole > 0 ? BigInt(Math.round(pricePerWhole * 1e9)) : (curveState ? priceMistPerToken(reserveMist, tokensSold, cardVSui, cardVTok) : 0n);
+  // Fallback: compute from virtual reserve curve (start price) when no trades
+  const priceMist      = pricePerWhole > 0
+    ? BigInt(Math.round(pricePerWhole * 1e9))
+    : priceMistPerToken(0n, BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS), cardVSui, cardVTok);
   const isTrending = stats?.recentTrades >= 3;
   const isNew = token.timestamp && (Date.now() - token.timestamp) < 30 * 60 * 1000;
   const suiUntilGrad = Math.max(0, cardDrain - mistToSui(reserveMist));
@@ -362,13 +363,16 @@ function TokenCard({ token, stats, curveState: curveStateProp, isCrown, suiUsd =
       {/* Row 2  -  sparkline + price */}
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
-          {stats?.sparkline24h?.length >= 2 ? (
-            <Sparkline points={stats.sparkline24h} width={72} height={22} />
-          ) : (
-            <div className="w-[72px] h-[22px] flex items-center">
-              <div className="w-full h-px bg-white/5" />
-            </div>
-          )}
+          {(() => {
+            const spark = stats?.sparkline24h;
+            if (spark?.length >= 2) return <Sparkline points={spark} width={72} height={22} />;
+            // Fallback: 2-point line from firstPrice → lastPrice
+            if (stats?.firstPrice && stats?.lastPrice) {
+              const synth = [{ p: stats.firstPrice }, { p: stats.lastPrice }];
+              return <Sparkline points={synth} width={72} height={22} />;
+            }
+            return <div className="w-[72px] h-[22px] flex items-center"><div className="w-full h-px bg-white/5" /></div>;
+          })()}
         </div>
         <div className="text-right">
           <div className="text-[11px] font-mono font-bold text-white/80">
