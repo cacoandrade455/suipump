@@ -55,6 +55,7 @@ export async function initSchema() {
       recent_trades         INT              DEFAULT 0,
       comment_count         INT              DEFAULT 0,
       reserve_sui           DOUBLE PRECISION DEFAULT 0,
+      creator_fees_sui      DOUBLE PRECISION DEFAULT 0,
       updated_at            BIGINT
     );
 
@@ -83,7 +84,8 @@ export async function initSchema() {
     ALTER TABLE curves ADD COLUMN IF NOT EXISTS icon_url              TEXT;
     ALTER TABLE curves ADD COLUMN IF NOT EXISTS token_type            TEXT;
     ALTER TABLE curves ADD COLUMN IF NOT EXISTS initial_shared_version BIGINT;
-    ALTER TABLE token_stats ADD COLUMN IF NOT EXISTS reserve_sui      DOUBLE PRECISION DEFAULT 0;
+    ALTER TABLE token_stats ADD COLUMN IF NOT EXISTS reserve_sui        DOUBLE PRECISION DEFAULT 0;
+    ALTER TABLE token_stats ADD COLUMN IF NOT EXISTS creator_fees_sui    DOUBLE PRECISION DEFAULT 0;
   `);
   console.log('✓ Schema initialized');
 }
@@ -222,12 +224,14 @@ export async function recomputeStats(curveId) {
   let lastTradeTime = null, lastPrice = null, firstPrice = null;
   let recentTrades = 0;
   let lastReserveSui = 0;
+  let creatorFeesSui = 0; // 0.40% of each buy (40% of 1% fee goes to creator)
 
   for (const row of buysRes.rows) {
     const d  = row.data;
     const ts = row.timestamp_ms ? Number(row.timestamp_ms) : 0;
     const suiIn = Number(d.sui_in ?? 0) / MIST;
     volumeSui += suiIn;
+    creatorFeesSui += suiIn * 0.004; // 0.40% creator fee on buys
     buys++;
     if (ts > oneDayAgo)  volume24h += suiIn;
     if (ts > oneHourAgo) recentTrades++;
@@ -269,24 +273,25 @@ export async function recomputeStats(curveId) {
     `INSERT INTO token_stats
        (curve_id, volume_sui, volume_24h, trades, buys, sells,
         last_trade_time, last_price, first_price, recent_trades, comment_count,
-        reserve_sui, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+        reserve_sui, creator_fees_sui, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
      ON CONFLICT (curve_id) DO UPDATE SET
-       volume_sui      = $2,
-       volume_24h      = $3,
-       trades          = $4,
-       buys            = $5,
-       sells           = $6,
-       last_trade_time = $7,
-       last_price      = $8,
-       first_price     = $9,
-       recent_trades   = $10,
-       comment_count   = $11,
-       reserve_sui     = $12,
-       updated_at      = $13`,
+       volume_sui        = $2,
+       volume_24h        = $3,
+       trades            = $4,
+       buys              = $5,
+       sells             = $6,
+       last_trade_time   = $7,
+       last_price        = $8,
+       first_price       = $9,
+       recent_trades     = $10,
+       comment_count     = $11,
+       reserve_sui       = $12,
+       creator_fees_sui  = $13,
+       updated_at        = $14`,
     [curveId, volumeSui, volume24h, buys + sells, buys, sells,
      lastTradeTime, lastPrice, firstPrice, recentTrades, commentCount,
-     lastReserveSui, now]
+     lastReserveSui, creatorFeesSui, now]
   );
 }
 
