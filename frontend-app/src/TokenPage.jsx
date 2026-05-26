@@ -12,7 +12,7 @@ import TradeHistory from './TradeHistory.jsx';
 import HolderList from './HolderList.jsx';
 import Comments from './Comments.jsx';
 import AIAnalysis from './AIAnalysis.jsx';
-import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8, MIST_PER_SUI, DRAIN_SUI_APPROX, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_SUI_V6, VIRTUAL_SUI_V7, VIRTUAL_SUI_V8, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, VIRTUAL_TOKENS_V6, VIRTUAL_TOKENS_V7, VIRTUAL_TOKENS_V8, DRAIN_SUI_V4, DRAIN_SUI_V5, DRAIN_SUI_V6, DRAIN_SUI_V7, DRAIN_SUI_V8, isNewCurve, isV5OrLater, isV7OrLater, isV8OrLater, supportsMetadataUpdate , curveShapeFor } from './constants.js';
+import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8, ALL_PACKAGE_IDS, MIST_PER_SUI, DRAIN_SUI_APPROX, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_SUI_V6, VIRTUAL_SUI_V7, VIRTUAL_SUI_V8, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, VIRTUAL_TOKENS_V6, VIRTUAL_TOKENS_V7, VIRTUAL_TOKENS_V8, DRAIN_SUI_V4, DRAIN_SUI_V5, DRAIN_SUI_V6, DRAIN_SUI_V7, DRAIN_SUI_V8, isNewCurve, isV5OrLater, isV7OrLater, isV8OrLater, supportsMetadataUpdate , curveShapeFor } from './constants.js';
 import { buyQuote, sellQuote } from './curve.js';
 import { t } from './i18n.js';
 
@@ -583,15 +583,39 @@ function TradePanelContent({
     if (!account || !panelCurveId || !panelTokenType || claiming) return;
     setClaiming(true); setClaimMsg('');
     try {
-      const ownedObjs = await client2.listOwnedObjects({ owner: account.address, type: `${pkgId}::bonding_curve::CreatorCap`, include: { json: true } });
-      const capObj = ownedObjs.objects?.find(o => o.json?.curve_id === panelCurveId) ?? ownedObjs.objects?.[0];
-      if (!capObj) throw new Error('CreatorCap not found in wallet');
-      const capId = capObj.objectId;
-      const objForRef = await client2.getObject({ objectId: panelCurveId });
-      const isv = objForRef.object?.owner?.Shared?.initialSharedVersion;
+      // Search all package versions for CreatorCap — token may be on any version
+      let capId = null;
+      let capPkgId = pkgId;
+      for (const searchPkg of ALL_PACKAGE_IDS) {
+        try {
+          const owned = await client2.listOwnedObjects({
+            owner: account.address,
+            type: `${searchPkg}::bonding_curve::CreatorCap`,
+            include: { json: true },
+          });
+          const match = owned.objects?.find(o => o.json?.curve_id === panelCurveId);
+          if (match) { capId = match.objectId; capPkgId = searchPkg; break; }
+        } catch {}
+      }
+      if (!capId) throw new Error('CreatorCap not found in wallet');
+
+      // Get ISV from indexer — avoids getObject CORS issue
+      let isv = panelCurveId && INDEXER_URL
+        ? await fetch(`${INDEXER_URL}/token/${panelCurveId}`, { signal: AbortSignal.timeout(3000) })
+            .then(r => r.ok ? r.json() : null)
+            .then(d => d?.initialSharedVersion ?? d?.initial_shared_version ?? null)
+            .catch(() => null)
+        : null;
+
       const tx = new Transaction();
-      const curveRef = isv ? tx.sharedObjectRef({ objectId: panelCurveId, initialSharedVersion: isv, mutable: true }) : tx.object(panelCurveId);
-      tx.moveCall({ target: `${pkgId}::bonding_curve::claim_creator_fees`, typeArguments: [panelTokenType], arguments: [tx.object(capId), curveRef] });
+      const curveRef = isv
+        ? tx.sharedObjectRef({ objectId: panelCurveId, initialSharedVersion: isv, mutable: true })
+        : tx.object(panelCurveId);
+      tx.moveCall({
+        target: `${capPkgId}::bonding_curve::claim_creator_fees`,
+        typeArguments: [panelTokenType],
+        arguments: [tx.object(capId), curveRef],
+      });
       const feeResult = await dAppKit.signAndExecuteTransaction({ transaction: tx });
       if (feeResult.$kind === 'FailedTransaction') throw new Error(feeResult.FailedTransaction.status.error ?? 'Claim failed');
       setClaimMsg('Fees claimed! 🎉'); setClaiming(false); setTimeout(() => setClaimMsg(''), 3000);
