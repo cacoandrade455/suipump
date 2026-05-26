@@ -43,18 +43,19 @@ export async function initSchema() {
     );
 
     CREATE TABLE IF NOT EXISTS token_stats (
-      curve_id        TEXT PRIMARY KEY,
-      volume_sui      DOUBLE PRECISION DEFAULT 0,
-      volume_24h      DOUBLE PRECISION DEFAULT 0,
-      trades          INT              DEFAULT 0,
-      buys            INT              DEFAULT 0,
-      sells           INT              DEFAULT 0,
-      last_trade_time BIGINT,
-      last_price      DOUBLE PRECISION,
-      first_price     DOUBLE PRECISION,
-      recent_trades   INT              DEFAULT 0,
-      comment_count   INT              DEFAULT 0,
-      updated_at      BIGINT
+      curve_id              TEXT PRIMARY KEY,
+      volume_sui            DOUBLE PRECISION DEFAULT 0,
+      volume_24h            DOUBLE PRECISION DEFAULT 0,
+      trades                INT              DEFAULT 0,
+      buys                  INT              DEFAULT 0,
+      sells                 INT              DEFAULT 0,
+      last_trade_time       BIGINT,
+      last_price            DOUBLE PRECISION,
+      first_price           DOUBLE PRECISION,
+      recent_trades         INT              DEFAULT 0,
+      comment_count         INT              DEFAULT 0,
+      reserve_sui           DOUBLE PRECISION DEFAULT 0,
+      updated_at            BIGINT
     );
 
     CREATE INDEX IF NOT EXISTS idx_token_stats_volume     ON token_stats (volume_sui DESC);
@@ -62,24 +63,27 @@ export async function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_token_stats_last_trade ON token_stats (last_trade_time DESC);
 
     CREATE TABLE IF NOT EXISTS curves (
-      curve_id          TEXT PRIMARY KEY,
-      creator           TEXT,
-      name              TEXT,
-      symbol            TEXT,
-      description       TEXT,
-      icon_url          TEXT,
-      token_type        TEXT,
-      package_id        TEXT,
-      created_at        BIGINT,
-      graduation_target SMALLINT,
-      anti_bot_delay    SMALLINT
+      curve_id              TEXT PRIMARY KEY,
+      creator               TEXT,
+      name                  TEXT,
+      symbol                TEXT,
+      description           TEXT,
+      icon_url              TEXT,
+      token_type            TEXT,
+      package_id            TEXT,
+      created_at            BIGINT,
+      graduation_target     SMALLINT,
+      anti_bot_delay        SMALLINT,
+      initial_shared_version BIGINT
     );
 
-    ALTER TABLE curves ADD COLUMN IF NOT EXISTS graduation_target SMALLINT;
-    ALTER TABLE curves ADD COLUMN IF NOT EXISTS anti_bot_delay    SMALLINT;
-    ALTER TABLE curves ADD COLUMN IF NOT EXISTS description       TEXT;
-    ALTER TABLE curves ADD COLUMN IF NOT EXISTS icon_url          TEXT;
-    ALTER TABLE curves ADD COLUMN IF NOT EXISTS token_type        TEXT;
+    ALTER TABLE curves ADD COLUMN IF NOT EXISTS graduation_target     SMALLINT;
+    ALTER TABLE curves ADD COLUMN IF NOT EXISTS anti_bot_delay        SMALLINT;
+    ALTER TABLE curves ADD COLUMN IF NOT EXISTS description           TEXT;
+    ALTER TABLE curves ADD COLUMN IF NOT EXISTS icon_url              TEXT;
+    ALTER TABLE curves ADD COLUMN IF NOT EXISTS token_type            TEXT;
+    ALTER TABLE curves ADD COLUMN IF NOT EXISTS initial_shared_version BIGINT;
+    ALTER TABLE token_stats ADD COLUMN IF NOT EXISTS reserve_sui      DOUBLE PRECISION DEFAULT 0;
   `);
   console.log('✓ Schema initialized');
 }
@@ -154,6 +158,36 @@ export async function upsertCurve(evt, packageId) {
       graduationTarget, antiBotDelay,
     ]
   );
+
+  // Fetch and store initial_shared_version if missing
+  // This is a one-time enrichment per curve — safe to do async
+  backfillSharedVersion(j.curve_id).catch(() => {});
+}
+
+// ── Backfill initial_shared_version for a curve ───────────────────────────────
+// Called once per new CurveCreated event. Stores the shared object version
+// so the frontend can build sharedObjectRef without a direct RPC call.
+
+async function backfillSharedVersion(curveId) {
+  try {
+    // Only fetch if not already stored
+    const existing = await pool.query(
+      'SELECT initial_shared_version FROM curves WHERE curve_id = $1',
+      [curveId]
+    );
+    if (existing.rows[0]?.initial_shared_version) return;
+
+    const obj = await rpcClient.getObject({ objectId: curveId });
+    const isv = obj?.object?.owner?.Shared?.initialSharedVersion;
+    if (!isv) return;
+
+    await pool.query(
+      'UPDATE curves SET initial_shared_version = $2 WHERE curve_id = $1',
+      [curveId, Number(isv)]
+    );
+  } catch {
+    // Non-fatal — will retry on next event for this curve
+  }
 }
 
 // ── Stats recompute ───────────────────────────────────────────────────────────
@@ -187,6 +221,7 @@ export async function recomputeStats(curveId) {
   let volumeSui = 0, volume24h = 0, buys = 0, sells = 0;
   let lastTradeTime = null, lastPrice = null, firstPrice = null;
   let recentTrades = 0;
+  let lastReserveSui = 0;
 
   for (const row of buysRes.rows) {
     const d  = row.data;
@@ -196,7 +231,10 @@ export async function recomputeStats(curveId) {
     buys++;
     if (ts > oneDayAgo)  volume24h += suiIn;
     if (ts > oneHourAgo) recentTrades++;
-    if (!lastTradeTime || ts > lastTradeTime) lastTradeTime = ts;
+    if (!lastTradeTime || ts > lastTradeTime) {
+      lastTradeTime  = ts;
+      lastReserveSui = Number(d.new_sui_reserve ?? 0) / MIST;
+    }
     const tokensOut = Number(d.tokens_out ?? 0) / 1e6;
     if (tokensOut > 0) {
       const price = suiIn / tokensOut;
@@ -213,7 +251,10 @@ export async function recomputeStats(curveId) {
     sells++;
     if (ts > oneDayAgo)  volume24h += suiOut;
     if (ts > oneHourAgo) recentTrades++;
-    if (!lastTradeTime || ts > lastTradeTime) lastTradeTime = ts;
+    if (!lastTradeTime || ts > lastTradeTime) {
+      lastTradeTime  = ts;
+      lastReserveSui = Number(d.new_sui_reserve ?? 0) / MIST;
+    }
     const tokensIn = Number(d.tokens_in ?? 0) / 1e6;
     if (tokensIn > 0) {
       const price = suiOut / tokensIn;
@@ -227,8 +268,9 @@ export async function recomputeStats(curveId) {
   await pool.query(
     `INSERT INTO token_stats
        (curve_id, volume_sui, volume_24h, trades, buys, sells,
-        last_trade_time, last_price, first_price, recent_trades, comment_count, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+        last_trade_time, last_price, first_price, recent_trades, comment_count,
+        reserve_sui, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
      ON CONFLICT (curve_id) DO UPDATE SET
        volume_sui      = $2,
        volume_24h      = $3,
@@ -240,9 +282,11 @@ export async function recomputeStats(curveId) {
        first_price     = $9,
        recent_trades   = $10,
        comment_count   = $11,
-       updated_at      = $12`,
+       reserve_sui     = $12,
+       updated_at      = $13`,
     [curveId, volumeSui, volume24h, buys + sells, buys, sells,
-     lastTradeTime, lastPrice, firstPrice, recentTrades, commentCount, now]
+     lastTradeTime, lastPrice, firstPrice, recentTrades, commentCount,
+     lastReserveSui, now]
   );
 }
 
@@ -258,16 +302,20 @@ export async function enrichCurveMetadata(curveId, _unusedClient) {
     if (!tokenType) return;
 
     const meta        = await rpcClient.getCoinMetadata({ coinType: tokenType });
-    const iconUrl     = meta?.iconUrl     ?? null;
-    const description = meta?.description ?? null;
+    const iconUrl     = meta?.coinMetadata?.iconUrl     ?? null;
+    const description = meta?.coinMetadata?.description ?? null;
+
+    // Also grab initial_shared_version while we have the object
+    const isv = obj?.object?.owner?.Shared?.initialSharedVersion ?? null;
 
     await pool.query(
       `UPDATE curves SET
-         token_type  = COALESCE($2, curves.token_type),
-         icon_url    = COALESCE($3, curves.icon_url),
-         description = COALESCE($4, curves.description)
+         token_type             = COALESCE($2, curves.token_type),
+         icon_url               = COALESCE($3, curves.icon_url),
+         description            = COALESCE($4, curves.description),
+         initial_shared_version = COALESCE($5, curves.initial_shared_version)
        WHERE curve_id = $1`,
-      [curveId, tokenType, iconUrl, description]
+      [curveId, tokenType, iconUrl, description, isv ? Number(isv) : null]
     );
   } catch (err) {
     console.error(`  enrich ${curveId.slice(0, 12)}… failed:`, err.message);
@@ -285,10 +333,10 @@ export async function refreshCurveMetadata(curveId, _unusedClient) {
     if (!tokenType) return;
 
     const meta        = await rpcClient.getCoinMetadata({ coinType: tokenType });
-    const iconUrl     = meta?.iconUrl     ?? null;
-    const description = meta?.description ?? null;
-    const name        = meta?.name        ?? null;
-    const symbol      = meta?.symbol      ?? null;
+    const iconUrl     = meta?.coinMetadata?.iconUrl     ?? null;
+    const description = meta?.coinMetadata?.description ?? null;
+    const name        = meta?.coinMetadata?.name        ?? null;
+    const symbol      = meta?.coinMetadata?.symbol      ?? null;
 
     await pool.query(
       `UPDATE curves SET
@@ -365,18 +413,19 @@ export async function getTradeHistory(curveId, limit = 100) {
 export async function getAllCurves() {
   const res = await pool.query(`
     SELECT
-      c.curve_id          AS "curveId",
+      c.curve_id               AS "curveId",
       c.creator,
       c.name,
       c.symbol,
       c.description,
-      c.icon_url          AS "iconUrl",
-      c.token_type        AS "tokenType",
-      c.package_id        AS "packageId",
-      c.created_at        AS "createdAt",
-      c.graduation_target AS "graduationTarget",
-      c.anti_bot_delay    AS "antiBotDelay",
-      row_to_json(s.*)    AS stats
+      c.icon_url               AS "iconUrl",
+      c.token_type             AS "tokenType",
+      c.package_id             AS "packageId",
+      c.created_at             AS "createdAt",
+      c.graduation_target      AS "graduationTarget",
+      c.anti_bot_delay         AS "antiBotDelay",
+      c.initial_shared_version AS "initialSharedVersion",
+      row_to_json(s.*)         AS stats
     FROM curves c
     LEFT JOIN token_stats s ON s.curve_id = c.curve_id
     ORDER BY c.created_at DESC
