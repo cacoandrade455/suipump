@@ -673,8 +673,9 @@ function TradePanelContent({
       if (!capId) throw new Error('CreatorCap not found in wallet');
 
       // Get ISV from indexer — avoids getObject CORS issue
-      let isv = panelCurveId && INDEXER_URL
-        ? await fetch(`${INDEXER_URL}/token/${panelCurveId}`, { signal: AbortSignal.timeout(3000) })
+      const _IURL = import.meta.env.VITE_INDEXER_URL || '';
+      let isv = panelCurveId && _IURL
+        ? await fetch(`${_IURL}/token/${panelCurveId}`, { signal: AbortSignal.timeout(3000) })
             .then(r => r.ok ? r.json() : null)
             .then(d => d?.initialSharedVersion ?? d?.initial_shared_version ?? null)
             .catch(() => null)
