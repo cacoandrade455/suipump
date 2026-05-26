@@ -79,7 +79,7 @@ export function useCopyTrade({ walletAddress, keypair }) {
     let logEntry = { targetAddress: target.address, action: 'buy', curveId, name, symbol, suiAmount: target.scaleSui, success: false };
 
     try {
-      const client = new SuiGraphQLClient({ url: 'https://graphql.testnet.sui.io/graphql' });
+      const client = new SuiGraphQLClient({ url: '/api/rpc' });
       const objForRef = await client.getObject({ id: curveId, options: { showOwner: true, showContent: true } });
       const isv = objForRef.data?.owner?.Shared?.initial_shared_version;
       if (!isv) throw new Error('Could not resolve curve version');
@@ -135,7 +135,7 @@ export function useCopyTrade({ walletAddress, keypair }) {
     let logEntry = { targetAddress: target.address, action: 'sell', curveId, name, symbol, suiAmount: 0, success: false };
 
     try {
-      const client = new SuiGraphQLClient({ url: 'https://graphql.testnet.sui.io/graphql' });
+      const client = new SuiGraphQLClient({ url: '/api/rpc' });
 
       // Get our token balance
       const coins = await client.getCoins({ owner: myAddress, coinType: tokenType });

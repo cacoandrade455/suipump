@@ -94,7 +94,7 @@ export function useDCA({ walletAddress, keypair }) {
     let logEntry = { ts: Date.now(), suiSpent: suiPerTranche, success: false };
 
     try {
-      const client = new SuiGraphQLClient({ url: 'https://graphql.testnet.sui.io/graphql' });
+      const client = new SuiGraphQLClient({ url: '/api/rpc' });
 
       const objForRef = await client.getObject({
         id: order.curveId,
