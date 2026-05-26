@@ -161,7 +161,7 @@ function applyLocalOverrides(token) {
 }
 
 function useStats() {
-  const [stats, setStats] = useState({ poolSui: null, tradeCount: null, volume: null });
+  const [stats, setStats] = useState({ poolSui: null, tradeCount: null, tokenCount: null, volume: null });
 
   useEffect(() => {
     if (!INDEXER_URL) return;
@@ -171,7 +171,7 @@ function useStats() {
         const res = await fetch(`${INDEXER_URL}/stats`, { signal: AbortSignal.timeout(5000) });
         if (res.ok && !cancelled) {
           const data = await res.json();
-          setStats({ poolSui: data.s1PoolSui, tradeCount: data.totalTrades, volume: data.totalVolume });
+          setStats({ poolSui: data.s1PoolSui, tradeCount: data.totalTrades, tokenCount: data.tokenCount ?? null, volume: data.totalVolume });
         }
       } catch {}
     }
@@ -434,7 +434,7 @@ function CrownBanner({ token, stats, curveState: curveStateProp, suiUsd }) {
 // ── Stats bar ─────────────────────────────────────────────────────────────────
 function StatsBar({ stats }) {
   const items = [
-    { icon: <Coins size={13} />, label: 'TOKENS', value: stats.tradeCount != null ? stats.tradeCount : ' - ' },
+    { icon: <Coins size={13} />, label: 'TOKENS', value: stats.tokenCount != null ? stats.tokenCount : ' - ' },
     { icon: <TrendingUp size={13} />, label: 'TRADES', value: stats.tradeCount ?? ' - ' },
     { icon: <Flame size={13} />, label: 'VOLUME', value: stats.volume != null ? `${fmt(stats.volume)} SUI` : '-' },
     { icon: <Gift size={13} />, label: 'S1 POOL', value: stats.poolSui != null ? `${stats.poolSui.toFixed(2)} SUI` : ' - ' },
