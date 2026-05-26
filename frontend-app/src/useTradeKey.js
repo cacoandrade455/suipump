@@ -11,7 +11,7 @@
 // cleared when the wallet address actually changes to a different address.
 
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { useSignPersonalMessage, useCurrentAccount } from '@mysten/dapp-kit';
+import { useCurrentAccount, useDAppKit } from '@mysten/dapp-kit-react';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 
 const SIGN_MESSAGE = 'Authorize SuiPump trading strategies v1';
@@ -59,7 +59,7 @@ function buildKeypair(privateKeyHex) {
 
 export function useTradeKey() {
   const account = useCurrentAccount();
-  const { mutateAsync: signMessage } = useSignPersonalMessage();
+  const dAppKit = useDAppKit();
 
   // keypair lives in a ref — immune to re-renders, only reset on wallet change
   const keypairRef   = useRef(null);
@@ -99,7 +99,7 @@ export function useTradeKey() {
     if (!account?.address) throw new Error('Wallet not connected');
     setStatus('signing'); setError(null);
     try {
-      const result = await signMessage({ message: textToBytes(SIGN_MESSAGE), account });
+      const result = await dAppKit.signPersonalMessage({ message: textToBytes(SIGN_MESSAGE) });
       const sigBytes = result.signature
         ? Uint8Array.from(atob(result.signature), c => c.charCodeAt(0))
         : new Uint8Array(result.bytes ?? []);
@@ -123,7 +123,7 @@ export function useTradeKey() {
       setStatus('error');
       throw e;
     }
-  }, [account, signMessage]);
+  }, [account, dAppKit]);
 
   // ── Load (decrypt) ────────────────────────────────────────────────────────
   const loadKey = useCallback(async () => {
@@ -133,7 +133,7 @@ export function useTradeKey() {
 
     setStatus('signing'); setError(null);
     try {
-      const result = await signMessage({ message: textToBytes(SIGN_MESSAGE), account });
+      const result = await dAppKit.signPersonalMessage({ message: textToBytes(SIGN_MESSAGE) });
       const sigBytes = result.signature
         ? Uint8Array.from(atob(result.signature), c => c.charCodeAt(0))
         : new Uint8Array(result.bytes ?? []);
@@ -152,7 +152,7 @@ export function useTradeKey() {
       setStatus('error');
       throw e;
     }
-  }, [account, signMessage]);
+  }, [account, dAppKit]);
 
   // ── Remove ────────────────────────────────────────────────────────────────
   const removeKey = useCallback(() => {
