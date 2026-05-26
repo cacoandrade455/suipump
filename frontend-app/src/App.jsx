@@ -276,7 +276,7 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch
         let tokenType = token.tokenType;
         if (!tokenType && token.curveId) {
           const obj = await client.getObject({ objectId: token.curveId });
-          const m = obj.data?.type?.match(/Curve<(.+)>$/);
+          const m = obj.object?.type?.match(/Curve<(.+)>$/);
           tokenType = m ? m[1] : null;
         }
         if (!tokenType) return;
@@ -1085,7 +1085,7 @@ function CrownBanner({ token, stats, suiUsd }) {
         let tokenType = token?.tokenType;
         if (!tokenType && token?.curveId) {
           const obj = await client.getObject({ objectId: token.curveId });
-          const m = obj.data?.type?.match(/Curve<(.+)>$/);
+          const m = obj.object?.type?.match(/Curve<(.+)>$/);
           tokenType = m ? m[1] : null;
         }
         if (!tokenType) return;
@@ -1428,7 +1428,7 @@ function TokenPageWrapper({ lang, tradeKey }) {
       try {
         const obj = await client.getObject({ objectId: curveId, include: { json: true } });
         if (cancelled) return;
-        const typeStr = obj.data?.type ?? '';
+        const typeStr = obj.object?.type ?? '';
         // typeStr = "0xPKG::bonding_curve::Curve<0xTEMPLATE::module::TOKEN>"
         // Extract bonding curve package ID from the outer type (before ::bonding_curve)
         const outerPkgMatch = typeStr.match(/^(0x[0-9a-fA-F]+)::bonding_curve::Curve/);
