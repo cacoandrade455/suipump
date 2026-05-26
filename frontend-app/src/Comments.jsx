@@ -147,7 +147,7 @@ function CommentItem({ comment, replies, account, curveId, onReplyPosted }) {
   );
 }
 
-export default function Comments({ curveId, packageId }) {
+export default function Comments({ curveId, packageId, initialSharedVersion = null }) {
   const account = useCurrentAccount();
   const dAppKit = useDAppKit();
 
@@ -234,16 +234,21 @@ export default function Comments({ curveId, packageId }) {
       const tx = new Transaction();
       const isV7 = isV7OrLater(packageId);
 
+      // post_comment takes &mut Curve<T> — needs sharedObjectRef
+      const curveRef = initialSharedVersion
+        ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion, mutable: true })
+        : tx.object(curveId);
+
       if (isV7 && COMMENT_FEE_MIST && BigInt(COMMENT_FEE_MIST) > 0n) {
         const [feeCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(BigInt(COMMENT_FEE_MIST))]);
         tx.moveCall({
           target: `${packageId}::bonding_curve::post_comment`,
-          arguments: [tx.pure.address(curveId), tx.pure.string(trimmed), feeCoin],
+          arguments: [curveRef, tx.pure.string(trimmed), feeCoin],
         });
       } else {
         tx.moveCall({
           target: `${packageId}::bonding_curve::post_comment`,
-          arguments: [tx.pure.address(curveId), tx.pure.string(trimmed)],
+          arguments: [curveRef, tx.pure.string(trimmed)],
         });
       }
 
