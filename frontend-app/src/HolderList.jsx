@@ -1,6 +1,6 @@
 // HolderList.jsx — SSE triggers re-fetch on trade, no time-based polling
 import React, { useState, useEffect, useRef } from 'react';
-import { useSuiClient } from '@mysten/dapp-kit';
+import { useCurrentClient } from '@mysten/dapp-kit-react';
 import { Users, BarChart2 } from 'lucide-react';
 import { ALL_PACKAGE_IDS } from './constants.js';
 import { paginateMultipleEvents } from './paginateEvents.js';
@@ -42,7 +42,7 @@ async function fetchTradeEvents(client, curveId) {
 }
 
 export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = null }) {
-  const client   = useSuiClient();
+  const client   = useCurrentClient();
   const [tab,     setTab]     = useState('holders');
   const [holders, setHolders] = useState([]);
   const [traders, setTraders] = useState([]);
@@ -57,7 +57,6 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = n
     try {
       const { buys, sells } = await fetchTradeEvents(client, curveId);
 
-      // Top holders — real on-chain balances
       const candidates = new Set();
       for (const e of buys)  { const a = e.parsedJson?.buyer;  if (a) candidates.add(a); }
       for (const e of sells) { const a = e.parsedJson?.seller; if (a) candidates.add(a); }
@@ -66,174 +65,126 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = n
       if (tokenType && candidates.size > 0) {
         const balances = await Promise.all([...candidates].map(async (addr) => {
           try {
-            const bal = await client.getBalance({ owner: addr, coinType: tokenType });
-            return { addr, raw: BigInt(bal.totalBalance ?? '0') };
+            // New API: getBalance returns { balance: { balance, coinBalance, ... } }
+            const res = await client.getBalance({ owner: addr, coinType: tokenType });
+            return { addr, raw: BigInt(res.balance?.balance ?? '0') };
           } catch { return { addr, raw: 0n }; }
         }));
         holderList = balances
           .filter(b => b.raw > 0n)
-          .sort((a, b) => (b.raw > a.raw ? 1 : -1))
-          .slice(0, 20)
-          .map((b, i) => ({
-            rank:    i + 1,
-            addr:    b.addr,
-            balance: Number(b.raw) / TOKEN_SCALE,
-            pct:     Number(b.raw) / (800_000_000 * TOKEN_SCALE) * 100,
-            isCreator: b.addr === creator,
-          }));
+          .sort((a, b) => (b.raw > a.raw ? 1 : b.raw < a.raw ? -1 : 0));
       }
 
-      // Top traders
-      const traderMap = new Map();
+      // Compute P&L from trade events
+      const traderMap = {};
       for (const e of buys) {
-        const j = e.parsedJson;
-        const addr = j?.buyer;
-        if (!addr) continue;
-        const suiIn    = Number(BigInt(j?.sui_in    ?? 0)) / 1e9;
-        const tokensOut = Number(BigInt(j?.tokens_out ?? 0)) / TOKEN_SCALE;
-        const tr = traderMap.get(addr) ?? { suiSpent: 0, suiReceived: 0, buyCount: 0, sellCount: 0, tokensIn: 0, tokensOut: 0 };
-        tr.suiSpent  += suiIn;
-        tr.tokensOut += tokensOut;
-        tr.buyCount  += 1;
-        traderMap.set(addr, tr);
+        const { buyer, sui_in = 0, tokens_out = 0 } = e.parsedJson;
+        if (!buyer) continue;
+        if (!traderMap[buyer]) traderMap[buyer] = { addr: buyer, spent: 0, received: 0, tokBought: 0, tokSold: 0 };
+        traderMap[buyer].spent     += Number(sui_in) / 1e9;
+        traderMap[buyer].tokBought += Number(tokens_out) / TOKEN_SCALE;
       }
       for (const e of sells) {
-        const j = e.parsedJson;
-        const addr = j?.seller;
-        if (!addr) continue;
-        const suiOut   = Number(BigInt(j?.sui_out   ?? 0)) / 1e9;
-        const tokensIn = Number(BigInt(j?.tokens_in ?? 0)) / TOKEN_SCALE;
-        const tr = traderMap.get(addr) ?? { suiSpent: 0, suiReceived: 0, buyCount: 0, sellCount: 0, tokensIn: 0, tokensOut: 0 };
-        tr.suiReceived += suiOut;
-        tr.tokensIn    += tokensIn;
-        tr.sellCount   += 1;
-        traderMap.set(addr, tr);
+        const { seller, sui_out = 0, tokens_in = 0 } = e.parsedJson;
+        if (!seller) continue;
+        if (!traderMap[seller]) traderMap[seller] = { addr: seller, spent: 0, received: 0, tokBought: 0, tokSold: 0 };
+        traderMap[seller].received += Number(sui_out) / 1e9;
+        traderMap[seller].tokSold  += Number(tokens_in) / TOKEN_SCALE;
       }
 
-      const traderList = [...traderMap.entries()]
-        .map(([addr, tr]) => ({
-          addr,
-          volume:    tr.suiSpent + tr.suiReceived,
-          pnl:       tr.suiReceived - tr.suiSpent,
-          buyCount:  tr.buyCount,
-          sellCount: tr.sellCount,
-        }))
-        .sort((a, b) => b.volume - a.volume)
-        .slice(0, 20);
+      const traderList = Object.values(traderMap)
+        .map(t => ({ ...t, pnl: t.received - t.spent }))
+        .sort((a, b) => b.pnl - a.pnl);
 
       setHolders(holderList);
       setTraders(traderList);
-    } catch (err) {
-      console.error('HolderList error:', err);
-    } finally {
-      setLoading(false);
+    } catch {} finally {
       loadingRef.current = false;
+      setLoading(false);
     }
   }
 
-  // Initial load
   useEffect(() => {
-    if (!curveId || !client) return;
     load();
-  }, [curveId, client, tokenType]);
-
-  // SSE — re-fetch holders/traders when a trade happens on this curve
-  useEffect(() => {
-    if (!curveId || !INDEXER_URL) return;
-
+    // SSE for real-time refresh
+    if (!INDEXER_URL) return;
     function connect() {
       const es = new EventSource(`${INDEXER_URL}/stream?curveId=${curveId}`);
       esRef.current = es;
-
       es.onmessage = (e) => {
         try {
           const event = JSON.parse(e.data);
           if (event.type === 'connected') return;
-          const isTrade = event.type === 'TokensPurchased' ||
-                          event.type === 'TokensBought'    ||
-                          event.type === 'TokensSold';
+          const isTrade = event.type === 'TokensPurchased' || event.type === 'TokensBought' || event.type === 'TokensSold';
           if (isTrade) load();
         } catch {}
       };
-
-      es.onerror = () => {
-        es.close();
-        timerRef.current = setTimeout(connect, 3_000);
-      };
+      es.onerror = () => { es.close(); timerRef.current = setTimeout(connect, 3000); };
     }
-
     connect();
     return () => { esRef.current?.close(); clearTimeout(timerRef.current); };
-  }, [curveId]);
+  }, [curveId, tokenType]);
+
+  const TOTAL_SUPPLY = 1_000_000_000 * TOKEN_SCALE;
 
   return (
     <div className="bg-white/[0.03] border border-white/10 rounded-xl overflow-hidden">
       <div className="flex border-b border-white/10">
-        <button onClick={() => setTab('holders')}
-          className={`flex-1 flex items-center justify-center gap-2 py-3 text-xs font-mono font-bold tracking-wider transition-colors ${
-            tab === 'holders' ? 'text-lime-400 border-b-2 border-lime-400 bg-lime-400/5' : 'text-white/40 hover:text-white/70'
-          }`}>
-          <Users size={13} /> TOP HOLDERS
+        <button onClick={() => setTab('holders')} className={`flex-1 py-2.5 text-[10px] font-mono tracking-wider transition-colors flex items-center justify-center gap-1.5 ${tab === 'holders' ? 'text-lime-400 bg-lime-400/5' : 'text-white/30 hover:text-white/60'}`}>
+          <Users size={10} /> HOLDERS
         </button>
-        <button onClick={() => setTab('traders')}
-          className={`flex-1 flex items-center justify-center gap-2 py-3 text-xs font-mono font-bold tracking-wider transition-colors ${
-            tab === 'traders' ? 'text-lime-400 border-b-2 border-lime-400 bg-lime-400/5' : 'text-white/40 hover:text-white/70'
-          }`}>
-          <BarChart2 size={13} /> TOP TRADERS
+        <button onClick={() => setTab('traders')} className={`flex-1 py-2.5 text-[10px] font-mono tracking-wider transition-colors flex items-center justify-center gap-1.5 ${tab === 'traders' ? 'text-lime-400 bg-lime-400/5' : 'text-white/30 hover:text-white/60'}`}>
+          <BarChart2 size={10} /> TRADERS
         </button>
       </div>
 
       {loading ? (
-        <div className="py-10 text-center text-white/35 text-xs font-mono">Loading…</div>
+        <div className="py-8 text-center text-white/20 text-xs font-mono">Loading…</div>
       ) : tab === 'holders' ? (
-        <div>
-          <div className="grid grid-cols-[auto_1fr_auto_auto] gap-x-3 px-4 py-2 text-[9px] font-mono text-white/25 border-b border-white/5">
-            <span>#</span><span>WALLET</span><span className="text-right">BALANCE</span><span className="text-right">% SUPPLY</span>
+        holders.length === 0 ? (
+          <div className="py-8 text-center text-white/20 text-xs font-mono">No holders yet</div>
+        ) : (
+          <div className="divide-y divide-white/5">
+            {holders.slice(0, 20).map((h, i) => {
+              const pct = (Number(h.raw) / TOTAL_SUPPLY) * 100;
+              const isCreator = creator && h.addr === creator;
+              return (
+                <div key={h.addr} className="px-4 py-2.5 flex items-center gap-3">
+                  <span className="text-[10px] font-mono text-white/20 w-4">{i + 1}</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[10px] font-mono text-white/60 truncate">{shortAddr(h.addr)}</span>
+                      {isCreator && <span className="text-[8px] font-mono text-lime-400/60 border border-lime-400/20 px-1 rounded">DEV</span>}
+                    </div>
+                    <div className="h-1 bg-white/5 rounded-full mt-1 overflow-hidden">
+                      <div className="h-full bg-lime-400/50 rounded-full" style={{ width: `${Math.min(100, pct * 2)}%` }} />
+                    </div>
+                  </div>
+                  <span className="text-[10px] font-mono text-white/40">{pct.toFixed(2)}%</span>
+                </div>
+              );
+            })}
           </div>
-          {holders.length === 0 ? (
-            <div className="py-6 text-center text-white/20 text-xs font-mono">No holders yet</div>
-          ) : holders.map(h => (
-            <div key={h.addr} className="grid grid-cols-[auto_1fr_auto_auto] gap-x-3 items-center px-4 py-2.5 border-b border-white/5 last:border-0 text-xs font-mono">
-              <span className="text-white/30">{h.rank}</span>
-              <div className="flex items-center gap-2 min-w-0">
-                <div className="w-5 h-5 rounded-full flex-shrink-0"
-                  style={{ background: `hsl(${parseInt(h.addr.slice(2,6),16) % 360},60%,50%)` }} />
-                <span className="text-white/60 truncate">{shortAddr(h.addr)}</span>
-                {h.isCreator && <span className="text-[8px] font-bold text-lime-400 bg-lime-400/10 border border-lime-400/30 rounded px-1">DEV</span>}
-              </div>
-              <span className="text-white/50 text-right">
-                {h.balance >= 1e6 ? `${(h.balance/1e6).toFixed(1)}M` : h.balance >= 1e3 ? `${(h.balance/1e3).toFixed(0)}k` : h.balance.toFixed(0)}
-              </span>
-              <span className={`text-right font-bold ${h.pct >= 5 ? 'text-lime-400' : 'text-white/40'}`}>
-                {h.pct.toFixed(2)}%
-              </span>
-            </div>
-          ))}
-        </div>
+        )
       ) : (
-        <div>
-          <div className="grid grid-cols-[1fr_auto_auto_auto] gap-x-3 px-4 py-2 text-[9px] font-mono text-white/25 border-b border-white/5">
-            <span>WALLET</span><span>VOLUME</span><span>B/S</span><span>PnL</span>
-          </div>
-          {traders.length === 0 ? (
-            <div className="py-6 text-center text-white/20 text-xs font-mono">No traders yet</div>
-          ) : traders.map((tr, i) => (
-            <div key={tr.addr} className="grid grid-cols-[1fr_auto_auto_auto] gap-x-3 items-center px-4 py-2.5 border-b border-white/5 last:border-0 text-xs font-mono">
-              <div className="flex items-center gap-2 min-w-0">
-                <div className="w-5 h-5 rounded-full flex-shrink-0"
-                  style={{ background: `hsl(${parseInt(tr.addr.slice(2,6),16) % 360},60%,50%)` }} />
-                <span className="text-white/60 truncate">{shortAddr(tr.addr)}</span>
+        traders.length === 0 ? (
+          <div className="py-8 text-center text-white/20 text-xs font-mono">No traders yet</div>
+        ) : (
+          <div className="divide-y divide-white/5">
+            {traders.slice(0, 20).map((t, i) => (
+              <div key={t.addr} className="px-4 py-2.5 flex items-center gap-3">
+                <span className="text-[10px] font-mono text-white/20 w-4">{i + 1}</span>
+                <div className="flex-1 min-w-0">
+                  <span className="text-[10px] font-mono text-white/60">{shortAddr(t.addr)}</span>
+                  <div className="text-[9px] font-mono text-white/25 mt-0.5">{t.tokBought.toFixed(0)} bought · {t.tokSold.toFixed(0)} sold</div>
+                </div>
+                <span className={`text-[10px] font-mono font-bold ${t.pnl >= 0 ? 'text-lime-400' : 'text-red-400'}`}>
+                  {fmtPnl(t.pnl, suiUsd)}
+                </span>
               </div>
-              <span className="text-white/50">
-                {suiUsd > 0 ? `$${(tr.volume * suiUsd).toFixed(0)}` : `${tr.volume.toFixed(1)}`}
-              </span>
-              <span className="text-white/30">{tr.buyCount}/{tr.sellCount}</span>
-              <span className={tr.pnl >= 0 ? 'text-lime-400 font-bold' : 'text-red-400 font-bold'}>
-                {fmtPnl(tr.pnl, suiUsd)}
-              </span>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )
       )}
     </div>
   );

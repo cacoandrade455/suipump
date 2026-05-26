@@ -2,12 +2,12 @@
 // Loads all token stats from indexer on mount, then updates in real-time
 // via SSE — only re-fetches stats for the specific curve that traded.
 import { useState, useEffect, useRef } from 'react';
-import { useSuiClient } from '@mysten/dapp-kit';
+import { useCurrentClient } from '@mysten/dapp-kit-react';
 
 const INDEXER_URL  = import.meta.env.VITE_INDEXER_URL || '';
 const MIST_PER_SUI = 1e9;
 
-// ── Holder count (still RPC, runs every 60s — not on critical path) ───────────
+// ── Holder count (RPC, runs every 60s) ────────────────────────────────────────
 async function fetchHolderCount(client, coinType) {
   const holders = new Set();
   let cursor = null;
@@ -15,21 +15,24 @@ async function fetchHolderCount(client, coinType) {
   while (pages < 20) {
     let result;
     try {
-      result = await client.getAllCoins({ coinType, cursor, limit: 50 });
+      // New API: listCoins
+      result = await client.listCoins({ owner: '0x0', coinType, cursor, limit: 50 });
     } catch { break; }
-    for (const coin of result.data) {
+    for (const coin of result.objects ?? []) {
       if (coin.balance && coin.balance !== '0') {
-        holders.add(coin.coinObjectId);
+        holders.add(coin.objectId);
         if (coin.owner) {
-          const ownerAddr = typeof coin.owner === 'string'
-            ? coin.owner
-            : coin.owner?.AddressOwner ?? coin.owner?.ObjectOwner ?? null;
+          const ownerAddr = coin.owner?.$kind === 'AddressOwner'
+            ? coin.owner.AddressOwner
+            : coin.owner?.$kind === 'ObjectOwner'
+              ? coin.owner.ObjectOwner
+              : null;
           if (ownerAddr) holders.add(ownerAddr);
         }
       }
     }
     if (!result.hasNextPage) break;
-    cursor = result.nextCursor;
+    cursor = result.cursor;
     pages++;
   }
   return holders.size;
@@ -57,7 +60,7 @@ function mapIndexerRow(s, holderCounts) {
 }
 
 export function useTokenStats(tokens) {
-  const client          = useSuiClient();
+  const client          = useCurrentClient();
   const [stats, setStats] = useState({});
   const holderCountsRef = useRef({});
   const esRef           = useRef(null);
@@ -85,7 +88,6 @@ export function useTokenStats(tokens) {
     if (!INDEXER_URL) return;
 
     function connect() {
-      // Subscribe to all events (no curveId filter)
       const es = new EventSource(`${INDEXER_URL}/stream`);
       esRef.current = es;
 
@@ -105,7 +107,6 @@ export function useTokenStats(tokens) {
           const sui     = Number(isBuy ? d.sui_in ?? 0 : d.sui_out ?? 0) / MIST_PER_SUI;
           const tok     = Number(isBuy ? d.tokens_out ?? 0 : d.tokens_in ?? 0) / 1e6;
 
-          // Update stats inline immediately
           setStats(prev => {
             const cur = prev[curveId] ?? {
               volume: 0, trades: 0, buys: 0, sells: 0,
@@ -144,8 +145,6 @@ export function useTokenStats(tokens) {
             };
           });
 
-          // Also re-fetch the full stats for this curve from indexer
-          // to get accurate server-computed values (runs in background)
           fetch(`${INDEXER_URL}/token/${curveId}/stats`)
             .then(r => r.ok ? r.json() : null)
             .then(s => {
