@@ -1252,15 +1252,17 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
         if (res.ok && !cancelled) {
           const d = await res.json();
           // Map indexer response to curve state field names expected by component
+          // Handle both camelCase (getAllCurves alias) and snake_case (raw SELECT c.*)
+          const stats = d.stats ?? {};
           setCurveState({
-            sui_reserve:         String(d.suiReserve ?? d.sui_reserve ?? 0),
-            token_reserve:       String(d.tokenReserve ?? d.token_reserve ?? String(800_000_000 * 1e6)),
-            graduated:           d.graduated ?? false,
-            creator_fees:        String(d.creatorFees ?? d.creator_fees ?? 0),
-            creator:             d.creator ?? null,
+            sui_reserve:            String(stats.reserve_sui != null ? Math.round(stats.reserve_sui * 1e9) : (d.suiReserve ?? d.sui_reserve ?? 0)),
+            token_reserve:          String(d.tokenReserve ?? d.token_reserve ?? String(800_000_000 * 1e6)),
+            graduated:              d.graduated ?? false,
+            creator_fees:           String(d.creatorFees ?? d.creator_fees ?? 0),
+            creator:                d.creator ?? null,
             initial_shared_version: d.initialSharedVersion ?? d.initial_shared_version ?? null,
-            metadata_updated:    d.metadataUpdated ?? d.metadata_updated ?? false,
-            created_at_ms:       d.createdAt ?? d.created_at ?? null,
+            metadata_updated:       d.metadataUpdated ?? d.metadata_updated ?? d.metadata_updated ?? false,
+            created_at_ms:          d.createdAt ?? d.created_at ?? null,
           });
         }
       } catch {}
@@ -1280,9 +1282,10 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
         .then(r => r.ok ? r.json() : null)
         .then(d => {
           if (!d || cancelled) return;
-          const m = { name: d.name, symbol: d.symbol, description: d.description, iconUrl: d.iconUrl };
+          // /token/:curveId returns snake_case from raw SELECT c.* 
+          const icon = d.iconUrl || d.icon_url || null;
+          const m = { name: d.name, symbol: d.symbol, description: d.description, iconUrl: icon };
           setMetadata(m);
-          const icon = d.iconUrl;
           if (icon && !isPlaceholderIcon(icon)) setIconUrl(icon);
         }).catch(() => {});
     }
