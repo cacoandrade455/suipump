@@ -4,7 +4,7 @@ import pg from 'pg';
 import cors from 'cors';
 import {
   getGlobalStats, getTokenStats, getTradeHistory,
-  getAllCurves, pool,
+  getAllCurves, pool, getLock, getLocksForCurve,
 } from './db.js';
 
 const PORT = parseInt(process.env.PORT || '3001');
@@ -542,6 +542,48 @@ async function startPgListener() {
 }
 
 export function startApi() {
+  // ── Vesting lock endpoints ──────────────────────────────────────────────────
+
+  app.get('/lock/:lockId', async (req, res) => {
+    try {
+      const lock = await getLock(req.params.lockId);
+      if (!lock) return res.status(404).json({ error: 'Lock not found' });
+      res.json({
+        lock_id:      lock.lock_id,
+        curve_id:     lock.curve_id,
+        beneficiary:  lock.beneficiary,
+        total_amount: String(lock.total_amount),
+        claimed:      String(lock.claimed),
+        locked:       String(BigInt(lock.total_amount) - BigInt(lock.claimed)),
+        start_ms:     String(lock.start_ms),
+        duration_ms:  String(lock.duration_ms),
+        mode:         Number(lock.mode),
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/token/:curveId/locks', async (req, res) => {
+    try {
+      const { owner } = req.query;
+      const locks = await getLocksForCurve(req.params.curveId, owner ?? null);
+      res.json(locks.map(lock => ({
+        lock_id:      lock.lock_id,
+        curve_id:     lock.curve_id,
+        beneficiary:  lock.beneficiary,
+        total_amount: String(lock.total_amount),
+        claimed:      String(lock.claimed),
+        locked:       String(BigInt(lock.total_amount) - BigInt(lock.claimed)),
+        start_ms:     String(lock.start_ms),
+        duration_ms:  String(lock.duration_ms),
+        mode:         Number(lock.mode),
+      })));
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.listen(PORT, () => console.log(`  ✓ API listening on port ${PORT}`));
   startPgListener().catch(err => console.error('PG listener failed:', err.message));
 }

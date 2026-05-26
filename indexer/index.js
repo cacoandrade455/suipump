@@ -13,6 +13,7 @@ import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import {
   pool, initSchema, getCursor, saveCursor, insertEvent,
   upsertCurve, recomputeStats, enrichCurveMetadata, backfillMissingIcons,
+  upsertLock, updateLockClaimed,
 } from './db.js';
 import { startGraduationWatcher } from './auto_graduate.js';
 import { startApi } from './api.js';
@@ -36,7 +37,7 @@ const NETWORK     = process.env.NETWORK          ?? 'testnet';
 const GRPC_URL    = (process.env.SUI_GRPC_URL    ?? `fullnode.${NETWORK}.sui.io:443`).replace(/^https?:\/\//, '');
 const GRAPHQL_URL = process.env.SUI_GRAPHQL_URL  ?? `https://graphql.${NETWORK}.sui.io/graphql`;
 
-const EVENT_NAMES = ['TokensPurchased', 'TokensSold', 'CurveCreated', 'Comment', 'Graduated'];
+const EVENT_NAMES = ['TokensPurchased', 'TokensSold', 'CurveCreated', 'Comment', 'Graduated', 'TokensLocked', 'VestedClaimed'];
 
 const TRACKED_EVENT_TYPES = new Set(
   PACKAGE_IDS.flatMap(pkg => EVENT_NAMES.map(name => `${pkg}::bonding_curve::${name}`))
@@ -165,6 +166,14 @@ async function processEvent(eventType, evt, packageId) {
     eventType.includes('Comment')
   )) {
     await recomputeStats(curveId);
+  }
+
+  if (eventType.includes('TokensLocked')) {
+    await upsertLock(evt);
+  }
+
+  if (eventType.includes('VestedClaimed')) {
+    await updateLockClaimed(evt);
   }
 }
 
