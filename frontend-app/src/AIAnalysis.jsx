@@ -1,6 +1,6 @@
 // AIAnalysis.jsx — AI-powered token analysis card
 import React, { useState } from 'react';
-import { useSuiClient } from '@mysten/dapp-kit';
+import { useCurrentClient } from '@mysten/dapp-kit-react';
 import { Sparkles, AlertTriangle, TrendingUp, Minus } from 'lucide-react';
 import { ALL_PACKAGE_IDS } from './constants.js';
 import { paginateMultipleEvents } from './paginateEvents.js';
@@ -14,7 +14,7 @@ function fmt(n, d = 2) {
 }
 
 export default function AIAnalysis({ curveId, tokenType, name, symbol, progress, reserveSui, creatorFeesSui, graduated, tokensSoldWhole }) {
-  const client = useSuiClient();
+  const client = useCurrentClient();
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -72,7 +72,7 @@ export default function AIAnalysis({ curveId, tokenType, name, symbol, progress,
           [...candidates].map(async (addr) => {
             try {
               const bal = await client.getBalance({ owner: addr, coinType: tokenType });
-              return BigInt(bal.totalBalance ?? '0');
+              return BigInt(bal.balance?.balance ?? '0');
             } catch {
               return 0n;
             }
