@@ -2,7 +2,7 @@
 // TokenPage.jsx
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useCurrentAccount, useSignAndExecuteTransaction, useSuiClient } from '@mysten/dapp-kit';
+import { useCurrentAccount, useDAppKit, useCurrentClient } from '@mysten/dapp-kit-react';
 import { Transaction } from '@mysten/sui/transactions';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { ArrowLeft, Copy, Check, Share2, ExternalLink, Settings, Edit3, Clock, Zap, ShieldAlert, Plus, Trash2, Bell } from 'lucide-react';
@@ -211,8 +211,8 @@ function vestedAmount(total, startMs, durationMs, mode, nowMs) {
 }
 
 function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, lang }) {
-  const client = useSuiClient();
-  const { mutate: signAndExecute } = useSignAndExecuteTransaction();
+  const client = useCurrentClient();
+  const dAppKit = useDAppKit();
 
   const [locks, setLocks]             = React.useState([]);
   const [loading, setLoading]         = React.useState(true);
@@ -229,12 +229,19 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
   const loadLocks = useCallback(async () => {
     if (!isV7 || !curveId || !account || !vestingPkg) { setLoading(false); return; }
     try {
-      const ev = await client.queryEvents({ query: { MoveEventType: `${vestingPkg}::bonding_curve::TokensLocked` }, limit: 200, order: 'descending' }).catch(() => ({ data: [] }));
-      const mine = ev.data.filter(e => e.parsedJson?.curve_id === curveId && e.parsedJson?.beneficiary === account.address).map(e => e.parsedJson?.lock_id).filter(Boolean);
+      // queryEvents removed in @mysten/sui 2.x — use indexer for lock IDs
+      const INDEXER_URL_VP = import.meta.env.VITE_INDEXER_URL || '';
+      let mine = [];
+      if (INDEXER_URL_VP) {
+        try {
+          const res = await fetch(`${INDEXER_URL_VP}/token/${curveId}/locks?owner=${account.address}`, { signal: AbortSignal.timeout(5000) });
+          if (res.ok) { const rows = await res.json(); mine = rows.map(r => r.lock_id).filter(Boolean); }
+        } catch {}
+      }
       const out = [];
       for (const lockId of mine) {
-        const obj = await client.getObject({ id: lockId, options: { showContent: true } }).catch(() => null);
-        const f = obj?.data?.content?.fields;
+        const obj = await client.getObject({ objectId: lockId, include: { json: true } }).catch(() => null);
+        const f = obj?.object?.json;
         if (!f) continue;
         out.push({ id: lockId, total: Number(f.total_amount), claimed: Number(f.claimed), remaining: Number(f.locked), startMs: Number(f.start_ms), durationMs: Number(f.duration_ms), mode: Number(f.mode) });
       }
@@ -248,16 +255,15 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
     if (!account || busy) return;
     setBusy(true); setMsg('');
     try {
-      const objForRef = await client.getObject({ id: lockId, options: { showOwner: true } });
-      const isv = objForRef.data?.owner?.Shared?.initial_shared_version;
+      const objForRef = await client.getObject({ objectId: lockId });
+      const isv = objForRef.object?.owner?.Shared?.initialSharedVersion;
       const tx = new Transaction();
       const lockRef = isv ? tx.sharedObjectRef({ objectId: lockId, initialSharedVersion: isv, mutable: true }) : tx.object(lockId);
       const [claimed] = tx.moveCall({ target: `${vestingPkg}::bonding_curve::claim_vested`, typeArguments: [tokenType], arguments: [lockRef, tx.object(SUI_CLOCK_ID)] });
       tx.transferObjects([claimed], account.address);
-      signAndExecute({ transaction: tx }, {
-        onSuccess: () => { setMsg('Claimed ✓'); setBusy(false); setTimeout(() => { setMsg(''); loadLocks(); }, 1500); },
-        onError:   (e) => { setMsg(e.message || 'Claim failed'); setBusy(false); },
-      });
+      const claimResult = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      if (claimResult.$kind === 'FailedTransaction') throw new Error(claimResult.FailedTransaction.status.error ?? 'Claim failed');
+      setMsg('Claimed ✓'); setBusy(false); setTimeout(() => { setMsg(''); loadLocks(); }, 1500);
     } catch (e) { setMsg(e.message || 'Claim failed'); setBusy(false); }
   };
 
@@ -269,22 +275,21 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
     setBusy(true); setMsg('');
     try {
       const atomic = BigInt(Math.floor(amt * 10 ** TOKEN_DECIMALS));
-      const coins  = await client.getCoins({ owner: account.address, coinType: tokenType });
-      if (!coins.data.length) throw new Error('No token balance');
-      const objForRef = await client.getObject({ id: curveId, options: { showOwner: true } });
-      const isv = objForRef.data?.owner?.Shared?.initial_shared_version;
+      const coins  = await client.listCoins({ owner: account.address, coinType: tokenType });
+      if (!coins.objects.length) throw new Error('No token balance');
+      const objForRef = await client.getObject({ objectId: curveId });
+      const isv = objForRef.object?.owner?.Shared?.initialSharedVersion;
       const tx  = new Transaction();
       const curveRef = isv ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: isv, mutable: false }) : tx.object(curveId);
-      const coinObjs = coins.data.map(c => tx.object(c.coinObjectId));
+      const coinObjs = coins.objects.map(c => tx.object(c.objectId));
       let tokenCoin;
       if (coinObjs.length === 1) { [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(atomic)]); }
       else { tx.mergeCoins(coinObjs[0], coinObjs.slice(1)); [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(atomic)]); }
       const durationMs = VEST_DURATIONS_MS[lockDuration] ?? VEST_DURATIONS_MS['30d'];
       tx.moveCall({ target: `${vestingPkg}::bonding_curve::lock_tokens`, typeArguments: [tokenType], arguments: [curveRef, tokenCoin, tx.pure.u8(lockMode), tx.pure.u64(durationMs), tx.object(SUI_CLOCK_ID)] });
-      signAndExecute({ transaction: tx }, {
-        onSuccess: () => { setMsg('Locked ✓'); setBusy(false); setLockAmount(''); setShowLockForm(false); setTimeout(() => { setMsg(''); loadLocks(); }, 1500); },
-        onError:   (e) => { setMsg(e.message || 'Lock failed'); setBusy(false); },
-      });
+      const lockResult = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      if (lockResult.$kind === 'FailedTransaction') throw new Error(lockResult.FailedTransaction.status.error ?? 'Lock failed');
+      setMsg('Locked ✓'); setBusy(false); setLockAmount(''); setShowLockForm(false); setTimeout(() => { setMsg(''); loadLocks(); }, 1500);
     } catch (e) { setMsg(e.message || 'Lock failed'); setBusy(false); }
   };
 
@@ -364,8 +369,8 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
 // ── Creator Tools Panel ───────────────────────────────────────────────────────
 
 function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveState, currentDesc, currentTwitter, currentTelegram, currentWebsite, currentDex, lang }) {
-  const client = useSuiClient();
-  const { mutate: signAndExecutePanel } = useSignAndExecuteTransaction();
+  const client = useCurrentClient();
+  const dAppKit = useDAppKit();
   const pkgId   = resolvePackageId(tokenType, packageIdHint);
   const isV5Token = isV5OrLater(pkgId);
   const isV6Token = !!(PACKAGE_ID_V6 && pkgId === PACKAGE_ID_V6);
@@ -385,15 +390,15 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
   const showMsg = (m) => { setMsg(m); setTimeout(() => setMsg(''), 4000); };
 
   const getCapId = async () => {
-    const ownedObjs = await client.getOwnedObjects({ owner: account.address, filter: { StructType: `${pkgId}::bonding_curve::CreatorCap` }, options: { showContent: true } });
-    const capObj = ownedObjs.data?.find(o => o.data?.content?.fields?.curve_id === curveId) ?? ownedObjs.data?.[0];
+    const ownedObjs = await client.listOwnedObjects({ owner: account.address, type: `${pkgId}::bonding_curve::CreatorCap`, include: { json: true } });
+    const capObj = ownedObjs.objects?.find(o => o.json?.curve_id === curveId) ?? ownedObjs.objects?.[0];
     if (!capObj) throw new Error('CreatorCap not found in wallet');
-    return capObj.data?.objectId;
+    return capObj.objectId;
   };
 
   const getCurveRef = async (tx) => {
-    const objForRef = await client.getObject({ id: curveId, options: { showOwner: true } });
-    const isv = objForRef.data?.owner?.Shared?.initial_shared_version;
+    const objForRef = await client.getObject({ objectId: curveId });
+    const isv = objForRef.object?.owner?.Shared?.initialSharedVersion;
     return isv ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: isv, mutable: true }) : tx.object(curveId);
   };
 
@@ -412,11 +417,11 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
     if (curveState?.metadata_updated === true) { showMsg('Already updated — one time only'); return; }
     setBusy(true); setMsg('');
     try {
-      const coinMeta = await client.getCoinMetadata({ coinType: tokenType });
-      const metadataId = coinMeta?.id;
+      const coinMetaRes = await client.getCoinMetadata({ coinType: tokenType });
+      const metadataId = coinMetaRes?.coinMetadata?.id;
       if (!metadataId) throw new Error('CoinMetadata object not found');
-      const metaObj = await client.getObject({ id: metadataId, options: { showOwner: true } });
-      const metaSharedVersion = metaObj.data?.owner?.Shared?.initial_shared_version;
+      const metaObj = await client.getObject({ objectId: metadataId });
+      const metaSharedVersion = metaObj.object?.owner?.Shared?.initialSharedVersion;
       const capId = await getCapId();
       const tx = new Transaction();
       const curveRef = await getCurveRef(tx);
@@ -426,10 +431,9 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
         typeArguments: [tokenType],
         arguments: [tx.object(capId), curveRef, metadataRef, tx.pure.option('string', meta.name.trim() || null), tx.pure.option('string', meta.symbol.trim() || null), tx.pure.option('string', meta.description.trim() || null), tx.pure.option('string', meta.iconUrl.trim() || null), tx.object(SUI_CLOCK_ID)],
       });
-      signAndExecutePanel({ transaction: tx }, {
-        onSuccess: () => { showMsg('Metadata updated on-chain ✅'); setBusy(false); setTimeout(() => window.location.reload(), 1400); },
-        onError:   (e) => { showMsg(e.message || 'Update failed'); setBusy(false); },
-      });
+      const metaResult = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      if (metaResult.$kind === 'FailedTransaction') throw new Error(metaResult.FailedTransaction.status.error ?? 'Update failed');
+      showMsg('Metadata updated on-chain ✅'); setBusy(false); setTimeout(() => window.location.reload(), 1400);
     } catch (e) { showMsg(e.message || 'Update failed'); setBusy(false); }
   };
 
@@ -524,8 +528,8 @@ function TradePanelContent({
   // curve math for return calculator
   reserveMist, tokensRemaining, vSui, vTok,
 }) {
-  const { mutate: signAndExecutePanel } = useSignAndExecuteTransaction();
-  const client2 = useSuiClient();
+  const dAppKit = useDAppKit();
+  const client2 = useCurrentClient();
   const [claiming,       setClaiming]       = useState(false);
   const [claimMsg,       setClaimMsg]       = useState('');
   const [showSlippage,   setShowSlippage]   = useState(false);
@@ -566,19 +570,18 @@ function TradePanelContent({
     if (!account || !panelCurveId || !panelTokenType || claiming) return;
     setClaiming(true); setClaimMsg('');
     try {
-      const ownedObjs = await client2.getOwnedObjects({ owner: account.address, filter: { StructType: `${pkgId}::bonding_curve::CreatorCap` }, options: { showContent: true } });
-      const capObj = ownedObjs.data?.find(o => o.data?.content?.fields?.curve_id === panelCurveId) ?? ownedObjs.data?.[0];
+      const ownedObjs = await client2.listOwnedObjects({ owner: account.address, type: `${pkgId}::bonding_curve::CreatorCap`, include: { json: true } });
+      const capObj = ownedObjs.objects?.find(o => o.json?.curve_id === panelCurveId) ?? ownedObjs.objects?.[0];
       if (!capObj) throw new Error('CreatorCap not found in wallet');
-      const capId = capObj.data?.objectId;
-      const objForRef = await client2.getObject({ id: panelCurveId, options: { showOwner: true } });
-      const isv = objForRef.data?.owner?.Shared?.initial_shared_version;
+      const capId = capObj.objectId;
+      const objForRef = await client2.getObject({ objectId: panelCurveId });
+      const isv = objForRef.object?.owner?.Shared?.initialSharedVersion;
       const tx = new Transaction();
       const curveRef = isv ? tx.sharedObjectRef({ objectId: panelCurveId, initialSharedVersion: isv, mutable: true }) : tx.object(panelCurveId);
       tx.moveCall({ target: `${pkgId}::bonding_curve::claim_creator_fees`, typeArguments: [panelTokenType], arguments: [tx.object(capId), curveRef] });
-      signAndExecutePanel({ transaction: tx }, {
-        onSuccess: () => { setClaimMsg('Fees claimed! 🎉'); setClaiming(false); setTimeout(() => setClaimMsg(''), 3000); },
-        onError:   (err) => { setClaimMsg(err.message || 'Claim failed'); setClaiming(false); setTimeout(() => setClaimMsg(''), 4000); },
-      });
+      const feeResult = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      if (feeResult.$kind === 'FailedTransaction') throw new Error(feeResult.FailedTransaction.status.error ?? 'Claim failed');
+      setClaimMsg('Fees claimed! 🎉'); setClaiming(false); setTimeout(() => setClaimMsg(''), 3000);
     } catch (err) { setClaimMsg(err.message || 'Claim failed'); setClaiming(false); }
   };
 
@@ -827,8 +830,8 @@ function TPSLPanel({
   slippage,
   keypair,        // Ed25519Keypair | null — if set, signs autonomously (no Slush popup)
 }) {
-  const client = useSuiClient();
-  const { mutate: signAndExecute } = useSignAndExecuteTransaction();
+  const client = useCurrentClient();
+  const dAppKit = useDAppKit();
 
   const [showConfig, setShowConfig]       = useState(false);
   const [entryPrice, setEntryPrice]       = useState('');
@@ -852,17 +855,17 @@ function TPSLPanel({
         ? keypair.getPublicKey().toSuiAddress()
         : account.address;
 
-      const objForRef = await client.getObject({ id: curveId, options: { showOwner: true } });
-      const isv = objForRef.data?.owner?.Shared?.initial_shared_version;
+      const objForRef = await client.getObject({ objectId: curveId });
+      const isv = objForRef.object?.owner?.Shared?.initialSharedVersion;
       const tx = new Transaction();
       const curveRef = isv
         ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: isv, mutable: true })
         : tx.object(curveId);
 
       // Get token coins owned by the signer
-      const coins = await client.getCoins({ owner: signerAddress, coinType: tokenType });
-      if (!coins.data.length) throw new Error('No token balance in trading wallet');
-      const coinObjs = coins.data.map(c => tx.object(c.coinObjectId));
+      const coins = await client.listCoins({ owner: signerAddress, coinType: tokenType });
+      if (!coins.objects.length) throw new Error('No token balance in trading wallet');
+      const coinObjs = coins.objects.map(c => tx.object(c.objectId));
       if (coinObjs.length > 1) tx.mergeCoins(coinObjs[0], coinObjs.slice(1));
       const [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(tokInAtomic)]);
 
@@ -900,21 +903,15 @@ function TPSLPanel({
       }
 
       // ── Slush fallback (no keypair) ──────────────────────────────────────
-      signAndExecute({ transaction: tx }, {
-        onSuccess: () => {
-          setTriggerMsg(m => m ? { ...m, status: 'done' } : m);
-          setSelling(false);
-        },
-        onError: (err) => {
-          setTriggerMsg(m => m ? { ...m, status: 'error', error: err.message } : m);
-          setSelling(false);
-        },
-      });
+      const sellResult = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      if (sellResult.$kind === 'FailedTransaction') throw new Error(sellResult.FailedTransaction.status.error ?? 'Sell failed');
+      setTriggerMsg(m => m ? { ...m, status: 'done' } : m);
+      setSelling(false);
     } catch (err) {
       setTriggerMsg(m => m ? { ...m, status: 'error', error: err.message } : m);
       setSelling(false);
     }
-  }, [account, curveId, tokenType, pkgId, selling, client, signAndExecute, reserveMist, tokensRemaining, vSui, vTok, slippage, keypair]);
+  }, [account, curveId, tokenType, pkgId, selling, client, dAppKit, reserveMist, tokensRemaining, vSui, vTok, slippage, keypair]);
 
   // ── onTrigger callback passed to useTPSL ────────────────────────────────
   const handleTrigger = useCallback(({ level, currentPriceSui }) => {
@@ -1201,8 +1198,8 @@ function CommentsBlock({ curveId, packageId, lang }) {
 export default function TokenPage({ curveId, tokenType, packageId: packageIdHint, onBack, lang = 'en', tradeKeypair = null, tradeKeyReady = false }) {
   const navigate = useNavigate();
   const account  = useCurrentAccount();
-  const client   = useSuiClient();
-  const { mutate: signAndExecute } = useSignAndExecuteTransaction();
+  const client   = useCurrentClient();
+  const dAppKit  = useDAppKit();
 
   const [suiUsd,          setSuiUsd]          = useState(0);
   const [curveState,      setCurveState]      = useState(null);
@@ -1233,8 +1230,8 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
     let cancelled = false;
     async function load() {
       try {
-        const obj = await client.getObject({ id: curveId, options: { showContent: true } });
-        if (!cancelled) setCurveState(obj.data?.content?.fields ?? null);
+        const obj = await client.getObject({ objectId: curveId, include: { json: true } });
+        if (!cancelled) setCurveState(obj.object?.json ?? null);
       } catch {}
     }
     load();
@@ -1256,8 +1253,8 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
           if (found) break;
           let cursor = null;
           for (let page = 0; page < 10 && !found; page++) {
-            const res = await client.queryEvents({ query: { MoveEventType: `${pid}::bonding_curve::CurveCreated` }, limit: 50, cursor: cursor || undefined });
-            found = res.data?.find(e => e.parsedJson?.curve_id === curveId);
+            const res = { data: [], nextCursor: null, hasNextPage: false }; // queryEvents removed; CurveCreated data comes from indexer
+            found = null; // queryEvents removed; curve data comes from indexer
             if (!res.hasNextPage) break;
             cursor = res.nextCursor;
           }
@@ -1274,10 +1271,10 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
     async function loadBalances() {
       try {
         const sui = await client.getBalance({ owner: account.address, coinType: '0x2::sui::SUI' });
-        if (!cancelled) setSuiBalance(Number(sui.totalBalance) / 1e9);
+        if (!cancelled) setSuiBalance(Number(sui.balance?.balance ?? '0') / 1e9);
         if (tokenType) {
           const tok = await client.getBalance({ owner: account.address, coinType: tokenType });
-          if (!cancelled) setTokenBalance(Number(tok.totalBalance) / 10 ** TOKEN_DECIMALS);
+          if (!cancelled) setTokenBalance(Number(tok.balance?.balance ?? '0') / 10 ** TOKEN_DECIMALS);
         }
       } catch {}
     }
@@ -1325,8 +1322,8 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
     if (!account?.address || !curveId || !client) { setIsCreator(false); return; }
     let cancelled = false;
     const checkPkg = async (pid) => {
-      const res = await client.getOwnedObjects({ owner: account.address, filter: { StructType: `${pid}::bonding_curve::CreatorCap` }, options: { showContent: true } });
-      return res.data?.some(o => o.data?.content?.fields?.curve_id === curveId);
+      const res = await client.listOwnedObjects({ owner: account.address, type: `${pid}::bonding_curve::CreatorCap`, include: { json: true } });
+      return res.objects?.some(o => o.json?.curve_id === curveId);
     };
     Promise.all([checkPkg(PACKAGE_ID_V4), ...(PACKAGE_ID_V5 ? [checkPkg(PACKAGE_ID_V5)] : []), ...(PACKAGE_ID_V6 ? [checkPkg(PACKAGE_ID_V6)] : []), ...(PACKAGE_ID_V7 ? [checkPkg(PACKAGE_ID_V7)] : []), ...(PACKAGE_ID_V8_1 ? [checkPkg(PACKAGE_ID_V8_1)] : []), ...(PACKAGE_ID_V8 ? [checkPkg(PACKAGE_ID_V8)] : [])])
       .then(results => { if (!cancelled) setIsCreator(results.some(Boolean)); }).catch(() => {});
@@ -1367,8 +1364,8 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
     setTxMsg('');
 
     try {
-      const objForRef = await client.getObject({ id: curveId, options: { showOwner: true } });
-      const initialSharedVersion = objForRef.data?.owner?.Shared?.initial_shared_version;
+      const objForRef = await client.getObject({ objectId: curveId });
+      const initialSharedVersion = objForRef.object?.owner?.Shared?.initialSharedVersion;
       const tx = new Transaction();
       const curveRef = initialSharedVersion
         ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion, mutable: true })
@@ -1389,8 +1386,8 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
         tx.transferObjects([tokens, refund], account.address);
       } else {
         const tokInAtomic = BigInt(Math.floor(amtFloat * 10 ** TOKEN_DECIMALS));
-        const coins = await client.getCoins({ owner: account.address, coinType: tokenType });
-        const coinObjs = coins.data.map(c => tx.object(c.coinObjectId));
+        const coins = await client.listCoins({ owner: account.address, coinType: tokenType });
+        const coinObjs = coins.objects.map(c => tx.object(c.objectId));
         let tokenCoin;
         if (!coinObjs.length) throw new Error('No token balance');
         if (coinObjs.length === 1) { [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(tokInAtomic)]); }
@@ -1404,15 +1401,15 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
         tx.transferObjects([suiOut], account.address);
       }
 
-      signAndExecute({ transaction: tx }, {
-        onSuccess: () => { setTxStatus('success'); setTxMsg(side === 'buy' ? 'Buy successful! 🎉' : 'Sell successful!'); setAmount(''); setTimeout(() => { setTxStatus(null); setTxMsg(''); }, 3000); },
-        onError:   (err) => { setTxStatus('error'); setTxMsg(err.message || 'Transaction failed'); setTimeout(() => { setTxStatus(null); setTxMsg(''); }, 4000); },
-      });
+      const tradeResult = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      if (tradeResult.$kind === 'FailedTransaction') throw new Error(tradeResult.FailedTransaction.status.error ?? 'Transaction failed');
+      setTxStatus('success'); setTxMsg(side === 'buy' ? 'Buy successful! 🎉' : 'Sell successful!'); setAmount('');
+      setTimeout(() => { setTxStatus(null); setTxMsg(''); }, 3000);
     } catch (err) {
       setTxStatus('error'); setTxMsg(err.message || 'Transaction failed');
       setTimeout(() => { setTxStatus(null); setTxMsg(''); }, 4000);
     }
-  }, [account, curveState, curveId, tokenType, side, amount, slippage, client, signAndExecute, reserveMist, tokensRemaining, pkgId, vSui, vTok]);
+  }, [account, curveState, curveId, tokenType, side, amount, slippage, client, dAppKit, reserveMist, tokensRemaining, pkgId, vSui, vTok]);
 
   const quote = quoteTrade();
   const scrollToTop = () => window.scrollTo({ top: 0, behavior: 'smooth' });

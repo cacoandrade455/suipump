@@ -1,13 +1,13 @@
 // useTokenList.js
 import { useState, useEffect } from 'react';
-import { useSuiClient } from '@mysten/dapp-kit';
+import { useCurrentClient } from '@mysten/dapp-kit-react';
 import { ALL_PACKAGE_IDS, isV5OrLater } from './constants.js';
 import { paginateEvents } from './paginateEvents.js';
 
 const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
 
 export function useTokenList() {
-  const client = useSuiClient();
+  const client = useCurrentClient();
   const [tokens, setTokens]   = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(null);
@@ -64,8 +64,9 @@ export function useTokenList() {
       });
       return await Promise.all(list.map(async (token) => {
         try {
-          const obj = await client.getObject({ id: token.curveId, options: { showType: true } });
-          const typeStr = obj.data?.type ?? '';
+          // New API: objectId, returns object.type
+          const obj = await client.getObject({ objectId: token.curveId });
+          const typeStr = obj.object?.type ?? '';
           const match   = typeStr.match(/Curve<(.+)>$/);
           return { ...token, tokenType: match ? match[1] : null };
         } catch { return token; }
@@ -85,12 +86,8 @@ export function useTokenList() {
         }
         if (!cancelled) {
           setTokens(enriched);
-          // Preload all icon images immediately so they're cached before cards render
           enriched.forEach(t => {
-            if (t.iconUrl) {
-              const img = new window.Image();
-              img.src = t.iconUrl;
-            }
+            if (t.iconUrl) { const img = new window.Image(); img.src = t.iconUrl; }
           });
         }
       } catch (err) {
@@ -109,6 +106,7 @@ export function useTokenList() {
 }
 
 export async function fetchCurveState(client, curveId) {
-  const obj = await client.getObject({ id: curveId, options: { showContent: true } });
-  return obj.data?.content?.fields ?? null;
+  // New API: include json for fields
+  const obj = await client.getObject({ objectId: curveId, include: { json: true } });
+  return obj.object?.json ?? null;
 }

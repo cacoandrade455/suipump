@@ -1,6 +1,6 @@
 // LaunchModal.jsx — v5 wired
 import React, { useState, useCallback } from 'react';
-import { useCurrentAccount, useSignAndExecuteTransaction, useSuiClient } from '@mysten/dapp-kit';
+import { useCurrentAccount, useDAppKit, useCurrentClient } from '@mysten/dapp-kit-react';
 import { Transaction } from '@mysten/sui/transactions';
 import { X, Plus, Trash2, Rocket, CheckCircle } from 'lucide-react';
 import wasmInit, * as bytecodeTemplate from '@mysten/move-bytecode-template';
@@ -122,8 +122,8 @@ function TokenPreview({ name, symbol, iconUrl }) {
 
 export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
   const account = useCurrentAccount();
-  const client = useSuiClient();
-  const { mutateAsync: signAndExecute } = useSignAndExecuteTransaction();
+  const client = useCurrentClient();
+  const dAppKit = useDAppKit();
 
   const [step, setStep] = useState(0);
   const [form, setForm] = useState({
@@ -218,11 +218,12 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
       const [upgradeCap] = tx1.publish({ modules: [[...patched]], dependencies: ['0x1', '0x2'] });
       tx1.transferObjects([upgradeCap], account.address);
 
-      const res1raw = await signAndExecute({ transaction: tx1 });
-      setTx1Digest(res1raw.digest);
+      const res1raw = await dAppKit.signAndExecuteTransaction({ transaction: tx1 });
+      if (res1raw.$kind === 'FailedTransaction') throw new Error('Tx1 signing failed: ' + res1raw.FailedTransaction.status.error);
+      setTx1Digest(res1raw.Transaction?.digest ?? res1raw.digest ?? '');
 
       const res1 = await client.waitForTransaction({
-        digest: res1raw.digest,
+        digest: res1raw.Transaction?.digest ?? res1raw.digest,
         include: { objectTypes: true },
       });
       if (res1.$kind === 'FailedTransaction') throw new Error('Tx1 failed: ' + res1.FailedTransaction.status.error);
@@ -337,13 +338,14 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
       tx2.moveCall({ target: `${PACKAGE_ID}::bonding_curve::share_curve`, typeArguments: [newTokenType], arguments: [curve] });
       tx2.transferObjects([cap], account.address);
 
-      const res2raw = await signAndExecute({ transaction: tx2 });
+      const res2raw = await dAppKit.signAndExecuteTransaction({ transaction: tx2 });
+      if (res2raw.$kind === 'FailedTransaction') throw new Error('Tx2 signing failed: ' + res2raw.FailedTransaction.status.error);
       const res2 = await client.waitForTransaction({
-        digest: res2raw.digest,
+        digest: res2raw.Transaction?.digest ?? res2raw.digest,
         include: { events: true },
       });
       if (res2.$kind === 'FailedTransaction') throw new Error('Tx2 failed: ' + res2.FailedTransaction.status.error);
-      setTx2Digest(res2raw.digest);
+      setTx2Digest(res2raw.Transaction?.digest ?? res2raw.digest ?? '');
 
       const curveEvent = res2.Transaction.events?.find(e => e.eventType?.includes('CurveCreated'));
       const curveId = curveEvent?.json?.curve_id;
@@ -356,7 +358,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
     } finally {
       setLaunching(false);
     }
-  }, [form, payouts, devBuy, account, client, signAndExecute, onLaunched]);
+  }, [form, payouts, devBuy, account, client, dAppKit, onLaunched]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm px-4">

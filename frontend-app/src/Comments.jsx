@@ -1,6 +1,6 @@
 // Comments.jsx — on-chain comments + off-chain replies (localStorage)
 import React, { useState, useEffect, useRef } from 'react';
-import { useCurrentAccount, useSuiClient, useSignAndExecuteTransaction } from '@mysten/dapp-kit';
+import { useCurrentAccount, useDAppKit } from '@mysten/dapp-kit-react';
 import { Transaction } from '@mysten/sui/transactions';
 import { Send, Reply, ChevronDown, ChevronUp } from 'lucide-react';
 import {
@@ -32,8 +32,6 @@ function timeAgo(ts) {
   return `${Math.floor(diff / 86_400_000)}d ago`;
 }
 
-// ── localStorage reply store ─────────────────────────────────────────────────
-
 function loadReplies(curveId) {
   try {
     const raw = localStorage.getItem(`suipump_replies_${curveId}`);
@@ -47,15 +45,12 @@ function saveReply(curveId, reply) {
   localStorage.setItem(`suipump_replies_${curveId}`, JSON.stringify(existing));
 }
 
-// ── CommentItem ──────────────────────────────────────────────────────────────
-
 function CommentItem({ comment, replies, account, curveId, onReplyPosted }) {
   const [showReplies, setShowReplies] = useState(false);
   const [replyOpen, setReplyOpen] = useState(false);
   const [replyText, setReplyText] = useState('');
   const [replyErr, setReplyErr] = useState('');
   const inputRef = useRef(null);
-
   const replyCount = replies.length;
 
   const handleOpenReply = () => {
@@ -68,20 +63,13 @@ function CommentItem({ comment, replies, account, curveId, onReplyPosted }) {
     const trimmed = replyText.trim();
     if (!trimmed || !account) return;
     if (trimmed.length > 200) { setReplyErr('Max 200 characters'); return; }
-
     const reply = {
       id: `reply_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-      parentId: comment.id,
-      author: account.address,
-      text: trimmed,
-      timestamp: Date.now(),
+      parentId: comment.id, author: account.address, text: trimmed, timestamp: Date.now(),
     };
-
     saveReply(curveId, reply);
     onReplyPosted(reply);
-    setReplyText('');
-    setReplyOpen(false);
-    setReplyErr('');
+    setReplyText(''); setReplyOpen(false); setReplyErr('');
   };
 
   const handleKey = (e) => {
@@ -92,98 +80,54 @@ function CommentItem({ comment, replies, account, curveId, onReplyPosted }) {
   return (
     <div className="px-4 py-3 hover:bg-white/[0.02] transition-colors">
       <div className="flex items-start gap-2.5">
-        {/* Avatar */}
-        <div
-          className="w-6 h-6 rounded-full flex-shrink-0 mt-0.5 flex items-center justify-center text-[9px] font-bold text-black"
-          style={{ backgroundColor: walletColor(comment.author) }}
-        >
+        <div className="w-6 h-6 rounded-full flex-shrink-0 mt-0.5 flex items-center justify-center text-[9px] font-bold text-black"
+          style={{ backgroundColor: walletColor(comment.author) }}>
           {comment.author?.slice(2, 4).toUpperCase()}
         </div>
-
         <div className="flex-1 min-w-0">
-          {/* Author + time */}
           <div className="flex items-center gap-2 mb-1">
             <span className="text-[10px] font-mono text-white/50">{shortAddr(comment.author)}</span>
             <span className="text-[10px] font-mono text-white/25">{timeAgo(comment.timestamp)}</span>
           </div>
-
-          {/* Text */}
           <p className="text-sm text-white/70 leading-relaxed break-words">{comment.text}</p>
-
-          {/* Action row */}
           <div className="flex items-center gap-3 mt-2">
             {account && (
-              <button
-                onClick={handleOpenReply}
-                className={`flex items-center gap-1 text-[10px] font-mono transition-colors ${
-                  replyOpen ? 'text-lime-400' : 'text-white/25 hover:text-white/50'
-                }`}
-              >
-                <Reply size={10} />
-                REPLY
+              <button onClick={handleOpenReply}
+                className={`flex items-center gap-1 text-[10px] font-mono transition-colors ${replyOpen ? 'text-lime-400' : 'text-white/25 hover:text-white/50'}`}>
+                <Reply size={9} /> Reply
               </button>
             )}
             {replyCount > 0 && (
-              <button
-                onClick={() => setShowReplies(o => !o)}
-                className="flex items-center gap-1 text-[10px] font-mono text-white/25 hover:text-white/50 transition-colors"
-              >
-                {showReplies ? <ChevronUp size={10} /> : <ChevronDown size={10} />}
+              <button onClick={() => setShowReplies(o => !o)}
+                className="flex items-center gap-1 text-[10px] font-mono text-white/25 hover:text-white/50 transition-colors">
+                {showReplies ? <ChevronUp size={9} /> : <ChevronDown size={9} />}
                 {replyCount} {replyCount === 1 ? 'reply' : 'replies'}
               </button>
             )}
           </div>
-
-          {/* Reply input */}
           {replyOpen && (
-            <div className="mt-3 space-y-1.5">
+            <div className="mt-2 space-y-1.5">
               <div className="flex gap-2">
-                <div
-                  className="w-5 h-5 rounded-full flex-shrink-0 mt-1 flex items-center justify-center text-[8px] font-bold text-black"
-                  style={{ backgroundColor: walletColor(account?.address) }}
-                >
-                  {account?.address?.slice(2, 4).toUpperCase()}
-                </div>
-                <textarea
-                  ref={inputRef}
-                  value={replyText}
-                  onChange={e => { setReplyText(e.target.value); setReplyErr(''); }}
-                  onKeyDown={handleKey}
-                  placeholder={`Reply to ${shortAddr(comment.author)}… (Enter to post)`}
-                  maxLength={200}
-                  rows={2}
-                  className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs font-mono text-white placeholder-white/20 resize-none focus:outline-none focus:border-lime-400/50 focus:bg-lime-400/5 transition-colors"
-                />
-                <button
-                  onClick={handlePostReply}
-                  disabled={!replyText.trim()}
-                  className={`self-end px-2.5 py-2 rounded-lg transition-colors ${
-                    !replyText.trim()
-                      ? 'bg-white/5 text-white/25 cursor-not-allowed'
-                      : 'bg-lime-400 hover:bg-lime-300 text-black'
-                  }`}
-                >
+                <input ref={inputRef} value={replyText} onChange={e => setReplyText(e.target.value)} onKeyDown={handleKey}
+                  placeholder="Write a reply…" maxLength={200}
+                  className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white placeholder-white/20 focus:outline-none focus:border-lime-400/40 font-mono" />
+                <button onClick={handlePostReply} disabled={!replyText.trim()}
+                  className={`px-2.5 py-1.5 rounded-lg text-[10px] font-mono transition-colors ${!replyText.trim() ? 'bg-white/5 text-white/25 cursor-not-allowed' : 'bg-lime-400 hover:bg-lime-300 text-black'}`}>
                   <Send size={12} />
                 </button>
               </div>
               <div className="flex items-center justify-between pl-7">
-                {replyErr
-                  ? <span className="text-[10px] font-mono text-red-400">{replyErr}</span>
-                  : <span />}
+                {replyErr ? <span className="text-[10px] font-mono text-red-400">{replyErr}</span> : <span />}
                 <span className="text-[10px] font-mono text-white/25">{replyText.length}/200</span>
               </div>
             </div>
           )}
-
-          {/* Replies list */}
           {showReplies && replyCount > 0 && (
             <div className="mt-3 space-y-3 border-l-2 border-white/5 pl-3">
               {replies.map(r => (
                 <div key={r.id} className="flex items-start gap-2">
-                  <div
-                    className="w-5 h-5 rounded-full flex-shrink-0 mt-0.5 flex items-center justify-center text-[8px] font-bold text-black"
-                    style={{ backgroundColor: walletColor(r.author) }}
-                  >
+                  <div className="w-5 h-5 rounded-full flex-shrink-0 mt-0.5 flex items-center justify-center text-[8px] font-bold text-black"
+                    style={{ backgroundColor: walletColor(r.author) }}>
                     {r.author?.slice(2, 4).toUpperCase()}
                   </div>
                   <div className="flex-1 min-w-0">
@@ -203,12 +147,9 @@ function CommentItem({ comment, replies, account, curveId, onReplyPosted }) {
   );
 }
 
-// ── Main component ───────────────────────────────────────────────────────────
-
 export default function Comments({ curveId, packageId }) {
   const account = useCurrentAccount();
-  const client = useSuiClient();
-  const { mutate: signAndExecute } = useSignAndExecuteTransaction();
+  const dAppKit = useDAppKit();
 
   const [comments, setComments] = useState([]);
   const [replies, setReplies] = useState([]);
@@ -217,162 +158,108 @@ export default function Comments({ curveId, packageId }) {
   const [posting, setPosting] = useState(false);
   const [postErr, setPostErr] = useState('');
   const bottomRef = useRef(null);
+  const esRef = useRef(null);
+  const timerRef = useRef(null);
 
-  // Load on-chain comments
   useEffect(() => {
-    if (!curveId || !client) return;
+    if (!curveId) return;
     let cancelled = false;
 
     async function load() {
       try {
-        let comments = [];
-
-        // ── Indexer path (fast, filtered by curveId) ────────────────────────
+        let loadedComments = [];
         if (INDEXER_URL) {
           try {
-            const res = await fetch(
-              `${INDEXER_URL}/token/${curveId}/comments`,
-              { signal: AbortSignal.timeout(5000) }
-            );
+            const res = await fetch(`${INDEXER_URL}/token/${curveId}/comments`, { signal: AbortSignal.timeout(5000) });
             if (res.ok) {
               const rows = await res.json();
-              comments = rows.map(r => ({
+              loadedComments = rows.map(r => ({
                 id:        r.tx_digest + '_' + (r.event_seq ?? 0),
-                author:    r.data?.author  ?? r.author,
-                text:      r.data?.text    ?? r.text,
-                timestamp: r.timestamp_ms  ?? r.timestampMs ?? null,
-              })).sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+                author:    r.data?.author ?? '',
+                text:      r.data?.text ?? '',
+                timestamp: r.timestamp_ms ? Number(r.timestamp_ms) : null,
+                curveId,
+              }));
             }
           } catch {}
         }
-
-        // ── RPC fallback — query Comment events filtered by curveId ─────────
-        if (comments.length === 0) {
-          const allEvents = [];
-          for (const pkg of ALL_PACKAGE_IDS) {
-            const eventType = `${pkg}::bonding_curve::Comment`;
-            // Use queryEvents directly with a limit — don't paginate all events globally
-            try {
-              const res = await client.queryEvents({
-                query: { MoveEventType: eventType },
-                limit: 50,
-                order: 'descending',
-              });
-              const filtered = (res.data ?? []).filter(
-                e => e.parsedJson?.curve_id === curveId
-              );
-              allEvents.push(...filtered);
-            } catch {}
-          }
-          comments = allEvents
-            .map(e => ({
-              id:        e.id?.txDigest + '_' + e.id?.eventSeq,
-              author:    e.parsedJson?.author,
-              text:      e.parsedJson?.text,
-              timestamp: e.timestampMs ? Number(e.timestampMs) : null,
-            }))
-            .sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
-        }
-
         if (!cancelled) {
-          setComments(comments);
-          setLoading(false);
+          setComments(loadedComments);
+          setReplies(loadReplies(curveId));
         }
-      } catch {
+      } catch {} finally {
         if (!cancelled) setLoading(false);
       }
     }
 
     load();
-    const t = setInterval(load, 15_000);
-    return () => { cancelled = true; clearInterval(t); };
-  }, [curveId, client]);
 
-  // Load off-chain replies from localStorage
-  useEffect(() => {
-    if (!curveId) return;
-    setReplies(loadReplies(curveId));
+    // SSE for real-time comments
+    function connect() {
+      if (!INDEXER_URL) return;
+      const es = new EventSource(`${INDEXER_URL}/stream?curveId=${curveId}`);
+      esRef.current = es;
+      es.onmessage = (e) => {
+        try {
+          const event = JSON.parse(e.data);
+          if (event.type === 'Comment') {
+            const d = event.data ?? {};
+            setComments(prev => {
+              const id = (d.tx_digest || event.txDigest || `${Date.now()}`) + '_sse';
+              if (prev.find(c => c.id === id)) return prev;
+              return [...prev, { id, author: d.author ?? '', text: d.text ?? '', timestamp: event.ts ?? Date.now(), curveId }];
+            });
+          }
+        } catch {}
+      };
+      es.onerror = () => { es.close(); timerRef.current = setTimeout(connect, 3000); };
+    }
+    connect();
+
+    return () => {
+      cancelled = true;
+      esRef.current?.close();
+      clearTimeout(timerRef.current);
+    };
   }, [curveId]);
-
-  const handleReplyPosted = (reply) => {
-    setReplies(prev => [...prev, reply]);
-  };
 
   const handlePost = async () => {
     const trimmed = text.trim();
     if (!trimmed || !account || posting) return;
-    if (trimmed.length > 200) { setPostErr('Max 200 characters'); return; }
+    if (trimmed.length > 500) { setPostErr('Max 500 characters'); return; }
+    if (!packageId) { setPostErr('Package ID not available'); return; }
 
-    setPosting(true);
-    setPostErr('');
-
+    setPosting(true); setPostErr('');
     try {
       const tx = new Transaction();
+      const isV7 = isV7OrLater(packageId);
 
-      // ALWAYS resolve package from curve object type — the prop may be stale
-      // or incorrect if TokenPage hasn't finished loading yet.
-      let pkg;
-      try {
-        const obj = await client.getObject({ id: curveId, options: { showType: true, showOwner: true } });
-        const typeStr = obj.data?.type ?? '';
-        const m = typeStr.match(/^(0x[0-9a-fA-F]+)::bonding_curve::Curve/);
-        pkg = m ? m[1] : null;
-      } catch {}
-      // Fall back to prop, then to V8 as last resort
-      if (!pkg) pkg = packageId;
-      if (!pkg) pkg = PACKAGE_ID_V8;
-
-      if (isV7OrLater(pkg)) {
-        // V7/V8: post_comment<T>(&mut Curve<T>, payment: Coin<SUI>, text: String)
-        // Requires typeArguments with the token type T.
-        const objForRef = await client.getObject({ id: curveId, options: { showOwner: true, showType: true } });
-        const initialSharedVersion = objForRef.data?.owner?.Shared?.initial_shared_version;
-        const curveRef = initialSharedVersion
-          ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion, mutable: true })
-          : tx.object(curveId);
-        // Extract token type T from curve type string "0xPKG::bonding_curve::Curve<TOKEN_TYPE>"
-        const typeStr = objForRef.data?.type ?? '';
-        const tokenTypeMatch = typeStr.match(/Curve<(.+)>$/);
-        const tokenType = tokenTypeMatch ? tokenTypeMatch[1] : null;
-        if (!tokenType) throw new Error('Could not determine token type for comment');
-        const [feeCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(COMMENT_FEE_MIST)]);
+      if (isV7 && COMMENT_FEE_MIST && BigInt(COMMENT_FEE_MIST) > 0n) {
+        const [feeCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(BigInt(COMMENT_FEE_MIST))]);
         tx.moveCall({
-          target: `${pkg}::bonding_curve::post_comment`,
-          typeArguments: [tokenType],
-          arguments: [curveRef, feeCoin, tx.pure.string(trimmed)],
+          target: `${packageId}::bonding_curve::post_comment`,
+          arguments: [tx.pure.address(curveId), tx.pure.string(trimmed), feeCoin],
         });
       } else {
-        // V4/V5/V6: post_comment(curve_id: ID, text) — no fee, no curve object
         tx.moveCall({
-          target: `${pkg}::bonding_curve::post_comment`,
-          arguments: [
-            tx.pure.address(curveId),
-            tx.pure.string(trimmed),
-          ],
+          target: `${packageId}::bonding_curve::post_comment`,
+          arguments: [tx.pure.address(curveId), tx.pure.string(trimmed)],
         });
       }
 
-      signAndExecute(
-        { transaction: tx },
-        {
-          onSuccess: () => {
-            setText('');
-            setPosting(false);
-            setComments(prev => [...prev, {
-              id: 'pending_' + Date.now(),
-              author: account.address,
-              text: trimmed,
-              timestamp: Date.now(),
-            }]);
-          },
-          onError: (err) => {
-            setPostErr(err.message || 'Failed to post');
-            setPosting(false);
-          },
-        }
-      );
+      const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      if (result.$kind === 'FailedTransaction') throw new Error(result.FailedTransaction.status.error ?? 'Post failed');
+
+      setText('');
+      // Optimistic update
+      setComments(prev => [...prev, {
+        id: result.Transaction.digest,
+        author: account.address, text: trimmed,
+        timestamp: Date.now(), curveId,
+      }]);
     } catch (err) {
-      setPostErr(err.message || 'Failed to post');
+      setPostErr(err.message || 'Failed to post comment');
+    } finally {
       setPosting(false);
     }
   };
@@ -381,86 +268,55 @@ export default function Comments({ curveId, packageId }) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handlePost(); }
   };
 
-  const totalCount = comments.length + replies.length;
+  const repliesByParent = {};
+  for (const r of replies) {
+    if (!repliesByParent[r.parentId]) repliesByParent[r.parentId] = [];
+    repliesByParent[r.parentId].push(r);
+  }
 
   return (
     <div className="bg-white/[0.03] border border-white/10 rounded-xl overflow-hidden">
-      {/* Header */}
-      <div className="px-4 py-3 border-b border-white/10 flex items-center justify-between">
-        <span className="text-[10px] font-mono text-white/35 tracking-widest">COMMENTS</span>
-        <span className="text-[10px] font-mono text-white/25">{totalCount}</span>
-      </div>
-
-      {/* Comment list */}
-      <div className="max-h-[500px] overflow-y-auto">
-        {loading ? (
-          <div className="py-8 text-center text-white/35 text-xs font-mono">Loading…</div>
-        ) : comments.length === 0 ? (
-          <div className="py-8 text-center text-white/35 text-xs font-mono">
-            No comments yet. Be the first!
+      {loading ? (
+        <div className="py-8 text-center text-white/20 text-xs font-mono">Loading…</div>
+      ) : comments.length === 0 ? (
+        <div className="py-8 text-center text-white/20 text-xs font-mono">No comments yet. Be the first!</div>
+      ) : (
+        <div className="divide-y divide-white/5 max-h-[500px] overflow-y-auto">
+          {comments.map(c => (
+            <CommentItem
+              key={c.id}
+              comment={c}
+              replies={repliesByParent[c.id] || []}
+              account={account}
+              curveId={curveId}
+              onReplyPosted={(r) => setReplies(prev => [...prev, r])}
+            />
+          ))}
+          <div ref={bottomRef} />
+        </div>
+      )}
+      {account && (
+        <div className="border-t border-white/10 p-3 space-y-2">
+          <div className="flex gap-2">
+            <textarea
+              value={text}
+              onChange={e => setText(e.target.value.slice(0, 500))}
+              onKeyDown={handleKey}
+              placeholder="Write a comment… (Enter to post)"
+              rows={2}
+              className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder-white/20 focus:outline-none focus:border-lime-400/40 font-mono resize-none transition-colors"
+            />
+            <button onClick={handlePost} disabled={!text.trim() || posting}
+              className={`px-3 py-2 rounded-xl text-sm font-mono transition-colors self-end ${!text.trim() || posting ? 'bg-white/5 text-white/20 cursor-not-allowed' : 'bg-lime-400 hover:bg-lime-300 text-black'}`}>
+              <Send size={14} />
+            </button>
           </div>
-        ) : (
-          <div className="divide-y divide-white/5">
-            {comments.map(c => (
-              <CommentItem
-                key={c.id}
-                comment={c}
-                replies={replies.filter(r => r.parentId === c.id)}
-                account={account}
-                curveId={curveId}
-                onReplyPosted={handleReplyPosted}
-              />
-            ))}
-            <div ref={bottomRef} />
+          <div className="flex items-center justify-between px-1">
+            {postErr ? <span className="text-[10px] font-mono text-red-400">{postErr}</span> : <span />}
+            <span className="text-[10px] font-mono text-white/25">{text.length}/500</span>
           </div>
-        )}
-      </div>
-
-      {/* Post input */}
-      <div className="border-t border-white/10 p-3">
-        {!account ? (
-          <div className="text-center text-white/35 text-xs font-mono py-2">
-            Connect wallet to comment
-          </div>
-        ) : (
-          <div className="space-y-2">
-            <div className="flex gap-2">
-              <div
-                className="w-6 h-6 rounded-full flex-shrink-0 mt-1.5 flex items-center justify-center text-[9px] font-bold text-black"
-                style={{ backgroundColor: walletColor(account.address) }}
-              >
-                {account.address.slice(2, 4).toUpperCase()}
-              </div>
-              <textarea
-                value={text}
-                onChange={e => { setText(e.target.value); setPostErr(''); }}
-                onKeyDown={handleKey}
-                placeholder="Write a comment… (Enter to post)"
-                maxLength={200}
-                rows={2}
-                className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm font-mono text-white placeholder-white/20 resize-none focus:outline-none focus:border-lime-400/50 focus:bg-lime-400/5 transition-colors"
-              />
-              <button
-                onClick={handlePost}
-                disabled={!text.trim() || posting}
-                className={`self-end px-3 py-2 rounded-lg transition-colors ${
-                  !text.trim() || posting
-                    ? 'bg-white/5 text-white/25 cursor-not-allowed'
-                    : 'bg-lime-400 hover:bg-lime-300 text-black'
-                }`}
-              >
-                <Send size={14} />
-              </button>
-            </div>
-            <div className="flex items-center justify-between px-8">
-              {postErr
-                ? <span className="text-[10px] font-mono text-red-400">{postErr}</span>
-                : <span />}
-              <span className="text-[10px] font-mono text-white/25">{text.length}/200</span>
-            </div>
-          </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }
