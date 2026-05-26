@@ -168,7 +168,15 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = n
                 <span className="text-[10px] font-mono text-white/20 w-4">{i + 1}</span>
                 <div className="flex-1 min-w-0">
                   <span className="text-[10px] font-mono text-white/60">{shortAddr(t.addr)}</span>
-                  <div className="text-[9px] font-mono text-white/25 mt-0.5">{t.buyCount} buys · {t.sellCount} sells · {t.tokBought.toFixed(0)} bought · {t.tokSold.toFixed(0)} sold</div>
+                  <div className="text-[9px] font-mono mt-0.5 flex items-center gap-1">
+                    <span className="text-white/30">{t.buyCount + t.sellCount}T</span>
+                    <span className="text-white/20">·</span>
+                    <span className="text-lime-400/70">{t.buyCount}B</span>
+                    <span className="text-white/20">·</span>
+                    <span className="text-red-400/70">{t.sellCount}S</span>
+                    <span className="text-white/20">·</span>
+                    <span className="text-white/25">{t.tokBought.toFixed(0)} bought · {t.tokSold.toFixed(0)} sold</span>
+                  </div>
                 </div>
                 <span className={`text-[10px] font-mono font-bold ${t.pnl >= 0 ? 'text-lime-400' : 'text-red-400'}`}>
                   {fmtPnl(t.pnl, suiUsd)}
