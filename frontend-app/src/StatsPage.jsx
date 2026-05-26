@@ -1,6 +1,5 @@
 // StatsPage.jsx
 import React, { useState, useEffect } from 'react';
-import { useCurrentClient } from '@mysten/dapp-kit-react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, TrendingUp, Flame, Gift, Coins, Trophy, Zap, BarChart3 } from 'lucide-react';
 import { PACKAGE_ID, ALL_PACKAGE_IDS, DRAIN_SUI_APPROX } from './constants.js';
@@ -58,7 +57,6 @@ function StatCard({ icon, label, valueSui, valueUsd, accent = false, sub }) {
 }
 
 export default function StatsPage({ onBack }) {
-  const client = useCurrentClient();
   const navigate = useNavigate();
   const { tokens } = useTokenList();
   const [suiUsd, setSuiUsd] = useState(0);
@@ -91,7 +89,7 @@ export default function StatsPage({ onBack }) {
       try {
         const buyTypes  = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensPurchased`);
         const sellTypes = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensSold`);
-        const eventMap  = await paginateMultipleEvents(client, [...buyTypes, ...sellTypes], { order: 'descending', maxPages: 50 });
+        const eventMap = {}; // RPC fallback removed (CORS blocked)
         const allBuys  = buyTypes.flatMap(t => eventMap[t] ?? []);
         const allSells = sellTypes.flatMap(t => eventMap[t] ?? []);
         let volume = 0;
@@ -105,7 +103,7 @@ export default function StatsPage({ onBack }) {
     }
     load();
     return () => { cancelled = true; };
-  }, [client, tokens.length]);
+  }, [tokens.length]);
 
   return (
     <div className="min-h-screen" style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}>

@@ -55,7 +55,7 @@ function TokenRow({ token, iconUrl, right, onClick }) {
 
 // ── HOLDINGS tab ─────────────────────────────────────────────────────────────
 
-function HoldingsTab({ account, tokens, client, lang, onTotalValue }) {
+function HoldingsTab({ account, tokens, lang, onTotalValue }) {
   const navigate = useNavigate();
   const [holdings, setHoldings] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -119,7 +119,7 @@ function HoldingsTab({ account, tokens, client, lang, onTotalValue }) {
     }
     load();
     return () => { cancelled = true; };
-  }, [account?.address, tokens.length, client]);
+  }, [account?.address, tokens.length]);
 
   if (!account) return <div className="text-xs font-mono text-white/30 text-center py-12">{t(lang, 'connectToView')}</div>;
   if (loading) return <div className="text-xs font-mono text-white/30 text-center py-12">Loading…</div>;
@@ -151,7 +151,7 @@ function HoldingsTab({ account, tokens, client, lang, onTotalValue }) {
 
 // ── TRADED tab ────────────────────────────────────────────────────────────────
 
-function TradedTab({ account, tokens, client, lang }) {
+function TradedTab({ account, tokens, lang }) {
   const navigate = useNavigate();
   const [tradedTokens, setTradedTokens] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -206,7 +206,7 @@ function TradedTab({ account, tokens, client, lang }) {
         // ── RPC fallback ──────────────────────────────────────────────────
         const buyTypes  = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensPurchased`);
         const sellTypes = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensSold`);
-        const eventMap  = await paginateMultipleEvents(client, [...buyTypes, ...sellTypes], { order: 'descending', maxPages: 50 });
+        const eventMap = {}; // RPC fallback removed (CORS blocked)
         if (cancelled) return;
 
         const curveVolume = {};
@@ -265,7 +265,7 @@ function TradedTab({ account, tokens, client, lang }) {
     }
     load();
     return () => { cancelled = true; };
-  }, [account?.address, tokens.length, client]);
+  }, [account?.address, tokens.length]);
 
   if (!account) return <div className="text-xs font-mono text-white/30 text-center py-12">{t(lang, 'connectToView')}</div>;
   if (loading) return <div className="text-xs font-mono text-white/30 text-center py-12">Loading…</div>;
@@ -298,7 +298,7 @@ function TradedTab({ account, tokens, client, lang }) {
 
 // ── CREATED tab ───────────────────────────────────────────────────────────────
 
-function CreatedTab({ account, tokens, client, lang }) {
+function CreatedTab({ account, tokens, lang }) {
   const navigate = useNavigate();
   const dAppKit = useDAppKit();
   const [curveStats, setCurveStats]   = useState({});
@@ -383,7 +383,7 @@ function CreatedTab({ account, tokens, client, lang }) {
     }
     load();
     return () => { cancelled = true; };
-  }, [createdTokens.length, client, account?.address]);
+  }, [createdTokens.length, account?.address]);
 
   // Total claimable fees
   const totalClaimableSui = useMemo(() => {
@@ -798,9 +798,9 @@ export default function PortfolioPage({ onBack, lang = 'en' }) {
 
         {/* Content */}
         <div className="rounded-2xl border border-white/10 bg-white/[0.03] overflow-hidden">
-          {tab === 'holdings' && <HoldingsTab account={viewAccount} tokens={tokens} client={client} lang={lang} onTotalValue={setTotalValueSui} />}
-          {tab === 'traded'   && <TradedTab   account={viewAccount} tokens={tokens} client={client} lang={lang} />}
-          {tab === 'created'  && <CreatedTab  account={viewAccount} tokens={tokens} client={client} lang={lang} />}
+          {tab === 'holdings' && <HoldingsTab account={viewAccount} tokens={tokens} lang={lang} onTotalValue={setTotalValueSui} />}
+          {tab === 'traded'   && <TradedTab   account={viewAccount} tokens={tokens} lang={lang} />}
+          {tab === 'created'  && <CreatedTab  account={viewAccount} tokens={tokens} lang={lang} />}
         </div>
 
         <div className="text-[9px] font-mono text-white/15 text-center">

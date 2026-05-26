@@ -2,7 +2,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Users, BarChart2 } from 'lucide-react';
 import { ALL_PACKAGE_IDS } from './constants.js';
-import { paginateMultipleEvents } from './paginateEvents.js';
 
 const INDEXER_URL  = import.meta.env.VITE_INDEXER_URL || '';
 const TOKEN_SCALE  = 1e6;
@@ -19,7 +18,7 @@ function fmtPnl(pnl, suiUsd) {
   return `${sign}${pnl.toFixed(2)} SUI`;
 }
 
-async function fetchTradeEvents(client, curveId) {
+async function fetchTradeEvents(curveId) {
   if (INDEXER_URL) {
     try {
       const res = await fetch(`${INDEXER_URL}/token/${curveId}/trades?limit=500`, { signal: AbortSignal.timeout(5000) });
@@ -27,17 +26,11 @@ async function fetchTradeEvents(client, curveId) {
         const rows = await res.json();
         const buys  = rows.filter(r => r.event_type?.includes('TokensPurchased')).map(r => ({ parsedJson: { ...r.data, curve_id: curveId } }));
         const sells = rows.filter(r => r.event_type?.includes('TokensSold')).map(r => ({ parsedJson: { ...r.data, curve_id: curveId } }));
-        if (buys.length + sells.length > 0) return { buys, sells };
+        return { buys, sells };
       }
     } catch {}
   }
-  const buyTypes  = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensPurchased`);
-  const sellTypes = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensSold`);
-  const eventMap  = await paginateMultipleEvents(client, [...buyTypes, ...sellTypes], { order: 'descending', maxPages: 20 });
-  return {
-    buys:  buyTypes.flatMap(bt   => (eventMap[bt]  || []).filter(e => e.parsedJson?.curve_id === curveId)),
-    sells: sellTypes.flatMap(st  => (eventMap[st]  || []).filter(e => e.parsedJson?.curve_id === curveId)),
-  };
+  return { buys: [], sells: [] }; // RPC fallback removed (CORS blocked)
 }
 
 export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = null }) {
@@ -53,7 +46,7 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = n
     if (loadingRef.current) return;
     loadingRef.current = true;
     try {
-      const { buys, sells } = await fetchTradeEvents(client, curveId);
+      const { buys, sells } = await fetchTradeEvents(curveId);
 
       const candidates = new Set();
       for (const e of buys)  { const a = e.parsedJson?.buyer;  if (a) candidates.add(a); }

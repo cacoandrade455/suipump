@@ -1,6 +1,5 @@
 // AIAnalysis.jsx — AI-powered token analysis card
 import React, { useState } from 'react';
-import { useCurrentClient } from '@mysten/dapp-kit-react';
 import { Sparkles, AlertTriangle, TrendingUp, Minus } from 'lucide-react';
 import { ALL_PACKAGE_IDS } from './constants.js';
 import { paginateMultipleEvents } from './paginateEvents.js';
@@ -14,7 +13,6 @@ function fmt(n, d = 2) {
 }
 
 export default function AIAnalysis({ curveId, tokenType, name, symbol, progress, reserveSui, creatorFeesSui, graduated, tokensSoldWhole }) {
-  const client = useCurrentClient();
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -44,9 +42,8 @@ export default function AIAnalysis({ curveId, tokenType, name, symbol, progress,
       if (buys.length === 0 && sells.length === 0) {
         const buyTypes  = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensPurchased`);
         const sellTypes = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensSold`);
-        const eventMap  = await paginateMultipleEvents(client, [...buyTypes, ...sellTypes], { order: 'descending', maxPages: 20 });
-        buys  = buyTypes.flatMap(bt  => (eventMap[bt]  || []).filter(e => e.parsedJson?.curve_id === curveId));
-        sells = sellTypes.flatMap(st => (eventMap[st] || []).filter(e => e.parsedJson?.curve_id === curveId));
+        // RPC fallback removed (CORS blocked) — indexer is primary path
+        buys = []; sells = [];
       }
 
       const buyCount  = buys.length;
@@ -66,19 +63,14 @@ export default function AIAnalysis({ curveId, tokenType, name, symbol, progress,
       for (const e of buys)  { const a = e.parsedJson?.buyer;  if (a) candidates.add(a); }
       for (const e of sells) { const a = e.parsedJson?.seller; if (a) candidates.add(a); }
 
+      // Load holders from indexer — avoids CORS
       let holderRaws = [];
-      if (tokenType && candidates.size > 0) {
-        const balances = await Promise.all(
-          [...candidates].map(async (addr) => {
-            try {
-              const bal = await client.getBalance({ owner: addr, coinType: tokenType });
-              return BigInt(bal.balance?.balance ?? '0');
-            } catch {
-              return 0n;
-            }
-          })
-        );
-        holderRaws = balances.filter(v => v > 0n);
+      const IURL_AI = import.meta.env.VITE_INDEXER_URL || '';
+      if (IURL_AI && curveId) {
+        try {
+          const hr = await fetch(`${IURL_AI}/token/${curveId}/holders`, { signal: AbortSignal.timeout(5000) });
+          if (hr.ok) { const rows = await hr.json(); holderRaws = rows.map(r => BigInt(r.balance ?? 0)).filter(v => v > 0n); }
+        } catch {}
       }
 
       const holderCount = holderRaws.length;
