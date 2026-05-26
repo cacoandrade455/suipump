@@ -1342,9 +1342,10 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   // ── derived state ─────────────────────────────────────────────────────────
 
   const pkgId    = resolvePackageId(tokenType, packageIdHint);
-  const vSui     = (pkgId === PACKAGE_ID_V8 || pkgId === PACKAGE_ID_V8_1) ? VIRTUAL_SUI_V8 : pkgId === PACKAGE_ID_V7 ? VIRTUAL_SUI_V7 : (pkgId === PACKAGE_ID_V6 || pkgId === PACKAGE_ID_V5) ? VIRTUAL_SUI_V5 : VIRTUAL_SUI_V4;
-  const vTok     = (pkgId === PACKAGE_ID_V8 || pkgId === PACKAGE_ID_V8_1) ? VIRTUAL_TOKENS_V8 : pkgId === PACKAGE_ID_V7 ? VIRTUAL_TOKENS_V7 : (pkgId === PACKAGE_ID_V6 || pkgId === PACKAGE_ID_V5) ? VIRTUAL_TOKENS_V5 : VIRTUAL_TOKENS_V4;
-  const drainSui = (pkgId === PACKAGE_ID_V8 || pkgId === PACKAGE_ID_V8_1) ? DRAIN_SUI_V8 : pkgId === PACKAGE_ID_V7 ? DRAIN_SUI_V7 : (pkgId === PACKAGE_ID_V6 || pkgId === PACKAGE_ID_V5) ? DRAIN_SUI_V5 : DRAIN_SUI_V4;
+  // Use curveShapeFor() — single source of truth for all virtual reserve values.
+  // Previously used inline ternary chains which could silently fall through to
+  // wrong defaults, causing the displayed quote to differ from the executed tx.
+  const { virtualSui: vSui, virtualTokens: vTok, drainSui } = curveShapeFor(pkgId);
 
   const reserveMist     = curveState ? BigInt(curveState.sui_reserve) : 0n;
   const tokensRemaining = curveState ? BigInt(curveState.token_reserve) : 0n;
