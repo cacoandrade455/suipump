@@ -693,7 +693,6 @@ function TradePanelContent({
       const feeResult = await dAppKit.signAndExecuteTransaction({ transaction: tx });
       if (feeResult.$kind === 'FailedTransaction') throw new Error(feeResult.FailedTransaction.status.error ?? 'Claim failed');
       setClaimMsg('Fees claimed! 🎉'); setClaiming(false); setTimeout(() => setClaimMsg(''), 3000);
-      setCurveState(prev => prev ? { ...prev, creator_fees: '0' } : prev);
     } catch (err) { setClaimMsg(err.message || 'Claim failed'); setClaiming(false); }
   };
 
