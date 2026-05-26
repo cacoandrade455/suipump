@@ -693,6 +693,7 @@ function TradePanelContent({
       const feeResult = await dAppKit.signAndExecuteTransaction({ transaction: tx });
       if (feeResult.$kind === 'FailedTransaction') throw new Error(feeResult.FailedTransaction.status.error ?? 'Claim failed');
       setClaimMsg('Fees claimed! 🎉'); setClaiming(false); setTimeout(() => setClaimMsg(''), 3000);
+      setCurveState(prev => prev ? { ...prev, creator_fees: '0' } : prev);
     } catch (err) { setClaimMsg(err.message || 'Claim failed'); setClaiming(false); }
   };
 
@@ -738,7 +739,7 @@ function TradePanelContent({
             <div className="text-[10px] font-mono text-white/35">{t(lang, 'creatorFees')}</div>
             {Number(creatorFeesMist) > 0 && <div className="text-xs font-mono text-lime-400">{fmt(Number(creatorFeesMist) / 1e9, 4)} SUI</div>}
           </div>
-          <button onClick={handleClaim} disabled={claiming} className={`w-full py-2 rounded-lg text-[10px] font-mono font-bold transition-colors ${claiming ? 'bg-white/5 text-white/20 cursor-not-allowed' : 'bg-lime-400/10 border border-lime-400/30 text-lime-400 hover:bg-lime-400/20'}`}>{claiming ? 'CLAIMING…' : t(lang, 'claimFees')}</button>
+          <button onClick={handleClaim} disabled={claiming || Number(creatorFeesMist) === 0} className={`w-full py-2 rounded-lg text-[10px] font-mono font-bold transition-colors ${claiming || Number(creatorFeesMist) === 0 ? 'bg-white/5 text-white/20 cursor-not-allowed' : 'bg-lime-400/10 border border-lime-400/30 text-lime-400 hover:bg-lime-400/20'}`}>{claiming ? 'CLAIMING…' : Number(creatorFeesMist) === 0 ? 'NO FEES YET' : t(lang, 'claimFees')}</button>
           {claimMsg && <div className={`text-[10px] font-mono text-center ${claimMsg.includes('🎉') ? 'text-lime-400' : 'text-red-400'}`}>{claimMsg}</div>}
         </div>
       )}
@@ -1386,6 +1387,30 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
     const timer = setInterval(load, 10_000);
     return () => { cancelled = true; clearInterval(timer); };
   }, [curveId]);
+
+  // ── Fetch real on-chain creator_fees — indexer estimate is stale after claims ──
+  useEffect(() => {
+    if (!curveId || !client) return;
+    let cancelled = false;
+    async function fetchOnChainFees() {
+      try {
+        // Query curve object fields via GraphQL to get live creator_fees balance
+        const gql = `{ object(address: "${curveId}") { asMoveObject { contents { json } } } }`;
+        const res = await client.graphql({ query: gql });
+        const json = res?.data?.object?.asMoveObject?.contents?.json;
+        if (json && json.creator_fees != null && !cancelled) {
+          const feeMist = typeof json.creator_fees === 'object'
+            ? String(json.creator_fees?.value ?? 0)   // Balance<SUI> wraps a u64 value field
+            : String(json.creator_fees ?? 0);
+          setCurveState(prev => prev ? { ...prev, creator_fees: feeMist } : prev);
+        }
+      } catch {}
+    }
+    fetchOnChainFees();
+    // Refresh every 15s and after any tx (via curveId dependency)
+    const t = setInterval(fetchOnChainFees, 15_000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [curveId, client]);
 
   useEffect(() => {
     if (!tokenType) return;
