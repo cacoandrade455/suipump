@@ -160,7 +160,7 @@ export function useSniper({ walletAddress, keypair }) {
 
     try {
       // Create a fresh SuiGraphQLClient for signing (keypair path)
-      const client = new SuiGraphQLClient({ url: 'https://graphql.testnet.sui.io/graphql' });
+      const client = new SuiGraphQLClient({ url: '/api/rpc' });
 
       // Get curve shared object ref
       const objForRef = await client.getObject({ id: curveId, options: { showOwner: true, showContent: true } });
@@ -323,7 +323,7 @@ export function useSniper({ walletAddress, keypair }) {
     const kp = keypairRef.current;
     if (!kp || !walletAddress) return;
     try {
-      const client    = new SuiGraphQLClient({ url: 'https://graphql.testnet.sui.io/graphql' });
+      const client    = new SuiGraphQLClient({ url: '/api/rpc' });
       const myAddress = kp.getPublicKey().toSuiAddress();
       const coins     = await client.getCoins({ owner: myAddress, coinType: tokenType });
       if (!coins.data.length) return;
@@ -393,7 +393,7 @@ export function useSniper({ walletAddress, keypair }) {
           if ((reserveSui / drainSui) * 100 < cfg2.gradSnipeThreshold) return;
           gradBought.current.add(curveId);
           const kp        = keypairRef.current;
-          const client    = new SuiGraphQLClient({ url: 'https://graphql.testnet.sui.io/graphql' });
+          const client    = new SuiGraphQLClient({ url: '/api/rpc' });
           const myAddress = kp.getPublicKey().toSuiAddress();
           const suiInMist = BigInt(Math.floor(cfg2.gradSnipeSuiAmount * 1e9));
           const objForRef = await client.getObject({ id: curveId, options: { showOwner: true, showContent: true } });

@@ -109,7 +109,7 @@ export function useRebalance({ walletAddress, keypair }) {
       } catch {}
 
       // Get current token prices from indexer stats
-      const client = new SuiGraphQLClient({ url: 'https://graphql.testnet.sui.io/graphql' });
+      const client = new SuiGraphQLClient({ url: '/api/rpc' });
       const posWithValue = [];
 
       for (const pos of positions) {
