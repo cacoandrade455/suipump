@@ -1,10 +1,8 @@
-// TradeHistory.jsx — initial HTTP fetch + SSE real-time append
-import React, { useState, useEffect, useRef } from 'react';
+// TradeHistory.jsx — receives trades + connected via props from TokenPage (shared SSE)
+import React from 'react';
 import { ArrowUpRight, ArrowDownRight } from 'lucide-react';
 
-const INDEXER_URL  = import.meta.env.VITE_INDEXER_URL || '';
-const MIST_PER_SUI = 1e9;
-const MAX_TRADES   = 200;
+const MAX_TRADES = 200;
 
 function timeAgo(ts) {
   if (!ts) return '';
@@ -15,97 +13,7 @@ function timeAgo(ts) {
   return `${Math.floor(diff / 86_400_000)}d ago`;
 }
 
-export default function TradeHistory({ curveId, symbol, creator = null }) {
-  const [trades,    setTrades]    = useState([]);
-  const [loading,   setLoading]   = useState(true);
-  const [connected, setConnected] = useState(false);
-  const seenRef  = useRef(new Set());
-  const esRef    = useRef(null);
-  const timerRef = useRef(null);
-
-  // Initial HTTP fetch
-  useEffect(() => {
-    if (!curveId || !INDEXER_URL) return;
-    let cancelled = false;
-
-    fetch(`${INDEXER_URL}/token/${curveId}/trades?limit=200`)
-      .then(r => r.ok ? r.json() : [])
-      .then(rows => {
-        if (cancelled) return;
-        const items = rows.map(r => {
-          const isBuy = r.event_type?.includes('TokensPurchased');
-          const id    = `${r.tx_digest || r.curve_id}_${r.timestamp_ms}`;
-          seenRef.current.add(id);
-          return {
-            id,
-            kind:   isBuy ? 'buy' : 'sell',
-            sui:    Number(isBuy ? r.data.sui_in ?? 0 : r.data.sui_out ?? 0) / MIST_PER_SUI,
-            tokens: Number(isBuy ? r.data.tokens_out ?? 0 : r.data.tokens_in ?? 0) / 1e6,
-            who:    r.data.buyer ?? r.data.seller,
-            ts:     r.timestamp_ms ? Number(r.timestamp_ms) : null,
-          };
-        });
-        setTrades(items);
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
-
-    return () => { cancelled = true; };
-  }, [curveId]);
-
-  // SSE for real-time updates
-  useEffect(() => {
-    if (!curveId || !INDEXER_URL) return;
-
-    function connect() {
-      const es = new EventSource(`${INDEXER_URL}/stream?curveId=${curveId}`);
-      esRef.current = es;
-
-      es.onopen = () => setConnected(true);
-
-      es.onmessage = (e) => {
-        try {
-          const event = JSON.parse(e.data);
-          if (event.type === 'connected') return;
-
-          const isTrade = event.type === 'TokensPurchased' ||
-                          event.type === 'TokensBought'    ||
-                          event.type === 'TokensSold';
-          if (!isTrade) return;
-
-          const isBuy = event.type !== 'TokensSold';
-          const d     = event.data ?? {};
-          const id    = `sse_${event.ts}_${event.curveId}`;
-          if (seenRef.current.has(id)) return;
-          seenRef.current.add(id);
-
-          const trade = {
-            id,
-            kind:   isBuy ? 'buy' : 'sell',
-            sui:    Number(isBuy ? d.sui_in ?? 0 : d.sui_out ?? 0) / MIST_PER_SUI,
-            tokens: Number(isBuy ? d.tokens_out ?? 0 : d.tokens_in ?? 0) / 1e6,
-            who:    d.buyer ?? d.seller ?? null,
-            ts:     event.ts ?? Date.now(),
-          };
-
-          setTrades(prev => [trade, ...prev].slice(0, MAX_TRADES));
-        } catch {}
-      };
-
-      es.onerror = () => {
-        setConnected(false);
-        es.close();
-        timerRef.current = setTimeout(connect, 3_000);
-      };
-    }
-
-    connect();
-    return () => {
-      esRef.current?.close();
-      clearTimeout(timerRef.current);
-    };
-  }, [curveId]);
-
+export default function TradeHistory({ trades = [], connected = false, loading = false, symbol, creator = null }) {
   if (loading) return (
     <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 animate-pulse">
       <div className="h-3 bg-white/5 rounded w-32 mb-3" />
@@ -125,7 +33,7 @@ export default function TradeHistory({ curveId, symbol, creator = null }) {
         <div className="text-xs font-mono text-white/20 text-center py-4">No trades yet</div>
       ) : (
         <div className="space-y-1 max-h-64 overflow-y-auto">
-          {trades.map((t, i) => (
+          {trades.slice(0, MAX_TRADES).map((t, i) => (
             <div key={t.id ?? i} className="flex items-center justify-between text-xs font-mono py-1.5 border-b border-white/5 last:border-0">
               <div className="flex items-center gap-2">
                 {t.kind === 'buy'
