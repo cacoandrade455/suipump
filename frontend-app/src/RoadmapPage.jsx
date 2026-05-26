@@ -29,8 +29,7 @@ const phases = [
     items: [
       { text: 'Security audit (hard gate)', done: false },
       { text: 'DeepBook / Cetus auto-graduation PTB', done: false },
-      { text: 'Dedicated gRPC RPC infra', done: false },
-      { text: 'Mobile app (iOS + Android)', done: false },
+      { text: 'Dedicated gRPC RPC infra', done: true },
       { text: 'Nexus/Talus 24/7 agent execution', done: false },
       { text: 'KOL + creator partnerships', done: false },
     ],
@@ -44,6 +43,7 @@ const phases = [
       { text: 'Mainnet deployment', done: false },
       { text: 'S1 airdrop tracking live', done: false },
       { text: 'First wave token launches', done: false },
+      { text: 'Mobile app (iOS + Android)', done: false },
       { text: 'On-chain referral system', done: false },
       { text: 'Off-chain indexer', done: true },
       { text: 'Live streaming and voice chat', done: false },
