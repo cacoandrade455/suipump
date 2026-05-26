@@ -1,59 +1,23 @@
-@import '@mysten/dapp-kit/dist/index.css';
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 body { background: #000; margin: 0; }
 
-/* ── dapp-kit theme override ──────────────────────────────────────────────────
-   Override CSS custom properties on [data-dapp-kit] to match SuiPump's
-   black/lime/white design system. This controls the ConnectButton appearance
-   in both disconnected (primary button) and connected (outline + dropdown)
-   states, as well as the connect modal.
+/* ── dapp-kit-react theme (web components, CSS custom properties) ─────────────
+   @mysten/dapp-kit-react uses Lit web components styled via CSS custom props.
+   Docs: https://sdk.mystenlabs.com/dapp-kit/theming
 ──────────────────────────────────────────────────────────────────────────── */
-[data-dapp-kit] {
-  /* Connected account dropdown container — kill the white box */
-  --dapp-kit-backgroundColors-dropdownMenu: #111111;
-  --dapp-kit-backgroundColors-dropdownMenuSeparator: rgba(255,255,255,0.08);
-
-  /* Outline button (connected state wrapper) — match header dark style */
-  --dapp-kit-borderColors-outlineButton: rgba(255,255,255,0.15);
-  --dapp-kit-colors-outlineButton: rgba(255,255,255,0.7);
-  --dapp-kit-backgroundColors-outlineButtonHover: rgba(255,255,255,0.06);
-
-  /* Primary button (disconnected CONNECT button) — lime */
-  --dapp-kit-backgroundColors-primaryButton: #84cc16;
-  --dapp-kit-backgroundColors-primaryButtonHover: #a3e635;
-  --dapp-kit-colors-primaryButton: #000000;
-  --dapp-kit-shadows-primaryButton: none;
-
-  /* Icon button (chevron in connected state) */
-  --dapp-kit-backgroundColors-iconButton: transparent;
-  --dapp-kit-backgroundColors-iconButtonHover: rgba(255,255,255,0.06);
-  --dapp-kit-colors-iconButton: rgba(255,255,255,0.5);
-
-  /* Body text */
-  --dapp-kit-colors-body: rgba(255,255,255,0.8);
-  --dapp-kit-colors-bodyMuted: rgba(255,255,255,0.4);
-
-  /* Modal */
-  --dapp-kit-backgroundColors-modalPrimary: #0e0e0e;
-  --dapp-kit-backgroundColors-modalSecondary: #161616;
-  --dapp-kit-backgroundColors-modalOverlay: rgba(0,0,0,0.7);
-
-  /* Wallet list */
-  --dapp-kit-backgroundColors-walletItemHover: rgba(132,204,22,0.08);
-  --dapp-kit-backgroundColors-walletItemSelected: rgba(132,204,22,0.12);
-
-  /* Typography */
-  --dapp-kit-typography-fontFamily: 'JetBrains Mono', ui-monospace, monospace;
-  --dapp-kit-fontSizes-small: 0.75rem;
-  --dapp-kit-fontSizes-medium: 0.875rem;
-
-  /* Border radius — match rounded-xl (12px) */
-  --dapp-kit-radii-medium: 0.75rem;
-  --dapp-kit-radii-large: 0.75rem;
-  --dapp-kit-radii-xlarge: 1rem;
+:root {
+  --primary:            #84cc16;
+  --primary-foreground: #000000;
+  --background:         #0e0e0e;
+  --foreground:         rgba(255,255,255,0.85);
+  --secondary:          #161616;
+  --secondary-foreground: rgba(255,255,255,0.6);
+  --border:             rgba(255,255,255,0.12);
+  --radius:             0.75rem;
+  --font-sans:          'JetBrains Mono', ui-monospace, monospace;
 }
 
 /* ── Scrollbar hide utility ───────────────────────────────────────────────────
