@@ -12,6 +12,27 @@ const app  = express();
 app.use(cors());
 app.use(express.json());
 
+// ── Virtual reserves per package — must match frontend curve.js ───────────────
+const MIST         = 1_000_000_000;
+const TOTAL_SUPPLY = 1_000_000_000; // 1B tokens
+
+function getVirtuals(packageId) {
+  if (!packageId) return { vSui: 3500 };
+  if (packageId.startsWith('0x2154')) return { vSui: 30000 }; // V4
+  if (packageId.startsWith('0x785c')) return { vSui: 10000 }; // V5
+  if (packageId.startsWith('0x21d5')) return { vSui: 10000 }; // V6
+  if (packageId.startsWith('0xfb8f')) return { vSui: 5000  }; // V7
+  return { vSui: 3500 };                                        // V8, V8_1
+}
+
+// price = (virtualSui + realSuiReserve) / TOTAL_SUPPLY
+// This formula matches the OHLC chart and token page header exactly.
+// new_sui_reserve is in MIST — convert to SUI first.
+function priceFromReserve(vSui, newSuiReserveMist) {
+  const totalPoolSui = vSui + Number(newSuiReserveMist ?? 0) / MIST;
+  return totalPoolSui / TOTAL_SUPPLY;
+}
+
 // ── SSE client registry ───────────────────────────────────────────────────────
 
 const sseClients = new Map();
@@ -140,12 +161,13 @@ app.get('/token/:curveId/comments', async (req, res) => {
        ORDER BY timestamp_ms ASC`,
       [req.params.curveId]
     );
+    // Flatten data fields to top level so frontend reads r.author / r.text directly
     res.json(result.rows.map(r => ({
       tx_digest:    r.tx_digest,
       event_seq:    r.event_seq,
       timestamp_ms: r.timestamp_ms,
-      author:       r.data?.author,
-      text:         r.data?.text,
+      author:       r.data?.author ?? null,
+      text:         r.data?.text   ?? null,
     })));
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -155,8 +177,7 @@ app.get('/token/:curveId/comments', async (req, res) => {
 app.get('/token/:curveId/ohlc', async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT data, timestamp_ms, event_type, e.curve_id,
-              c.package_id
+      `SELECT data, timestamp_ms, event_type, e.curve_id, c.package_id
        FROM events e
        LEFT JOIN curves c ON c.curve_id = e.curve_id
        WHERE e.curve_id = $1
@@ -165,36 +186,12 @@ app.get('/token/:curveId/ohlc', async (req, res) => {
       [req.params.curveId]
     );
 
-    const MIST = 1e9;
-    const TOKEN_DEC = 1e6;
-    const CURVE_SUPPLY = 800_000_000;
-
-    // Virtual reserves by package version — must match frontend curve.js
-    function getVirtuals(packageId) {
-      if (!packageId) return { vSui: 3500, vTok: 800_000_000 };
-      if (packageId.startsWith('0x2154')) return { vSui: 30000, vTok: 1_073_000_191 }; // V4
-      if (packageId.startsWith('0x785c')) return { vSui: 10000, vTok: 1_073_000_191 }; // V5
-      if (packageId.startsWith('0x21d5')) return { vSui: 10000, vTok: 1_073_000_191 }; // V6
-      if (packageId.startsWith('0xfb8f')) return { vSui: 5000,  vTok: 800_000_000   }; // V7
-      return { vSui: 3500, vTok: 800_000_000 }; // V8, V8_1
-    }
-
-    const TOTAL_SUPPLY = 1_000_000_000; // 1B tokens
-
     const points = result.rows.map(row => {
-      const d     = row.data;
-      const ts    = row.timestamp_ms ? Math.floor(Number(row.timestamp_ms) / 1000) : 0;
+      const d    = row.data;
+      const ts   = row.timestamp_ms ? Math.floor(Number(row.timestamp_ms) / 1000) : 0;
       const isBuy = row.event_type.includes('TokensPurchased') || row.event_type.includes('TokensBought');
-
       const { vSui } = getVirtuals(row.package_id);
-
-      // price = total_pool_value / total_supply (1B)
-      // total_pool_value = virtual_sui + real_sui_reserve
-      // This matches: header mcap = price * 1B * suiUsd
-      const realSuiMist = Number(d.new_sui_reserve ?? 0);
-      const totalPoolSui = (vSui * MIST + realSuiMist) / MIST;
-      const price = totalPoolSui / TOTAL_SUPPLY;
-
+      const price = priceFromReserve(vSui, d.new_sui_reserve ?? 0);
       return { time: ts, price, kind: isBuy ? 'buy' : 'sell' };
     }).filter(p => p && p.price > 0 && p.time > 0);
 
@@ -202,33 +199,174 @@ app.get('/token/:curveId/ohlc', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── Token holders ─────────────────────────────────────────────────────────────
+
+app.get('/token/:curveId/holders', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT
+         COALESCE(data->>'buyer', data->>'seller') AS address,
+         SUM(CASE
+           WHEN event_type LIKE '%TokensPurchased' OR event_type LIKE '%TokensBought'
+             THEN (data->>'tokens_out')::float
+           ELSE -(data->>'tokens_in')::float
+         END) AS balance
+       FROM events
+       WHERE curve_id = $1
+         AND (event_type LIKE '%TokensPurchased' OR event_type LIKE '%TokensBought' OR event_type LIKE '%TokensSold')
+       GROUP BY address
+       HAVING SUM(CASE
+         WHEN event_type LIKE '%TokensPurchased' OR event_type LIKE '%TokensBought'
+           THEN (data->>'tokens_out')::float
+         ELSE -(data->>'tokens_in')::float
+       END) > 0
+       ORDER BY balance DESC
+       LIMIT 100`,
+      [req.params.curveId]
+    );
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ── Token stats for homepage ──────────────────────────────────────────────────
+// CRITICAL: sparkline price uses (vSui + new_sui_reserve) / 1B
+// This matches the OHLC chart and token page header exactly.
+// DO NOT use sui_in/tokens_out — that's the trade ratio, not the curve price.
 
 app.get('/tokens/stats', async (req, res) => {
   try {
     const now       = Date.now();
     const oneDayAgo = now - 86_400_000;
+
     const [statsRes, sparklineRes] = await Promise.all([
-      pool.query('SELECT * FROM token_stats'),
+      // Include package_id so we can compute vSui per token
+      pool.query(`
+        SELECT ts.*, c.package_id
+        FROM token_stats ts
+        LEFT JOIN curves c ON c.curve_id = ts.curve_id
+      `),
+      // Sparkline: use new_sui_reserve + virtual reserves for correct price
+      // Join curves to get package_id for vSui lookup
       pool.query(
-        `SELECT curve_id,
-                json_agg(json_build_object('t', timestamp_ms, 'p',
-                  CASE WHEN (event_type LIKE '%TokensPurchased' OR event_type LIKE '%TokensBought')
-                    THEN (data->>'sui_in')::float / 1e9 / NULLIF((data->>'tokens_out')::float / 1e6, 0)
-                    ELSE (data->>'sui_out')::float / 1e9 / NULLIF((data->>'tokens_in')::float / 1e6, 0)
-                  END
-                ) ORDER BY timestamp_ms ASC) as sparkline
-         FROM events
-         WHERE (event_type LIKE '%TokensPurchased' OR event_type LIKE '%TokensBought' OR event_type LIKE '%TokensSold')
-           AND timestamp_ms > $1
-         GROUP BY curve_id`, [oneDayAgo]
+        `SELECT e.curve_id, c.package_id,
+                json_agg(
+                  json_build_object(
+                    't', e.timestamp_ms,
+                    'r', (e.data->>'new_sui_reserve')::float
+                  )
+                  ORDER BY e.timestamp_ms ASC
+                ) AS points
+         FROM events e
+         LEFT JOIN curves c ON c.curve_id = e.curve_id
+         WHERE (e.event_type LIKE '%TokensPurchased'
+             OR e.event_type LIKE '%TokensBought'
+             OR e.event_type LIKE '%TokensSold')
+           AND e.timestamp_ms > $1
+           AND e.data->>'new_sui_reserve' IS NOT NULL
+         GROUP BY e.curve_id, c.package_id`,
+        [oneDayAgo]
       ),
     ]);
+
+    // Build sparkline map using correct price formula
     const sparklineMap = {};
     for (const row of sparklineRes.rows) {
-      sparklineMap[row.curve_id] = (row.sparkline || []).filter(p => p.p > 0);
+      const { vSui } = getVirtuals(row.package_id);
+      const points = (row.points || [])
+        .map(p => ({ t: Number(p.t), p: priceFromReserve(vSui, p.r) }))
+        .filter(p => p.p > 0 && p.t > 0);
+      sparklineMap[row.curve_id] = points;
     }
-    res.json(statsRes.rows.map(s => ({ ...s, sparkline24h: sparklineMap[s.curve_id] || [] })));
+
+    // Also compute start_price for tokens with no trades (correct start mcap display)
+    const response = statsRes.rows.map(s => {
+      const { vSui } = getVirtuals(s.package_id);
+      // start_price = virtual pool / total supply (no real reserves)
+      const startPrice = vSui / TOTAL_SUPPLY;
+      // last_price: use reserve_sui if available (set by recomputeStats),
+      // otherwise fall back to start_price
+      const lastPrice = s.reserve_sui > 0
+        ? priceFromReserve(vSui, s.reserve_sui * MIST)
+        : (s.last_price ?? startPrice);
+
+      return {
+        ...s,
+        last_price:   lastPrice,
+        start_price:  startPrice,
+        sparkline24h: sparklineMap[s.curve_id] || [],
+      };
+    });
+
+    res.json(response);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── All tokens stats (for homepage cards with no trade data) ──────────────────
+// Returns start_price for ALL curves including those with zero trades
+
+app.get('/tokens/start-prices', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT curve_id, package_id FROM curves');
+    const out = result.rows.map(r => {
+      const { vSui } = getVirtuals(r.package_id);
+      return { curve_id: r.curve_id, start_price: vSui / TOTAL_SUPPLY };
+    });
+    res.json(out);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Trader portfolio ──────────────────────────────────────────────────────────
+
+app.get('/trader/:address', async (req, res) => {
+  try {
+    const address = req.params.address;
+    const result = await pool.query(
+      `SELECT e.curve_id, c.name, c.symbol, c.icon_url, c.token_type, c.package_id, c.graduated,
+              SUM(CASE
+                WHEN (e.event_type LIKE '%TokensPurchased' OR e.event_type LIKE '%TokensBought')
+                  THEN (e.data->>'tokens_out')::float / 1e6
+                ELSE -(e.data->>'tokens_in')::float / 1e6
+              END) AS balance,
+              MAX(CASE WHEN (e.event_type LIKE '%TokensPurchased' OR e.event_type LIKE '%TokensBought')
+                THEN (e.data->>'new_sui_reserve')::float ELSE NULL END) AS last_reserve_mist
+       FROM events e
+       LEFT JOIN curves c ON c.curve_id = e.curve_id
+       WHERE (e.data->>'buyer' = $1 OR e.data->>'seller' = $1)
+         AND (e.event_type LIKE '%TokensPurchased' OR e.event_type LIKE '%TokensBought' OR e.event_type LIKE '%TokensSold')
+       GROUP BY e.curve_id, c.name, c.symbol, c.icon_url, c.token_type, c.package_id, c.graduated
+       HAVING SUM(CASE
+         WHEN (e.event_type LIKE '%TokensPurchased' OR e.event_type LIKE '%TokensBought')
+           THEN (e.data->>'tokens_out')::float / 1e6
+         ELSE -(e.data->>'tokens_in')::float / 1e6
+       END) > 0`,
+      [address]
+    );
+    res.json(result.rows.map(r => ({
+      ...r,
+      iconUrl: r.icon_url,
+      tokenType: r.token_type,
+      packageId: r.package_id,
+      reserve_sui: Number(r.last_reserve_mist ?? 0) / MIST,
+    })));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Creator tokens ────────────────────────────────────────────────────────────
+
+app.get('/tokens', async (req, res) => {
+  try {
+    const { creator } = req.query;
+    if (creator) {
+      const result = await pool.query(
+        `SELECT c.curve_id AS "curveId", c.creator, c.name, c.symbol,
+                c.icon_url AS "iconUrl", c.token_type AS "tokenType",
+                c.package_id AS "packageId", c.created_at AS "createdAt"
+         FROM curves c WHERE c.creator = $1 ORDER BY c.created_at DESC`,
+        [creator]
+      );
+      return res.json(result.rows);
+    }
+    res.json(await getAllCurves());
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -253,21 +391,11 @@ app.get('/leaderboard/volume', async (req, res) => {
   try {
     const limit  = Math.min(parseInt(req.query.limit || '20'), 100);
     const result = await pool.query(
-      `SELECT ts.*, c.name, c.symbol, c.token_type, c.created_at
-       FROM token_stats ts JOIN curves c ON c.curve_id = ts.curve_id
+      `SELECT ts.curve_id, c.name, c.symbol, c.icon_url, c.package_id,
+              ts.volume_sui, ts.trades, ts.buys, ts.sells, ts.last_price, ts.reserve_sui
+       FROM token_stats ts
+       LEFT JOIN curves c ON c.curve_id = ts.curve_id
        ORDER BY ts.volume_sui DESC LIMIT $1`, [limit]
-    );
-    res.json(result.rows);
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-app.get('/leaderboard/trades', async (req, res) => {
-  try {
-    const limit  = Math.min(parseInt(req.query.limit || '20'), 100);
-    const result = await pool.query(
-      `SELECT ts.*, c.name, c.symbol, c.token_type, c.created_at
-       FROM token_stats ts JOIN curves c ON c.curve_id = ts.curve_id
-       ORDER BY ts.trades DESC LIMIT $1`, [limit]
     );
     res.json(result.rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -275,54 +403,91 @@ app.get('/leaderboard/trades', async (req, res) => {
 
 app.get('/leaderboard/traders', async (req, res) => {
   try {
-    const limit  = Math.min(parseInt(req.query.limit || '20'), 100);
-    const result = await pool.query(
-      `SELECT wallet, SUM(vol_sui) AS volume_sui, SUM(trade_count) AS trades
-       FROM (
-         SELECT data->>'buyer'  AS wallet, (data->>'sui_in')::float  / 1e9 AS vol_sui, 1 AS trade_count
-         FROM events WHERE (event_type LIKE '%TokensPurchased' OR event_type LIKE '%TokensBought') AND data->>'buyer' IS NOT NULL
-         UNION ALL
-         SELECT data->>'seller' AS wallet, (data->>'sui_out')::float / 1e9 AS vol_sui, 1 AS trade_count
-         FROM events WHERE event_type LIKE '%TokensSold' AND data->>'seller' IS NOT NULL
-       ) t GROUP BY wallet ORDER BY volume_sui DESC LIMIT $1`, [limit]
-    );
-    res.json(result.rows);
+    const limit = Math.min(parseInt(req.query.limit || '20'), 100);
+    const MIST_LOCAL = 1_000_000_000;
+    const TOKEN_SCALE = 1_000_000;
+    const [buysRes, sellsRes] = await Promise.all([
+      pool.query(`
+        SELECT data->>'buyer' AS address,
+               e.curve_id, c.name, c.symbol, c.token_type, c.package_id,
+               SUM((data->>'sui_in')::float)     AS sui_spent,
+               SUM((data->>'tokens_out')::float) AS tokens_bought
+        FROM events e LEFT JOIN curves c ON c.curve_id = e.curve_id
+        WHERE (event_type LIKE '%TokensPurchased' OR event_type LIKE '%TokensBought')
+        GROUP BY data->>'buyer', e.curve_id, c.name, c.symbol, c.token_type, c.package_id
+      `),
+      pool.query(`
+        SELECT data->>'seller' AS address,
+               e.curve_id, c.name, c.symbol, c.token_type, c.package_id,
+               SUM((data->>'sui_out')::float)   AS sui_received,
+               SUM((data->>'tokens_in')::float) AS tokens_sold
+        FROM events e LEFT JOIN curves c ON c.curve_id = e.curve_id
+        WHERE event_type LIKE '%TokensSold'
+        GROUP BY data->>'seller', e.curve_id, c.name, c.symbol, c.token_type, c.package_id
+      `),
+    ]);
+    const traderMap = {};
+    for (const row of buysRes.rows) {
+      const addr = row.address;
+      if (!addr) continue;
+      if (!traderMap[addr]) traderMap[addr] = { address: addr, sui_spent: 0, sui_received: 0, buys: 0, sells: 0, tokens_bought: 0, tokens_sold: 0, positions: {} };
+      traderMap[addr].sui_spent    += Number(row.sui_spent   ?? 0) / MIST_LOCAL;
+      traderMap[addr].tokens_bought += Number(row.tokens_bought ?? 0) / TOKEN_SCALE;
+      traderMap[addr].buys++;
+    }
+    for (const row of sellsRes.rows) {
+      const addr = row.address;
+      if (!addr) continue;
+      if (!traderMap[addr]) traderMap[addr] = { address: addr, sui_spent: 0, sui_received: 0, buys: 0, sells: 0, tokens_bought: 0, tokens_sold: 0, positions: {} };
+      traderMap[addr].sui_received += Number(row.sui_received ?? 0) / MIST_LOCAL;
+      traderMap[addr].tokens_sold  += Number(row.tokens_sold  ?? 0) / TOKEN_SCALE;
+      traderMap[addr].sells++;
+    }
+    const sorted = Object.values(traderMap)
+      .sort((a, b) => (b.sui_spent + b.sui_received) - (a.sui_spent + a.sui_received))
+      .slice(0, limit);
+    res.json(sorted);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ── Trader portfolio ──────────────────────────────────────────────────────────
-
-app.get('/trader/:address', async (req, res) => {
+app.get('/leaderboard/positions', async (req, res) => {
   try {
-    const addr       = req.params.address;
-    const MIST       = 1e9;
-    const TOKEN_SCALE = 1e6;
+    const { address } = req.query;
+    if (!address) return res.status(400).json({ error: 'address required' });
+    const MIST_LOCAL  = 1_000_000_000;
+    const TOKEN_SCALE = 1_000_000;
     const [buysRes, sellsRes] = await Promise.all([
       pool.query(
-        `SELECT e.curve_id, e.data, c.name, c.symbol, c.token_type, c.package_id
+        `SELECT e.curve_id, c.name, c.symbol, c.token_type, c.package_id,
+                SUM((data->>'sui_in')::float)     AS sui_spent,
+                SUM((data->>'tokens_out')::float) AS tokens_bought
          FROM events e LEFT JOIN curves c ON c.curve_id = e.curve_id
-         WHERE (e.event_type LIKE '%TokensPurchased' OR e.event_type LIKE '%TokensBought')
-           AND e.data->>'buyer' = $1`, [addr]
+         WHERE (event_type LIKE '%TokensPurchased' OR event_type LIKE '%TokensBought')
+           AND data->>'buyer' = $1
+         GROUP BY e.curve_id, c.name, c.symbol, c.token_type, c.package_id`, [address]
       ),
       pool.query(
-        `SELECT e.curve_id, e.data, c.name, c.symbol, c.token_type, c.package_id
-         FROM events e LEFT JOIN curves c ON c.curve_id = e.curve_id
-         WHERE e.event_type LIKE '%TokensSold' AND e.data->>'seller' = $1`, [addr]
+        `SELECT e.curve_id,
+                SUM((data->>'sui_out')::float)   AS sui_received,
+                SUM((data->>'tokens_in')::float) AS tokens_sold
+         FROM events e
+         WHERE event_type LIKE '%TokensSold' AND data->>'seller' = $1
+         GROUP BY e.curve_id`, [address]
       ),
     ]);
     const curveMap = {};
     for (const row of buysRes.rows) {
       const id = row.curve_id;
       if (!curveMap[id]) curveMap[id] = { curve_id: id, name: row.name, symbol: row.symbol, token_type: row.token_type, package_id: row.package_id, sui_spent: 0, sui_received: 0, buys: 0, sells: 0, tokens_bought: 0, tokens_sold: 0 };
-      curveMap[id].sui_spent     += Number(row.data.sui_in     ?? 0) / MIST;
-      curveMap[id].tokens_bought += Number(row.data.tokens_out ?? 0) / TOKEN_SCALE;
+      curveMap[id].sui_spent    += Number(row.sui_spent    ?? 0) / MIST_LOCAL;
+      curveMap[id].tokens_bought += Number(row.tokens_bought ?? 0) / TOKEN_SCALE;
       curveMap[id].buys++;
     }
     for (const row of sellsRes.rows) {
       const id = row.curve_id;
-      if (!curveMap[id]) curveMap[id] = { curve_id: id, name: row.name, symbol: row.symbol, token_type: row.token_type, package_id: row.package_id, sui_spent: 0, sui_received: 0, buys: 0, sells: 0, tokens_bought: 0, tokens_sold: 0 };
-      curveMap[id].sui_received += Number(row.data.sui_out   ?? 0) / MIST;
-      curveMap[id].tokens_sold  += Number(row.data.tokens_in ?? 0) / TOKEN_SCALE;
+      if (!curveMap[id]) curveMap[id] = { ...curveMap[id], curve_id: id, sui_spent: 0, sui_received: 0, buys: 0, sells: 0, tokens_bought: 0, tokens_sold: 0 };
+      curveMap[id].sui_received += Number(row.sui_received ?? 0) / MIST_LOCAL;
+      curveMap[id].tokens_sold  += Number(row.tokens_sold  ?? 0) / TOKEN_SCALE;
       curveMap[id].sells++;
     }
     res.json(Object.values(curveMap).map(c => ({
@@ -333,8 +498,6 @@ app.get('/trader/:address', async (req, res) => {
     })).sort((a, b) => (b.sui_spent + b.sui_received) - (a.sui_spent + a.sui_received)));
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
-
-// ── Start ─────────────────────────────────────────────────────────────────────
 
 // ── PostgreSQL LISTEN — receives events from background worker ───────────────
 
