@@ -1264,13 +1264,14 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
           const stats = d.stats ?? {};
           setCurveState({
             sui_reserve:            String(stats.reserve_sui != null ? Math.round(stats.reserve_sui * 1e9) : (d.suiReserve ?? d.sui_reserve ?? 0)),
-            token_reserve:          String(d.tokenReserve ?? d.token_reserve ?? String(800_000_000 * 1e6)),
+            token_reserve:          String(stats.token_reserve != null ? Math.round(stats.token_reserve * 1e6) : (d.tokenReserve ?? d.token_reserve ?? String(800_000_000 * 1e6))),
             graduated:              d.graduated ?? false,
             creator_fees:           String(d.creatorFees ?? d.creator_fees ?? 0),
             creator:                d.creator ?? null,
             initial_shared_version: d.initialSharedVersion ?? d.initial_shared_version ?? null,
-            metadata_updated:       d.metadataUpdated ?? d.metadata_updated ?? d.metadata_updated ?? false,
+            metadata_updated:       d.metadataUpdated ?? d.metadata_updated ?? false,
             created_at_ms:          d.createdAt ?? d.created_at ?? null,
+            package_id:             d.packageId ?? d.package_id ?? null,
           });
         }
       } catch {}
@@ -1360,7 +1361,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
 
   // ── derived state ─────────────────────────────────────────────────────────
 
-  const pkgId    = resolvePackageId(tokenType, packageIdHint);
+  const pkgId    = resolvePackageId(tokenType, packageIdHint ?? curveState?.package_id ?? null);
   // Use curveShapeFor() — single source of truth for all virtual reserve values.
   // Previously used inline ternary chains which could silently fall through to
   // wrong defaults, causing the displayed quote to differ from the executed tx.
