@@ -281,7 +281,7 @@ function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch
         }
         if (!tokenType) return;
         const metaRes = await client.getCoinMetadata({ coinType: tokenType });
-        if (!cancelled && meta?.iconUrl) setIconUrl(meta.iconUrl);
+        if (!cancelled && metaRes?.coinMetadata?.iconUrl) setIconUrl(metaRes.coinMetadata.iconUrl);
       } catch {}
     }
     loadIcon();
@@ -1090,7 +1090,7 @@ function CrownBanner({ token, stats, suiUsd }) {
         }
         if (!tokenType) return;
         const metaRes = await client.getCoinMetadata({ coinType: tokenType });
-        if (!cancelled && meta?.iconUrl) setIconUrl(meta.iconUrl);
+        if (!cancelled && metaRes?.coinMetadata?.iconUrl) setIconUrl(metaRes.coinMetadata.iconUrl);
       } catch {}
     }
     loadIcon();
