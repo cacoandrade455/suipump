@@ -286,10 +286,19 @@ export function useSniper({ walletAddress, keypair }) {
 
           if (!passesFilters(event, cfg)) return;
 
-          // Get token type from curve object
-          // tokenType is the full generic type e.g. 0xPKG::module::TOKEN
-          const tokenType = d.token_type ?? d.type_name ?? null;
-          if (!tokenType) return;
+          // CurveCreated event does NOT include token_type on-chain.
+          // Fetch it from the indexer (already enriched by upsertCurve).
+          let tokenType = d.token_type ?? d.type_name ?? null;
+          if (!tokenType) {
+            try {
+              const r = await fetch(`${INDEXER_URL}/token/${curveId}`, { signal: AbortSignal.timeout(4000) });
+              if (r.ok) {
+                const td = await r.json();
+                tokenType = td.token_type ?? td.tokenType ?? null;
+              }
+            } catch {}
+          }
+          if (!tokenType) return; // indexer not yet enriched — skip
 
           // Determine package from event type
           const pkgId = event.eventType?.split('::')?.[0] ?? PACKAGE_ID_V8;
