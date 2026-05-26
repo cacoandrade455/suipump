@@ -248,21 +248,30 @@ export default function WhitepaperPage({ onBack }) {
           <Bullet>Five-way fee split with a dedicated airdrop bucket and optional referrals</Bullet>
           <Bullet>Front-run-safe graduation with on-chain metadata freeze</Bullet>
           <Bullet>Per-curve emergency pause and on-chain dev-token vesting</Bullet>
+          <Bullet>8 autonomous trading strategies — TP/SL, Sniper, DCA, Copy Trading, Graduation Snipe, Rebalancer, and more</Bullet>
+          <Bullet>gRPC checkpoint streaming indexer live — sub-second real-time event indexing</Bullet>
           <Bullet>Off-chain indexer live; multi-version trading across all contract versions</Bullet>
           <Bullet>Pre-audit security review completed</Bullet>
           <H>PHASE 2 — PRE-MAINNET</H>
-          <Bullet>Independent security audit of the Move contracts</Bullet>
+          <Bullet>Independent security audit of the Move contracts (hard gate)</Bullet>
           <Bullet>AdminCap and UpgradeCap transferred to multisig</Bullet>
           <Bullet>DEX auto-graduation (Cetus / DeepBook / Turbos)</Bullet>
-          <Bullet>Dedicated RPC node and monitoring infrastructure</Bullet>
+          <Bullet>Dedicated gRPC RPC node and monitoring infrastructure</Bullet>
+          <Bullet>Mobile app (iOS + Android)</Bullet>
+          <Bullet>Nexus/Talus autonomous agent — 24/7 server-side strategy execution</Bullet>
+          <Bullet>KOL and creator partnerships</Bullet>
           <H>PHASE 3 — MAINNET</H>
           <Bullet>Mainnet deployment post-audit</Bullet>
           <Bullet>S1 airdrop tracking activated from the first transaction</Bullet>
           <Bullet>First wave of real token launches and communities</Bullet>
+          <Bullet>On-chain referral system live</Bullet>
+          <Bullet>Live streaming and voice chat</Bullet>
           <H>PHASE 4 — SCALE</H>
           <Bullet>$SUMP token — buyback-and-burn from protocol fees, governance</Bullet>
           <Bullet>Season 2 airdrop with enhanced point mechanics</Bullet>
           <Bullet>SuiPump Perps — derivatives market for graduated tokens</Bullet>
+          <Bullet>DAO treasury management</Bullet>
+          <Bullet>Multi-chain expansion</Bullet>
         </Section>
 
         <Section number="10" title="Disclaimers">

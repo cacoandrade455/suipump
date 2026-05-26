@@ -10,11 +10,13 @@ const phases = [
     status: 'complete',
     label: 'COMPLETE',
     items: [
-      { text: 'Move contracts + 26/26 tests', done: true },
+      { text: 'Move contracts + 55/55 tests, 59/59 Python harness', done: true },
       { text: 'Full trading UI live', done: true },
       { text: '2-tx token launch flow', done: true },
       { text: 'Comments, leaderboard, portfolio, search & sort', done: true },
       { text: 'USD price display + OHLC charts', done: true },
+      { text: '8 autonomous trading strategies', done: true },
+      { text: 'gRPC streaming indexer live', done: true },
       { text: '6-language i18n rollout', done: true },
       { text: 'Vercel Analytics + Discord community', done: true },
     ],
@@ -27,8 +29,9 @@ const phases = [
     items: [
       { text: 'Security audit (hard gate)', done: false },
       { text: 'DeepBook / Cetus auto-graduation PTB', done: false },
-      { text: 'Dedicated RPC infra', done: false },
-      { text: 'On-chain referral system', done: false },
+      { text: 'Dedicated gRPC RPC infra', done: false },
+      { text: 'Mobile app (iOS + Android)', done: false },
+      { text: 'Nexus/Talus 24/7 agent execution', done: false },
       { text: 'KOL + creator partnerships', done: false },
     ],
   },
@@ -41,8 +44,9 @@ const phases = [
       { text: 'Mainnet deployment', done: false },
       { text: 'S1 airdrop tracking live', done: false },
       { text: 'First wave token launches', done: false },
-      { text: 'Ambassador program', done: false },
-      { text: 'Off-chain indexer', done: false },
+      { text: 'On-chain referral system', done: false },
+      { text: 'Off-chain indexer', done: true },
+      { text: 'Live streaming and voice chat', done: false },
     ],
   },
   {
@@ -56,7 +60,6 @@ const phases = [
       { text: 'SuiPump Perps', done: false },
       { text: 'Multi-chain expansion', done: false },
       { text: 'DAO treasury management', done: false },
-      { text: 'DAO governance via $SUMP', done: false },
     ],
   },
 ];
@@ -132,8 +135,6 @@ export default function RoadmapPage({ onBack, lang = 'en' }) {
                   <div className={`mt-1 w-3 h-3 rounded-sm border flex-shrink-0 flex items-center justify-center ${
                     item.done
                       ? 'bg-lime-400/20 border-lime-400/40'
-                      : phase.status === 'active'
-                      ? 'border-white/10'
                       : 'border-white/10'
                   }`}>
                     {item.done && <div className="w-1.5 h-1.5 rounded-full bg-lime-400" />}
