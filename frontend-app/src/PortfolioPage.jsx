@@ -1,7 +1,7 @@
 // v18-holdings-fix
 // PortfolioPage.jsx
 import React, { useState, useEffect, useMemo } from 'react';
-import { useCurrentAccount, useDAppKit } from '@mysten/dapp-kit-react';
+import { useCurrentAccount, useDAppKit, useCurrentClient } from '@mysten/dapp-kit-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Wallet, TrendingUp, Plus } from 'lucide-react';
 import { useTokenList } from './useTokenList.js';
@@ -337,6 +337,7 @@ function TradedTab({ account, tokens, lang }) {
 function CreatedTab({ account, tokens, lang }) {
   const navigate = useNavigate();
   const dAppKit = useDAppKit();
+  const client  = useCurrentClient();
   const [curveStats, setCurveStats]   = useState({});
   const [capMap, setCapMap]           = useState({});
   const [loading, setLoading]         = useState(true);
@@ -412,25 +413,34 @@ function CreatedTab({ account, tokens, lang }) {
     setClaimMsg('');
     let claimed = 0;
     try {
+      // Find all CreatorCaps owned by this wallet across all package versions
+      const capsByPkg = {};
+      for (const pkgId of ALL_PACKAGE_IDS) {
+        try {
+          const owned = await client.listOwnedObjects({
+            owner: account.address,
+            type: `${pkgId}::bonding_curve::CreatorCap`,
+            include: { json: true },
+          });
+          for (const obj of owned.objects ?? []) {
+            const curveId = obj.json?.curve_id;
+            if (curveId) capsByPkg[curveId] = obj.objectId;
+          }
+        } catch {}
+      }
+
       for (const tk of createdTokens) {
         const fees = curveStats[tk.curveId]?.creatorFeesSui ?? 0;
         if (fees < 0.001) continue;
 
-        // Find CreatorCap — check wallet via indexer
-        let capId = capMap[tk.curveId];
-        if (!capId) {
-          try {
-            const capRes = await fetch(`${INDEXER_URL}/token/${tk.curveId}/creator-cap?owner=${account.address}`, { signal: AbortSignal.timeout(3000) });
-            if (capRes.ok) { const cd = await capRes.json(); capId = cd.objectId ?? null; }
-          } catch {}
-        }
+        const capId = capsByPkg[tk.curveId];
         if (!capId) continue;
 
         // Fetch ISV for sharedObjectRef
         let isv = null;
         try {
           const isvRes = await fetch(`${INDEXER_URL}/token/${tk.curveId}`, { signal: AbortSignal.timeout(3000) });
-          if (isvRes.ok) { const id = await isvRes.json(); isv = id.initialSharedVersion ?? id.initial_shared_version ?? null; }
+          if (isvRes.ok) { const d = await isvRes.json(); isv = d.initialSharedVersion ?? d.initial_shared_version ?? null; }
         } catch {}
 
         const tx = new Transaction();
