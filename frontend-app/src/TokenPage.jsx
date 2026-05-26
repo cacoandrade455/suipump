@@ -1242,7 +1242,8 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   useEffect(() => {
     if (!tokenType) return;
     let cancelled = false;
-    client.getCoinMetadata({ coinType: tokenType }).then(m => {
+    client.getCoinMetadata({ coinType: tokenType }).then(res => {
+      const m = res?.coinMetadata ?? null;
       if (!cancelled) { setMetadata(m); const icon = m?.iconUrl; if (icon && !isPlaceholderIcon(icon)) setIconUrl(icon); }
     }).catch(() => {});
     (async () => {
