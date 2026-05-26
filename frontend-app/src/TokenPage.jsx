@@ -736,8 +736,8 @@ function TradePanelContent({
               {side === 'buy' ? (
                 <>
                   <div className="flex justify-between text-[10px] font-mono">
-                    <span className="text-white/35">{t(lang, 'youReceive')}</span>
-                    <span className="text-white">{fmt(Number(quote.tokensOut) / 1e6, 0)} ${symbol}</span>
+                    <span className="text-white/35">{t(lang, 'youReceive')} <span className="text-white/20 text-[8px]">(min)</span></span>
+                    <span className="text-white">{fmt(Number(quote.tokensOut) * (1 - slippageNum / 100) / 1e6, 0)} ${symbol}</span>
                   </div>
                   <div className="flex justify-between text-[10px] font-mono">
                     <span className="text-white/35">{t(lang, 'priceImpact')}</span>
@@ -747,8 +747,8 @@ function TradePanelContent({
               ) : (
                 <>
                   <div className="flex justify-between text-[10px] font-mono">
-                    <span className="text-white/35">{t(lang, 'youReceive')}</span>
-                    <span className="text-white">{fmt(Number(quote.suiOut) / 1e9, 4)} SUI</span>
+                    <span className="text-white/35">{t(lang, 'youReceive')} <span className="text-white/20 text-[8px]">(min)</span></span>
+                    <span className="text-white">{fmt(Number(quote.suiOut) * (1 - slippageNum / 100) / 1e9, 4)} SUI</span>
                   </div>
                   <div className="flex justify-between text-[10px] font-mono">
                     <span className="text-white/35">{t(lang, 'priceImpact')}</span>
@@ -1266,7 +1266,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
             sui_reserve:            String(stats.reserve_sui != null ? Math.round(stats.reserve_sui * 1e9) : (d.suiReserve ?? d.sui_reserve ?? 0)),
             token_reserve:          String(stats.token_reserve != null ? Math.round(stats.token_reserve * 1e6) : (d.tokenReserve ?? d.token_reserve ?? String(800_000_000 * 1e6))),
             graduated:              d.graduated ?? false,
-            creator_fees:           String(d.creatorFees ?? d.creator_fees ?? 0),
+            creator_fees:           String(stats.creator_fees_sui != null ? Math.round(stats.creator_fees_sui * 1e9) : (d.creatorFees ?? d.creator_fees ?? 0)),
             creator:                d.creator ?? null,
             initial_shared_version: d.initialSharedVersion ?? d.initial_shared_version ?? null,
             metadata_updated:       d.metadataUpdated ?? d.metadata_updated ?? false,

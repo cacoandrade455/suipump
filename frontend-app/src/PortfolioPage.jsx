@@ -415,16 +415,32 @@ function CreatedTab({ account, tokens, lang }) {
       for (const tk of createdTokens) {
         const fees = curveStats[tk.curveId]?.creatorFeesSui ?? 0;
         if (fees < 0.001) continue;
-        const capId = capMap[tk.curveId];
+
+        // Find CreatorCap — check wallet via indexer
+        let capId = capMap[tk.curveId];
+        if (!capId) {
+          try {
+            const capRes = await fetch(`${INDEXER_URL}/token/${tk.curveId}/creator-cap?owner=${account.address}`, { signal: AbortSignal.timeout(3000) });
+            if (capRes.ok) { const cd = await capRes.json(); capId = cd.objectId ?? null; }
+          } catch {}
+        }
         if (!capId) continue;
+
+        // Fetch ISV for sharedObjectRef
+        let isv = null;
+        try {
+          const isvRes = await fetch(`${INDEXER_URL}/token/${tk.curveId}`, { signal: AbortSignal.timeout(3000) });
+          if (isvRes.ok) { const id = await isvRes.json(); isv = id.initialSharedVersion ?? id.initial_shared_version ?? null; }
+        } catch {}
+
         const tx = new Transaction();
+        const curveRef = isv
+          ? tx.sharedObjectRef({ objectId: tk.curveId, initialSharedVersion: isv, mutable: true })
+          : tx.object(tk.curveId);
         tx.moveCall({
           target: `${tk.packageId}::bonding_curve::claim_creator_fees`,
           typeArguments: [tk.tokenType],
-          arguments: [
-            tx.object(tk.curveId),
-            tx.object(capId),
-          ],
+          arguments: [tx.object(capId), curveRef],
         });
         const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
         if (result.$kind === 'Transaction') claimed++;
