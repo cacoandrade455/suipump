@@ -1,12 +1,10 @@
 // PriceChart.jsx
 // TradingView Lightweight Charts wrapper.
-// Data: initial fetch from indexer /ohlc + real-time SSE via useTokenPageFeed.
+// Data: ohlc + connected received as props from TokenPage (shared useTokenPageFeed SSE).
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { createChart, CandlestickSeries } from 'lightweight-charts';
 
-
-const INDEXER_URL        = import.meta.env.VITE_INDEXER_URL || '';
 const TOTAL_SUPPLY_WHOLE = 1_000_000_000;
 
 const INTERVALS = [
@@ -17,18 +15,6 @@ const INTERVALS = [
   { label: 'ALL', seconds: 0 },
 ];
 const VIEWS = ['PRICE', 'MCAP'];
-
-async function fetchSuiUsd() {
-  try {
-    const r = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=SUIUSDT');
-    return parseFloat((await r.json()).price) || 0;
-  } catch {
-    try {
-      const r = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=sui&vs_currencies=usd');
-      return (await r.json())?.sui?.usd || 0;
-    } catch { return 0; }
-  }
-}
 
 function buildCandles(points, bucketSeconds) {
   if (points.length === 0) return [];
@@ -80,70 +66,17 @@ function fmtSui(price) {
   return price.toFixed(7) + ' SUI';
 }
 
-export default function PriceChart({ curveId }) {
+// ohlc: [{ time, price, kind }] — provided by TokenPage via useTokenPageFeed
+// connected: bool — SSE connection status from TokenPage
+// suiUsd: number — live SUI/USD price from TokenPage
+// loading: bool — initial fetch in progress
+export default function PriceChart({ ohlc = [], connected = false, suiUsd = 0, loading = false }) {
   const containerRef = useRef(null);
   const chartRef     = useRef(null);
   const seriesRef    = useRef(null);
 
-  const [suiUsd,      setSuiUsd]      = useState(0);
   const [intervalIdx, setIntervalIdx] = useState(4);
   const [view,        setView]        = useState('PRICE');
-
-  // ── Initial fetch + SSE real-time append ─────────────────────────────────
-  const [rawTrades, setRawTrades] = useState([]);
-  const [loading,   setLoading]   = useState(true);
-  const [connected, setConnected] = useState(false);
-  const sseRef   = useRef(null);
-  const sseTimer = useRef(null);
-
-  useEffect(() => {
-    if (!curveId || !INDEXER_URL) return;
-    let cancelled = false;
-    fetch(`${INDEXER_URL}/token/${curveId}/ohlc`)
-      .then(r => r.ok ? r.json() : [])
-      .then(pts => { if (!cancelled) { setRawTrades(pts); setLoading(false); } })
-      .catch(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [curveId]);
-
-  useEffect(() => {
-    if (!curveId || !INDEXER_URL) return;
-    function connect() {
-      const es = new EventSource(`${INDEXER_URL}/stream?curveId=${curveId}`);
-      sseRef.current = es;
-      es.onopen = () => setConnected(true);
-      es.onmessage = (e) => {
-        try {
-          const event = JSON.parse(e.data);
-          if (event.type === 'connected') return;
-          const isTrade = event.type === 'TokensPurchased' || event.type === 'TokensBought' || event.type === 'TokensSold';
-          if (!isTrade) return;
-          const isBuy = event.type !== 'TokensSold';
-          const d = event.data ?? {};
-          // price = total_pool_value / 1B total supply
-          // V8 virtual SUI = 3500 SUI
-          const V_SUI_MIST   = 3500 * 1e9;
-          const TOTAL_SUPPLY = 1_000_000_000;
-          const realSuiMist  = Number(d.new_sui_reserve ?? 0);
-          const totalPoolSui = (V_SUI_MIST + realSuiMist) / 1e9;
-          const price        = totalPoolSui / TOTAL_SUPPLY;
-          if (price <= 0) return;
-          const time  = Math.floor((event.ts ?? Date.now()) / 1000);
-          setRawTrades(prev => [...prev, { time, price, kind: isBuy ? 'buy' : 'sell' }].sort((a,b) => a.time - b.time));
-        } catch {}
-      };
-      es.onerror = () => { setConnected(false); es.close(); sseTimer.current = setTimeout(connect, 3000); };
-    }
-    connect();
-    return () => { sseRef.current?.close(); clearTimeout(sseTimer.current); };
-  }, [curveId]);
-
-  // ── SUI/USD price ─────────────────────────────────────────────────────────
-  useEffect(() => {
-    fetchSuiUsd().then(setSuiUsd);
-    const t = setInterval(() => fetchSuiUsd().then(setSuiUsd), 30_000);
-    return () => clearInterval(t);
-  }, []);
 
   // ── Initialize chart once ─────────────────────────────────────────────────
   useEffect(() => {
@@ -205,9 +138,8 @@ export default function PriceChart({ curveId }) {
     } else {
       mul = suiUsd > 0 ? suiUsd : 1;
     }
-    // Deduplicate by time+price and sort ascending before building candles
     const seen = new Set();
-    const deduped = rawTrades
+    const deduped = ohlc
       .filter(p => { const k = `${p.time}_${p.price}`; if (seen.has(k)) return false; seen.add(k); return true; })
       .sort((a, b) => a.time - b.time);
     const built = buildCandles(deduped, INTERVALS[intervalIdx].seconds);
@@ -218,7 +150,7 @@ export default function PriceChart({ curveId }) {
       low:   c.low   * mul,
       close: c.close * mul,
     }));
-  }, [rawTrades, intervalIdx, view, suiUsd]);
+  }, [ohlc, intervalIdx, view, suiUsd]);
 
   useEffect(() => {
     if (!seriesRef.current || !chartRef.current) return;
@@ -312,7 +244,7 @@ export default function PriceChart({ curveId }) {
       {/* Chart */}
       <div className="relative">
         <div ref={containerRef} style={{ width: '100%', height: '280px' }} />
-        {(loading || rawTrades.length === 0) && (
+        {(loading || ohlc.length === 0) && (
           <div className="absolute inset-0 flex items-center justify-center text-[10px] font-mono text-lime-900 bg-black pointer-events-none">
             {loading ? 'LOADING TRADES…' : 'NO TRADES YET — BE THE FIRST TO BUY'}
           </div>

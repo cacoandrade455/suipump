@@ -9,6 +9,7 @@ import { ArrowLeft, Copy, Check, Share2, ExternalLink, Settings, Edit3, Clock, Z
 import { useTPSL, makeLevel } from './useTPSL.js';
 import PriceChart from './PriceChart.jsx';
 import TradeHistory from './TradeHistory.jsx';
+import { useTokenPageFeed } from './useRealtimeFeed.js';
 import HolderList from './HolderList.jsx';
 import Comments from './Comments.jsx';
 import AIAnalysis from './AIAnalysis.jsx';
@@ -1217,7 +1218,7 @@ function TPSLPanel({
 
 // ── Trades / Holders toggle block ─────────────────────────────────────────────
 
-function TradesHoldersBlock({ curveId, tokenType, suiUsd, lang, creator }) {
+function TradesHoldersBlock({ curveId, tokenType, suiUsd, lang, creator, trades, connected, loading, symbol }) {
   const [tab, setTab] = useState('trades');
   return (
     <div className="space-y-0">
@@ -1226,7 +1227,9 @@ function TradesHoldersBlock({ curveId, tokenType, suiUsd, lang, creator }) {
         <button onClick={() => setTab('holders')} className={`flex-1 py-3 text-xs font-mono font-bold tracking-wider transition-colors ${tab === 'holders' ? 'text-lime-400 bg-lime-400/5 border-b-2 border-lime-400' : 'text-white/40 hover:text-white/70'}`}>{t(lang, 'holders')}</button>
       </div>
       <div className="[&>div]:rounded-t-none [&>div]:border-t-0">
-        {tab === 'trades' ? <TradeHistory curveId={curveId} suiUsd={suiUsd} creator={creator} /> : <HolderList curveId={curveId} tokenType={tokenType} suiUsd={suiUsd} creator={creator} />}
+        {tab === 'trades'
+          ? <TradeHistory trades={trades} connected={connected} loading={loading} symbol={symbol} creator={creator} />
+          : <HolderList curveId={curveId} tokenType={tokenType} suiUsd={suiUsd} creator={creator} />}
       </div>
     </div>
   );
@@ -1264,6 +1267,9 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   const [copied,          setCopied]          = useState(false);
   const [shared,          setShared]          = useState(false);
   const [linkCopied,      setLinkCopied]      = useState(false);
+
+  // ── Shared SSE feed — one connection for chart + trades ──────────────────
+  const { trades: feedTrades, ohlc: feedOhlc, loading: feedLoading, connected: feedConnected } = useTokenPageFeed(curveId);
 
   // ── data loading ──────────────────────────────────────────────────────────
 
@@ -1631,12 +1637,12 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
             )}
           </div>
 
-          <PriceChart curveId={curveId} tokenType={tokenType} suiUsd={suiUsd} />
+          <PriceChart ohlc={feedOhlc} connected={feedConnected} suiUsd={suiUsd} loading={feedLoading} />
           <AIAnalysis curveId={curveId} tokenType={tokenType} name={name} symbol={symbol} progress={progress} reserveSui={mistToSui(reserveMist)} creatorFeesSui={Number(creatorFeesMist) / 1e9} graduated={graduated} tokensSoldWhole={Number(tokensSold) / 10 ** TOKEN_DECIMALS} />
 
           <div className="lg:hidden"><TradePanelContent {...tradePanelProps} /></div>
 
-          <TradesHoldersBlock curveId={curveId} tokenType={tokenType} suiUsd={suiUsd} lang={lang} creator={creatorAddr} />
+          <TradesHoldersBlock curveId={curveId} tokenType={tokenType} suiUsd={suiUsd} lang={lang} creator={creatorAddr} trades={feedTrades} connected={feedConnected} loading={feedLoading} symbol={symbol} />
           <CommentsBlock curveId={curveId} packageId={pkgId} lang={lang} initialSharedVersion={initialSharedVersionProp ?? curveState?.initial_shared_version ?? null} />
         </div>
 
