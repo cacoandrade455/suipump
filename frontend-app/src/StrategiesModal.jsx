@@ -5,7 +5,7 @@
 // Tab 3: Active — overview of all TP/SL configs + snipe log.
 
 import React, { useState, useEffect } from 'react';
-import { useCurrentAccount } from '@mysten/dapp-kit';
+import { useCurrentAccount } from '@mysten/dapp-kit-react';
 import { X, Key, ShieldAlert, Eye, EyeOff, Trash2, CheckCircle2, Loader2, AlertTriangle, ChevronRight, Zap, Crosshair, ToggleLeft, ToggleRight, ExternalLink } from 'lucide-react';
 
 import { loadTPSL, clearTPSL } from './useTPSL.js';
