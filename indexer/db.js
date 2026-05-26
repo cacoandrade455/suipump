@@ -86,6 +86,20 @@ export async function initSchema() {
     ALTER TABLE curves ADD COLUMN IF NOT EXISTS initial_shared_version BIGINT;
     ALTER TABLE token_stats ADD COLUMN IF NOT EXISTS reserve_sui        DOUBLE PRECISION DEFAULT 0;
     ALTER TABLE token_stats ADD COLUMN IF NOT EXISTS creator_fees_sui    DOUBLE PRECISION DEFAULT 0;
+
+    CREATE TABLE IF NOT EXISTS vesting_locks (
+      lock_id       TEXT PRIMARY KEY,
+      curve_id      TEXT NOT NULL,
+      beneficiary   TEXT NOT NULL,
+      total_amount  BIGINT NOT NULL,
+      claimed       BIGINT NOT NULL DEFAULT 0,
+      start_ms      BIGINT NOT NULL,
+      duration_ms   BIGINT NOT NULL,
+      mode          SMALLINT NOT NULL DEFAULT 0
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_vesting_locks_curve_id    ON vesting_locks (curve_id);
+    CREATE INDEX IF NOT EXISTS idx_vesting_locks_beneficiary ON vesting_locks (beneficiary);
   `);
   console.log('✓ Schema initialized');
 }
@@ -371,6 +385,57 @@ export async function backfillMissingIcons(_unusedClient) {
     await new Promise(r => setTimeout(r, 300));
   }
   console.log(`  ✓ Icon backfill complete`);
+}
+
+// ── Vesting lock helpers ─────────────────────────────────────────────────────
+
+export async function upsertLock(evt) {
+  const j = evt.parsedJson;
+  if (!j?.lock_id) return;
+  await pool.query(
+    `INSERT INTO vesting_locks (lock_id, curve_id, beneficiary, total_amount, claimed, start_ms, duration_ms, mode)
+     VALUES ($1, $2, $3, $4, 0, $5, $6, $7)
+     ON CONFLICT (lock_id) DO NOTHING`,
+    [j.lock_id, j.curve_id, j.beneficiary,
+     BigInt(j.total_amount ?? 0),
+     BigInt(j.start_ms ?? 0),
+     BigInt(j.duration_ms ?? 0),
+     Number(j.mode ?? 0)]
+  );
+}
+
+export async function updateLockClaimed(evt) {
+  const j = evt.parsedJson;
+  if (!j?.lock_id) return;
+  // remaining = total_amount - claimed_so_far; amount = just_claimed
+  const totalClaimed = BigInt(j.total_amount ?? 0) - BigInt(j.remaining ?? 0);
+  await pool.query(
+    `UPDATE vesting_locks SET claimed = $2 WHERE lock_id = $1`,
+    [j.lock_id, totalClaimed]
+  );
+}
+
+export async function getLock(lockId) {
+  const res = await pool.query(
+    'SELECT * FROM vesting_locks WHERE lock_id = $1',
+    [lockId]
+  );
+  return res.rows[0] ?? null;
+}
+
+export async function getLocksForCurve(curveId, beneficiary = null) {
+  if (beneficiary) {
+    const res = await pool.query(
+      'SELECT * FROM vesting_locks WHERE curve_id = $1 AND beneficiary = $2 ORDER BY start_ms ASC',
+      [curveId, beneficiary]
+    );
+    return res.rows;
+  }
+  const res = await pool.query(
+    'SELECT * FROM vesting_locks WHERE curve_id = $1 ORDER BY start_ms ASC',
+    [curveId]
+  );
+  return res.rows;
 }
 
 // ── Query helpers ─────────────────────────────────────────────────────────────
