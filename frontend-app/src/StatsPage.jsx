@@ -225,9 +225,9 @@ export default function StatsPage({ onBack }) {
           <StatCard
             icon={<Flame size={11} />}
             label="TOTAL TRADES"
-            valueSui={loading ? '…' : fmt(data.tradeCount, 0)}
+            valueSui={loading ? '…' : (data.tradeCount ?? '—').toLocaleString()}
             sub={loading || data.buyCount == null ? null
-              : `${fmt(data.buyCount, 0)} buys · ${fmt(data.sellCount, 0)} sells`}
+              : `${(data.buyCount ?? 0).toLocaleString()} buys · ${(data.sellCount ?? 0).toLocaleString()} sells`}
           />
         </div>
 
