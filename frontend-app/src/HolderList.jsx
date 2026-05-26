@@ -143,9 +143,11 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = n
         </button>
       </div>
 
-      {loading ? (
+      {loading && (
         <div className="py-8 text-center text-white/20 text-xs font-mono">Loading…</div>
-      ) : tab === 'holders' ? (
+      )}
+
+      {!loading && tab === 'holders' && (
         holders.length === 0 ? (
           <div className="py-8 text-center text-white/20 text-xs font-mono">No holders yet</div>
         ) : (
@@ -171,7 +173,9 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = n
             })}
           </div>
         )
-      ) : (
+      )}
+
+      {!loading && tab === 'traders' && (
         traders.length === 0 ? (
           <div className="py-8 text-center text-white/20 text-xs font-mono">No traders yet</div>
         ) : (
@@ -198,7 +202,9 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = n
             ))}
           </div>
         )
-      ) : (
+      )}
+
+      {!loading && tab === 'vesting' && (
         locks.length === 0 ? (
           <div className="py-8 text-center text-white/20 text-xs font-mono">No vesting locks</div>
         ) : (
