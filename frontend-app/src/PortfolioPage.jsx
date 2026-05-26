@@ -1,4 +1,4 @@
-// v17-indexer-claimall
+// v18-holdings-fix
 // PortfolioPage.jsx
 import React, { useState, useEffect, useMemo } from 'react';
 import { useCurrentAccount, useDAppKit } from '@mysten/dapp-kit-react';
@@ -15,7 +15,7 @@ const MIST_PER_SUI = 1e9;
 const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
 
 function fmt(n, d = 2) {
-  if (n == null) return ' - ';
+  if (n == null) return '-';
   if (!Number.isFinite(n) || n === 0) return '0';
   if (n >= 1e6) return (n / 1e6).toFixed(d) + 'M';
   if (n >= 1e3) return (n / 1e3).toFixed(d) + 'k';
@@ -23,7 +23,7 @@ function fmt(n, d = 2) {
 }
 
 function fmtPnl(n, d = 3) {
-  if (n == null || !Number.isFinite(n)) return ' - ';
+  if (n == null || !Number.isFinite(n)) return '-';
   const abs = Math.abs(n);
   const str = abs >= 1e3 ? (abs/1e3).toFixed(1) + 'k' : abs.toFixed(d);
   return (n >= 0 ? '+' : '-') + str + ' SUI';
@@ -53,7 +53,80 @@ function TokenRow({ token, iconUrl, right, onClick }) {
   );
 }
 
-// ── HOLDINGS tab ─────────────────────────────────────────────────────────────
+// ── Canvas PnL card helpers ───────────────────────────────────────────────────
+
+function drawPnlCard({ canvas, name, symbol, pnlSui, pnlPct, spent, entryPrice, currentPrice, isClosed, mascotImg }) {
+  const W = 800, H = 420;
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  const isUp = pnlSui >= 0;
+
+  const bg = ctx.createLinearGradient(0, 0, W, H);
+  bg.addColorStop(0, '#050505');
+  bg.addColorStop(1, '#0d1a05');
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+
+  ctx.strokeStyle = isUp ? '#84cc1630' : '#ef444430';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(1, 1, W - 2, H - 2);
+
+  ctx.font = 'bold 13px monospace'; ctx.fillStyle = '#84cc16';
+  ctx.fillText('SUIPUMP.ORG', 40, 48);
+
+  ctx.font = 'bold 32px monospace'; ctx.fillStyle = '#ffffff';
+  ctx.fillText(name || 'Unknown', 40, 100);
+  ctx.font = '16px monospace'; ctx.fillStyle = '#84cc1699';
+  ctx.fillText(`$${symbol}`, 40, 128);
+
+  const pnlColor = isUp ? '#84cc16' : '#ef4444';
+  ctx.font = 'bold 72px monospace'; ctx.fillStyle = pnlColor;
+  ctx.fillText(`${isUp ? '+' : ''}${pnlSui.toFixed(3)} SUI`, 40, 230);
+
+  ctx.font = 'bold 28px monospace'; ctx.fillStyle = pnlColor + 'cc';
+  ctx.fillText(`${isUp ? '▲' : '▼'} ${Math.abs(pnlPct).toFixed(1)}%`, 40, 278);
+
+  ctx.font = '14px monospace'; ctx.fillStyle = '#ffffff55';
+  ctx.fillText(`Spent: ${spent.toFixed(3)} SUI`, 40, 330);
+  if (entryPrice > 0) ctx.fillText(`Entry: ${entryPrice.toFixed(8)} SUI/token`, 40, 354);
+  if (currentPrice > 0) ctx.fillText(`Now:   ${currentPrice.toFixed(8)} SUI/token`, 40, 378);
+
+  ctx.font = 'bold 13px monospace';
+  ctx.fillStyle = isClosed ? '#ffffff40' : '#84cc16';
+  const badge = isClosed ? 'CLOSED' : 'OPEN';
+  ctx.fillText(badge, W - 112, 62);
+  if (mascotImg) { ctx.globalCompositeOperation = 'screen'; ctx.drawImage(mascotImg, W - 320, H - 370, 310, 310); ctx.globalCompositeOperation = 'source-over'; }
+}
+
+function PnlShareButton({ tk, unrealizedPnl, currentPrice, mascotDataUrl }) {
+  const handleShare = () => {
+    const canvas = document.createElement('canvas');
+    const totalPnl = (tk.realizedPnl || 0) + (unrealizedPnl || 0);
+    const pnlPct = tk.suiSpent > 0 ? (totalPnl / tk.suiSpent) * 100 : 0;
+    let mascotImg = null;
+    if (mascotDataUrl) { mascotImg = new Image(); mascotImg.src = mascotDataUrl; }
+    const draw = () => {
+      drawPnlCard({ canvas, name: tk.name, symbol: tk.symbol, pnlSui: totalPnl, pnlPct, spent: tk.suiSpent, entryPrice: tk.avgEntryPrice, currentPrice: currentPrice || 0, isClosed: tk.isClosed, mascotImg });
+      const link = document.createElement('a');
+      link.download = `suipump-${tk.symbol}-pnl.png`;
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    };
+    if (mascotImg) { mascotImg.onload = draw; mascotImg.onerror = draw; } else { draw(); }
+  };
+  return (
+    <button onClick={e => { e.stopPropagation(); handleShare(); }}
+      className="flex items-center gap-1 px-2 py-1 rounded-lg bg-lime-400/10 border border-lime-400/20 text-lime-400 text-[9px] font-mono font-bold hover:bg-lime-400/20 transition-colors">
+      SHARE PNL
+    </button>
+  );
+}
+
+// ── PFP storage ───────────────────────────────────────────────────────────────
+function pfpKey(addr) { return `suipump_pfp_${addr}`; }
+function getPfp(addr) { try { return localStorage.getItem(pfpKey(addr)) || ''; } catch { return ''; } }
+function setPfp(addr, url) { try { localStorage.setItem(pfpKey(addr), url); } catch {} }
+
+// ── HOLDINGS tab ──────────────────────────────────────────────────────────────
 
 function HoldingsTab({ account, tokens, lang, onTotalValue }) {
   const navigate = useNavigate();
@@ -64,10 +137,11 @@ function HoldingsTab({ account, tokens, lang, onTotalValue }) {
   useEffect(() => {
     if (!account?.address || !tokens.length) { setLoading(false); return; }
     let cancelled = false;
+
     async function load() {
       setLoading(true);
       try {
-        // ── Indexer path ──────────────────────────────────────────────────
+        // Step 1: Fetch all curve stats — has correct last_price per curve
         let tokenStats = {};
         if (INDEXER_URL) {
           try {
@@ -79,44 +153,64 @@ function HoldingsTab({ account, tokens, lang, onTotalValue }) {
           } catch {}
         }
 
-        // Load holdings from indexer /trader endpoint — avoids CORS
+        // Step 2: Fetch trader positions — balance per token
         let results = [];
         if (INDEXER_URL) {
           try {
-            const tradRes = await fetch(`${INDEXER_URL}/trader/${viewAddress}`, { signal: AbortSignal.timeout(8000) });
+            // FIX: use account.address, not undefined `viewAddress`
+            const tradRes = await fetch(`${INDEXER_URL}/trader/${account.address}`, { signal: AbortSignal.timeout(8000) });
             if (tradRes.ok) {
               const positions = await tradRes.json();
               results = positions
-                .filter(p => p.token_type && p.balance > 0)
+                .filter(p => p.balance > 0)
                 .map(p => {
                   const token = tokens.find(t => t.curveId === p.curve_id);
                   if (!token) return null;
-                  const reserveMist = BigInt(Math.floor((p.reserve_sui ?? 0) * MIST_PER_SUI));
-                  const tokensRemaining = BigInt(Math.floor((p.token_reserve ?? 800_000_000 * 1e6)));
-                  const tokensSold = BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS) - tokensRemaining;
-                  const priceMist = priceMistPerToken(reserveMist, tokensSold);
-                  const rawBalance = BigInt(Math.floor(p.balance * 10 ** TOKEN_DECIMALS));
-                  const valueInMist = (rawBalance * priceMist) / (10n ** BigInt(TOKEN_DECIMALS));
-                  return { ...token, balance: p.balance, valueSui: Number(valueInMist) / MIST_PER_SUI, graduated: p.graduated ?? false };
-                }).filter(Boolean);
+
+                  // FIX: use last_price from /tokens/stats — correct (vSui+reserve)/1B formula
+                  // Fall back to priceMistPerToken only if stats missing
+                  const stats = tokenStats[p.curve_id];
+                  let valueSui = 0;
+                  if (stats?.last_price && stats.last_price > 0) {
+                    // last_price is in SUI per token (e.g. 0.0000035)
+                    valueSui = p.balance * stats.last_price;
+                  } else {
+                    // Fallback: manual calc using reserve from indexer stats
+                    const reserveSui = stats?.reserve_sui ?? 0;
+                    const reserveMist = BigInt(Math.round(reserveSui * MIST_PER_SUI));
+                    const tokensRemaining = BigInt(Math.round((stats?.token_reserve ?? 800_000_000) * 1e6));
+                    const tokensSold = BigInt(800_000_000) * BigInt(1e6) - tokensRemaining;
+                    const priceMist = priceMistPerToken(reserveMist, tokensSold);
+                    const rawBalance = BigInt(Math.round(p.balance * 1e6));
+                    const valueInMist = (rawBalance * priceMist) / BigInt(1e6);
+                    valueSui = Number(valueInMist) / MIST_PER_SUI;
+                  }
+
+                  return {
+                    ...token,
+                    balance: p.balance,
+                    valueSui,
+                    graduated: p.graduated ?? false,
+                  };
+                })
+                .filter(Boolean);
             }
           } catch {}
         }
 
         if (cancelled) return;
-        const valid = results.filter(Boolean).sort((a, b) => b.valueSui - a.valueSui);
+        const valid = results.sort((a, b) => b.valueSui - a.valueSui);
         const total = valid.reduce((s, h) => s + h.valueSui, 0);
         setHoldings(valid);
         onTotalValue(total);
 
-        // Load icons
-        // Icons come from token list (indexer) — no RPC needed
         const icons = {};
         for (const h of valid) { if (h.iconUrl) icons[h.curveId] = h.iconUrl; }
         if (!cancelled) setIconUrls(icons);
       } catch {}
       finally { if (!cancelled) setLoading(false); }
     }
+
     load();
     return () => { cancelled = true; };
   }, [account?.address, tokens.length]);
@@ -165,7 +259,7 @@ function TradedTab({ account, tokens, lang }) {
       try {
         const addr = account.address;
 
-        // ── Indexer path ──────────────────────────────────────────────────
+        // Indexer path
         if (INDEXER_URL) {
           try {
             const res = await fetch(`${INDEXER_URL}/trader/${addr}`, { signal: AbortSignal.timeout(5000) });
@@ -175,27 +269,25 @@ function TradedTab({ account, tokens, lang }) {
                 const enriched = rows.map(r => {
                   const meta = tokens.find(tk => tk.curveId === r.curve_id);
                   return {
-                    curveId:      r.curve_id,
-                    name:         meta?.name  || r.name  || 'Unknown',
-                    symbol:       meta?.symbol || r.symbol || '???',
-                    tokenType:    meta?.tokenType || null,
-                    suiSpent:     r.sui_spent    ?? 0,
-                    suiReceived:  r.sui_received ?? 0,
-                    buys:         r.buys         ?? 0,
-                    sells:        r.sells        ?? 0,
-                    realizedPnl:  (r.sui_received ?? 0) - (r.sui_spent ?? 0),
-                    isClosed:     (r.net_tokens ?? 0) <= 0.001,
+                    curveId:       r.curve_id,
+                    name:          meta?.name   || r.name   || 'Unknown',
+                    symbol:        meta?.symbol || r.symbol || '???',
+                    tokenType:     meta?.tokenType || null,
+                    iconUrl:       meta?.iconUrl || null,
+                    suiSpent:      r.sui_spent    ?? 0,
+                    suiReceived:   r.sui_received ?? 0,
+                    buys:          r.buys         ?? 0,
+                    sells:         r.sells        ?? 0,
+                    realizedPnl:   (r.sui_received ?? 0) - (r.sui_spent ?? 0),
+                    isClosed:      (r.net_tokens  ?? 0) <= 0.001,
                     avgEntryPrice: r.avg_entry_price ?? 0,
                   };
                 }).sort((a, b) => (b.suiSpent + b.suiReceived) - (a.suiSpent + a.suiReceived));
+
                 if (!cancelled) { setTradedTokens(enriched); setLoading(false); }
 
-                // load icons
                 const icons = {};
-                await Promise.all(enriched.map(async (tk) => {
-                  if (!tk.tokenType) return;
-                  if (tk.iconUrl) icons[tk.curveId] = tk.iconUrl;
-                }));
+                for (const tk of enriched) { if (tk.iconUrl) icons[tk.curveId] = tk.iconUrl; }
                 if (!cancelled) setIconUrls(icons);
                 return;
               }
@@ -203,64 +295,8 @@ function TradedTab({ account, tokens, lang }) {
           } catch {}
         }
 
-        // ── RPC fallback ──────────────────────────────────────────────────
-        const buyTypes  = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensPurchased`);
-        const sellTypes = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensSold`);
-        const eventMap = {}; // RPC fallback removed (CORS blocked)
-        if (cancelled) return;
-
-        const curveVolume = {};
-        for (const bt of buyTypes) {
-          for (const e of (eventMap[bt] || [])) {
-            if (e.parsedJson?.buyer !== addr) continue;
-            const id = e.parsedJson.curve_id;
-            if (!curveVolume[id]) curveVolume[id] = { suiSpent: 0, suiReceived: 0, buys: 0, sells: 0, tokensBought: 0, tokensSold: 0 };
-            curveVolume[id].suiSpent    += Number(e.parsedJson.sui_in    ?? 0) / MIST_PER_SUI;
-            curveVolume[id].tokensBought += Number(e.parsedJson.tokens_out ?? 0) / 10**TOKEN_DECIMALS;
-            curveVolume[id].buys += 1;
-          }
-        }
-        for (const st of sellTypes) {
-          for (const e of (eventMap[st] || [])) {
-            if (e.parsedJson?.seller !== addr) continue;
-            const id = e.parsedJson.curve_id;
-            if (!curveVolume[id]) curveVolume[id] = { suiSpent: 0, suiReceived: 0, buys: 0, sells: 0, tokensBought: 0, tokensSold: 0 };
-            curveVolume[id].suiReceived += Number(e.parsedJson.sui_out   ?? 0) / MIST_PER_SUI;
-            curveVolume[id].tokensSold  += Number(e.parsedJson.tokens_in ?? 0) / 10**TOKEN_DECIMALS;
-            curveVolume[id].sells += 1;
-          }
-        }
-
-        const curveIds = Object.keys(curveVolume);
-        if (!curveIds.length) { if (!cancelled) { setTradedTokens([]); setLoading(false); } return; }
-
-        const enriched = curveIds.map(curveId => {
-          const meta  = tokens.find(tk => tk.curveId === curveId);
-          const stats = curveVolume[curveId];
-          return {
-            curveId,
-            name:          meta?.name   || 'Unknown',
-            symbol:        meta?.symbol || '???',
-            tokenType:     meta?.tokenType || null,
-            suiSpent:      stats.suiSpent,
-            suiReceived:   stats.suiReceived,
-            buys:          stats.buys,
-            sells:         stats.sells,
-            realizedPnl:   stats.suiReceived - stats.suiSpent,
-            avgEntryPrice: stats.tokensBought > 0 ? stats.suiSpent / stats.tokensBought : 0,
-            isClosed:      (stats.tokensBought - stats.tokensSold) <= 0.001,
-          };
-        }).sort((a, b) => (b.suiSpent + b.suiReceived) - (a.suiSpent + a.suiReceived));
-
-        if (!cancelled) { setTradedTokens(enriched); setLoading(false); }
-
-        const icons = {};
-        await Promise.all(enriched.map(async (tk) => {
-          if (!tk.tokenType) return;
-          if (tk.iconUrl) icons[tk.curveId] = tk.iconUrl;
-        }));
-        if (!cancelled) setIconUrls(icons);
-
+        // RPC fallback removed (CORS blocked) — empty state
+        if (!cancelled) { setTradedTokens([]); setLoading(false); }
       } catch { if (!cancelled) setLoading(false); }
     }
     load();
@@ -302,7 +338,7 @@ function CreatedTab({ account, tokens, lang }) {
   const navigate = useNavigate();
   const dAppKit = useDAppKit();
   const [curveStats, setCurveStats]   = useState({});
-  const [capMap, setCapMap]           = useState({}); // curveId → capId
+  const [capMap, setCapMap]           = useState({});
   const [loading, setLoading]         = useState(true);
   const [iconUrls, setIconUrls]       = useState({});
   const [claimingAll, setClaimingAll] = useState(false);
@@ -319,7 +355,6 @@ function CreatedTab({ account, tokens, lang }) {
     async function load() {
       setLoading(true);
       try {
-        // Load curve stats (indexer first, RPC fallback)
         let indexerStats = {};
         if (INDEXER_URL) {
           try {
@@ -331,7 +366,6 @@ function CreatedTab({ account, tokens, lang }) {
           } catch {}
         }
 
-        // Load curve states from indexer
         const curveObjs = await Promise.all(
           createdTokens.map(tk =>
             fetch(`${INDEXER_URL}/token/${tk.curveId}`, { signal: AbortSignal.timeout(5000) })
@@ -339,113 +373,68 @@ function CreatedTab({ account, tokens, lang }) {
               .catch(() => null)
           )
         );
-        const iconResults = await Promise.all(
-          createdTokens.map(async (tk) => {
-            try { return { curveId: tk.curveId, iconUrl: tk.iconUrl || null }; }
-            catch { return { curveId: tk.curveId, iconUrl: null }; }
-          })
-        );
 
-        if (cancelled) return;
-        const stats = {};
+        const statsMap = {};
         for (let i = 0; i < createdTokens.length; i++) {
+          const tk = createdTokens[i];
           const obj = curveObjs[i];
-          const tk  = createdTokens[i];
-          if (!obj) continue;
-          const fields = obj;
-          const reserveMist  = BigInt(fields.sui_reserve ?? 0);
-          const reserveSui   = mistToSui(reserveMist);
-          const progress     = Math.min(100, (reserveSui / DRAIN_SUI_APPROX) * 100);
-          const rawFees = fields.creator_fees;
-          const creatorFeesMist = typeof rawFees === 'object' ? Number(rawFees?.value ?? 0) : Number(rawFees ?? 0);
-          const creatorFeesSui = creatorFeesMist / MIST_PER_SUI;
-          stats[tk.curveId]  = { progress, reserveSui, creatorFeesSui, graduated: fields.graduated ?? false, tokenType: tk.tokenType, packageId: tk.packageId };
+          const idxStat = indexerStats[tk.curveId] ?? {};
+          statsMap[tk.curveId] = {
+            creatorFeesSui: obj?.stats?.creator_fees_sui ?? idxStat.creator_fees_sui ?? 0,
+            volumeSui:      idxStat.volume_sui  ?? 0,
+            trades:         idxStat.trades      ?? 0,
+            progress:       idxStat.progress    ?? 0,
+            graduated:      obj?.graduated      ?? idxStat.graduated ?? false,
+          };
         }
-        setCurveStats(stats);
 
-        // Load CreatorCaps owned by this wallet
-        const caps = {};
-        await Promise.all(createdTokens.map(async (tk) => {
-          try {
-            try {
-              const capRes = await fetch(`${INDEXER_URL}/token/${tk.curveId}/creator-cap?owner=${account.address}`, { signal: AbortSignal.timeout(3000) });
-              if (capRes.ok) { const d = await capRes.json(); if (d.objectId) caps[tk.curveId] = d.objectId; }
-            } catch {}
-          } catch {}
-        }));
-        setCapMap(caps);
-
-        const icons = {};
-        for (const { curveId, iconUrl } of iconResults) { if (iconUrl) icons[curveId] = iconUrl; }
-        setIconUrls(icons);
-      } catch {}
-      finally { if (!cancelled) setLoading(false); }
+        if (!cancelled) {
+          setCurveStats(statsMap);
+          const icons = {};
+          for (const tk of createdTokens) { if (tk.iconUrl) icons[tk.curveId] = tk.iconUrl; }
+          setIconUrls(icons);
+          setLoading(false);
+        }
+      } catch { if (!cancelled) setLoading(false); }
     }
     load();
     return () => { cancelled = true; };
   }, [createdTokens.length, account?.address]);
 
-  // Total claimable fees
-  const totalClaimableSui = useMemo(() => {
-    return Object.values(curveStats).reduce((s, stat) => s + (stat.creatorFeesSui >= 0.001 ? stat.creatorFeesSui : 0), 0);
-  }, [curveStats]);
+  const totalClaimable = useMemo(() =>
+    createdTokens.reduce((s, tk) => s + (curveStats[tk.curveId]?.creatorFeesSui ?? 0), 0),
+    [createdTokens, curveStats]
+  );
 
-  // Claim all fees in one PTB
   const handleClaimAll = async () => {
-    const claimable = createdTokens.filter(tk => {
-      const s = curveStats[tk.curveId];
-      return s && s.creatorFeesSui >= 0.001 && capMap[tk.curveId];
-    });
-    if (!claimable.length) return;
-
+    if (!account || claimingAll) return;
     setClaimingAll(true);
     setClaimMsg('');
+    let claimed = 0;
     try {
-      // Verify on-chain fees before building PTB — avoids ENoFees abort
-      const verified = await Promise.all(claimable.map(async (tk) => {
-        try {
-          const res_obj = await fetch(`${INDEXER_URL}/token/${tk.curveId}`, { signal: AbortSignal.timeout(3000) }).then(r => r.ok ? r.json() : null).catch(() => null);
-          const f = res_obj;
-          // creator_fees is Balance<SUI> — serialized as { value: "123" } or plain string
-          const raw = f?.creator_fees;
-          const fees = typeof raw === 'object' ? Number(raw?.value ?? 0) : Number(raw ?? 0);
-          return fees > 0 ? tk : null;
-        } catch { return null; }
-      }));
-      const actualClaimable = verified.filter(Boolean);
-      if (!actualClaimable.length) {
-        setClaimMsg('No fees available on-chain');
-        setClaimingAll(false);
-        return;
-      }
-      const tx = new Transaction();
-      for (const tk of actualClaimable) {
-        const pkgId   = tk.packageId;
-        const capId   = capMap[tk.curveId];
-        const sharedInfo = await fetch(`${INDEXER_URL}/token/${tk.curveId}`, { signal: AbortSignal.timeout(3000) }).then(r => r.ok ? r.json() : null).catch(() => null);
-        const initVer   = sharedInfo?.initialSharedVersion ?? sharedInfo?.initial_shared_version ?? null;
-        const curveRef  = initVer
-          ? tx.sharedObjectRef({ objectId: tk.curveId, initialSharedVersion: initVer, mutable: true })
-          : tx.object(tk.curveId);
+      for (const tk of createdTokens) {
+        const fees = curveStats[tk.curveId]?.creatorFeesSui ?? 0;
+        if (fees < 0.001) continue;
+        const capId = capMap[tk.curveId];
+        if (!capId) continue;
+        const tx = new Transaction();
         tx.moveCall({
-          target: `${pkgId}::bonding_curve::claim_creator_fees`,
+          target: `${tk.packageId}::bonding_curve::claim_creator_fees`,
           typeArguments: [tk.tokenType],
-          arguments: [tx.object(capId), curveRef],
+          arguments: [
+            tx.object(tk.curveId),
+            tx.object(capId),
+          ],
         });
+        const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+        if (result.$kind === 'Transaction') claimed++;
       }
-      const claimAllRes = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      if (claimAllRes.$kind === 'FailedTransaction') throw new Error(claimAllRes.FailedTransaction.status.error ?? 'Claim failed');
-      setClaimMsg(`✅ Claimed fees from ${actualClaimable.length} token${actualClaimable.length !== 1 ? 's' : ''}`);
+      setClaimMsg(claimed > 0 ? `Claimed from ${claimed} token${claimed !== 1 ? 's' : ''} ✓` : 'Nothing to claim');
+    } catch (e) {
+      setClaimMsg(e.message || 'Claim failed');
+    } finally {
       setClaimingAll(false);
       setTimeout(() => setClaimMsg(''), 4000);
-      setCurveStats(prev => {
-        const next = { ...prev };
-        for (const tk of actualClaimable) next[tk.curveId] = { ...next[tk.curveId], creatorFeesSui: 0 };
-        return next;
-      });
-    } catch (err) {
-      setClaimMsg(err.message || 'Claim failed');
-      setClaimingAll(false);
     }
   };
 
@@ -455,54 +444,42 @@ function CreatedTab({ account, tokens, lang }) {
 
   return (
     <>
-      {/* ── Claim All banner ── */}
-      <div className="px-5 py-3 border-b border-white/5 space-y-2">
-        <div className="flex items-center justify-between">
-          <span className="text-[10px] font-mono text-white/30">
-            {createdTokens.length} token{createdTokens.length !== 1 ? 's' : ''} launched
+      {totalClaimable > 0.001 && (
+        <div className="px-5 py-3 border-b border-white/5 flex items-center justify-between">
+          <span className="text-[10px] font-mono text-white/40">
+            {fmt(totalClaimable, 4)} SUI claimable
           </span>
-          {totalClaimableSui > 0 && (
-            <span className="text-[10px] font-mono text-lime-400/70">
-              {fmt(totalClaimableSui, 4)} SUI claimable
-            </span>
-          )}
-        </div>
-        {totalClaimableSui > 0 && (
           <button
             onClick={handleClaimAll}
             disabled={claimingAll}
-            className={`w-full py-2.5 rounded-xl text-xs font-mono font-bold tracking-widest transition-colors ${
-              claimingAll
-                ? 'bg-white/5 text-white/20 cursor-not-allowed'
-                : 'bg-lime-400/10 border border-lime-400/30 text-lime-400 hover:bg-lime-400/20'
-            }`}
+            className="text-[10px] font-mono text-lime-400 hover:text-lime-300 disabled:text-white/20 transition-colors"
           >
-            {claimingAll ? 'CLAIMING…' : `CLAIM ALL FEES — ${fmt(totalClaimableSui, 4)} SUI`}
+            {claimingAll ? 'Claiming…' : 'Claim all'}
           </button>
-        )}
-        {claimMsg && (
-          <div className={`text-[10px] font-mono text-center ${claimMsg.startsWith('✅') ? 'text-lime-400' : 'text-red-400'}`}>
-            {claimMsg}
-          </div>
-        )}
+        </div>
+      )}
+      {claimMsg && (
+        <div className="px-5 py-2 text-[10px] font-mono text-lime-400 border-b border-white/5">{claimMsg}</div>
+      )}
+      <div className="px-5 py-3 border-b border-white/5">
+        <span className="text-[10px] font-mono text-white/30">{createdTokens.length} token{createdTokens.length !== 1 ? 's' : ''} launched</span>
       </div>
-
-      {/* ── Token rows ── */}
       {createdTokens.map((tk) => {
-        const s = curveStats[tk.curveId];
+        const stats = curveStats[tk.curveId] ?? {};
         return (
           <TokenRow key={tk.curveId} token={tk} iconUrl={iconUrls[tk.curveId]}
             onClick={() => navigate(`/token/${tk.curveId}`)}
             right={
               <div className="text-right shrink-0 space-y-0.5">
-                {s ? (
-                  <>
-                    <div className="text-xs font-mono font-bold text-white/70">{fmt(s.reserveSui, 1)} SUI</div>
-                    <div className="text-[10px] font-mono text-lime-400/70">{s.progress.toFixed(1)}% filled</div>
-                    {s.creatorFeesSui > 0 && <div className="text-[9px] font-mono text-lime-400">{fmt(s.creatorFeesSui, 3)} fees</div>}
-                    {s.graduated && <div className="text-[9px] font-mono text-emerald-400">GRAD</div>}
-                  </>
-                ) : <div className="text-[10px] font-mono text-white/20"> - </div>}
+                <div className="text-xs font-mono font-bold text-lime-400">{fmt(stats.volumeSui, 2)} SUI vol</div>
+                <div className="text-[10px] font-mono text-white/30">{stats.trades ?? 0} trades</div>
+                {stats.graduated
+                  ? <div className="text-[9px] font-mono text-emerald-400">GRAD</div>
+                  : <div className="text-[9px] font-mono text-white/20">{fmt(stats.progress, 1)}%</div>
+                }
+                {(stats.creatorFeesSui ?? 0) > 0.001 && (
+                  <div className="text-[9px] font-mono text-lime-400/70">{fmt(stats.creatorFeesSui, 4)} claimable</div>
+                )}
               </div>
             }
           />
@@ -512,77 +489,7 @@ function CreatedTab({ account, tokens, lang }) {
   );
 }
 
-// ── PNL Share Card (canvas) ───────────────────────────────────────────────────
-
-function drawPnlCard({ canvas, name, symbol, pnlSui, pnlPct, spent, entryPrice, currentPrice, isClosed, mascotImg }) {
-  const ctx = canvas.getContext('2d');
-  const W = 800, H = 420;
-  canvas.width = W; canvas.height = H;
-  ctx.fillStyle = '#080808'; ctx.fillRect(0, 0, W, H);
-  ctx.strokeStyle = 'rgba(132,204,22,0.04)'; ctx.lineWidth = 1;
-  for (let x = 0; x < W; x += 40) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
-  for (let y = 0; y < H; y += 40) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
-  const grd = ctx.createRadialGradient(0, 0, 0, 0, 0, 300);
-  grd.addColorStop(0, 'rgba(132,204,22,0.12)'); grd.addColorStop(1, 'rgba(132,204,22,0)');
-  ctx.fillStyle = grd; ctx.fillRect(0, 0, W, H);
-  ctx.strokeStyle = 'rgba(132,204,22,0.25)'; ctx.lineWidth = 1.5; ctx.strokeRect(1, 1, W - 2, H - 2);
-  const isPos = pnlSui >= 0;
-  const accentColor = isPos ? '#84cc16' : '#f87171';
-  ctx.font = 'bold 22px "JetBrains Mono", monospace'; ctx.fillStyle = 'rgba(255,255,255,0.9)'; ctx.fillText(name, 48, 64);
-  ctx.font = '15px "JetBrains Mono", monospace'; ctx.fillStyle = '#84cc16'; ctx.fillText('$' + symbol, 48, 88);
-  const pctText = (isPos ? '+' : '') + pnlPct.toFixed(2) + '%';
-  ctx.font = 'bold 96px "JetBrains Mono", monospace'; ctx.fillStyle = accentColor;
-  ctx.shadowColor = accentColor; ctx.shadowBlur = 32; ctx.fillText(pctText, 44, 210); ctx.shadowBlur = 0;
-  const pnlText = (isPos ? '+' : '') + Math.abs(pnlSui).toFixed(3) + ' SUI ' + (isClosed ? 'REALIZED' : 'TOTAL PNL');
-  ctx.font = '18px "JetBrains Mono", monospace'; ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.fillText(pnlText, 48, 248);
-  ctx.strokeStyle = 'rgba(255,255,255,0.07)'; ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(48, 272); ctx.lineTo(W - 48, 272); ctx.stroke();
-  ctx.font = '13px "JetBrains Mono", monospace'; ctx.fillStyle = 'rgba(255,255,255,0.3)';
-  ctx.fillText('INVESTED', 48, 300); ctx.fillText('ENTRY', 220, 300); ctx.fillText('CURRENT', 390, 300);
-  ctx.fillStyle = 'rgba(255,255,255,0.7)'; ctx.font = '14px "JetBrains Mono", monospace';
-  ctx.fillText(spent.toFixed(2) + ' SUI', 48, 320);
-  ctx.fillText(entryPrice > 0 ? entryPrice.toFixed(8) : '—', 220, 320);
-  ctx.fillText(currentPrice > 0 ? currentPrice.toFixed(8) : '—', 390, 320);
-  ctx.font = 'bold 15px "JetBrains Mono", monospace'; ctx.fillStyle = '#84cc16'; ctx.fillText('SUIPUMP', 48, H - 32);
-  ctx.font = '13px "JetBrains Mono", monospace'; ctx.fillStyle = 'rgba(255,255,255,0.2)'; ctx.fillText('suipump.org', 48, H - 14);
-  const badge = isClosed ? 'CLOSED' : 'ACTIVE';
-  ctx.fillStyle = isClosed ? 'rgba(255,255,255,0.1)' : 'rgba(132,204,22,0.15)';
-  ctx.beginPath(); ctx.roundRect(W - 130, 44, 82, 26, 6); ctx.fill();
-  ctx.font = 'bold 11px "JetBrains Mono", monospace';
-  ctx.fillStyle = isClosed ? 'rgba(255,255,255,0.3)' : '#84cc16'; ctx.fillText(badge, W - 112, 62);
-  if (mascotImg) { ctx.globalCompositeOperation = 'screen'; ctx.drawImage(mascotImg, W - 320, H - 370, 310, 310); ctx.globalCompositeOperation = 'source-over'; }
-}
-
-function PnlShareButton({ tk, unrealizedPnl, currentPrice, mascotDataUrl }) {
-  const handleShare = () => {
-    const canvas = document.createElement('canvas');
-    const totalPnl = (tk.realizedPnl || 0) + (unrealizedPnl || 0);
-    const pnlPct = tk.suiSpent > 0 ? (totalPnl / tk.suiSpent) * 100 : 0;
-    let mascotImg = null;
-    if (mascotDataUrl) { mascotImg = new Image(); mascotImg.src = mascotDataUrl; }
-    const draw = () => {
-      drawPnlCard({ canvas, name: tk.name, symbol: tk.symbol, pnlSui: totalPnl, pnlPct, spent: tk.suiSpent, entryPrice: tk.avgEntryPrice, currentPrice: currentPrice || 0, isClosed: tk.isClosed, mascotImg });
-      const link = document.createElement('a');
-      link.download = `suipump-${tk.symbol}-pnl.png`;
-      link.href = canvas.toDataURL('image/png');
-      link.click();
-    };
-    if (mascotImg) { mascotImg.onload = draw; mascotImg.onerror = draw; } else { draw(); }
-  };
-  return (
-    <button onClick={e => { e.stopPropagation(); handleShare(); }}
-      className="flex items-center gap-1 px-2 py-1 rounded-lg bg-lime-400/10 border border-lime-400/20 text-lime-400 text-[9px] font-mono font-bold hover:bg-lime-400/20 transition-colors">
-      SHARE PNL
-    </button>
-  );
-}
-
 // ── Main ──────────────────────────────────────────────────────────────────────
-
-// ── PFP storage key ──────────────────────────────────────────────────────────
-function pfpKey(addr) { return `suipump_pfp_${addr}`; }
-function getPfp(addr) { try { return localStorage.getItem(pfpKey(addr)) || ''; } catch { return ''; } }
-function setPfp(addr, url) { try { localStorage.setItem(pfpKey(addr), url); } catch {} }
 
 export default function PortfolioPage({ onBack, lang = 'en' }) {
   const account    = useCurrentAccount();
@@ -604,14 +511,11 @@ export default function PortfolioPage({ onBack, lang = 'en' }) {
   const [editingPfp, setEditingPfp] = useState(false);
   const [pfpInput, setPfpInput]     = useState('');
 
-  // Load PFP from localStorage
   useEffect(() => {
-    if (viewAddress) {
-      setPfpUrl(getPfp(viewAddress));
-    }
+    if (viewAddress) setPfpUrl(getPfp(viewAddress));
   }, [viewAddress]);
 
-  React.useEffect(() => {
+  useEffect(() => {
     async function fetchPrice() {
       try {
         const r = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=SUIUSDT');
@@ -632,10 +536,7 @@ export default function PortfolioPage({ onBack, lang = 'en' }) {
 
   function savePfp() {
     const url = pfpInput.trim();
-    if (url && viewAddress) {
-      setPfp(viewAddress, url);
-      setPfpUrl(url);
-    }
+    if (url && viewAddress) { setPfp(viewAddress, url); setPfpUrl(url); }
     setEditingPfp(false);
     setPfpInput('');
   }
@@ -671,136 +572,108 @@ export default function PortfolioPage({ onBack, lang = 'en' }) {
 
         {/* Viewing someone else banner */}
         {!isOwnWallet && (
-          <div className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-2.5 flex items-center justify-between">
-            <span className="text-[10px] font-mono text-white/40">Viewing wallet</span>
-            {account && (
-              <button
-                onClick={() => navigate('/portfolio')}
-                className="text-[10px] font-mono text-lime-400 hover:text-lime-300 transition-colors"
-              >
-                View my portfolio →
-              </button>
-            )}
+          <div className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-[10px] font-mono text-white/40 text-center">
+            Viewing portfolio for <span className="text-lime-400">{viewAddress.slice(0, 8)}…{viewAddress.slice(-6)}</span>
           </div>
         )}
 
-        {/* Header */}
-        <div className="rounded-3xl border border-white/10 bg-gradient-to-br from-lime-950/20 via-black to-black p-6 relative overflow-hidden">
-          <div className="absolute top-0 left-1/2 -translate-x-1/2 w-64 h-16 bg-lime-400/10 blur-3xl rounded-full pointer-events-none" />
-          <div className="relative">
-            <div className="flex items-center gap-4 mb-3">
-              {/* PFP */}
-              <div className="relative group/pfp shrink-0">
-                <div className="w-14 h-14 rounded-full border-2 border-white/10 overflow-hidden bg-lime-950/30 flex items-center justify-center">
-                  {pfpUrl
-                    ? <img src={pfpUrl} alt="pfp" className="w-full h-full object-cover"
-                        onError={() => setPfpUrl('')} />
-                    : <span className="text-2xl">🔥</span>
-                  }
-                </div>
-                {isOwnWallet && (
-                  <button
-                    onClick={() => { setEditingPfp(true); setPfpInput(pfpUrl); }}
-                    className="absolute inset-0 rounded-full bg-black/60 opacity-0 group-hover/pfp:opacity-100 transition-opacity flex items-center justify-center"
-                  >
-                    <span className="text-[9px] font-mono text-white">EDIT</span>
-                  </button>
-                )}
+        {/* Profile card */}
+        <div className="rounded-2xl border border-white/10 bg-white/[0.03] overflow-hidden">
+          <div className="px-5 py-4 border-b border-white/5 flex items-center gap-4">
+            {/* PFP */}
+            <div className="relative">
+              <div className="w-14 h-14 rounded-full border border-white/10 overflow-hidden flex items-center justify-center bg-lime-950/30">
+                {pfpUrl
+                  ? <img src={pfpUrl} alt="pfp" className="w-full h-full object-cover" onError={() => setPfpUrl('')} />
+                  : <div className="text-2xl">👤</div>
+                }
               </div>
-
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-3 mb-1">
-                  <Wallet className="text-lime-400 shrink-0" size={16} />
-                  <h1 className="text-lg font-bold text-white truncate" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
-                    {t(lang, 'portfolioTitle')}
-                  </h1>
-                </div>
-                <div className="text-[10px] font-mono text-white/35 break-all">{viewAddress}</div>
-              </div>
+              {isOwnWallet && (
+                <button
+                  onClick={() => setEditingPfp(v => !v)}
+                  className="absolute -bottom-1 -right-1 w-5 h-5 rounded-full bg-lime-400 text-black text-[8px] font-bold flex items-center justify-center hover:bg-lime-300 transition-colors"
+                >✎</button>
+              )}
             </div>
 
-            {/* PFP edit form */}
-            {editingPfp && isOwnWallet && (
-              <div className="space-y-2 mb-3">
-                {/* File upload */}
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <span className="text-[9px] font-mono text-white/30 shrink-0">UPLOAD</span>
-                  <label className="flex-1 flex items-center justify-center gap-2 bg-white/5 border border-white/10 border-dashed rounded-lg px-3 py-2 text-[10px] font-mono text-white/40 hover:border-lime-400/40 hover:text-lime-400 transition-colors cursor-pointer">
-                    <span>Choose file…</span>
-                    <input
-                      type="file"
-                      accept="image/*"
-                      className="hidden"
-                      onChange={e => {
-                        const file = e.target.files?.[0];
-                        if (!file) return;
-                        const reader = new FileReader();
-                        reader.onload = ev => {
-                          const dataUrl = ev.target.result;
-                          if (viewAddress) {
-                            setPfp(viewAddress, dataUrl);
-                            setPfpUrl(dataUrl);
-                          }
-                          setEditingPfp(false);
-                        };
-                        reader.readAsDataURL(file);
-                      }}
-                    />
-                  </label>
-                </label>
-                {/* URL input */}
-                <div className="flex gap-2 items-center">
-                  <span className="text-[9px] font-mono text-white/30 shrink-0">URL</span>
-                  <input
-                    value={pfpInput}
-                    onChange={e => setPfpInput(e.target.value)}
-                    placeholder="Paste image URL…"
-                    className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-[11px] font-mono text-white placeholder-white/20 focus:outline-none focus:border-lime-400/50"
-                  />
-                  <button onClick={savePfp}
-                    className="px-3 py-1.5 bg-lime-400 text-black text-[10px] font-mono font-bold rounded-lg hover:bg-lime-300 transition-colors">
-                    SAVE
-                  </button>
-                  <button onClick={() => setEditingPfp(false)}
-                    className="px-2 py-1.5 bg-white/5 text-white/40 text-[10px] font-mono rounded-lg hover:bg-white/10 transition-colors">
-                    ✕
-                  </button>
+            <div className="flex-1 min-w-0">
+              <div className="text-xs font-mono text-white/60 truncate">
+                {viewAddress.slice(0, 16)}…{viewAddress.slice(-8)}
+              </div>
+              {suiUsd > 0 && totalValueSui > 0 && (
+                <div className="text-sm font-mono font-bold text-lime-400 mt-0.5">
+                  ~${(totalValueSui * suiUsd).toFixed(2)} USD
                 </div>
-              </div>
-            )}
+              )}
+            </div>
 
-            {totalValueSui > 0 && (
-              <div className="flex items-baseline gap-2">
-                {suiUsd > 0 && (
-                  <span className="text-2xl font-bold text-white" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
-                    ${(totalValueSui * suiUsd).toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                  </span>
-                )}
-                <span className="text-sm font-mono text-white/40">{totalValueSui.toFixed(4)} SUI</span>
-              </div>
+            {isOwnWallet && (
+              <button
+                onClick={() => { navigator.clipboard.writeText(viewAddress).catch(() => {}); }}
+                className="text-[9px] font-mono text-white/30 hover:text-white/60 transition-colors"
+              >
+                COPY
+              </button>
             )}
           </div>
-        </div>
 
-        {/* Tab toggle */}
-        <div className="flex gap-2">
-          {TABS.map(tk => (
-            <button key={tk.id} onClick={() => setTab(tk.id)}
-              className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-mono transition-all ${
-                tab === tk.id
-                  ? 'bg-lime-400 text-black font-bold'
-                  : 'bg-white/5 text-white/40 hover:bg-white/10 hover:text-white/70'
-              }`}>
-              {tk.icon} {tk.label}
-            </button>
-          ))}
-        </div>
+          {/* PFP edit */}
+          {editingPfp && isOwnWallet && (
+            <div className="px-5 py-3 border-b border-white/5 flex gap-2">
+              <input
+                value={pfpInput}
+                onChange={e => setPfpInput(e.target.value)}
+                placeholder="Paste image URL…"
+                className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-xs font-mono text-white placeholder-white/20 focus:outline-none focus:border-lime-400/40"
+                onKeyDown={e => e.key === 'Enter' && savePfp()}
+              />
+              <button onClick={savePfp} className="px-3 py-1.5 bg-lime-400 text-black text-xs font-mono font-bold rounded-lg hover:bg-lime-300 transition-colors">Save</button>
+            </div>
+          )}
 
-        {/* Content */}
-        <div className="rounded-2xl border border-white/10 bg-white/[0.03] overflow-hidden">
-          {tab === 'holdings' && <HoldingsTab account={viewAccount} tokens={tokens} lang={lang} onTotalValue={setTotalValueSui} />}
-          {tab === 'traded'   && <TradedTab   account={viewAccount} tokens={tokens} lang={lang} />}
-          {tab === 'created'  && <CreatedTab  account={viewAccount} tokens={tokens} lang={lang} />}
+          {/* Tab bar */}
+          <div className="flex border-b border-white/5">
+            {TABS.map(tb => (
+              <button
+                key={tb.id}
+                onClick={() => setTab(tb.id)}
+                className={`flex-1 flex items-center justify-center gap-1.5 py-3 text-[10px] font-mono font-bold tracking-wider transition-colors ${
+                  tab === tb.id
+                    ? 'text-lime-400 border-b-2 border-lime-400 bg-lime-400/5'
+                    : 'text-white/30 hover:text-white/60'
+                }`}
+              >
+                {tb.icon}
+                {tb.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Tab content */}
+          <div>
+            {tab === 'holdings' && (
+              <HoldingsTab
+                account={viewAccount}
+                tokens={tokens}
+                lang={lang}
+                onTotalValue={setTotalValueSui}
+              />
+            )}
+            {tab === 'traded' && (
+              <TradedTab
+                account={viewAccount}
+                tokens={tokens}
+                lang={lang}
+              />
+            )}
+            {tab === 'created' && (
+              <CreatedTab
+                account={viewAccount}
+                tokens={tokens}
+                lang={lang}
+              />
+            )}
+          </div>
         </div>
 
         <div className="text-[9px] font-mono text-white/15 text-center">
