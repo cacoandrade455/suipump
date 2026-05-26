@@ -175,8 +175,8 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
               const rows = await res.json();
               loadedComments = rows.map(r => ({
                 id:        r.tx_digest + '_' + (r.event_seq ?? 0),
-                author:    r.data?.author ?? '',
-                text:      r.data?.text ?? '',
+                author:    r.author ?? r.data?.author ?? '',
+                text:      r.text  ?? r.data?.text  ?? '',
                 timestamp: r.timestamp_ms ? Number(r.timestamp_ms) : null,
                 curveId,
               }));
@@ -231,12 +231,21 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
 
     setPosting(true); setPostErr('');
     try {
+      // Resolve initialSharedVersion — try prop first, then indexer, then fail gracefully
+      let isv = initialSharedVersion;
+      if (!isv && INDEXER_URL) {
+        try {
+          const r = await fetch(`${INDEXER_URL}/token/${curveId}`, { signal: AbortSignal.timeout(4000) });
+          if (r.ok) { const d = await r.json(); isv = d.initialSharedVersion ?? d.initial_shared_version ?? null; }
+        } catch {}
+      }
+
       const tx = new Transaction();
       const isV7 = isV7OrLater(packageId);
 
-      // post_comment takes &mut Curve<T> — needs sharedObjectRef
-      const curveRef = initialSharedVersion
-        ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion, mutable: true })
+      // post_comment takes &mut Curve<T> — MUST use sharedObjectRef
+      const curveRef = isv
+        ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: isv, mutable: true })
         : tx.object(curveId);
 
       if (isV7 && COMMENT_FEE_MIST && BigInt(COMMENT_FEE_MIST) > 0n) {
