@@ -1,6 +1,6 @@
 // HolderList.jsx — SSE triggers re-fetch on trade, no time-based polling
 import React, { useState, useEffect, useRef } from 'react';
-import { Users, BarChart2 } from 'lucide-react';
+import { Users, BarChart2, Lock } from 'lucide-react';
 import { ALL_PACKAGE_IDS } from './constants.js';
 
 const INDEXER_URL  = import.meta.env.VITE_INDEXER_URL || '';
@@ -38,6 +38,7 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = n
   const [holders, setHolders] = useState([]);
   const [traders, setTraders] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [locks,   setLocks]   = useState([]);
   const esRef    = useRef(null);
   const timerRef = useRef(null);
   const loadingRef = useRef(false);
@@ -90,6 +91,14 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = n
 
       setHolders(holderList);
       setTraders(traderList);
+
+      // Fetch vesting locks
+      if (INDEXER_URL) {
+        try {
+          const lockRes = await fetch(`${INDEXER_URL}/token/${curveId}/locks`, { signal: AbortSignal.timeout(5000) });
+          if (lockRes.ok) setLocks(await lockRes.json());
+        } catch {}
+      }
     } catch {} finally {
       loadingRef.current = false;
       setLoading(false);
@@ -108,7 +117,8 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = n
           const event = JSON.parse(e.data);
           if (event.type === 'connected') return;
           const isTrade = event.type === 'TokensPurchased' || event.type === 'TokensBought' || event.type === 'TokensSold';
-          if (isTrade) load();
+          const isLock  = event.type === 'TokensLocked' || event.type === 'VestedClaimed';
+          if (isTrade || isLock) load();
         } catch {}
       };
       es.onerror = () => { es.close(); timerRef.current = setTimeout(connect, 3000); };
@@ -127,6 +137,9 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = n
         </button>
         <button onClick={() => setTab('traders')} className={`flex-1 py-2.5 text-[10px] font-mono tracking-wider transition-colors flex items-center justify-center gap-1.5 ${tab === 'traders' ? 'text-lime-400 bg-lime-400/5' : 'text-white/30 hover:text-white/60'}`}>
           <BarChart2 size={10} /> TRADERS
+        </button>
+        <button onClick={() => setTab('vesting')} className={`flex-1 py-2.5 text-[10px] font-mono tracking-wider transition-colors flex items-center justify-center gap-1.5 ${tab === 'vesting' ? 'text-lime-400 bg-lime-400/5' : 'text-white/30 hover:text-white/60'}`}>
+          <Lock size={10} /> VESTING
         </button>
       </div>
 
@@ -183,6 +196,46 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = n
                 </span>
               </div>
             ))}
+          </div>
+        )
+      ) : (
+        locks.length === 0 ? (
+          <div className="py-8 text-center text-white/20 text-xs font-mono">No vesting locks</div>
+        ) : (
+          <div className="divide-y divide-white/5">
+            {locks.map((lk, i) => {
+              const total    = Number(lk.total_amount) / TOKEN_SCALE;
+              const claimed  = Number(lk.claimed) / TOKEN_SCALE;
+              const locked   = Number(lk.locked) / TOKEN_SCALE;
+              const now      = Date.now();
+              const startMs  = Number(lk.start_ms);
+              const durMs    = Number(lk.duration_ms);
+              const elapsed  = Math.max(0, now - startMs);
+              const vestedPct = durMs > 0 ? Math.min(100, (elapsed / durMs) * 100) : 100;
+              const msLeft   = Math.max(0, startMs + durMs - now);
+              const daysLeft = Math.ceil(msLeft / 86_400_000);
+              const modeLabel = lk.mode === 1 ? 'MONTHLY' : 'LINEAR';
+              return (
+                <div key={lk.lock_id} className="px-4 py-3 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[10px] font-mono text-white/60">{shortAddr(lk.beneficiary)}</span>
+                      <span className="text-[8px] font-mono text-lime-400/50 border border-lime-400/20 px-1 rounded">{modeLabel}</span>
+                    </div>
+                    <span className="text-[10px] font-mono text-white/40">
+                      {daysLeft > 0 ? `${daysLeft}d left` : 'FULLY VESTED'}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-[9px] font-mono text-white/25">
+                    <span>{total.toFixed(0)} total · {claimed.toFixed(0)} claimed · {locked.toFixed(0)} locked</span>
+                    <span className="text-lime-400/60">{vestedPct.toFixed(1)}% vested</span>
+                  </div>
+                  <div className="h-1 bg-white/5 rounded-full overflow-hidden">
+                    <div className="h-full bg-lime-400/40 rounded-full" style={{ width: `${vestedPct}%` }} />
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )
       )}
