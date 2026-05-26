@@ -43,7 +43,7 @@ export function useTokenStats(tokens) {
       .then(rows => {
         const map = {};
         for (const s of rows) {
-          map[s.curve_id] = mapIndexerRow(s;
+          map[s.curve_id] = mapIndexerRow(s);
         }
         setStats(map);
       })
@@ -118,7 +118,7 @@ export function useTokenStats(tokens) {
               if (!s) return;
               setStats(prev => ({
                 ...prev,
-                [curveId]: mapIndexerRow(s,
+                [curveId]: mapIndexerRow(s),
               }));
             })
             .catch(() => {});
