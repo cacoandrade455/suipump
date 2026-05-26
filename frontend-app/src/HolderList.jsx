@@ -70,16 +70,18 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = n
       for (const e of buys) {
         const { buyer, sui_in = 0, tokens_out = 0 } = e.parsedJson;
         if (!buyer) continue;
-        if (!traderMap[buyer]) traderMap[buyer] = { addr: buyer, spent: 0, received: 0, tokBought: 0, tokSold: 0 };
+        if (!traderMap[buyer]) traderMap[buyer] = { addr: buyer, spent: 0, received: 0, tokBought: 0, tokSold: 0, buyCount: 0, sellCount: 0 };
         traderMap[buyer].spent     += Number(sui_in) / 1e9;
         traderMap[buyer].tokBought += Number(tokens_out) / TOKEN_SCALE;
+        traderMap[buyer].buyCount  += 1;
       }
       for (const e of sells) {
         const { seller, sui_out = 0, tokens_in = 0 } = e.parsedJson;
         if (!seller) continue;
-        if (!traderMap[seller]) traderMap[seller] = { addr: seller, spent: 0, received: 0, tokBought: 0, tokSold: 0 };
+        if (!traderMap[seller]) traderMap[seller] = { addr: seller, spent: 0, received: 0, tokBought: 0, tokSold: 0, buyCount: 0, sellCount: 0 };
         traderMap[seller].received += Number(sui_out) / 1e9;
         traderMap[seller].tokSold  += Number(tokens_in) / TOKEN_SCALE;
+        traderMap[seller].sellCount += 1;
       }
 
       const traderList = Object.values(traderMap)
@@ -166,7 +168,7 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = n
                 <span className="text-[10px] font-mono text-white/20 w-4">{i + 1}</span>
                 <div className="flex-1 min-w-0">
                   <span className="text-[10px] font-mono text-white/60">{shortAddr(t.addr)}</span>
-                  <div className="text-[9px] font-mono text-white/25 mt-0.5">{t.tokBought.toFixed(0)} bought · {t.tokSold.toFixed(0)} sold</div>
+                  <div className="text-[9px] font-mono text-white/25 mt-0.5">{t.buyCount} buys · {t.sellCount} sells · {t.tokBought.toFixed(0)} bought · {t.tokSold.toFixed(0)} sold</div>
                 </div>
                 <span className={`text-[10px] font-mono font-bold ${t.pnl >= 0 ? 'text-lime-400' : 'text-red-400'}`}>
                   {fmtPnl(t.pnl, suiUsd)}
