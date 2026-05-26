@@ -1,6 +1,5 @@
 // LiveFeedSidebar.jsx  -  real-time buys/sells across all tokens
 import React, { useState, useEffect, useRef } from 'react';
-import { useCurrentClient } from '@mysten/dapp-kit-react';
 import { useNavigate } from 'react-router-dom';
 import { Zap, X } from 'lucide-react';
 import { ALL_PACKAGE_IDS } from './constants.js';
@@ -22,7 +21,6 @@ function fmt(n) {
 }
 
 export default function LiveFeedSidebar({ tokens, onClose }) {
-  const client = useCurrentClient();
   const navigate = useNavigate();
   const [feed, setFeed] = useState([]);
   const seenRef = useRef(new Set());
@@ -75,7 +73,7 @@ export default function LiveFeedSidebar({ tokens, onClose }) {
     async function pollRpc() {
       const buyTypes  = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensPurchased`);
       const sellTypes = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensSold`);
-      const eventMap  = await paginateMultipleEvents(client, [...buyTypes, ...sellTypes], { order: 'descending', maxPages: 2 });
+      const eventMap = {}; // RPC fallback removed (CORS blocked)
       const newItems = [];
       for (const bt of buyTypes) {
         for (const e of (eventMap[bt] || [])) {
@@ -158,7 +156,7 @@ export default function LiveFeedSidebar({ tokens, onClose }) {
       esRef.current?.close();
       clearTimeout(timerRef.current);
     };
-  }, [client]);
+  }, []);
 
   const timeAgo = (ts) => {
     if (!ts) return '';

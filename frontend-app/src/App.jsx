@@ -556,7 +556,7 @@ function useNotifications(walletAddress) {
     load();
     const timer = setInterval(load, 30_000);
     return () => { cancelled = true; clearInterval(timer); };
-  }, [walletAddress, client, storageKey]);
+  }, [walletAddress, storageKey]);
 
   const markAllRead = () => {
     if (!storageKey) return;

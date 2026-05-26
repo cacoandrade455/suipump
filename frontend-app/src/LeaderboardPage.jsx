@@ -1,6 +1,5 @@
 // LeaderboardPage.jsx
 import React, { useState, useEffect } from 'react';
-import { useCurrentClient } from '@mysten/dapp-kit-react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, TrendingUp, Trophy, Zap } from 'lucide-react';
 import { ALL_PACKAGE_IDS } from './constants.js';
@@ -32,7 +31,6 @@ function RankBadge({ rank }) {
 }
 
 export default function LeaderboardPage({ onBack, lang = 'en' }) {
-  const client = useCurrentClient();
   const navigate = useNavigate();
   const { tokens } = useTokenList();
   const [tokenVolumes, setTokenVolumes] = useState([]);
@@ -60,7 +58,7 @@ export default function LeaderboardPage({ onBack, lang = 'en' }) {
     async function loadFromRpc() {
       const buyTypes  = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensPurchased`);
       const sellTypes = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensSold`);
-      const eventMap  = await paginateMultipleEvents(client, [...buyTypes, ...sellTypes], { order: 'descending', maxPages: 10 });
+      const eventMap = {}; // RPC fallback removed (CORS blocked)
       const buysData  = buyTypes.flatMap(t => eventMap[t] ?? []);
       const sellsData = sellTypes.flatMap(t => eventMap[t] ?? []);
       const volumeByCurve = {}, tradesByCurve = {}, volumeByTrader = {}, tradesByTrader = {};
@@ -92,7 +90,7 @@ export default function LeaderboardPage({ onBack, lang = 'en' }) {
     }
     load();
     return () => { cancelled = true; };
-  }, [client]);
+  }, []);
 
   const enrichedTokens = tokenVolumes.map(tv => {
     const meta = tokens.find(tk => tk.curveId === tv.curveId);
