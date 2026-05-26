@@ -221,7 +221,7 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
   const [lockDuration, setLockDuration] = React.useState('30d');
 
   const isV7      = isV7OrLater(packageId);
-  const vestingPkg = PACKAGE_ID_V7;
+  const vestingPkg = packageId; // use the token's actual package — lock_tokens exists in V7 and V8
 
   const loadLocks = useCallback(async () => {
     if (!isV7 || !curveId || !account || !vestingPkg) { setLoading(false); return; }
