@@ -1,5 +1,7 @@
-// v17-network-banner
+// v18-strategies-lifted
 // App.jsx  -  react-router-dom based routing
+// Strategy hooks (useSniper, useDCA, useCopyTrade) lifted to app level so they
+// survive modal open/close. Hooks only stop when the browser tab is closed.
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, useNavigate, useParams, Link, useLocation } from 'react-router-dom';
 import { useCurrentAccount, useDAppKit, useCurrentClient } from '@mysten/dapp-kit-react';
@@ -24,6 +26,9 @@ import LiveFeedSidebar from './LiveFeedSidebar.jsx';
 import { useWatchlist } from './useWatchlist.js';
 import StrategiesModal from './StrategiesModal.jsx';
 import { useTradeKey } from './useTradeKey.js';
+import { useSniper } from './useSniper.js';
+import { useDCA } from './useDCA.js';
+import { useCopyTrade } from './useCopyTrade.js';
 
 const MIST_PER_SUI = 1e9;
 const TOTAL_SUPPLY_WHOLE = 1_000_000_000;
@@ -39,51 +44,23 @@ async function refreshSuiUsd() {
       const r = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=sui&vs_currencies=usd');
       const j = await r.json();
       _suiUsdCache = j?.sui?.usd || 0;
-    } catch { _suiUsdCache = 0; }
+    } catch {}
   }
   return _suiUsdCache;
 }
 
-function fmt(n, d = 2) {
-  if (n == null) return ' - ';
-  if (!Number.isFinite(n)) return ' - ';
-  if (n >= 1e9) return (n / 1e9).toFixed(d) + 'B';
-  if (n >= 1e6) return (n / 1e6).toFixed(d) + 'M';
-  if (n >= 1e3) return (n / 1e3).toFixed(d) + 'k';
-  return n.toFixed(d);
-}
-
-function timeAgoShort(ts) {
-  if (!ts) return ' - ';
-  const diff = Date.now() - ts;
-  if (diff < 60_000) return 'just now';
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
-  return `${Math.floor(diff / 86_400_000)}d ago`;
-}
-
-// ── Network detection banner ─────────────────────────────────────────────────
-
+// ── Network banner ────────────────────────────────────────────────────────────
 function NetworkBanner() {
-  const account = useCurrentAccount();
   const [dismissed, setDismissed] = useState(
     () => { try { return sessionStorage.getItem('suipump_net_banner') === '1'; } catch { return false; } }
   );
-
-  if (dismissed || !account) return null;
-
-  const chains = account.chains ?? [];
-  const onTestnet = chains.length === 0 || chains.some(c => c === 'sui:testnet' || c === 'sui:unknown');
-  if (onTestnet) return null;
-
-  const chainLabel = chains[0]?.replace('sui:', '') ?? 'unknown';
-
+  if (dismissed) return null;
   return (
-    <div className="w-full bg-red-950/60 border-b border-red-500/30 px-4 py-2.5 flex items-center justify-between gap-3 sticky top-[57px] z-30">
+    <div className="w-full bg-red-950/40 border-b border-red-500/20 px-4 py-2 flex items-center justify-between gap-3 sticky top-[57px] z-30">
       <div className="flex items-center gap-2.5 min-w-0">
-        <AlertTriangle size={13} className="text-red-400 shrink-0" />
-        <p className="text-[11px] font-mono text-red-300 leading-snug">
-          Your wallet is on <span className="font-bold text-red-200 uppercase">{chainLabel}</span> — SuiPump runs on <span className="font-bold text-red-200">testnet</span>. Switch networks in your wallet to trade.
+        <AlertTriangle size={11} className="text-red-400/70 shrink-0" />
+        <p className="text-[10px] font-mono text-red-300/60 leading-snug">
+          <span className="font-bold text-red-200/80">TESTNET</span> — tokens have no real value. For testing only.
         </p>
       </div>
       <button
@@ -98,18 +75,12 @@ function NetworkBanner() {
 }
 
 // ── Strategies locked banner ──────────────────────────────────────────────────
-// Shows when the user has a saved trading key but it's not yet unlocked
-// this session. Reminds them strategies won't execute until they unlock.
-
 function StrategiesLockedBanner({ tradeKey, onOpenStrategies }) {
   const account    = useCurrentAccount();
   const [dismissed, setDismissed] = useState(
     () => { try { return sessionStorage.getItem('suipump_key_banner') === '1'; } catch { return false; } }
   );
-
-  // Only show if: wallet connected, has saved key, key is NOT ready (locked)
   if (!account || !tradeKey.hasKey || tradeKey.isReady || dismissed) return null;
-
   return (
     <div className="w-full bg-yellow-950/40 border-b border-yellow-500/20 px-4 py-2 flex items-center justify-between gap-3 sticky top-[57px] z-30">
       <div className="flex items-center gap-2.5 min-w-0">
@@ -143,30 +114,23 @@ function ScrollToTop() {
   return null;
 }
 
-// ── Live stats hook ──────────────────────────────────────────────────────────
-
+// ── Live stats hook ───────────────────────────────────────────────────────────
 const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
 
-// Testnet: apply localStorage metadata/links overrides to token display
-// V7 will replace this with proper on-chain metadata updates
 function applyLocalOverrides(token) {
   try {
     const metaOverride  = JSON.parse(localStorage.getItem(`suipump_meta_${token.curveId}`)  || '{}');
-    const linksOverride = JSON.parse(localStorage.getItem(`suipump_links_${token.curveId}`) || '{}');
     return {
       ...token,
       name:    metaOverride.name    || token.name,
       symbol:  metaOverride.symbol  || token.symbol,
       iconUrl: metaOverride.iconUrl || token.iconUrl || null,
     };
-  } catch {
-    return token;
-  }
+  } catch { return token; }
 }
 
 function useStats() {
   const [stats, setStats] = useState({ poolSui: null, tradeCount: null, volume: null });
-
   useEffect(() => {
     if (!INDEXER_URL) return;
     let cancelled = false;
@@ -183,11 +147,8 @@ function useStats() {
     const timer = setInterval(load, 30_000);
     return () => { cancelled = true; clearInterval(timer); };
   }, []);
-
   return stats;
 }
-
-// ── % change badge ───────────────────────────────────────────────────────────
 
 function PctBadge({ pct }) {
   if (pct == null || !Number.isFinite(pct)) return null;
@@ -201,1108 +162,118 @@ function PctBadge({ pct }) {
   );
 }
 
-// ── Token card ───────────────────────────────────────────────────────────────
-
-// ── Sparkline mini chart ─────────────────────────────────────────────────────
-function Sparkline({ points, width = 80, height = 24 }) {
-  if (!points || points.length < 2) return null;
-  const prices = points.map(p => p.p);
-  const min = Math.min(...prices);
-  const max = Math.max(...prices);
-  const range = max - min || 1;
-  const pts = prices.map((p, i) => {
-    const x = (i / (prices.length - 1)) * width;
-    const y = height - ((p - min) / range) * height;
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(' ');
-  const isUp = prices[prices.length - 1] >= prices[0];
-  return (
-    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ overflow: 'visible' }}>
-      <polyline points={pts} fill="none" stroke={isUp ? '#84cc16' : '#f87171'} strokeWidth="1.5" strokeLinejoin="round" opacity="0.8" />
-    </svg>
-  );
-}
-
-function TokenCard({ token, stats, curveState: curveStateProp, isCrown, suiUsd = 0, isWatched, onToggleWatch }) {
+// ── Header ────────────────────────────────────────────────────────────────────
+function Header({ onLaunch, lang, setLang, onToggleFeed, showFeed, onStrategies }) {
+  const account = useCurrentAccount();
+  const dAppKit = useDAppKit();
   const navigate = useNavigate();
-  const iconUrl = token.iconUrl || null;
-
-  // curveState from parent (pre-loaded via /tokens/stats) — no per-card fetch needed
-  // Derive curve state fields from tokenStats + curveStateProp
-  const curveState = curveStateProp ? {
-    sui_reserve:   String(Math.round((curveStateProp.reserveSui ?? 0) * 1e9)),
-    token_reserve: String(800_000_000 * 1e6),  // approximate — not needed for display
-    graduated:     curveStateProp.graduated ?? false,
-    creator:       token.creator ?? null,
-  } : null;
-
-  // All curve math derived from pre-loaded curveStateProp — zero per-card fetches
-  const cardShape   = curveShapeFor(token.packageId);
-  const cardDrain   = cardShape.drainSui;
-  const cardVSui    = cardShape.virtualSui;
-  const cardVTok    = cardShape.virtualTokens;
-  const reserveSui  = curveStateProp?.reserveSui ?? 0;
-  const reserveMist = BigInt(Math.round(reserveSui * 1e9));
-  const progress    = curveStateProp?.progress ?? 0;
-  const graduated   = curveStateProp?.graduated ?? false;
-  // Price from tokenStats last_price (most up-to-date from SSE)
-  const pricePerWhole  = stats?.lastPrice ?? 0;
-  const marketCapSui   = pricePerWhole * TOTAL_SUPPLY_WHOLE;
-  // Fallback: compute from virtual reserve curve (start price) when no trades
-  const priceMist      = pricePerWhole > 0
-    ? BigInt(Math.round(pricePerWhole * 1e9))
-    : priceMistPerToken(0n, BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS), cardVSui, cardVTok);
-  const isTrending = stats?.recentTrades >= 3;
-  const isNew = token.timestamp && (Date.now() - token.timestamp) < 30 * 60 * 1000;
-  const suiUntilGrad = Math.max(0, cardDrain - mistToSui(reserveMist));
-
-  // Social links  -  twitter/telegram parsed from description via || delimiter
-  const description = curveState?.description || '';
-  const parts = description.split('||');
-  const hasTwitter  = parts.some(p => p.trim().startsWith('tw:'));
-  const hasTelegram = parts.some(p => p.trim().startsWith('tg:'));
-  const hasVerified = hasTwitter || hasTelegram;
-
-  // Dev buy
-  const devBuySui = stats?.devBuyMist ? stats.devBuyMist / 1e9 : 0;
-
-  const timeAgo = token.timestamp ? (() => {
-    const diff = Date.now() - token.timestamp;
-    if (diff < 60_000) return 'just now';
-    if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m`;
-    if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h`;
-    return `${Math.floor(diff / 86_400_000)}d`;
-  })() : '';
+  const [showConnect, setShowConnect] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [showLangMenu, setShowLangMenu] = useState(false);
 
   return (
-    <button
-      onClick={() => navigate(`/token/${token.curveId}`)}
-      className={`text-left rounded-2xl border bg-white/[0.03] hover:bg-white/[0.06] transition-all duration-200 p-4 w-full group relative ${
-        isCrown
-          ? 'border-lime-400/50 shadow-lg shadow-lime-400/10'
-          : 'border-white/10 hover:border-lime-400/30'
-      }`}
-    >
-      {isCrown && (
-        <div className="absolute -top-3 left-1/2 -translate-x-1/2 flex items-center gap-1 bg-[#080808] border border-lime-400/40 rounded-full px-2.5 py-0.5">
-          <Crown size={10} className="text-lime-400" />
-          <span className="text-[9px] font-mono font-bold text-lime-400 tracking-widest">COMMUNITY CROWN</span>
-        </div>
-      )}
+    <header className="sticky top-0 z-40 border-b border-white/8 bg-[#080808]/95 backdrop-blur-md">
+      <div className="max-w-6xl mx-auto px-4 h-[57px] flex items-center justify-between gap-3">
+        {/* Logo */}
+        <button onClick={() => navigate('/')} className="flex items-center gap-2 shrink-0 group">
+          <div className="w-7 h-7 rounded-lg bg-lime-400 flex items-center justify-center group-hover:bg-lime-300 transition-colors">
+            <Flame size={14} className="text-black" />
+          </div>
+          <span className="text-sm font-mono font-bold text-white tracking-widest hidden sm:block">SUIPUMP</span>
+        </button>
 
-      {/* Row 1  -  icon + name + badges + watchlist */}
-      <div className={`flex items-start justify-between mb-2 ${isCrown ? 'mt-1' : ''}`}>
-        <div className="flex items-center gap-2.5">
-          <div className={`w-10 h-10 rounded-full overflow-hidden border-2 flex items-center justify-center bg-lime-950/30 shrink-0 transition-all ${
-            isCrown ? 'border-lime-400/40' : 'border-white/10 group-hover:border-lime-400/30'
-          }`}>
-            {iconUrl
-              ? <img src={iconUrl} alt={token.symbol} className="w-full h-full object-cover"
-                  onError={e => { e.target.style.display='none'; e.target.nextSibling.style.display='block'; }} />
-              : null}
-            <span className="text-lg" style={{ display: iconUrl ? 'none' : 'block' }}>🔥</span>
-          </div>
-          <div>
-            <div className="flex items-center gap-1.5">
-              <span className="text-sm font-bold text-white font-mono leading-none">{token.name}</span>
-              {hasVerified && (
-                <span className="text-lime-400" title="Has social links">
-                  <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><path d="M5 0L6.18 3.18L9.51 3.09L7 5.14L7.94 8.41L5 6.5L2.06 8.41L3 5.14L.49 3.09L3.82 3.18Z"/></svg>
-                </span>
-              )}
-            </div>
-            <div className="flex items-center gap-1.5 mt-0.5">
-              <span className="text-[10px] text-lime-400/70 font-mono">${token.symbol}</span>
-              <span className="text-[9px] font-mono text-white/25">{timeAgo}</span>
-            </div>
-          </div>
-        </div>
-        <div className="flex items-center gap-1 flex-col items-end">
-          <div className="flex items-center gap-1">
-            {isNew && (
-              <div className="text-[9px] font-mono text-white bg-white/15 border border-white/20 px-1.5 py-0.5 rounded-full">
-                NEW
-              </div>
-            )}
-            {isTrending && (
-              <div className="text-[9px] font-mono text-lime-400 bg-lime-400/10 border border-lime-400/20 px-1.5 py-0.5 rounded-full flex items-center gap-0.5">
-                <Flame size={8} /> HOT
-              </div>
-            )}
-            {graduated && (
-              <div className="text-[9px] font-mono text-emerald-400 bg-emerald-400/10 border border-emerald-400/20 px-1.5 py-0.5 rounded-full">
-                GRAD
-              </div>
-            )}
-            {!graduated && (() => {
-              const gt = Number(curveState?.graduation_target ?? 0);
-              const label = gt === 1 ? '⚡ Deep' : gt === 2 ? '🔄 Turbos' : '🌊 Cetus';
-              const cls = gt === 1
-                ? 'border-blue-400/25 text-blue-400/60 bg-blue-400/5'
-                : gt === 2
-                ? 'border-purple-400/25 text-purple-400/60 bg-purple-400/5'
-                : 'border-lime-400/25 text-lime-400/60 bg-lime-400/5';
-              return (
-                <div className={`text-[9px] font-mono px-1.5 py-0.5 rounded-full border ${cls}`}>
-                  {label}
-                </div>
-              );
-            })()}
-            <PctBadge pct={stats?.pctChange} />
-          </div>
-          {/* Watchlist star */}
+        {/* Nav */}
+        <nav className="hidden md:flex items-center gap-1">
+          {[
+            { label: t(lang,'leaderboard'), path: '/leaderboard', icon: <Trophy size={11}/> },
+            { label: t(lang,'stats'),       path: '/stats',       icon: <BarChart3 size={11}/> },
+            { label: t(lang,'portfolio'),   path: '/portfolio',   icon: <Wallet size={11}/> },
+            { label: t(lang,'s1Airdrop'),   path: '/airdrop',     icon: <Gift size={11}/> },
+          ].map(({ label, path, icon }) => (
+            <Link key={path} to={path}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-mono text-white/40 hover:text-white hover:bg-white/5 transition-all">
+              {icon}{label}
+            </Link>
+          ))}
+        </nav>
+
+        {/* Right actions */}
+        <div className="flex items-center gap-2">
+          {/* Strategies button */}
           <button
-            onClick={e => { e.stopPropagation(); onToggleWatch && onToggleWatch(token.curveId); }}
-            className={`p-0.5 transition-colors ${isWatched ? 'text-lime-400' : 'text-white/15 hover:text-white/40'}`}
+            onClick={onStrategies}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-mono text-white/40 hover:text-white hover:bg-white/5 transition-all"
+            title="Trading Strategies"
           >
-            <Star size={11} fill={isWatched ? 'currentColor' : 'none'} />
+            <Zap size={11} />
+            <span className="hidden sm:block">Strategies</span>
+          </button>
+
+          {/* Launch */}
+          <button
+            onClick={onLaunch}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-lime-400 text-black text-[11px] font-mono font-bold hover:bg-lime-300 transition-colors"
+          >
+            <Plus size={11} />
+            <span className="hidden sm:block">{t(lang,'launchToken')}</span>
+          </button>
+
+          {/* Connect */}
+          {account ? (
+            <button
+              onClick={() => dAppKit.disconnectWallet()}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-[11px] font-mono text-white/50 hover:text-white hover:border-white/20 transition-all"
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-lime-400" />
+              <span className="hidden sm:block">{account.address.slice(0,6)}…{account.address.slice(-4)}</span>
+            </button>
+          ) : (
+            <button
+              onClick={() => setShowConnect(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-[11px] font-mono text-white/50 hover:text-white hover:border-white/20 transition-all"
+            >
+              <Wallet size={11} />
+              <span className="hidden sm:block">{t(lang,'connect')}</span>
+            </button>
+          )}
+
+          {/* Mobile menu */}
+          <button
+            onClick={() => setMenuOpen(o => !o)}
+            className="md:hidden p-1.5 text-white/40 hover:text-white transition-colors"
+          >
+            {menuOpen ? <X size={16}/> : <Menu size={16}/>}
           </button>
         </div>
       </div>
 
-      {/* Row 2  -  sparkline + price */}
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-2">
-          {(() => {
-            const spark = stats?.sparkline24h;
-            if (spark?.length >= 2) return <Sparkline points={spark} width={72} height={22} />;
-            // Fallback: 2-point line from firstPrice → lastPrice
-            if (stats?.firstPrice && stats?.lastPrice) {
-              const synth = [{ p: stats.firstPrice }, { p: stats.lastPrice }];
-              return <Sparkline points={synth} width={72} height={22} />;
-            }
-            return <div className="w-[72px] h-[22px] flex items-center"><div className="w-full h-px bg-white/5" /></div>;
-          })()}
-        </div>
-        <div className="text-right">
-          <div className="text-[11px] font-mono font-bold text-white/80">
-            {curveState
-              ? suiUsd > 0
-                ? (() => { const p = (Number(priceMist)/1e9)*suiUsd; return p >= 0.01 ? `$${p.toFixed(4)}` : p >= 1e-6 ? `$${p.toFixed(8)}` : `$${p.toPrecision(4)}`; })()
-                : `${(Number(priceMist) / 1e9).toFixed(7)} SUI`
-              : '…'}
-          </div>
-          {marketCapSui > 0 && (
-            <div className="text-[9px] font-mono text-white/25">
-              {suiUsd > 0
-                ? (() => { const mc = marketCapSui * suiUsd; return mc >= 1e6 ? `MC $${(mc/1e6).toFixed(2)}M` : mc >= 1e3 ? `MC $${(mc/1e3).toFixed(1)}k` : `MC $${mc.toFixed(0)}`; })()
-                : `MC ${fmt(marketCapSui, 0)} SUI`}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Row 3  -  progress bar + graduation countdown */}
-      <div className="mb-2">
-        <div className="h-1.5 bg-white/5 rounded-full overflow-hidden mb-1">
-          <div
-            className={`h-full rounded-full transition-all duration-500 ${
-              isCrown
-                ? 'bg-gradient-to-r from-lime-500 to-lime-300'
-                : 'bg-gradient-to-r from-lime-600 to-lime-400'
-            }`}
-            style={{ width: `${Math.max(progress, 1)}%` }}
-          />
-        </div>
-        {!graduated && suiUntilGrad > 0 && (
-          <div className="text-[9px] font-mono text-white/25">
-            {fmt(suiUntilGrad, 0)} SUI until graduation
-          </div>
-        )}
-      </div>
-
-      {/* Row 4  -  stats strip */}
-      <div className="flex items-center justify-between text-[9px] font-mono">
-        <div className="flex items-center gap-2 text-white/30">
-          {(stats?.volume ?? 0) > 0 && (
-            <span className="text-lime-400/60">{fmt(stats.volume, 1)} SUI vol</span>
-          )}
-          {stats?.trades > 0 && (
-            <span>{stats.trades} trades</span>
-          )}
-          {stats?.holderCount > 0 && (
-            <span className="flex items-center gap-0.5">
-              <Users size={8} /> {stats.holderCount}
-            </span>
-          )}
-          {stats?.commentCount > 0 && (
-            <span className="flex items-center gap-0.5">
-              <MessageCircle size={8} /> {stats.commentCount}
-            </span>
-          )}
-        </div>
-        {devBuySui > 0 && (
-          <span className="text-white/20">dev {fmt(devBuySui, 2)} SUI</span>
-        )}
-      </div>
-    </button>
-  );
-}
-
-function SkeletonCard() {
-  return (
-    <div className="rounded-2xl border border-white/5 bg-white/[0.02] p-4 w-full animate-pulse">
-      <div className="flex items-center gap-3 mb-4">
-        <div className="w-11 h-11 rounded-full bg-white/5" />
-        <div className="flex-1">
-          <div className="h-3 bg-white/5 rounded w-24 mb-2" />
-          <div className="h-2.5 bg-white/5 rounded w-16" />
-        </div>
-      </div>
-      <div className="h-1.5 bg-white/5 rounded-full mb-3" />
-      <div className="flex justify-between">
-        <div className="h-2.5 bg-white/5 rounded w-16" />
-        <div className="h-2.5 bg-white/5 rounded w-24" />
-      </div>
-    </div>
-  );
-}
-
-function MobileWalletButtons() {
-  const [show, setShow] = React.useState(false);
-  const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-  if (!isMobile) return null;
-  const dappUrl = encodeURIComponent('https://suipump.vercel.app');
-  const wallets = [
-    { name: 'Phantom', icon: 'https://www.phantom.app/img/phantom-logo.png', url: `https://phantom.app/ul/browse/${dappUrl}?ref=${dappUrl}` },
-    { name: 'Slush', icon: 'https://slush.app/favicon.ico', url: `https://slush.app/open?url=${dappUrl}` },
-  ];
-  return (
-    <div className="mt-3">
-      {!show ? (
-        <button
-          onClick={() => setShow(true)}
-          className="w-full py-2.5 rounded-xl border border-white/10 text-[10px] font-mono text-white/40 hover:text-white hover:border-white/20 transition-colors"
-        >
-          Open in wallet browser
-        </button>
-      ) : (
-        <div className="flex gap-2">
-          {wallets.map(w => (
-            <a key={w.name} href={w.url}
-              className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl border border-white/10 text-[10px] font-mono text-white/50 hover:text-white hover:border-white/20 transition-colors"
-            >
-              <img src={w.icon} alt={w.name} className="w-4 h-4 rounded" onError={e => { e.target.style.display='none'; }} />
-              {w.name}
-            </a>
+      {/* Mobile menu */}
+      {menuOpen && (
+        <div className="md:hidden border-t border-white/5 bg-[#080808] px-4 py-3 space-y-1">
+          {[
+            { label: t(lang,'leaderboard'), path: '/leaderboard' },
+            { label: t(lang,'stats'),       path: '/stats' },
+            { label: t(lang,'portfolio'),   path: '/portfolio' },
+            { label: t(lang,'s1Airdrop'),   path: '/airdrop' },
+            { label: t(lang,'whitepaper'),  path: '/whitepaper' },
+            { label: t(lang,'roadmap'),     path: '/roadmap' },
+          ].map(({ label, path }) => (
+            <Link key={path} to={path} onClick={() => setMenuOpen(false)}
+              className="block px-3 py-2 rounded-lg text-[11px] font-mono text-white/40 hover:text-white hover:bg-white/5 transition-all">
+              {label}
+            </Link>
           ))}
         </div>
       )}
-    </div>
-  );
-}
 
-// ── Notifications ─────────────────────────────────────────────────────────────
-
-function useNotifications(walletAddress) {
-  const [notifications, setNotifications] = useState([]);
-  const [unread, setUnread] = useState(0);
-  const storageKey = walletAddress ? `suipump_notif_seen_${walletAddress}` : null;
-  const IURL = import.meta.env.VITE_INDEXER_URL || '';
-
-  useEffect(() => {
-    if (!walletAddress || !IURL) return;
-    let cancelled = false;
-
-    async function load() {
-      try {
-        // Load creator's tokens from indexer (no RPC/CORS issue)
-        const tokensRes = await fetch(`${IURL}/tokens?creator=${walletAddress}`, { signal: AbortSignal.timeout(5000) });
-        if (!tokensRes.ok) return;
-        const myTokens = await tokensRes.json();
-        const myCurveIds = new Set(myTokens.map(t => t.curveId).filter(Boolean));
-
-        if (myCurveIds.size === 0) { if (!cancelled) setNotifications([]); return; }
-
-        // Load comments on creator's tokens
-        const commentResults = await Promise.all(
-          [...myCurveIds].slice(0, 10).map(cid =>
-            fetch(`${IURL}/token/${cid}/comments`, { signal: AbortSignal.timeout(5000) })
-              .then(r => r.ok ? r.json() : [])
-              .then(rows => rows.map(r => ({
-                id: r.tx_digest + '_' + (r.event_seq ?? 0),
-                type: 'comment',
-                curveId: cid,
-                author: r.data?.author ?? '',
-                text: r.data?.text ?? '',
-                timestamp: r.timestamp_ms ? Number(r.timestamp_ms) : 0,
-              })))
-              .catch(() => [])
-          )
-        );
-
-        // Load graduations
-        const gradResults = await Promise.all(
-          [...myCurveIds].slice(0, 10).map(cid =>
-            fetch(`${IURL}/token/${cid}`, { signal: AbortSignal.timeout(5000) })
-              .then(r => r.ok ? r.json() : null)
-              .then(d => d?.graduated ? [{ id: `grad_${cid}`, type: 'graduated', curveId: cid, author: null, text: null, timestamp: d.graduatedAt ?? 0 }] : [])
-              .catch(() => [])
-          )
-        );
-
-        const allComments = commentResults.flat().filter(c => c.author !== walletAddress);
-        const allGrads = gradResults.flat();
-        const myCurveIds_placeholder = myCurveIds; // already have it
-
-        const relevant = [...allComments, ...allGrads]
-          .sort((a, b) => b.timestamp - a.timestamp)
-          .slice(0, 20);
-
-        if (!cancelled) {
-          setNotifications(relevant);
-          const lastSeen = parseInt(localStorage.getItem(storageKey) || '0', 10);
-          setUnread(relevant.filter(n => n.timestamp > lastSeen).length);
-        }
-      } catch {}
-    }
-
-    load();
-    const timer = setInterval(load, 30_000);
-    return () => { cancelled = true; clearInterval(timer); };
-  }, [walletAddress, storageKey]);
-
-  const markAllRead = () => {
-    if (!storageKey) return;
-    localStorage.setItem(storageKey, String(Date.now()));
-    setUnread(0);
-  };
-
-  return { notifications, unread, markAllRead };
-}
-
-function NotificationBell({ walletAddress }) {
-  const navigate = useNavigate();
-  const { notifications, unread, markAllRead } = useNotifications(walletAddress);
-  const [open, setOpen] = useState(false);
-  const bellRef = React.useRef(null);
-
-  useEffect(() => {
-    if (!open) return;
-    function handle(e) {
-      if (bellRef.current && !bellRef.current.contains(e.target)) setOpen(false);
-    }
-    document.addEventListener('mousedown', handle);
-    return () => document.removeEventListener('mousedown', handle);
-  }, [open]);
-
-  const toggle = () => {
-    if (!open) markAllRead();
-    setOpen(o => !o);
-  };
-
-  function timeAgo(ts) {
-    if (!ts) return '';
-    const diff = Date.now() - ts;
-    if (diff < 60_000) return 'just now';
-    if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
-    if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
-    return `${Math.floor(diff / 86_400_000)}d ago`;
-  }
-
-  function shortAddr(addr) {
-    if (!addr) return ' - ';
-    return addr.slice(0, 6) + '…' + addr.slice(-4);
-  }
-
-  if (!walletAddress) return null;
-
-  return (
-    <div className="relative" ref={bellRef}>
-      <button
-        onClick={toggle}
-        className={`relative p-1.5 rounded-lg transition-colors ${
-          open ? 'text-lime-400 bg-lime-400/10' : 'text-white/30 hover:text-white'
-        }`}
-        title="Notifications"
-      >
-        <Bell size={13} />
-        {unread > 0 && (
-          <span className="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 bg-red-500 rounded-full text-[8px] font-bold text-white flex items-center justify-center leading-none">
-            {unread > 9 ? '9+' : unread}
-          </span>
-        )}
-      </button>
-
-      {open && (
-        <div className="absolute right-0 top-full mt-2 w-80 bg-[#0e0e0e] border border-white/10 rounded-xl shadow-2xl z-50 overflow-hidden">
-          <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
-            <span className="text-[10px] font-mono text-white/50 tracking-widest">NOTIFICATIONS</span>
-            <span className="text-[10px] font-mono text-white/25">{notifications.length} total</span>
-          </div>
-          {notifications.length === 0 ? (
-            <div className="px-4 py-8 text-center text-white/25 text-xs font-mono">
-              No comments on your tokens yet
-            </div>
-          ) : (
-            <div className="max-h-80 overflow-y-auto divide-y divide-white/5">
-              {notifications.map(n => (
-                <button
-                  key={n.id}
-                  onClick={() => { navigate(`/token/${n.curveId}`); setOpen(false); }}
-                  className="w-full px-4 py-3 text-left hover:bg-white/[0.03] transition-colors"
-                >
-                  {n.type === 'graduated' ? (
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2">
-                        <span className="text-base">🎓</span>
-                        <div>
-                          <p className="text-xs font-mono font-bold text-lime-400">Token Graduated!</p>
-                          <p className="text-[10px] font-mono text-white/40">{n.curveId?.slice(0, 12)}…</p>
-                        </div>
-                      </div>
-                      <span className="text-[10px] font-mono text-white/25 flex-shrink-0">{timeAgo(n.timestamp)}</span>
-                    </div>
-                  ) : (
-                    <>
-                      <div className="flex items-start justify-between gap-2 mb-1">
-                        <span className="text-[10px] font-mono text-lime-400/80">{shortAddr(n.author)}</span>
-                        <span className="text-[10px] font-mono text-white/25 flex-shrink-0">{timeAgo(n.timestamp)}</span>
-                      </div>
-                      <p className="text-xs text-white/60 leading-relaxed line-clamp-2">{n.text}</p>
-                      <p className="text-[9px] font-mono text-white/20 mt-1">{n.curveId?.slice(0, 12)}…</p>
-                    </>
-                  )}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Custom wallet button ──────────────────────────────────────────────────────
-
-function WalletButton({ size = 'md', lang = 'en' }) {
-  const account = useCurrentAccount();
-  const dAppKit = useDAppKit();
-  const [open, setOpen] = useState(false);
-  const [showMenu, setShowMenu] = useState(false);
-  const menuRef = React.useRef(null);
-
-  useEffect(() => {
-    if (!showMenu) return;
-    function handle(e) {
-      if (menuRef.current && !menuRef.current.contains(e.target)) setShowMenu(false);
-    }
-    document.addEventListener('mousedown', handle);
-    return () => document.removeEventListener('mousedown', handle);
-  }, [showMenu]);
-
-  const btnCls = size === 'sm'
-    ? 'flex items-center gap-1.5 px-3 py-1.5 text-[10px] rounded-xl font-mono font-bold border transition-all'
-    : 'flex items-center gap-2 px-4 py-2 text-xs rounded-xl font-mono font-bold border transition-all';
-
-  if (!account) {
-    return (
-      <>
-        <button
-          onClick={() => setOpen(true)}
-          className={`${btnCls} bg-white/5 border-white/15 text-white/70 hover:border-lime-400/40 hover:text-white`}
-        >
-          {t(lang, 'connect')}
-        </button>
-        <ConnectModal open={open} onOpenChange={setOpen} />
-      </>
-    );
-  }
-
-  const addr = account.address;
-  const short = `${addr.slice(0, 6)}…${addr.slice(-4)}`;
-
-  return (
-    <div className="relative" ref={menuRef}>
-      <button
-        onClick={() => setShowMenu(o => !o)}
-        className={`${btnCls} bg-white/5 border-white/15 text-white/70 hover:border-lime-400/40 hover:text-white`}
-      >
-        <span>{short}</span>
-        <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor" className="opacity-50">
-          <path d="M5 7L1 3h8z"/>
-        </svg>
-      </button>
-      {showMenu && (
-        <div className="absolute right-0 top-full mt-1.5 w-44 bg-[#111] border border-white/10 rounded-xl shadow-xl z-50 overflow-hidden">
-          <div className="px-3 py-2 border-b border-white/5">
-            <div className="text-[9px] font-mono text-white/30 tracking-widest mb-0.5">{t(lang, 'wallet')}</div>
-            <div className="text-[10px] font-mono text-white/60 truncate">{short}</div>
-          </div>
-          <button
-            onClick={() => { dAppKit.disconnectWallet(); setShowMenu(false); }}
-            className="w-full px-3 py-2.5 text-left text-[10px] font-mono text-red-400/80 hover:bg-white/5 hover:text-red-400 transition-colors"
-          >
-            {t(lang, 'disconnect')}
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Hero connect button ───────────────────────────────────────────────────────
-
-function ConnectWalletHero({ lang = 'en' }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <>
-      <button
-        onClick={() => setOpen(true)}
-        className="inline-flex items-center gap-2 px-6 py-3 rounded-2xl border border-white/10 text-sm font-mono text-white/50 hover:border-lime-400/40 hover:text-white/80 transition-all"
-      >
-        {t(lang, 'connectWalletToLaunch')}
-      </button>
-      <ConnectModal open={open} onOpenChange={setOpen} />
-    </>
-  );
-}
-
-// ── Header ────────────────────────────────────────────────────────────────────
-
-// ── Language flag emoji ───────────────────────────────────────────────────────
-const LANG_FLAG_EMOJI = {
-  en: '🇺🇸',
-  zh: '🇨🇳',
-  pt: '🇧🇷',
-  ko: '🇰🇷',
-  vi: '🇻🇳',
-  ru: '🇷🇺',
-  es: '🇪🇸',
-};
-
-function FlagImg({ code }) {
-  const emoji = LANG_FLAG_EMOJI[code] || '🌐';
-  return (
-    <span style={{ fontFamily: "'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji',sans-serif", fontSize: '13px', lineHeight: 1 }}>
-      {emoji}
-    </span>
-  );
-}
-
-function Header({ onLaunch, lang, setLang, onToggleFeed, showFeed, onStrategies }) {
-  const account = useCurrentAccount();
-  const { poolSui, tradeCount } = useStats();
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [langOpen, setLangOpen] = useState(false);
-  const langRef = React.useRef(null);
-
-  useEffect(() => {
-    if (!langOpen) return;
-    function handle(e) {
-      if (langRef.current && !langRef.current.contains(e.target)) setLangOpen(false);
-    }
-    document.addEventListener('mousedown', handle);
-    return () => document.removeEventListener('mousedown', handle);
-  }, [langOpen]);
-
-  const currentLang = LANGUAGES.find(l => l.code === lang) || LANGUAGES[0];
-
-  return (
-    <header className="border-b border-white/5 bg-black/80 backdrop-blur sticky top-0 z-40">
-      <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
-        <Link to="/" className="flex items-center gap-2.5 hover:opacity-80 transition-opacity" onClick={() => setMenuOpen(false)}>
-          <div className="relative">
-            <Flame className="text-lime-400" size={20} />
-            <div className="absolute inset-0 blur-lg bg-lime-400/40 -z-10" />
-          </div>
-          <div>
-            <div className="text-sm font-bold tracking-tight text-white" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
-              SUIPUMP<span className="text-lime-400">.</span>
-            </div>
-            <div className="hidden sm:block text-[8px] font-mono text-white/30 tracking-[0.2em] -mt-0.5">TESTNET</div>
-          </div>
-        </Link>
-
-        {/* Desktop nav */}
-        <div className="hidden sm:flex items-center gap-2">
-          <Link to="/airdrop" className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all">
-            <Gift size={10} />
-            {poolSui !== null
-              ? <span>{t(lang, 's1Airdrop')} {poolSui.toFixed(4)} SUI</span>
-              : <span>{t(lang, 's1Airdrop')}</span>}
-            {tradeCount !== null && <span className="text-white/35 ml-1">- {tradeCount} {t(lang, 'trades').toLowerCase()}</span>}
-          </Link>
-          <Link to="/stats" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5"><BarChart3 size={10} /> {t(lang, 'stats')}</Link>
-          <Link to="/leaderboard" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5"><Trophy size={10} /> {t(lang, 'leaderboard')}</Link>
-          <Link to="/portfolio" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5"><Wallet size={10} /> {t(lang, 'portfolio')}</Link>
-          <Link to="/whitepaper" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all">{t(lang, 'whitepaper')}</Link>
-          <Link to="/roadmap" className="px-3 py-1.5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50 hover:border-lime-400/40 hover:text-lime-400 transition-all flex items-center gap-1.5"><Map size={10} /> {t(lang, 'roadmap')}</Link>
-          <div className="flex items-center gap-1 ml-1">
-            {/* Language picker */}
-            <div className="relative" ref={langRef}>
-              <button
-                onClick={() => setLangOpen(o => !o)}
-                className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-[10px] font-mono text-white/40 hover:text-white border border-transparent hover:border-white/10 transition-all"
-              >
-                <FlagImg code={currentLang.code} />
-                <span>{currentLang.label}</span>
-                <svg width="8" height="8" viewBox="0 0 10 10" fill="currentColor" className="opacity-40"><path d="M5 7L1 3h8z"/></svg>
-              </button>
-              {langOpen && (
-                <div className="absolute right-0 top-full mt-1 bg-[#111] border border-white/10 rounded-xl shadow-xl z-50 overflow-hidden min-w-[110px]">
-                  {LANGUAGES.map(l => (
-                    <button
-                      key={l.code}
-                      onClick={() => { setLang(l.code); setLangOpen(false); }}
-                      className={`w-full flex items-center gap-2 px-3 py-2 text-[10px] font-mono transition-colors ${
-                        lang === l.code
-                          ? 'text-lime-400 bg-lime-400/10'
-                          : 'text-white/50 hover:bg-white/5 hover:text-white'
-                      }`}
-                    >
-                      <FlagImg code={l.code} />
-                      <span>{l.label}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-            <a href="https://x.com/SuiPump_SUMP" target="_blank" rel="noreferrer"
-              className="p-1.5 rounded-lg text-white/30 hover:text-white transition-colors" title="X / Twitter">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
-            </a>
-            <a href="https://discord.gg/UZ4wzDcEPN" target="_blank" rel="noreferrer"
-              className="p-1.5 rounded-lg text-white/30 hover:text-white transition-colors" title="Discord">
-              <MessageCircle size={13} />
-            </a>
-            <a href="https://t.me/SuiPump_SUMP" target="_blank" rel="noreferrer"
-              className="p-1.5 rounded-lg text-white/30 hover:text-white transition-colors" title="Telegram">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>
-            </a>
-            <a href="https://github.com/cacoandrade455/suipump" target="_blank" rel="noreferrer"
-              className="p-1.5 rounded-lg text-white/30 hover:text-white transition-colors" title="GitHub">
-              <Github size={13} />
-            </a>
-            <NotificationBell walletAddress={account?.address} />
-            <button
-              onClick={onToggleFeed}
-              className={`p-1.5 rounded-lg transition-colors ${showFeed ? 'text-lime-400 bg-lime-400/10' : 'text-white/30 hover:text-lime-400'}`}
-              title="Live Feed"
-            >
-              <Activity size={13} />
-            </button>
-          </div>
-          {account && (
-            <button onClick={onLaunch} className="flex items-center gap-2 px-4 py-2 bg-lime-400 text-black text-xs font-mono tracking-widest hover:bg-lime-300 transition-colors rounded-xl font-bold">
-              <Plus size={12} /> {t(lang, 'launchToken')}
-            </button>
-          )}
-          {account && (
-            <button
-              onClick={onStrategies}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-lime-400/30 text-lime-400 text-[10px] font-mono font-bold hover:bg-lime-400/10 transition-all"
-              title="Trading Strategies"
-            >
-              <Zap size={11} /> STRATEGIES
-            </button>
-          )}
-          <WalletButton size="md" lang={lang} />
-        </div>
-
-        {/* Mobile nav */}
-        <div className="flex sm:hidden items-center gap-2">
-          {account && (
-            <button onClick={onLaunch} className="flex items-center gap-1 px-3 py-1.5 bg-lime-400 text-black text-[10px] font-mono font-bold rounded-xl hover:bg-lime-300 transition-colors">
-              <Plus size={11} /> {t(lang, 'launch')}
-            </button>
-          )}
-          {account && (
-            <button onClick={onStrategies} className="p-1.5 rounded-lg border border-lime-400/30 text-lime-400 hover:bg-lime-400/10 transition-colors" title="Strategies">
-              <Zap size={14} />
-            </button>
-          )}
-          <WalletButton size="sm" lang={lang} />
-          <NotificationBell walletAddress={account?.address} />
-          <button onClick={() => setMenuOpen(o => !o)} className="p-1.5 rounded-lg border border-white/10 text-white/50 hover:text-white transition-colors">
-            {menuOpen ? <X size={16} /> : <Menu size={16} />}
-          </button>
-        </div>
-      </div>
-
-      {/* Mobile dropdown menu */}
-      {menuOpen && (
-        <div className="sm:hidden border-t border-white/5 bg-black/95 px-4 py-4 space-y-2">
-          <Link to="/airdrop" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/50 hover:text-white transition-colors">
-            <Gift size={14} /> {t(lang, 's1Airdrop')}
-          </Link>
-          <Link to="/stats" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/50 hover:text-white transition-colors">
-            <BarChart3 size={14} /> {t(lang, 'stats')}
-          </Link>
-          <Link to="/leaderboard" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/50 hover:text-white transition-colors">
-            <Trophy size={14} /> {t(lang, 'leaderboard')}
-          </Link>
-          <Link to="/portfolio" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/50 hover:text-white transition-colors">
-            <Wallet size={14} /> {t(lang, 'portfolio')}
-          </Link>
-          <Link to="/whitepaper" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/50 hover:text-white transition-colors">
-            {t(lang, 'whitepaper')}
-          </Link>
-          <Link to="/roadmap" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm font-mono text-white/50 hover:text-white transition-colors">
-            <Map size={14} /> {t(lang, 'roadmap')}
-          </Link>
-          {/* Mobile language picker */}
-          <div className="pt-2 border-t border-white/5">
-            <div className="text-[9px] font-mono text-white/20 tracking-widest mb-2">LANGUAGE</div>
-            <div className="flex flex-wrap gap-1.5">
-              {LANGUAGES.map(l => (
-                <button
-                  key={l.code}
-                  onClick={() => { setLang(l.code); setMenuOpen(false); }}
-                  className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] font-mono transition-colors border ${
-                    lang === l.code
-                      ? 'bg-lime-400/10 border-lime-400/30 text-lime-400'
-                      : 'border-white/10 text-white/40 hover:text-white'
-                  }`}
-                >
-                  <span>{l.flag}</span>
-                  <span>{l.label}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="flex items-center gap-3 pt-2 border-t border-white/5">
-            <a href="https://x.com/SuiPump_SUMP" target="_blank" rel="noreferrer" className="flex items-center gap-2 text-sm font-mono text-white/40 hover:text-white transition-colors">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg> X
-            </a>
-            <a href="https://discord.gg/UZ4wzDcEPN" target="_blank" rel="noreferrer" className="flex items-center gap-2 text-sm font-mono text-white/40 hover:text-white transition-colors">
-              <MessageCircle size={14} /> Discord
-            </a>
-            <a href="https://t.me/SuiPump_SUMP" target="_blank" rel="noreferrer" className="flex items-center gap-2 text-sm font-mono text-white/40 hover:text-white transition-colors">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg> Telegram
-            </a>
-            <a href="https://github.com/cacoandrade455/suipump" target="_blank" rel="noreferrer" className="flex items-center gap-2 text-sm font-mono text-white/40 hover:text-white transition-colors">
-              <Github size={14} /> GitHub
-            </a>
-          </div>
-          <div className="pt-1"><MobileWalletButtons /></div>
-        </div>
+      {showConnect && (
+        <ConnectModal onClose={() => setShowConnect(false)} />
       )}
     </header>
   );
 }
 
-// ── Stats bar ─────────────────────────────────────────────────────────────────
-
-function StatsBar({ tokenCount, stats, lang = 'en' }) {
-  const items = [
-    { icon: <Coins size={13} />, label: t(lang, 'tokens'), value: tokenCount ?? ' - ' },
-    { icon: <TrendingUp size={13} />, label: t(lang, 'trades'), value: stats.tradeCount ?? ' - ' },
-    { icon: <Flame size={13} />, label: t(lang, 'volume'), value: stats.volume != null ? `${fmt(stats.volume)} SUI` : '-' },
-    { icon: <Gift size={13} />, label: t(lang, 's1Pool'), value: stats.poolSui != null ? `${stats.poolSui.toFixed(2)} SUI` : ' - ' },
-  ];
-  return (
-    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-8">
-      {items.map(({ icon, label, value }) => (
-        <div key={label} className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 flex items-center gap-3">
-          <div className="text-lime-400/60">{icon}</div>
-          <div>
-            <div className="text-[9px] font-mono text-white/30 tracking-widest">{label}</div>
-            <div className="text-sm font-bold font-mono text-white">{value}</div>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// ── Community Crown featured banner ──────────────────────────────────────────
-
-function CrownBanner({ token, stats, curveState: curveStateProp, suiUsd }) {
-  const navigate = useNavigate();
-  const iconUrl = token?.iconUrl || null;
-  const curveState = curveStateProp ? {
-    sui_reserve: String(Math.round((curveStateProp.reserveSui ?? 0) * 1e9)),
-    graduated:   curveStateProp.graduated ?? false,
-    creator:     token?.creator ?? null,
-  } : null;
-
-  if (!token) return null;
-
-  const card2Shape   = curveShapeFor(token?.packageId);
-  const reserveSui2  = curveStateProp?.reserveSui ?? 0;
-  const reserveMist  = BigInt(Math.round(reserveSui2 * 1e9));
-  const progress     = curveStateProp?.progress ?? 0;
-  const pricePerWhole2 = stats?.lastPrice ?? 0;
-  const mcapSui      = pricePerWhole2 * TOTAL_SUPPLY_WHOLE;
-
-  return (
-    <button
-      onClick={() => navigate(`/token/${token.curveId}`)}
-      className="w-full mb-6 rounded-2xl border border-lime-400/30 bg-gradient-to-r from-lime-950/30 to-black p-4 text-left hover:border-lime-400/50 transition-all group relative overflow-hidden"
-    >
-      <div className="absolute top-0 right-0 w-48 h-full bg-lime-400/5 blur-2xl pointer-events-none" />
-      <div className="relative flex items-center gap-4">
-        <div className="w-12 h-12 rounded-full overflow-hidden border-2 border-lime-400/40 flex items-center justify-center bg-lime-950/30 shrink-0">
-          {iconUrl
-            ? <img src={iconUrl} alt={token.symbol} className="w-full h-full object-cover" onError={e => { e.target.style.display='none'; e.target.nextSibling.style.display='block'; }} />
-            : null}
-          <span className="text-xl" style={{ display: iconUrl ? 'none' : 'block' }}>🔥</span>
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-0.5">
-            <Crown size={11} className="text-lime-400" />
-            <span className="text-[9px] font-mono font-bold text-lime-400 tracking-widest">COMMUNITY CROWN</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-white font-bold font-mono">{token.name}</span>
-            <span className="text-lime-400/70 font-mono text-sm">${token.symbol}</span>
-          </div>
-          <div className="mt-1.5 h-1 bg-white/5 rounded-full overflow-hidden w-48">
-            <div className="h-full bg-gradient-to-r from-lime-500 to-lime-300 rounded-full" style={{ width: `${Math.max(progress, 1)}%` }} />
-          </div>
-        </div>
-        <div className="text-right hidden sm:block shrink-0">
-          {mcapSui > 0 && (
-            <div>
-              <div className="text-xs font-mono text-white/60">
-                {suiUsd > 0
-                  ? `$${mcapSui * suiUsd >= 1000 ? ((mcapSui * suiUsd) / 1000).toFixed(1) + 'k' : (mcapSui * suiUsd).toFixed(0)}`
-                  : `${fmt(mcapSui)} SUI`}
-              </div>
-              <div className="text-[9px] font-mono text-white/30">MCAP</div>
-            </div>
-          )}
-          <div className="text-right mt-1">
-            <div className="text-xs font-mono font-bold text-lime-400">{progress.toFixed(1)}%</div>
-            <div className="text-[9px] font-mono text-white/30">CURVE</div>
-          </div>
-        </div>
-
-        {/* Progress bar  -  full width at bottom on mobile */}
-        <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-white/5">
-          <div
-            className="h-full bg-gradient-to-r from-lime-500 to-lime-300 transition-all duration-500"
-            style={{ width: `${Math.max(progress, 1)}%` }}
-          />
-        </div>
-      </div>
-    </button>
-  );
-}
-
-// ── Home page ─────────────────────────────────────────────────────────────────
-
-function HomePage({ onLaunch, lang = 'en' }) {
-  const { isWatched, toggle: toggleWatch } = useWatchlist();
-  const account = useCurrentAccount();
-  const { tokens, loading, error } = useTokenList();
-
-  // Fetch curve states from indexer (no direct RPC needed)
-  const [curveStates, setCurveStates] = React.useState({});
-  React.useEffect(() => {
-    if (!tokens || tokens.length === 0) return;
-    let cancelled = false;
-    async function loadCurveStates() {
-      // Pull curve states from indexer — avoids CORS on graphql.testnet.sui.io
-      const IURL = import.meta.env.VITE_INDEXER_URL || '';
-      if (!IURL) return;
-      try {
-        const res = await fetch(`${IURL}/tokens/stats`, { signal: AbortSignal.timeout(8000) });
-        if (!res.ok || cancelled) return;
-        const rows = await res.json();
-        const map = {};
-        for (const s of rows) {
-          const token = tokens.find(t => t.curveId === s.curve_id);
-          if (!token) continue;
-          const reserveSui = Number(s.reserve_sui ?? 0);
-          const tokenDrain = curveShapeFor(token.packageId).drainSui;
-          const progress   = Math.min(100, (reserveSui / tokenDrain) * 100);
-          map[s.curve_id]  = { reserveSui, progress, lastTradeTime: s.last_trade_time || 0 };
-        }
-        if (!cancelled) setCurveStates(map);
-      } catch {}
-    }
-    loadCurveStates();
-    const timer = setInterval(loadCurveStates, 15_000);
-    return () => { cancelled = true; clearInterval(timer); };
-  }, [tokens]);
-  const stats = useStats();
-  const tokenStats = useTokenStats(tokens);
-  const [search, setSearch] = useState('');
-  const [sort, setSort] = useState('newest');
-  const [suiUsd, setSuiUsd] = useState(_suiUsdCache);
-
-  const SORT_OPTIONS = [
-    { id: 'newest',     label: t(lang, 'newest') },
-    { id: 'trending',   label: t(lang, 'trending') },
-    { id: 'last_trade', label: t(lang, 'lastTrade') },
-    { id: 'volume',     label: t(lang, 'volumeSort') },
-    { id: 'market_cap', label: t(lang, 'marketCap') },
-    { id: 'trades',     label: t(lang, 'tradesSort') },
-    { id: 'progress',   label: t(lang, 'progress') },
-    { id: 'oldest',     label: t(lang, 'oldest') },
-    { id: 'watchlist',  label: '⭐ WATCHLIST' },
-  ];
-
-  useEffect(() => {
-    refreshSuiUsd().then(p => setSuiUsd(p));
-    const timer = setInterval(() => refreshSuiUsd().then(p => setSuiUsd(p)), 30_000);
-    return () => clearInterval(timer);
-  }, []);
-
-  const filtered = tokens.filter(tok => {
-    if (!search.trim()) return true;
-    const q = search.toLowerCase().trim();
-    if (tok.name?.toLowerCase().includes(q)) return true;
-    if (tok.symbol?.toLowerCase().includes(q)) return true;
-    if (q.startsWith('0x') && tok.curveId?.toLowerCase().includes(q)) return true;
-    return false;
-  });
-
-  const crownCurveId = React.useMemo(() => {
-    if (search.trim()) return null;
-    let best = null, bestVol = 0;
-    for (const tok of tokens) {
-      const vol = tokenStats[tok.curveId]?.volume ?? 0;
-      if (vol > bestVol) { bestVol = vol; best = tok.curveId; }
-    }
-    return bestVol > 0 ? best : null;
-  }, [tokens, tokenStats, search]);
-
-  const sorted = [...filtered].sort((a, b) => {
-    const sa = tokenStats[a.curveId];
-    const sb = tokenStats[b.curveId];
-    // Helper: compute mcap for a token from curveStates
-    const mcap = (curveId, pkgId) => {
-      const cs = curveStates[curveId];
-      if (!cs) return 0;
-      const shape = curveShapeFor(pkgId);
-      const totalPoolSui = cs.reserveSui + shape.virtualSui;
-      const priceSui = totalPoolSui / TOTAL_SUPPLY_WHOLE;
-      return priceSui * TOTAL_SUPPLY_WHOLE; // = totalPoolSui
-    };
-    switch (sort) {
-      case 'newest':     return (b.timestamp || 0) - (a.timestamp || 0);
-      case 'oldest':     return (a.timestamp || 0) - (b.timestamp || 0);
-      case 'trending':   return (sb?.trades || sb?.recentTrades || 0) - (sa?.trades || sa?.recentTrades || 0);
-      case 'last_trade': return (curveStates[b.curveId]?.lastTradeTime || 0) - (curveStates[a.curveId]?.lastTradeTime || 0);
-      case 'market_cap': return mcap(b.curveId, b.packageId) - mcap(a.curveId, a.packageId);
-      case 'volume':     return (sb?.volume || 0) - (sa?.volume || 0);
-      case 'trades':     return (sb?.trades || 0) - (sa?.trades || 0);
-      case 'reserve':    return (curveStates[b.curveId]?.reserveSui || 0) - (curveStates[a.curveId]?.reserveSui || 0);
-      case 'progress':   return (curveStates[b.curveId]?.progress || 0) - (curveStates[a.curveId]?.progress || 0);
-      case 'watchlist':  {
-        const wa = isWatched(a.curveId) ? 1 : 0;
-        const wb = isWatched(b.curveId) ? 1 : 0;
-        if (wb !== wa) return wb - wa;
-        return (b.timestamp || 0) - (a.timestamp || 0); // secondary: newest first
-      }
-      default: return 0;
-    }
-  });
-
-  const showLastTradeHint = sort === 'last_trade';
-
-  return (
-    <div>
-      <div className="relative rounded-3xl border border-white/10 bg-gradient-to-br from-lime-950/20 via-black to-black p-8 sm:p-12 mb-8 text-center overflow-hidden">
-        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-96 h-32 bg-lime-400/10 blur-3xl rounded-full pointer-events-none" />
-        <div className="relative">
-          <div className="flex items-center justify-center gap-3 mb-4">
-            <div className="relative">
-              <Flame className="text-lime-400" size={36} />
-              <div className="absolute inset-0 blur-xl bg-lime-400/60 -z-10" />
-            </div>
-            <h1 className="text-4xl sm:text-5xl font-bold tracking-tight text-white" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
-              SUIPUMP<span className="text-lime-400">.</span>
-            </h1>
-          </div>
-          <p className="text-sm sm:text-base text-white/50 font-mono mb-2 max-w-lg mx-auto leading-relaxed">{t(lang, 'heroTagline')}</p>
-          <p className="text-xs text-white/30 font-mono mb-8 max-w-lg mx-auto">{t(lang, 'heroSub')}</p>
-          {account ? (
-            <button onClick={onLaunch} className="inline-flex items-center gap-2 px-8 py-3.5 bg-lime-400 text-black font-mono text-sm tracking-widest hover:bg-lime-300 transition-colors rounded-2xl font-bold shadow-lg shadow-lime-400/20">
-              <Rocket size={14} /> {t(lang, 'launchAToken')}
-            </button>
-          ) : (
-            <ConnectWalletHero lang={lang} />
-          )}
-        </div>
-      </div>
-
-      <StatsBar tokenCount={tokens.length} stats={stats} lang={lang} />
-
-      {/* Search bar */}
-      <div className="relative mb-2">
-        <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/35 pointer-events-none" />
-        <input
-          value={search} onChange={e => setSearch(e.target.value)}
-          placeholder={t(lang, 'searchPlaceholder')}
-          className="w-full bg-white/5 border border-white/10 rounded-xl pl-9 pr-4 py-2.5 text-white text-xs font-mono focus:outline-none focus:border-lime-400/40 transition-colors placeholder-white/20"
-        />
-      </div>
-      {/* Sort tabs — horizontal scroll on mobile, no wrap */}
-      <div className="flex gap-1.5 overflow-x-auto pb-2 mb-2 scrollbar-hide">
-        {SORT_OPTIONS.map(opt => (
-          <button key={opt.id} onClick={() => setSort(opt.id)}
-            className={`px-3 py-2 rounded-xl text-[10px] font-mono tracking-widest transition-all whitespace-nowrap flex-shrink-0 ${
-              sort === opt.id ? 'bg-lime-400 text-black font-bold' : 'bg-white/5 text-white/30 hover:bg-white/10 hover:text-white/60'
-            }`}>{opt.label}</button>
-        ))}
-      </div>
-
-      <div className="mb-3 flex items-center justify-between">
-        <div className="text-xs font-mono text-white/30 tracking-widest">
-          {loading ? t(lang, 'loadingTokens') : `${sorted.length} ${t(lang, 'tokensLaunched')}${search ? ` ${t(lang, 'tokensFound')}` : ''}`}
-        </div>
-        {showLastTradeHint && (
-          <div className="text-[10px] font-mono text-white/35">{t(lang, 'sortedByLastTrade')}</div>
-        )}
-        {sort === 'market_cap' && (
-          <div className="text-[10px] font-mono text-white/35">{t(lang, 'marketCapFormula')}</div>
-        )}
-      </div>
-
-      {/* Community Crown featured banner */}
-      {!search.trim() && crownCurveId && (
-        <CrownBanner
-          token={tokens.find(tok => tok.curveId === crownCurveId)}
-          stats={tokenStats[crownCurveId]}
-          suiUsd={suiUsd}
-        />
-      )}
-
-      {error && (
-        <div className="rounded-2xl border border-red-500/20 bg-red-950/20 p-4 text-xs font-mono text-red-400 mb-4">{t(lang, 'failedToLoad')} {error}</div>
-      )}
-
-      {loading && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          {[...Array(6)].map((_, i) => <SkeletonCard key={i} />)}
-        </div>
-      )}
-
-      {!loading && sorted.length === 0 && !error && (
-        <div className="rounded-3xl border border-white/10 p-16 text-center">
-          <div className="text-5xl mb-4">{search ? '🔍' : '🔥'}</div>
-          <div className="text-sm font-mono text-white/40 mb-2">{search ? `No tokens matching "${search}"` : t(lang, 'noTokensYet')}</div>
-          {!search && <div className="text-xs font-mono text-white/35">{t(lang, 'beFirstToLaunch')}</div>}
-        </div>
-      )}
-
-      {!loading && sorted.length > 0 && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-y-6 gap-x-3">
-          {sorted.map((rawToken) => { const token = applyLocalOverrides(rawToken); return (
-            <TokenCard
-              key={token.curveId}
-              token={token}
-              stats={tokenStats[token.curveId]}
-              curveState={curveStates[token.curveId]}
-              isCrown={token.curveId === crownCurveId}
-              suiUsd={suiUsd}
-              isWatched={isWatched(token.curveId)}
-              onToggleWatch={toggleWatch}
-            />
-          );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ── Token page wrapper ────────────────────────────────────────────────────────
-
 function TokenPageWrapper({ lang, tradeKey }) {
   const { curveId } = useParams();
   const navigate = useNavigate();
@@ -1315,7 +286,6 @@ function TokenPageWrapper({ lang, tradeKey }) {
     if (!curveId) return;
     let cancelled = false;
     async function load() {
-      // Use indexer for token type + shared version — avoids CORS on graphql.testnet.sui.io
       const IURL = import.meta.env.VITE_INDEXER_URL || '';
       try {
         if (IURL) {
@@ -1335,7 +305,6 @@ function TokenPageWrapper({ lang, tradeKey }) {
             }
           }
         }
-        // No indexer or token not found — show error
         if (!cancelled) setError('Could not determine token type');
       } catch (err) {
         if (!cancelled) setError(err.message || String(err));
@@ -1355,16 +324,251 @@ function TokenPageWrapper({ lang, tradeKey }) {
   return <TokenPage curveId={curveId} tokenType={tokenType} packageId={packageId} initialSharedVersion={initialSharedVersion} onBack={() => navigate('/')} lang={lang} tradeKeypair={tradeKey?.keypair ?? null} tradeKeyReady={tradeKey?.isReady ?? false} />;
 }
 
-// ── App root ──────────────────────────────────────────────────────────────────
+// ── Home page ─────────────────────────────────────────────────────────────────
+function HomePage({ onLaunch, lang }) {
+  const navigate    = useNavigate();
+  const { tokens }  = useTokenList();
+  const { stats: curveStats, curveStates } = useTokenStats();
+  const globalStats = useStats();
 
-// ── 404 Page ─────────────────────────────────────────────────────────────────
+  const [suiUsd,    setSuiUsd]    = useState(0);
+  const [search,    setSearch]    = useState('');
+  const [sort,      setSort]      = useState('recent');
+  const [showAll,   setShowAll]   = useState(false);
+
+  useEffect(() => {
+    refreshSuiUsd().then(setSuiUsd);
+    const t = setInterval(() => refreshSuiUsd().then(setSuiUsd), 30_000);
+    return () => clearInterval(t);
+  }, []);
+
+  const displayTokens = React.useMemo(() => {
+    let list = tokens.map(applyLocalOverrides);
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      list = list.filter(t =>
+        t.name?.toLowerCase().includes(q) ||
+        t.symbol?.toLowerCase().includes(q) ||
+        t.curveId?.toLowerCase().includes(q)
+      );
+    }
+    const getVal = (tk) => {
+      const s = curveStats[tk.curveId];
+      switch (sort) {
+        case 'volume':   return s?.volumeSui  ?? 0;
+        case 'mcap':     return s?.lastPrice  ?? 0;
+        case 'progress': return curveStates[tk.curveId]?.progress ?? 0;
+        case 'recent':   return s?.lastTradeTime ?? tk.createdAt ?? 0;
+        default:         return s?.lastTradeTime ?? tk.createdAt ?? 0;
+      }
+    };
+    return list.sort((a, b) => getVal(b) - getVal(a));
+  }, [tokens, curveStats, curveStates, search, sort]);
+
+  const topToken = displayTokens[0];
+  const visibleTokens = showAll ? displayTokens : displayTokens.slice(0, 20);
+
+  return (
+    <div className="space-y-6">
+      {/* Stats bar */}
+      {(globalStats.volume != null || globalStats.tradeCount != null) && (
+        <div className="flex items-center gap-6 py-3 px-4 rounded-xl bg-white/[0.02] border border-white/5 overflow-x-auto scrollbar-hide">
+          {globalStats.volume != null && (
+            <div className="text-center shrink-0">
+              <div className="text-[10px] font-mono text-white/30 tracking-widest">VOLUME</div>
+              <div className="text-sm font-mono font-bold text-lime-400">{(globalStats.volume).toFixed(0)} SUI</div>
+            </div>
+          )}
+          {globalStats.tradeCount != null && (
+            <div className="text-center shrink-0">
+              <div className="text-[10px] font-mono text-white/30 tracking-widest">TRADES</div>
+              <div className="text-sm font-mono font-bold text-white">{globalStats.tradeCount.toLocaleString()}</div>
+            </div>
+          )}
+          {globalStats.poolSui != null && (
+            <div className="text-center shrink-0">
+              <div className="text-[10px] font-mono text-white/30 tracking-widest">S1 POOL</div>
+              <div className="text-sm font-mono font-bold text-white">{globalStats.poolSui.toFixed(1)} SUI</div>
+            </div>
+          )}
+          {tokens.length > 0 && (
+            <div className="text-center shrink-0">
+              <div className="text-[10px] font-mono text-white/30 tracking-widest">TOKENS</div>
+              <div className="text-sm font-mono font-bold text-white">{tokens.length}</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Crown banner */}
+      {topToken && curveStates[topToken.curveId] && (
+        <button
+          onClick={() => navigate(`/token/${topToken.curveId}`)}
+          className="w-full rounded-2xl border border-lime-400/20 bg-lime-950/10 hover:bg-lime-950/20 transition-all p-4 text-left group"
+        >
+          <div className="flex items-center gap-3">
+            <Crown size={16} className="text-lime-400 shrink-0" />
+            <span className="text-[10px] font-mono text-lime-400/70 tracking-widest">COMMUNITY CROWN 👑</span>
+          </div>
+          <div className="mt-2 flex items-center gap-3">
+            {topToken.iconUrl && (
+              <img src={topToken.iconUrl} alt={topToken.symbol}
+                className="w-10 h-10 rounded-full border border-white/10 object-cover shrink-0" />
+            )}
+            <div className="min-w-0">
+              <div className="text-sm font-mono font-bold text-white group-hover:text-lime-400 transition-colors truncate">
+                {topToken.name}
+              </div>
+              <div className="text-[10px] font-mono text-white/40">${topToken.symbol}</div>
+            </div>
+            {curveStats[topToken.curveId] && (
+              <div className="ml-auto text-right shrink-0">
+                <div className="text-xs font-mono font-bold text-lime-400">
+                  {(curveStats[topToken.curveId].volumeSui ?? 0).toFixed(1)} SUI vol
+                </div>
+                <div className="text-[10px] font-mono text-white/30">
+                  {(curveStates[topToken.curveId]?.progress ?? 0).toFixed(1)}% bonded
+                </div>
+              </div>
+            )}
+          </div>
+        </button>
+      )}
+
+      {/* Controls */}
+      <div className="flex items-center gap-3">
+        <div className="flex-1 relative">
+          <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/20" />
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search tokens…"
+            className="w-full bg-white/[0.04] border border-white/8 rounded-xl pl-8 pr-4 py-2.5 text-xs font-mono text-white placeholder-white/20 focus:outline-none focus:border-lime-400/30 transition-colors"
+          />
+        </div>
+        <div className="flex gap-1 overflow-x-auto scrollbar-hide">
+          {[
+            { id: 'recent',   label: 'NEW'      },
+            { id: 'volume',   label: 'VOLUME'   },
+            { id: 'mcap',     label: 'MCAP'     },
+            { id: 'progress', label: 'BONDING'  },
+          ].map(s => (
+            <button key={s.id} onClick={() => setSort(s.id)}
+              className={`shrink-0 px-3 py-1.5 rounded-lg text-[10px] font-mono font-bold transition-colors ${
+                sort === s.id
+                  ? 'bg-lime-400 text-black'
+                  : 'bg-white/5 text-white/40 hover:text-white hover:bg-white/8'
+              }`}>
+              {s.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Token grid */}
+      {tokens.length === 0 ? (
+        <div className="rounded-2xl border border-white/5 bg-white/[0.02] p-12 text-center">
+          <div className="text-[11px] font-mono text-white/20">No tokens yet — be the first to launch!</div>
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {visibleTokens.map(token => {
+              const stats = curveStats[token.curveId];
+              const cs    = curveStates[token.curveId];
+              const price    = stats?.lastPrice ?? stats?.startPrice ?? 0;
+              const mcap     = price * TOTAL_SUPPLY_WHOLE * suiUsd;
+              const progress = cs?.progress ?? 0;
+              const vol24h   = stats?.volume24h ?? 0;
+              const sparkline = stats?.sparkline24h ?? [];
+
+              return (
+                <button
+                  key={token.curveId}
+                  onClick={() => navigate(`/token/${token.curveId}`)}
+                  className="rounded-2xl border border-white/8 bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/15 transition-all p-4 text-left group"
+                >
+                  <div className="flex items-start gap-3 mb-3">
+                    <div className="w-10 h-10 rounded-full border border-white/10 overflow-hidden flex items-center justify-center bg-lime-950/30 shrink-0">
+                      {token.iconUrl
+                        ? <img src={token.iconUrl} alt={token.symbol} className="w-full h-full object-cover" onError={e => { e.target.style.display='none'; }} />
+                        : <Flame size={14} className="text-lime-400/50" />}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs font-mono font-bold text-white truncate group-hover:text-lime-400 transition-colors">
+                        {token.name}
+                      </div>
+                      <div className="text-[10px] font-mono text-white/30">${token.symbol}</div>
+                    </div>
+                    {token.curveId === topToken?.curveId && (
+                      <Crown size={12} className="text-lime-400 shrink-0 mt-0.5" />
+                    )}
+                  </div>
+
+                  {/* Sparkline */}
+                  {sparkline.length > 1 && (
+                    <div className="h-8 mb-3 flex items-end gap-0.5">
+                      {sparkline.slice(-20).map((v, i, arr) => {
+                        const min = Math.min(...arr); const max = Math.max(...arr);
+                        const h = max > min ? Math.max(2, ((v - min) / (max - min)) * 32) : 4;
+                        const isLast = i === arr.length - 1;
+                        return <div key={i} style={{ height: h }} className={`flex-1 rounded-sm ${isLast ? 'bg-lime-400' : 'bg-lime-400/30'}`} />;
+                      })}
+                    </div>
+                  )}
+
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-mono text-white/30">MCAP</span>
+                      <span className="text-[10px] font-mono font-bold text-white">
+                        {mcap >= 1000 ? `$${(mcap/1000).toFixed(1)}k` : mcap > 0 ? `$${mcap.toFixed(0)}` : '-'}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-mono text-white/30">24H VOL</span>
+                      <span className="text-[10px] font-mono text-white/60">
+                        {vol24h > 0 ? `${vol24h.toFixed(1)} SUI` : '-'}
+                      </span>
+                    </div>
+                    <div className="mt-2">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-[9px] font-mono text-white/20">BONDING</span>
+                        <span className="text-[9px] font-mono text-white/30">{progress.toFixed(1)}%</span>
+                      </div>
+                      <div className="h-1 bg-white/5 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-gradient-to-r from-lime-600 to-lime-400 rounded-full transition-all"
+                          style={{ width: `${Math.min(100, progress)}%` }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+          {!showAll && displayTokens.length > 20 && (
+            <div className="text-center">
+              <button
+                onClick={() => setShowAll(true)}
+                className="px-6 py-2.5 rounded-xl border border-white/10 text-xs font-mono text-white/40 hover:text-white hover:border-white/20 transition-all"
+              >
+                Show all {displayTokens.length} tokens
+              </button>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── 404 Page ──────────────────────────────────────────────────────────────────
 function NotFoundPage({ onBack }) {
   return (
     <div className="min-h-screen bg-black flex flex-col items-center justify-center gap-6 px-4">
       <div className="text-lime-400 font-mono text-6xl font-bold">404</div>
-      <div className="text-white/50 font-mono text-sm tracking-widest text-center">
-        PAGE NOT FOUND
-      </div>
+      <div className="text-white/50 font-mono text-sm tracking-widest text-center">PAGE NOT FOUND</div>
       <div className="text-white/25 font-mono text-xs text-center max-w-xs">
         This token or page doesn't exist. It may have been moved or the address is invalid.
       </div>
@@ -1378,21 +582,28 @@ function NotFoundPage({ onBack }) {
   );
 }
 
+// ── App root ──────────────────────────────────────────────────────────────────
 export default function App() {
   const navigate = useNavigate();
-  const [showLaunch, setShowLaunch]         = useState(false);
-  const [showStrategies, setShowStrategies] = useState(false);
+  const account  = useCurrentAccount();
+
+  const [showLaunch,      setShowLaunch]      = useState(false);
+  const [showStrategies,  setShowStrategies]  = useState(false);
+  const [showFeed,        setShowFeed]        = useState(false);
   const [lang, setLang] = useState(() => localStorage.getItem('suipump_lang') || 'en');
 
-  const handleLang = (code) => {
-    setLang(code);
-    localStorage.setItem('suipump_lang', code);
-  };
-
+  const handleLang = (code) => { setLang(code); localStorage.setItem('suipump_lang', code); };
   const handleLaunched = ({ curveId }) => { setShowLaunch(false); navigate(`/token/${curveId}`); };
-  const [showFeed, setShowFeed] = useState(false);
+
   const { tokens: allTokens } = useTokenList();
   const tradeKey = useTradeKey();
+
+  // ── Strategy hooks lifted to app level ─────────────────────────────────────
+  // These stay alive regardless of modal open/close.
+  // They only stop when the browser tab is closed.
+  const sniper    = useSniper({    walletAddress: account?.address, keypair: tradeKey.isReady ? tradeKey.keypair : null });
+  const dca       = useDCA({       walletAddress: account?.address, keypair: tradeKey.isReady ? tradeKey.keypair : null });
+  const copyTrade = useCopyTrade({ walletAddress: account?.address, keypair: tradeKey.isReady ? tradeKey.keypair : null });
 
   return (
     <div className="min-h-screen bg-[#080808] text-white" style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}>
@@ -1402,9 +613,17 @@ export default function App() {
         backgroundSize: '60px 60px',
       }} />
       <ScrollToTop />
-      <Header onLaunch={() => setShowLaunch(true)} lang={lang} setLang={handleLang} onToggleFeed={() => setShowFeed(o => !o)} showFeed={showFeed} onStrategies={() => setShowStrategies(true)} />
+      <Header
+        onLaunch={() => setShowLaunch(true)}
+        lang={lang}
+        setLang={handleLang}
+        onToggleFeed={() => setShowFeed(o => !o)}
+        showFeed={showFeed}
+        onStrategies={() => setShowStrategies(true)}
+      />
       <NetworkBanner />
       <StrategiesLockedBanner tradeKey={tradeKey} onOpenStrategies={() => setShowStrategies(true)} />
+
       <main className="max-w-6xl mx-auto px-4 py-6">
         <Routes>
           <Route path="/" element={<HomePage onLaunch={() => setShowLaunch(true)} lang={lang} />} />
@@ -1418,6 +637,7 @@ export default function App() {
           <Route path="*" element={<NotFoundPage onBack={() => navigate('/')} />} />
         </Routes>
       </main>
+
       <footer className="max-w-6xl mx-auto px-4 py-8 border-t border-white/5 mt-8">
         <div className="flex items-center justify-center gap-4 mb-3">
           <a href="https://x.com/SuiPump_SUMP" target="_blank" rel="noreferrer" className="text-white/25 hover:text-white/60 transition-colors">
@@ -1437,15 +657,18 @@ export default function App() {
           {t(lang, 'footerText')}
         </div>
       </footer>
+
       {showLaunch && (
-        <LaunchModal
-          onClose={() => setShowLaunch(false)}
-          onLaunched={handleLaunched}
-          lang={lang}
-        />
+        <LaunchModal onClose={() => setShowLaunch(false)} onLaunched={handleLaunched} lang={lang} />
       )}
       {showStrategies && (
-        <StrategiesModal onClose={() => setShowStrategies(false)} tradeKey={tradeKey} />
+        <StrategiesModal
+          onClose={() => setShowStrategies(false)}
+          tradeKey={tradeKey}
+          sniper={sniper}
+          dca={dca}
+          copyTrade={copyTrade}
+        />
       )}
       {showFeed && (
         <LiveFeedSidebar tokens={allTokens} onClose={() => setShowFeed(false)} />
