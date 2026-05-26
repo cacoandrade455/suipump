@@ -223,51 +223,34 @@ function Sparkline({ points, width = 80, height = 24 }) {
   );
 }
 
-function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch }) {
+function TokenCard({ token, stats, curveState: curveStateProp, isCrown, suiUsd = 0, isWatched, onToggleWatch }) {
   const navigate = useNavigate();
-  const [curveState, setCurveState] = useState(null);
-  // iconUrl comes directly from indexer token list — no RPC needed
   const iconUrl = token.iconUrl || null;
 
-  useEffect(() => {
-    // Load curve state from indexer (no direct RPC — avoids CORS)
-    const IURL = import.meta.env.VITE_INDEXER_URL || '';
-    if (!IURL || !token.curveId) return;
-    let cancelled = false;
-    async function load() {
-      try {
-        const res = await fetch(`${IURL}/token/${token.curveId}`, { signal: AbortSignal.timeout(5000) });
-        if (res.ok && !cancelled) {
-          const d = await res.json();
-          // Map indexer fields to curve state shape
-          setCurveState({
-            sui_reserve:    d.suiReserve ?? d.sui_reserve ?? '0',
-            token_reserve:  d.tokenReserve ?? d.token_reserve ?? String(800_000_000 * 1e6),
-            graduated:      d.graduated ?? false,
-            creator_fees:   d.creatorFees ?? d.creator_fees ?? '0',
-            creator:        d.creator ?? null,
-          });
-        }
-      } catch {}
-    }
-    load();
-    const timer = setInterval(load, 10_000);
-    return () => { cancelled = true; clearInterval(timer); };
-  }, [token.curveId]);
+  // curveState from parent (pre-loaded via /tokens/stats) — no per-card fetch needed
+  // Derive curve state fields from tokenStats + curveStateProp
+  const curveState = curveStateProp ? {
+    sui_reserve:   String(Math.round((curveStateProp.reserveSui ?? 0) * 1e9)),
+    token_reserve: String(800_000_000 * 1e6),  // approximate — not needed for display
+    graduated:     curveStateProp.graduated ?? false,
+    creator:       token.creator ?? null,
+  } : null;
 
-  const reserveMist = curveState ? BigInt(curveState.sui_reserve) : 0n;
-  const tokensRemaining = curveState ? BigInt(curveState.token_reserve) : 0n;
-  const tokensSold = BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS) - tokensRemaining;
-  // Per-token virtual reserves — V4/V5/V6/V7 each use different constants
-  const cardShape  = curveShapeFor(token.packageId);
-  const cardVSui   = cardShape.virtualSui;
-  const cardVTok   = cardShape.virtualTokens;
-  const cardDrain  = cardShape.drainSui;
-  const progress = Math.min(100, (mistToSui(reserveMist) / cardDrain) * 100);
-  const priceMist = curveState ? priceMistPerToken(reserveMist, tokensSold, cardVSui, cardVTok) : 0n;
-  const graduated = curveState?.graduated ?? false;
-  const pricePerWhole = Number(priceMist) / 1e9;
-  const marketCapSui = pricePerWhole * TOTAL_SUPPLY_WHOLE;
+  // All curve math derived from pre-loaded curveStateProp — zero per-card fetches
+  const cardShape   = curveShapeFor(token.packageId);
+  const cardDrain   = cardShape.drainSui;
+  const cardVSui    = cardShape.virtualSui;
+  const cardVTok    = cardShape.virtualTokens;
+  const reserveSui  = curveStateProp?.reserveSui ?? 0;
+  const reserveMist = BigInt(Math.round(reserveSui * 1e9));
+  const progress    = curveStateProp?.progress ?? 0;
+  const graduated   = curveStateProp?.graduated ?? false;
+  // Price from tokenStats last_price (most up-to-date from SSE)
+  const pricePerWhole  = stats?.lastPrice ?? 0;
+  const marketCapSui   = pricePerWhole * TOTAL_SUPPLY_WHOLE;
+  // Fallback: compute from reserve if stats not loaded yet
+  const tokensSold     = BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS);
+  const priceMist      = pricePerWhole > 0 ? BigInt(Math.round(pricePerWhole * 1e9)) : (curveState ? priceMistPerToken(reserveMist, tokensSold, cardVSui, cardVTok) : 0n);
   const isTrending = stats?.recentTrades >= 3;
   const isNew = token.timestamp && (Date.now() - token.timestamp) < 30 * 60 * 1000;
   const suiUntilGrad = Math.max(0, cardDrain - mistToSui(reserveMist));
@@ -1021,41 +1004,23 @@ function StatsBar({ tokenCount, stats, lang = 'en' }) {
 
 // ── Community Crown featured banner ──────────────────────────────────────────
 
-function CrownBanner({ token, stats, suiUsd }) {
+function CrownBanner({ token, stats, curveState: curveStateProp, suiUsd }) {
   const navigate = useNavigate();
-  const [curveState, setCurveState] = useState(null);
   const iconUrl = token?.iconUrl || null;
-
-  useEffect(() => {
-    const IURL = import.meta.env.VITE_INDEXER_URL || '';
-    if (!IURL || !token?.curveId) return;
-    let cancelled = false;
-    fetch(`${IURL}/token/${token.curveId}`, { signal: AbortSignal.timeout(5000) })
-      .then(r => r.ok ? r.json() : null)
-      .then(d => {
-        if (d && !cancelled) setCurveState({
-          sui_reserve:   d.suiReserve ?? d.sui_reserve ?? '0',
-          token_reserve: d.tokenReserve ?? d.token_reserve ?? String(800_000_000 * 1e6),
-          graduated:     d.graduated ?? false,
-          creator_fees:  d.creatorFees ?? d.creator_fees ?? '0',
-          creator:       d.creator ?? null,
-        });
-      }).catch(() => {});
-    return () => { cancelled = true; };
-  }, [token?.curveId]);
+  const curveState = curveStateProp ? {
+    sui_reserve: String(Math.round((curveStateProp.reserveSui ?? 0) * 1e9)),
+    graduated:   curveStateProp.graduated ?? false,
+    creator:     token?.creator ?? null,
+  } : null;
 
   if (!token) return null;
 
-  const reserveMist = curveState ? BigInt(curveState.sui_reserve) : 0n;
-  const tokensRemaining = curveState ? BigInt(curveState.token_reserve) : 0n;
-  const tokensSold = BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS) - tokensRemaining;
-  // Per-token curve shape — V4/V5/V6/V7 each differ
-  const card2Shape = curveShapeFor(token?.packageId);
-  const progress = Math.min(100, (mistToSui(reserveMist) / card2Shape.drainSui) * 100);
-  const card2VSui = card2Shape.virtualSui;
-  const card2VTok = card2Shape.virtualTokens;
-  const priceMist = curveState ? priceMistPerToken(reserveMist, tokensSold, card2VSui, card2VTok) : 0n;
-  const mcapSui = (Number(priceMist) / 1e9) * TOTAL_SUPPLY_WHOLE;
+  const card2Shape   = curveShapeFor(token?.packageId);
+  const reserveSui2  = curveStateProp?.reserveSui ?? 0;
+  const reserveMist  = BigInt(Math.round(reserveSui2 * 1e9));
+  const progress     = curveStateProp?.progress ?? 0;
+  const pricePerWhole2 = stats?.lastPrice ?? 0;
+  const mcapSui      = pricePerWhole2 * TOTAL_SUPPLY_WHOLE;
 
   return (
     <button
@@ -1318,6 +1283,7 @@ function HomePage({ onLaunch, lang = 'en' }) {
               key={token.curveId}
               token={token}
               stats={tokenStats[token.curveId]}
+              curveState={curveStates[token.curveId]}
               isCrown={token.curveId === crownCurveId}
               suiUsd={suiUsd}
               isWatched={isWatched(token.curveId)}
@@ -1338,13 +1304,14 @@ function TokenPageWrapper({ lang, tradeKey }) {
   const navigate = useNavigate();
   const [tokenType, setTokenType] = useState(null);
   const [packageId, setPackageId] = useState(null);
+  const [initialSharedVersion, setInitialSharedVersion] = useState(null);
   const [error, setError] = useState(null);
 
   useEffect(() => {
     if (!curveId) return;
     let cancelled = false;
     async function load() {
-      // Use indexer for token type resolution — avoids CORS on graphql.testnet.sui.io
+      // Use indexer for token type + shared version — avoids CORS on graphql.testnet.sui.io
       const IURL = import.meta.env.VITE_INDEXER_URL || '';
       try {
         if (IURL) {
@@ -1353,8 +1320,13 @@ function TokenPageWrapper({ lang, tradeKey }) {
             const d = await res.json();
             const tokenType = d.tokenType || d.token_type;
             const packageId = d.packageId || d.package_id;
+            const isv = d.initialSharedVersion || d.initial_shared_version || null;
             if (tokenType) {
-              if (!cancelled) { setTokenType(tokenType); if (packageId) setPackageId(packageId); }
+              if (!cancelled) {
+                setTokenType(tokenType);
+                if (packageId) setPackageId(packageId);
+                if (isv) setInitialSharedVersion(isv);
+              }
               return;
             }
           }
@@ -1376,7 +1348,7 @@ function TokenPageWrapper({ lang, tradeKey }) {
       <div className="h-3 bg-white/5 rounded w-32" />
     </div>
   );
-  return <TokenPage curveId={curveId} tokenType={tokenType} packageId={packageId} onBack={() => navigate('/')} lang={lang} tradeKeypair={tradeKey?.keypair ?? null} tradeKeyReady={tradeKey?.isReady ?? false} />;
+  return <TokenPage curveId={curveId} tokenType={tokenType} packageId={packageId} initialSharedVersion={initialSharedVersion} onBack={() => navigate('/')} lang={lang} tradeKeypair={tradeKey?.keypair ?? null} tradeKeyReady={tradeKey?.isReady ?? false} />;
 }
 
 // ── App root ──────────────────────────────────────────────────────────────────

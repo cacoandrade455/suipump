@@ -872,7 +872,7 @@ function TPSLPanel({
         ? keypair.getPublicKey().toSuiAddress()
         : account.address;
 
-      const isv = curveState?.initial_shared_version ?? null;
+      const isv = initialSharedVersionProp ?? curveState?.initial_shared_version ?? null;
       const tx = new Transaction();
       const curveRef = isv
         ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: isv, mutable: true })
@@ -1211,7 +1211,7 @@ function CommentsBlock({ curveId, packageId, lang }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function TokenPage({ curveId, tokenType, packageId: packageIdHint, onBack, lang = 'en', tradeKeypair = null, tradeKeyReady = false }) {
+export default function TokenPage({ curveId, tokenType, packageId: packageIdHint, initialSharedVersion: initialSharedVersionProp = null, onBack, lang = 'en', tradeKeypair = null, tradeKeyReady = false }) {
   const navigate = useNavigate();
   const account  = useCurrentAccount();
   const client   = useCurrentClient();
@@ -1412,7 +1412,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
     setTxMsg('');
 
     try {
-      const initialSharedVersion = curveState?.initial_shared_version ?? null;
+      const initialSharedVersion = initialSharedVersionProp ?? curveState?.initial_shared_version ?? null;
       const tx = new Transaction();
       const curveRef = initialSharedVersion
         ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion, mutable: true })

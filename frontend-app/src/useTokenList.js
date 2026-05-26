@@ -25,13 +25,14 @@ export function useTokenList() {
         name:             r.name,
         symbol:           r.symbol,
         description:      r.description,
-        iconUrl:          r.iconUrl,
-        timestamp:        r.createdAt ? Number(r.createdAt) : null,
-        packageId:        r.packageId,
-        isV5:             isV5OrLater(r.packageId),
-        graduationTarget: r.graduationTarget,
-        antiBotDelay:     r.antiBotDelay,
-        tokenType:        r.tokenType,
+        iconUrl:               r.iconUrl,
+        timestamp:             r.createdAt ? Number(r.createdAt) : null,
+        packageId:             r.packageId,
+        isV5:                  isV5OrLater(r.packageId),
+        graduationTarget:      r.graduationTarget,
+        antiBotDelay:          r.antiBotDelay,
+        tokenType:             r.tokenType,
+        initialSharedVersion:  r.initialSharedVersion ?? null,
       }));
     }
 
