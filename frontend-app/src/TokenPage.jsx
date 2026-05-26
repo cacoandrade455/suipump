@@ -1339,6 +1339,29 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
     return () => { cancelled = true; clearInterval(timer); };
   }, [account, client, tokenType]);
 
+  // Fresh reserves fetched on amount change for accurate quote display
+  const [freshReserveMist,     setFreshReserveMist]     = React.useState(null);
+  const [freshTokensRemaining, setFreshTokensRemaining] = React.useState(null);
+
+  // Debounced fetch — runs 300ms after amount changes
+  React.useEffect(() => {
+    if (!amount || !curveId) return;
+    const IURL = import.meta.env.VITE_INDEXER_URL || '';
+    if (!IURL) return;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const r = await fetch(`${IURL}/token/${curveId}/stats`, { signal: AbortSignal.timeout(2000) });
+        if (r.ok && !cancelled) {
+          const d = await r.json();
+          if (d.reserve_sui   != null) setFreshReserveMist(BigInt(Math.round(d.reserve_sui * 1e9)));
+          if (d.token_reserve != null) setFreshTokensRemaining(BigInt(Math.round(d.token_reserve * 1e6)));
+        }
+      } catch {}
+    }, 300);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [amount, curveId]);
+
   // ── derived state ─────────────────────────────────────────────────────────
 
   const pkgId    = resolvePackageId(tokenType, packageIdHint);
@@ -1347,8 +1370,9 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   // wrong defaults, causing the displayed quote to differ from the executed tx.
   const { virtualSui: vSui, virtualTokens: vTok, drainSui } = curveShapeFor(pkgId);
 
-  const reserveMist     = curveState ? BigInt(curveState.sui_reserve) : 0n;
-  const tokensRemaining = curveState ? BigInt(curveState.token_reserve) : 0n;
+  // Fresh reserves override stale curveState for quote accuracy
+  const reserveMist     = freshReserveMist     ?? (curveState ? BigInt(curveState.sui_reserve)   : 0n);
+  const tokensRemaining = freshTokensRemaining ?? (curveState ? BigInt(curveState.token_reserve) : 0n);
   const tokensSold      = BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS) - tokensRemaining;
   const progress        = Math.min(100, (mistToSui(reserveMist) / drainSui) * 100);
   const priceMist       = curveState ? priceMistPerToken(reserveMist, tokensSold, vSui, vTok) : 0n;
