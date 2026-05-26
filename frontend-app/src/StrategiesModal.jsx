@@ -246,47 +246,109 @@ function SniperTab({ sniper, hasKey, isReady, onClose }) {
 }
 
 // ── DCA tab ───────────────────────────────────────────────────────────────────
+// ── DCA tab ───────────────────────────────────────────────────────────────────
 function DCATab({ dca, hasKey, isReady, onClose }) {
   const account = useCurrentAccount();
   const { activeOrders = [], doneOrders = [], createOrder, cancelOrder, clearDone } = dca;
 
-  const [curveId,      setCurveId]      = useState('');
-  const [totalSui,     setTotalSui]     = useState('10');
-  const [tranches,     setTranches]     = useState('5');
-  const [intervalMs,   setIntervalMs]   = useState(INTERVAL_OPTIONS[1]?.ms ?? 300_000);
-  const [slippage,     setSlippage]     = useState('2');
-  const [resolving,    setResolving]    = useState(false);
-  const [resolvedName, setResolvedName] = useState('');
-  const [resolvedSym,  setResolvedSym]  = useState('');
-  const [resolvedType, setResolvedType] = useState('');
-  const [resolvedPkg,  setResolvedPkg]  = useState('');
-  const [formMsg,      setFormMsg]      = useState('');
-  const [saved,        setSaved]        = useState(false);
+  const [dcaMode,         setDcaMode]         = React.useState('time');
+  const [curveId,         setCurveId]         = useState('');
+  const [totalSui,        setTotalSui]        = useState('10');
+  const [tranches,        setTranches]        = useState('5');
+  const [intervalMs,      setIntervalMs]      = useState(INTERVAL_OPTIONS[1]?.ms ?? 300_000);
+  const [slippage,        setSlippage]        = useState('2');
+  const [resolving,       setResolving]       = useState(false);
+  const [resolvedName,    setResolvedName]    = useState('');
+  const [resolvedSym,     setResolvedSym]     = useState('');
+  const [resolvedType,    setResolvedType]    = useState('');
+  const [resolvedPkg,     setResolvedPkg]     = useState('');
+  const [resolvedPrice,   setResolvedPrice]   = useState(null);
 
-  const resolveCurve = async (id) => {
-    if (!id || id.length < 10) { setResolvedName(''); setResolvedType(''); return; }
-    setResolving(true);
+  const [dipCurveId,      setDipCurveId]      = useState('');
+  const [suiPerDip,       setSuiPerDip]       = useState('2');
+  const [dipPct,          setDipPct]          = useState('10');
+  const [cooldownMin,     setCooldownMin]     = useState('5');
+  const [maxDipBuys,      setMaxDipBuys]      = useState('0');
+  const [dipSlippage,     setDipSlippage]     = useState('2');
+  const [dipResolving,    setDipResolving]    = useState(false);
+  const [dipResolvedName, setDipResolvedName] = useState('');
+  const [dipResolvedSym,  setDipResolvedSym]  = useState('');
+  const [dipResolvedType, setDipResolvedType] = useState('');
+  const [dipResolvedPkg,  setDipResolvedPkg]  = useState('');
+  const [dipCurrentPrice, setDipCurrentPrice] = useState(null);
+
+  const [formMsg, setFormMsg] = useState('');
+  const [saved,   setSaved]   = useState(false);
+
+  const IURL = import.meta.env.VITE_INDEXER_URL || '';
+
+  const resolveCurve = async (id, isDip = false) => {
+    if (!id || id.length < 10) return;
+    isDip ? setDipResolving(true) : setResolving(true);
     try {
-      const r = await fetch(`${INDEXER_URL}/token/${id}`, { signal: AbortSignal.timeout(5000) });
+      const r = await fetch(`${IURL}/token/${id}`, { signal: AbortSignal.timeout(5000) });
       if (r.ok) {
         const d = await r.json();
-        setResolvedName(d.name ?? ''); setResolvedSym(d.symbol ?? '');
-        setResolvedType(d.token_type ?? d.tokenType ?? '');
-        setResolvedPkg(d.package_id  ?? d.packageId  ?? '');
+        const name = d.name ?? '';
+        const sym  = d.symbol ?? '';
+        const type = d.token_type ?? d.tokenType ?? '';
+        const pkg  = d.package_id ?? d.packageId ?? '';
+        const reserveSui = d.stats?.reserve_sui ?? d.reserve_sui ?? 0;
+        if (isDip) {
+          setDipResolvedName(name); setDipResolvedSym(sym);
+          setDipResolvedType(type); setDipResolvedPkg(pkg);
+          if (pkg) {
+            const { curveShapeFor } = await import('./constants.js');
+            const { virtualSui } = curveShapeFor(pkg);
+            setDipCurrentPrice((reserveSui + virtualSui) / 1_000_000_000);
+          }
+        } else {
+          setResolvedName(name); setResolvedSym(sym);
+          setResolvedType(type); setResolvedPkg(pkg);
+          if (pkg) {
+            const { curveShapeFor } = await import('./constants.js');
+            const { virtualSui } = curveShapeFor(pkg);
+            setResolvedPrice((reserveSui + virtualSui) / 1_000_000_000);
+          }
+        }
       }
-    } catch {} finally { setResolving(false); }
+    } catch {}
+    isDip ? setDipResolving(false) : setResolving(false);
   };
 
-  const handleCreateAndRun = () => {
+  const handleCreateTime = () => {
     if (!resolvedType || !resolvedPkg) { setFormMsg('Paste a valid curve ID first'); return; }
-    const total = parseFloat(totalSui); const n = parseInt(tranches);
+    const total = parseFloat(totalSui);
+    const n     = parseInt(tranches);
     if (!total || total <= 0) { setFormMsg('Enter total SUI'); return; }
     if (!n || n < 2)          { setFormMsg('Minimum 2 tranches'); return; }
-    createOrder({ curveId: curveId.trim(), tokenType: resolvedType, pkgId: resolvedPkg,
+    createOrder({
+      mode: 'time', curveId: curveId.trim(), tokenType: resolvedType, pkgId: resolvedPkg,
       name: resolvedName, symbol: resolvedSym, totalSui: total, trancheCount: n,
-      intervalMs: parseInt(intervalMs), slippage: parseFloat(slippage) || 2 });
-    setSaved(true);
+      intervalMs: parseInt(intervalMs), slippage: parseFloat(slippage) || 2,
+    });
     setCurveId(''); setResolvedName(''); setResolvedType(''); setResolvedPkg('');
+    setSaved(true);
+    setTimeout(() => { setSaved(false); onClose(); }, 900);
+  };
+
+  const handleCreateDip = () => {
+    if (!dipResolvedType || !dipResolvedPkg) { setFormMsg('Paste a valid curve ID first'); return; }
+    const sui = parseFloat(suiPerDip);
+    const pct = parseFloat(dipPct);
+    if (!sui || sui <= 0) { setFormMsg('Enter SUI per dip buy'); return; }
+    if (!pct || pct <= 0) { setFormMsg('Enter dip % threshold'); return; }
+    createOrder({
+      mode: 'dip', curveId: dipCurveId.trim(), tokenType: dipResolvedType, pkgId: dipResolvedPkg,
+      name: dipResolvedName, symbol: dipResolvedSym,
+      suiPerDip: sui, dipPct: pct,
+      cooldownMin: parseInt(cooldownMin) || 5,
+      maxDipBuys:  parseInt(maxDipBuys)  || 0,
+      refPrice:    dipCurrentPrice,
+      slippage:    parseFloat(dipSlippage) || 2,
+    });
+    setDipCurveId(''); setDipResolvedName(''); setDipResolvedType(''); setDipResolvedPkg('');
+    setSaved(true);
     setTimeout(() => { setSaved(false); onClose(); }, 900);
   };
 
@@ -300,28 +362,49 @@ function DCATab({ dca, hasKey, isReady, onClose }) {
 
   return (
     <div className="space-y-4">
+
+      {/* Active orders */}
       {activeOrders.length > 0 && (
         <div className="space-y-2">
           <div className="text-[9px] font-mono text-white/30 tracking-widest">RUNNING ORDERS</div>
           {activeOrders.map(order => {
-            const pct = Math.round(((order.executed ?? 0) / order.trancheCount) * 100);
-            const interval = INTERVAL_OPTIONS.find(o => o.ms === order.intervalMs)?.label ?? `${order.intervalMs/60000}m`;
-            const nextIn = order.nextFireAt ? Math.max(0, Math.ceil((order.nextFireAt - Date.now()) / 1000)) : null;
+            const isTime  = !order.mode || order.mode === 'time';
+            const pct     = isTime ? Math.round(((order.executed ?? 0) / order.trancheCount) * 100) : null;
+            const buysLeft = !isTime && order.maxDipBuys > 0 ? order.maxDipBuys - (order.dipBuyCount ?? 0) : null;
             return (
               <div key={order.id} className="rounded-xl border border-lime-400/15 bg-lime-950/10 overflow-hidden">
                 <div className="px-3 py-2.5 flex items-center justify-between">
                   <div className="min-w-0">
-                    <div className="text-[10px] font-mono font-bold text-white truncate">
-                      {order.name || order.curveId.slice(0,8)+'…'}{order.symbol && <span className="text-lime-400/70 ml-1">${order.symbol}</span>}
+                    <div className="flex items-center gap-2 mb-0.5">
+                      <div className="text-[10px] font-mono font-bold text-white truncate">
+                        {order.name || order.curveId.slice(0,8)+'…'}
+                        {order.symbol && <span className="text-lime-400/70 ml-1">${order.symbol}</span>}
+                      </div>
+                      <span className={`text-[8px] font-mono px-1.5 py-0.5 rounded-full ${
+                        isTime ? 'bg-blue-400/10 text-blue-400/70' : 'bg-orange-400/10 text-orange-400/70'
+                      }`}>{isTime ? 'TIME' : 'DIP'}</span>
                     </div>
-                    <div className="text-[8px] font-mono text-white/30 mt-0.5">
-                      {order.executed ?? 0}/{order.trancheCount} tranches · {(order.totalSui/order.trancheCount).toFixed(2)} SUI · every {interval}
-                    </div>
-                    {nextIn !== null && <div className="text-[8px] font-mono text-lime-400/50">next in {nextIn < 60 ? `${nextIn}s` : `${Math.ceil(nextIn/60)}m`}</div>}
+                    {isTime ? (
+                      <div className="text-[8px] font-mono text-white/30">
+                        {order.executed ?? 0}/{order.trancheCount} tranches · {(order.totalSui / order.trancheCount).toFixed(2)} SUI each
+                      </div>
+                    ) : (
+                      <div className="text-[8px] font-mono text-white/30">
+                        Buy {order.suiPerDip} SUI on -{order.dipPct}% dip
+                        {buysLeft !== null ? ` · ${buysLeft} buys left` : ' · unlimited'}
+                        {(order.dipBuyCount ?? 0) > 0 && ` · ${order.dipBuyCount} done`}
+                      </div>
+                    )}
                   </div>
-                  <button onClick={() => cancelOrder(order.id)} className="text-white/20 hover:text-red-400 ml-3 shrink-0"><Trash2 size={11} /></button>
+                  <button onClick={() => cancelOrder(order.id)} className="text-white/20 hover:text-red-400 ml-3 shrink-0">
+                    <Trash2 size={11} />
+                  </button>
                 </div>
-                <div className="h-1 bg-white/5"><div className="h-full bg-lime-400/60" style={{ width: `${pct}%` }} /></div>
+                {isTime && pct != null && (
+                  <div className="h-1 bg-white/5">
+                    <div className="h-full bg-lime-400/60" style={{ width: `${pct}%` }} />
+                  </div>
+                )}
               </div>
             );
           })}
@@ -331,52 +414,143 @@ function DCATab({ dca, hasKey, isReady, onClose }) {
         </div>
       )}
 
-      <div className="space-y-3">
-        <div className="text-[9px] font-mono text-white/30 tracking-widest">NEW DCA ORDER</div>
-        <div className="space-y-1">
-          <label className="text-[9px] font-mono text-white/30">TOKEN CURVE ID</label>
-          <input value={curveId} onChange={e => { setCurveId(e.target.value); setResolvedName(''); setResolvedType(''); }}
-            onBlur={e => resolveCurve(e.target.value.trim())} placeholder="0x… paste from token page URL"
-            className="w-full bg-white/[0.04] border border-white/8 rounded-lg px-3 py-1.5 text-[11px] font-mono text-white placeholder-white/15 focus:outline-none focus:border-lime-400/30" />
-          {resolving && <div className="text-[8px] font-mono text-white/30">Resolving…</div>}
-          {resolvedName && <div className="text-[9px] font-mono text-lime-400">✓ {resolvedName} <span className="text-white/40">${resolvedSym}</span></div>}
+      {/* Mode toggle */}
+      <div className="flex rounded-xl overflow-hidden border border-white/10">
+        {[['time', '⏱ Time-based'], ['dip', '📉 Buy the Dip']].map(([mode, label]) => (
+          <button key={mode} onClick={() => { setDcaMode(mode); setFormMsg(''); }}
+            className={`flex-1 py-2.5 text-[10px] font-mono font-bold transition-colors ${
+              dcaMode === mode ? 'bg-lime-400 text-black' : 'bg-white/[0.03] text-white/30 hover:text-white/60'
+            }`}>{label}</button>
+        ))}
+      </div>
+
+      {/* Time-based form */}
+      {dcaMode === 'time' && (
+        <div className="space-y-3">
+          <div className="text-[9px] font-mono text-white/30 tracking-widest">NEW TIME-BASED ORDER</div>
+          <div className="space-y-1">
+            <label className="text-[9px] font-mono text-white/30">TOKEN CURVE ID</label>
+            <input value={curveId}
+              onChange={e => { setCurveId(e.target.value); setResolvedName(''); setResolvedType(''); }}
+              onBlur={e => resolveCurve(e.target.value.trim(), false)}
+              placeholder="0x… paste from token page URL"
+              className="w-full bg-white/[0.04] border border-white/8 rounded-lg px-3 py-1.5 text-[11px] font-mono text-white placeholder-white/15 focus:outline-none focus:border-lime-400/30" />
+            {resolving && <div className="text-[8px] font-mono text-white/30">Resolving…</div>}
+            {resolvedName && <div className="text-[9px] font-mono text-lime-400">✓ {resolvedName} <span className="text-white/40">${resolvedSym}</span></div>}
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            {[['TOTAL SUI', totalSui, setTotalSui], ['TRANCHES', tranches, setTranches]].map(([label, val, set]) => (
+              <div key={label} className="space-y-1">
+                <label className="text-[9px] font-mono text-white/30">{label}</label>
+                <input type="number" min="1" step="1" value={val} onChange={e => set(e.target.value)}
+                  className="w-full bg-white/[0.04] border border-white/8 rounded-lg px-3 py-1.5 text-[11px] font-mono text-white focus:outline-none focus:border-lime-400/30" />
+              </div>
+            ))}
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1">
+              <label className="text-[9px] font-mono text-white/30">INTERVAL</label>
+              <select value={intervalMs} onChange={e => setIntervalMs(parseInt(e.target.value))}
+                className="w-full bg-white/[0.04] border border-white/8 rounded-lg px-3 py-1.5 text-[11px] font-mono text-white focus:outline-none">
+                {(INTERVAL_OPTIONS ?? []).map(o => <option key={o.ms} value={o.ms} className="bg-[#0d0d0d]">{o.label}</option>)}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-[9px] font-mono text-white/30">SLIPPAGE %</label>
+              <input type="number" min="0.1" max="50" step="0.1" value={slippage} onChange={e => setSlippage(e.target.value)}
+                className="w-full bg-white/[0.04] border border-white/8 rounded-lg px-3 py-1.5 text-[11px] font-mono text-white focus:outline-none" />
+            </div>
+          </div>
+          {resolvedPrice && (
+            <div className="text-[9px] font-mono text-white/30 bg-white/[0.02] rounded-lg px-3 py-2">
+              Current price: <span className="text-white/60">{resolvedPrice.toFixed(8)} SUI/token</span>
+              {totalSui && tranches && (
+                <span className="text-white/40 ml-2">· {(parseFloat(totalSui) / parseInt(tranches)).toFixed(2)} SUI/tranche</span>
+              )}
+            </div>
+          )}
+          {formMsg && <div className="text-[10px] font-mono text-red-400 text-center">{formMsg}</div>}
+          {saved ? (
+            <div className="w-full py-3 rounded-xl bg-lime-950/40 border border-lime-400/40 text-lime-400 text-[11px] font-mono font-bold flex items-center justify-center gap-2">
+              <CheckCircle2 size={13} /> DCA running — closing modal…
+            </div>
+          ) : (
+            <SaveRunButton onClick={handleCreateTime} active={false} label="Save & Run in Background" disabled={!resolvedType} />
+          )}
         </div>
-        <div className="grid grid-cols-2 gap-2">
-          {[
-            { label: 'TOTAL SUI', val: totalSui, set: setTotalSui, type: 'number', min: 0.1, step: 0.1 },
-            { label: 'TRANCHES',  val: tranches,  set: setTranches,  type: 'number', min: 2,   step: 1   },
-          ].map(({ label, val, set, type, min, step }) => (
-            <div key={label} className="space-y-1">
-              <label className="text-[9px] font-mono text-white/30">{label}</label>
-              <input type={type} min={min} step={step} value={val} onChange={e => set(e.target.value)}
+      )}
+
+      {/* Dip-based form */}
+      {dcaMode === 'dip' && (
+        <div className="space-y-3">
+          <div className="text-[9px] font-mono text-white/30 tracking-widest">NEW DIP ORDER</div>
+          <div className="space-y-1">
+            <label className="text-[9px] font-mono text-white/30">TOKEN CURVE ID</label>
+            <input value={dipCurveId}
+              onChange={e => { setDipCurveId(e.target.value); setDipResolvedName(''); setDipResolvedType(''); }}
+              onBlur={e => resolveCurve(e.target.value.trim(), true)}
+              placeholder="0x… paste from token page URL"
+              className="w-full bg-white/[0.04] border border-white/8 rounded-lg px-3 py-1.5 text-[11px] font-mono text-white placeholder-white/15 focus:outline-none focus:border-lime-400/30" />
+            {dipResolving && <div className="text-[8px] font-mono text-white/30">Resolving…</div>}
+            {dipResolvedName && <div className="text-[9px] font-mono text-lime-400">✓ {dipResolvedName} <span className="text-white/40">${dipResolvedSym}</span></div>}
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1">
+              <label className="text-[9px] font-mono text-white/30">BUY ON DIP OF</label>
+              <div className="relative">
+                <input type="number" min="1" max="90" step="1" value={dipPct} onChange={e => setDipPct(e.target.value)}
+                  className="w-full bg-white/[0.04] border border-white/8 rounded-lg px-3 py-1.5 pr-7 text-[11px] font-mono text-white focus:outline-none focus:border-lime-400/30" />
+                <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[9px] font-mono text-white/25">%</span>
+              </div>
+              <div className="text-[8px] font-mono text-white/20">from last buy price</div>
+            </div>
+            <div className="space-y-1">
+              <label className="text-[9px] font-mono text-white/30">SUI PER BUY</label>
+              <input type="number" min="0.1" step="0.1" value={suiPerDip} onChange={e => setSuiPerDip(e.target.value)}
                 className="w-full bg-white/[0.04] border border-white/8 rounded-lg px-3 py-1.5 text-[11px] font-mono text-white focus:outline-none focus:border-lime-400/30" />
             </div>
-          ))}
-        </div>
-        <div className="grid grid-cols-2 gap-2">
-          <div className="space-y-1">
-            <label className="text-[9px] font-mono text-white/30">INTERVAL</label>
-            <select value={intervalMs} onChange={e => setIntervalMs(parseInt(e.target.value))}
-              className="w-full bg-white/[0.04] border border-white/8 rounded-lg px-3 py-1.5 text-[11px] font-mono text-white focus:outline-none">
-              {(INTERVAL_OPTIONS ?? []).map(o => <option key={o.ms} value={o.ms} className="bg-[#0d0d0d]">{o.label}</option>)}
-            </select>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1">
+              <label className="text-[9px] font-mono text-white/30">COOLDOWN (MIN)</label>
+              <input type="number" min="1" step="1" value={cooldownMin} onChange={e => setCooldownMin(e.target.value)}
+                className="w-full bg-white/[0.04] border border-white/8 rounded-lg px-3 py-1.5 text-[11px] font-mono text-white focus:outline-none" />
+              <div className="text-[8px] font-mono text-white/20">min between buys</div>
+            </div>
+            <div className="space-y-1">
+              <label className="text-[9px] font-mono text-white/30">MAX BUYS</label>
+              <input type="number" min="0" step="1" value={maxDipBuys} onChange={e => setMaxDipBuys(e.target.value)}
+                className="w-full bg-white/[0.04] border border-white/8 rounded-lg px-3 py-1.5 text-[11px] font-mono text-white focus:outline-none" />
+              <div className="text-[8px] font-mono text-white/20">0 = unlimited</div>
+            </div>
           </div>
           <div className="space-y-1">
             <label className="text-[9px] font-mono text-white/30">SLIPPAGE %</label>
-            <input type="number" min="0.1" max="50" step="0.1" value={slippage} onChange={e => setSlippage(e.target.value)}
+            <input type="number" min="0.1" max="50" step="0.1" value={dipSlippage} onChange={e => setDipSlippage(e.target.value)}
               className="w-full bg-white/[0.04] border border-white/8 rounded-lg px-3 py-1.5 text-[11px] font-mono text-white focus:outline-none" />
           </div>
+          {dipCurrentPrice && (
+            <div className="text-[9px] font-mono text-white/30 bg-white/[0.02] rounded-lg px-3 py-2">
+              Current price: <span className="text-white/60">{dipCurrentPrice.toFixed(8)} SUI/token</span>
+              {dipPct && (
+                <span className="text-orange-400/60 ml-2">
+                  · triggers at {(dipCurrentPrice * (1 - parseFloat(dipPct) / 100)).toFixed(8)}
+                </span>
+              )}
+            </div>
+          )}
+          {formMsg && <div className="text-[10px] font-mono text-red-400 text-center">{formMsg}</div>}
+          {saved ? (
+            <div className="w-full py-3 rounded-xl bg-lime-950/40 border border-lime-400/40 text-lime-400 text-[11px] font-mono font-bold flex items-center justify-center gap-2">
+              <CheckCircle2 size={13} /> Dip watcher running — closing modal…
+            </div>
+          ) : (
+            <SaveRunButton onClick={handleCreateDip} active={false} label="Save & Run in Background" disabled={!dipResolvedType} />
+          )}
         </div>
-        {formMsg && <div className={`text-[10px] font-mono text-center ${formMsg.includes('✓') ? 'text-lime-400' : 'text-red-400'}`}>{formMsg}</div>}
-        {saved ? (
-          <div className="w-full py-3 rounded-xl bg-lime-950/40 border border-lime-400/40 text-lime-400 text-[11px] font-mono font-bold flex items-center justify-center gap-2">
-            <CheckCircle2 size={13} /> DCA running — closing modal…
-          </div>
-        ) : (
-          <SaveRunButton onClick={handleCreateAndRun} active={false} label="Save & Run in Background" disabled={!resolvedType} />
-        )}
-      </div>
+      )}
 
+      {/* Done orders */}
       {doneOrders.length > 0 && (
         <div className="space-y-2">
           <div className="flex items-center justify-between">
@@ -385,7 +559,10 @@ function DCATab({ dca, hasKey, isReady, onClose }) {
           </div>
           {doneOrders.map(order => (
             <div key={order.id} className="rounded-xl border border-white/5 px-3 py-2 text-[10px] font-mono text-white/30">
-              ✓ {order.name || order.curveId.slice(0,8)+'…'} — {order.trancheCount} tranches · {order.totalSui} SUI
+              ✓ {order.name || order.curveId.slice(0,8)+'…'} —{' '}
+              {order.mode === 'dip'
+                ? `${order.dipBuyCount} dip buys`
+                : `${order.trancheCount} tranches · ${order.totalSui} SUI`}
             </div>
           ))}
         </div>
@@ -394,7 +571,6 @@ function DCATab({ dca, hasKey, isReady, onClose }) {
   );
 }
 
-// ── Copy Trade tab ────────────────────────────────────────────────────────────
 function CopyTradeTab({ copyTrade, hasKey, isReady, onClose }) {
   const account = useCurrentAccount();
   const { targets = [], log = [], addTarget, removeTarget, toggleTarget, clearLog, isActive } = copyTrade;
@@ -825,330 +1001,4 @@ export default function StrategiesModal({ onClose, tradeKey, sniper, dca, copyTr
       </div>
     </>
   );
-}// ── DCA tab ───────────────────────────────────────────────────────────────────
-function DCATab({ dca, hasKey, isReady, onClose }) {
-  const account = useCurrentAccount();
-  const { activeOrders = [], doneOrders = [], createOrder, cancelOrder, clearDone } = dca;
-
-  const [dcaMode,         setDcaMode]         = React.useState('time');
-  const [curveId,         setCurveId]         = useState('');
-  const [totalSui,        setTotalSui]        = useState('10');
-  const [tranches,        setTranches]        = useState('5');
-  const [intervalMs,      setIntervalMs]      = useState(INTERVAL_OPTIONS[1]?.ms ?? 300_000);
-  const [slippage,        setSlippage]        = useState('2');
-  const [resolving,       setResolving]       = useState(false);
-  const [resolvedName,    setResolvedName]    = useState('');
-  const [resolvedSym,     setResolvedSym]     = useState('');
-  const [resolvedType,    setResolvedType]    = useState('');
-  const [resolvedPkg,     setResolvedPkg]     = useState('');
-  const [resolvedPrice,   setResolvedPrice]   = useState(null);
-
-  const [dipCurveId,      setDipCurveId]      = useState('');
-  const [suiPerDip,       setSuiPerDip]       = useState('2');
-  const [dipPct,          setDipPct]          = useState('10');
-  const [cooldownMin,     setCooldownMin]     = useState('5');
-  const [maxDipBuys,      setMaxDipBuys]      = useState('0');
-  const [dipSlippage,     setDipSlippage]     = useState('2');
-  const [dipResolving,    setDipResolving]    = useState(false);
-  const [dipResolvedName, setDipResolvedName] = useState('');
-  const [dipResolvedSym,  setDipResolvedSym]  = useState('');
-  const [dipResolvedType, setDipResolvedType] = useState('');
-  const [dipResolvedPkg,  setDipResolvedPkg]  = useState('');
-  const [dipCurrentPrice, setDipCurrentPrice] = useState(null);
-
-  const [formMsg, setFormMsg] = useState('');
-  const [saved,   setSaved]   = useState(false);
-
-  const IURL = import.meta.env.VITE_INDEXER_URL || '';
-
-  const resolveCurve = async (id, isDip = false) => {
-    if (!id || id.length < 10) return;
-    isDip ? setDipResolving(true) : setResolving(true);
-    try {
-      const r = await fetch(`${IURL}/token/${id}`, { signal: AbortSignal.timeout(5000) });
-      if (r.ok) {
-        const d = await r.json();
-        const name = d.name ?? '';
-        const sym  = d.symbol ?? '';
-        const type = d.token_type ?? d.tokenType ?? '';
-        const pkg  = d.package_id ?? d.packageId ?? '';
-        const reserveSui = d.stats?.reserve_sui ?? d.reserve_sui ?? 0;
-        if (isDip) {
-          setDipResolvedName(name); setDipResolvedSym(sym);
-          setDipResolvedType(type); setDipResolvedPkg(pkg);
-          if (pkg) {
-            const { curveShapeFor } = await import('./constants.js');
-            const { virtualSui } = curveShapeFor(pkg);
-            setDipCurrentPrice((reserveSui + virtualSui) / 1_000_000_000);
-          }
-        } else {
-          setResolvedName(name); setResolvedSym(sym);
-          setResolvedType(type); setResolvedPkg(pkg);
-          if (pkg) {
-            const { curveShapeFor } = await import('./constants.js');
-            const { virtualSui } = curveShapeFor(pkg);
-            setResolvedPrice((reserveSui + virtualSui) / 1_000_000_000);
-          }
-        }
-      }
-    } catch {}
-    isDip ? setDipResolving(false) : setResolving(false);
-  };
-
-  const handleCreateTime = () => {
-    if (!resolvedType || !resolvedPkg) { setFormMsg('Paste a valid curve ID first'); return; }
-    const total = parseFloat(totalSui);
-    const n     = parseInt(tranches);
-    if (!total || total <= 0) { setFormMsg('Enter total SUI'); return; }
-    if (!n || n < 2)          { setFormMsg('Minimum 2 tranches'); return; }
-    createOrder({
-      mode: 'time', curveId: curveId.trim(), tokenType: resolvedType, pkgId: resolvedPkg,
-      name: resolvedName, symbol: resolvedSym, totalSui: total, trancheCount: n,
-      intervalMs: parseInt(intervalMs), slippage: parseFloat(slippage) || 2,
-    });
-    setCurveId(''); setResolvedName(''); setResolvedType(''); setResolvedPkg('');
-    setSaved(true);
-    setTimeout(() => { setSaved(false); onClose(); }, 900);
-  };
-
-  const handleCreateDip = () => {
-    if (!dipResolvedType || !dipResolvedPkg) { setFormMsg('Paste a valid curve ID first'); return; }
-    const sui = parseFloat(suiPerDip);
-    const pct = parseFloat(dipPct);
-    if (!sui || sui <= 0) { setFormMsg('Enter SUI per dip buy'); return; }
-    if (!pct || pct <= 0) { setFormMsg('Enter dip % threshold'); return; }
-    createOrder({
-      mode: 'dip', curveId: dipCurveId.trim(), tokenType: dipResolvedType, pkgId: dipResolvedPkg,
-      name: dipResolvedName, symbol: dipResolvedSym,
-      suiPerDip: sui, dipPct: pct,
-      cooldownMin: parseInt(cooldownMin) || 5,
-      maxDipBuys:  parseInt(maxDipBuys)  || 0,
-      refPrice:    dipCurrentPrice,
-      slippage:    parseFloat(dipSlippage) || 2,
-    });
-    setDipCurveId(''); setDipResolvedName(''); setDipResolvedType(''); setDipResolvedPkg('');
-    setSaved(true);
-    setTimeout(() => { setSaved(false); onClose(); }, 900);
-  };
-
-  if (!account) return <div className="py-12 text-center text-[11px] font-mono text-white/30">Connect your wallet to use DCA</div>;
-  if (!hasKey || !isReady) return (
-    <div className="py-12 text-center space-y-2">
-      <div className="text-[11px] font-mono text-white/25">Trading key required</div>
-      <div className="text-[9px] font-mono text-white/15">Set up your trading key in the Key tab first</div>
-    </div>
-  );
-
-  return (
-    <div className="space-y-4">
-
-      {/* Active orders */}
-      {activeOrders.length > 0 && (
-        <div className="space-y-2">
-          <div className="text-[9px] font-mono text-white/30 tracking-widest">RUNNING ORDERS</div>
-          {activeOrders.map(order => {
-            const isTime  = !order.mode || order.mode === 'time';
-            const pct     = isTime ? Math.round(((order.executed ?? 0) / order.trancheCount) * 100) : null;
-            const buysLeft = !isTime && order.maxDipBuys > 0 ? order.maxDipBuys - (order.dipBuyCount ?? 0) : null;
-            return (
-              <div key={order.id} className="rounded-xl border border-lime-400/15 bg-lime-950/10 overflow-hidden">
-                <div className="px-3 py-2.5 flex items-center justify-between">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2 mb-0.5">
-                      <div className="text-[10px] font-mono font-bold text-white truncate">
-                        {order.name || order.curveId.slice(0,8)+'…'}
-                        {order.symbol && <span className="text-lime-400/70 ml-1">${order.symbol}</span>}
-                      </div>
-                      <span className={`text-[8px] font-mono px-1.5 py-0.5 rounded-full ${
-                        isTime ? 'bg-blue-400/10 text-blue-400/70' : 'bg-orange-400/10 text-orange-400/70'
-                      }`}>{isTime ? 'TIME' : 'DIP'}</span>
-                    </div>
-                    {isTime ? (
-                      <div className="text-[8px] font-mono text-white/30">
-                        {order.executed ?? 0}/{order.trancheCount} tranches · {(order.totalSui / order.trancheCount).toFixed(2)} SUI each
-                      </div>
-                    ) : (
-                      <div className="text-[8px] font-mono text-white/30">
-                        Buy {order.suiPerDip} SUI on -{order.dipPct}% dip
-                        {buysLeft !== null ? ` · ${buysLeft} buys left` : ' · unlimited'}
-                        {(order.dipBuyCount ?? 0) > 0 && ` · ${order.dipBuyCount} done`}
-                      </div>
-                    )}
-                  </div>
-                  <button onClick={() => cancelOrder(order.id)} className="text-white/20 hover:text-red-400 ml-3 shrink-0">
-                    <Trash2 size={11} />
-                  </button>
-                </div>
-                {isTime && pct != null && (
-                  <div className="h-1 bg-white/5">
-                    <div className="h-full bg-lime-400/60" style={{ width: `${pct}%` }} />
-                  </div>
-                )}
-              </div>
-            );
-          })}
-          <button onClick={onClose} className="w-full py-2.5 rounded-xl border border-white/10 text-white/40 text-[11px] font-mono font-bold hover:border-white/20 hover:text-white/60">
-            Close — orders keep running
-          </button>
-        </div>
-      )}
-
-      {/* Mode toggle */}
-      <div className="flex rounded-xl overflow-hidden border border-white/10">
-        {[['time', '⏱ Time-based'], ['dip', '📉 Buy the Dip']].map(([mode, label]) => (
-          <button key={mode} onClick={() => { setDcaMode(mode); setFormMsg(''); }}
-            className={`flex-1 py-2.5 text-[10px] font-mono font-bold transition-colors ${
-              dcaMode === mode ? 'bg-lime-400 text-black' : 'bg-white/[0.03] text-white/30 hover:text-white/60'
-            }`}>{label}</button>
-        ))}
-      </div>
-
-      {/* Time-based form */}
-      {dcaMode === 'time' && (
-        <div className="space-y-3">
-          <div className="text-[9px] font-mono text-white/30 tracking-widest">NEW TIME-BASED ORDER</div>
-          <div className="space-y-1">
-            <label className="text-[9px] font-mono text-white/30">TOKEN CURVE ID</label>
-            <input value={curveId}
-              onChange={e => { setCurveId(e.target.value); setResolvedName(''); setResolvedType(''); }}
-              onBlur={e => resolveCurve(e.target.value.trim(), false)}
-              placeholder="0x… paste from token page URL"
-              className="w-full bg-white/[0.04] border border-white/8 rounded-lg px-3 py-1.5 text-[11px] font-mono text-white placeholder-white/15 focus:outline-none focus:border-lime-400/30" />
-            {resolving && <div className="text-[8px] font-mono text-white/30">Resolving…</div>}
-            {resolvedName && <div className="text-[9px] font-mono text-lime-400">✓ {resolvedName} <span className="text-white/40">${resolvedSym}</span></div>}
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            {[['TOTAL SUI', totalSui, setTotalSui], ['TRANCHES', tranches, setTranches]].map(([label, val, set]) => (
-              <div key={label} className="space-y-1">
-                <label className="text-[9px] font-mono text-white/30">{label}</label>
-                <input type="number" min="1" step="1" value={val} onChange={e => set(e.target.value)}
-                  className="w-full bg-white/[0.04] border border-white/8 rounded-lg px-3 py-1.5 text-[11px] font-mono text-white focus:outline-none focus:border-lime-400/30" />
-              </div>
-            ))}
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <div className="space-y-1">
-              <label className="text-[9px] font-mono text-white/30">INTERVAL</label>
-              <select value={intervalMs} onChange={e => setIntervalMs(parseInt(e.target.value))}
-                className="w-full bg-white/[0.04] border border-white/8 rounded-lg px-3 py-1.5 text-[11px] font-mono text-white focus:outline-none">
-                {(INTERVAL_OPTIONS ?? []).map(o => <option key={o.ms} value={o.ms} className="bg-[#0d0d0d]">{o.label}</option>)}
-              </select>
-            </div>
-            <div className="space-y-1">
-              <label className="text-[9px] font-mono text-white/30">SLIPPAGE %</label>
-              <input type="number" min="0.1" max="50" step="0.1" value={slippage} onChange={e => setSlippage(e.target.value)}
-                className="w-full bg-white/[0.04] border border-white/8 rounded-lg px-3 py-1.5 text-[11px] font-mono text-white focus:outline-none" />
-            </div>
-          </div>
-          {resolvedPrice && (
-            <div className="text-[9px] font-mono text-white/30 bg-white/[0.02] rounded-lg px-3 py-2">
-              Current price: <span className="text-white/60">{resolvedPrice.toFixed(8)} SUI/token</span>
-              {totalSui && tranches && (
-                <span className="text-white/40 ml-2">· {(parseFloat(totalSui) / parseInt(tranches)).toFixed(2)} SUI/tranche</span>
-              )}
-            </div>
-          )}
-          {formMsg && <div className="text-[10px] font-mono text-red-400 text-center">{formMsg}</div>}
-          {saved ? (
-            <div className="w-full py-3 rounded-xl bg-lime-950/40 border border-lime-400/40 text-lime-400 text-[11px] font-mono font-bold flex items-center justify-center gap-2">
-              <CheckCircle2 size={13} /> DCA running — closing modal…
-            </div>
-          ) : (
-            <SaveRunButton onClick={handleCreateTime} active={false} label="Save & Run in Background" disabled={!resolvedType} />
-          )}
-        </div>
-      )}
-
-      {/* Dip-based form */}
-      {dcaMode === 'dip' && (
-        <div className="space-y-3">
-          <div className="text-[9px] font-mono text-white/30 tracking-widest">NEW DIP ORDER</div>
-          <div className="space-y-1">
-            <label className="text-[9px] font-mono text-white/30">TOKEN CURVE ID</label>
-            <input value={dipCurveId}
-              onChange={e => { setDipCurveId(e.target.value); setDipResolvedName(''); setDipResolvedType(''); }}
-              onBlur={e => resolveCurve(e.target.value.trim(), true)}
-              placeholder="0x… paste from token page URL"
-              className="w-full bg-white/[0.04] border border-white/8 rounded-lg px-3 py-1.5 text-[11px] font-mono text-white placeholder-white/15 focus:outline-none focus:border-lime-400/30" />
-            {dipResolving && <div className="text-[8px] font-mono text-white/30">Resolving…</div>}
-            {dipResolvedName && <div className="text-[9px] font-mono text-lime-400">✓ {dipResolvedName} <span className="text-white/40">${dipResolvedSym}</span></div>}
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <div className="space-y-1">
-              <label className="text-[9px] font-mono text-white/30">BUY ON DIP OF</label>
-              <div className="relative">
-                <input type="number" min="1" max="90" step="1" value={dipPct} onChange={e => setDipPct(e.target.value)}
-                  className="w-full bg-white/[0.04] border border-white/8 rounded-lg px-3 py-1.5 pr-7 text-[11px] font-mono text-white focus:outline-none focus:border-lime-400/30" />
-                <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[9px] font-mono text-white/25">%</span>
-              </div>
-              <div className="text-[8px] font-mono text-white/20">from last buy price</div>
-            </div>
-            <div className="space-y-1">
-              <label className="text-[9px] font-mono text-white/30">SUI PER BUY</label>
-              <input type="number" min="0.1" step="0.1" value={suiPerDip} onChange={e => setSuiPerDip(e.target.value)}
-                className="w-full bg-white/[0.04] border border-white/8 rounded-lg px-3 py-1.5 text-[11px] font-mono text-white focus:outline-none focus:border-lime-400/30" />
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <div className="space-y-1">
-              <label className="text-[9px] font-mono text-white/30">COOLDOWN (MIN)</label>
-              <input type="number" min="1" step="1" value={cooldownMin} onChange={e => setCooldownMin(e.target.value)}
-                className="w-full bg-white/[0.04] border border-white/8 rounded-lg px-3 py-1.5 text-[11px] font-mono text-white focus:outline-none" />
-              <div className="text-[8px] font-mono text-white/20">min between buys</div>
-            </div>
-            <div className="space-y-1">
-              <label className="text-[9px] font-mono text-white/30">MAX BUYS</label>
-              <input type="number" min="0" step="1" value={maxDipBuys} onChange={e => setMaxDipBuys(e.target.value)}
-                className="w-full bg-white/[0.04] border border-white/8 rounded-lg px-3 py-1.5 text-[11px] font-mono text-white focus:outline-none" />
-              <div className="text-[8px] font-mono text-white/20">0 = unlimited</div>
-            </div>
-          </div>
-          <div className="space-y-1">
-            <label className="text-[9px] font-mono text-white/30">SLIPPAGE %</label>
-            <input type="number" min="0.1" max="50" step="0.1" value={dipSlippage} onChange={e => setDipSlippage(e.target.value)}
-              className="w-full bg-white/[0.04] border border-white/8 rounded-lg px-3 py-1.5 text-[11px] font-mono text-white focus:outline-none" />
-          </div>
-          {dipCurrentPrice && (
-            <div className="text-[9px] font-mono text-white/30 bg-white/[0.02] rounded-lg px-3 py-2">
-              Current price: <span className="text-white/60">{dipCurrentPrice.toFixed(8)} SUI/token</span>
-              {dipPct && (
-                <span className="text-orange-400/60 ml-2">
-                  · triggers at {(dipCurrentPrice * (1 - parseFloat(dipPct) / 100)).toFixed(8)}
-                </span>
-              )}
-            </div>
-          )}
-          {formMsg && <div className="text-[10px] font-mono text-red-400 text-center">{formMsg}</div>}
-          {saved ? (
-            <div className="w-full py-3 rounded-xl bg-lime-950/40 border border-lime-400/40 text-lime-400 text-[11px] font-mono font-bold flex items-center justify-center gap-2">
-              <CheckCircle2 size={13} /> Dip watcher running — closing modal…
-            </div>
-          ) : (
-            <SaveRunButton onClick={handleCreateDip} active={false} label="Save & Run in Background" disabled={!dipResolvedType} />
-          )}
-        </div>
-      )}
-
-      {/* Done orders */}
-      {doneOrders.length > 0 && (
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-[9px] font-mono text-white/20 tracking-widest">COMPLETED</span>
-            <button onClick={clearDone} className="text-[9px] font-mono text-white/20 hover:text-red-400">clear</button>
-          </div>
-          {doneOrders.map(order => (
-            <div key={order.id} className="rounded-xl border border-white/5 px-3 py-2 text-[10px] font-mono text-white/30">
-              ✓ {order.name || order.curveId.slice(0,8)+'…'} —{' '}
-              {order.mode === 'dip'
-                ? `${order.dipBuyCount} dip buys`
-                : `${order.trancheCount} tranches · ${order.totalSui} SUI`}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
 }
-
-
-
