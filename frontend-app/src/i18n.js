@@ -31,7 +31,7 @@ export const translations = {
 
     // Hero
     heroTagline: 'Permissionless token launchpad on Sui.',
-    heroSub: 'Fair launch · No pre-mine · 40% creator fees · Graduates to Cetus',
+    heroSub: 'Fair launch · No pre-mine · 40% creator fees · Graduates to your favorite DEX',
     launchAToken: 'LAUNCH A TOKEN',
     connectWalletToLaunch: 'CONNECT WALLET TO LAUNCH',
 
@@ -227,7 +227,7 @@ export const translations = {
     disconnect: '断开',
     wallet: '钱包',
     heroTagline: 'Sui 上的无许可代币发行平台。',
-    heroSub: '公平发行 · 无预挖 · 创作者获40%手续费 · 毕业至 Cetus',
+    heroSub: '公平发行 · 无预挖 · 创作者获40%手续费 · 毕业至您喜爱的 DEX',
     launchAToken: '发行代币',
     connectWalletToLaunch: '连接钱包以发行',
     tokens: '代币',
@@ -391,7 +391,7 @@ export const translations = {
     disconnect: 'DESCONECTAR',
     wallet: 'CARTEIRA',
     heroTagline: 'Launchpad permissionless de tokens na Sui.',
-    heroSub: 'Lançamento justo · Sem pré-mineração · 40% de taxas aos criadores · Gradua no Cetus',
+    heroSub: 'Lançamento justo · Sem pré-mineração · 40% de taxas aos criadores · Gradua no DEX favorito',
     launchAToken: 'LANÇAR UM TOKEN',
     connectWalletToLaunch: 'CONECTE A CARTEIRA PARA LANÇAR',
     tokens: 'TOKENS',
@@ -555,7 +555,7 @@ export const translations = {
     disconnect: '연결 해제',
     wallet: '지갑',
     heroTagline: 'Sui의 무허가 토큰 런치패드.',
-    heroSub: '공정 출시 · 프리마이닝 없음 · 크리에이터 수수료 40% · Cetus로 졸업',
+    heroSub: '공정 출시 · 프리마이닝 없음 · 크리에이터 수수료 40% · 좋아하는 DEX로 졸업',
     launchAToken: '토큰 출시하기',
     connectWalletToLaunch: '출시하려면 지갑을 연결하세요',
     tokens: '토큰',
@@ -719,7 +719,7 @@ export const translations = {
     disconnect: 'NGẮT KẾT NỐI',
     wallet: 'VÍ',
     heroTagline: 'Nền tảng phát hành token không cần phép trên Sui.',
-    heroSub: 'Ra mắt công bằng · Không pre-mine · 40% phí về tay người tạo · Tốt nghiệp lên Cetus',
+    heroSub: 'Ra mắt công bằng · Không pre-mine · 40% phí về tay người tạo · Tốt nghiệp lên DEX yêu thích',
     launchAToken: 'PHÁT HÀNH TOKEN',
     connectWalletToLaunch: 'KẾT NỐI VÍ ĐỂ PHÁT HÀNH',
     tokens: 'TOKEN',
@@ -883,7 +883,7 @@ export const translations = {
     disconnect: 'ОТКЛЮЧИТЬ',
     wallet: 'КОШЕЛЁК',
     heroTagline: 'Беспрепятственный лаунчпад токенов на Sui.',
-    heroSub: 'Честный запуск · Без пре-майнинга · 40% комиссий создателям · Выпуск на Cetus',
+    heroSub: 'Честный запуск · Без пре-майнинга · 40% комиссий создателям · Выпуск на выбранный DEX',
     launchAToken: 'ВЫПУСТИТЬ ТОКЕН',
     connectWalletToLaunch: 'ПОДКЛЮЧИТЕ КОШЕЛЁК ДЛЯ ЗАПУСКА',
     tokens: 'ТОКЕНЫ',
@@ -1050,7 +1050,7 @@ export const translations = {
 
     // Hero
     heroTagline: 'Plataforma de lanzamiento de tokens sin permisos en Sui.',
-    heroSub: 'Lanzamiento justo · Sin pre-minado · 40% de comisiones a creadores · Gradúa en Cetus',
+    heroSub: 'Lanzamiento justo · Sin pre-minado · 40% de comisiones a creadores · Gradúa en tu DEX favorito',
     launchAToken: 'LANZAR UN TOKEN',
     connectWalletToLaunch: 'CONECTA TU BILLETERA PARA LANZAR',
 
