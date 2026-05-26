@@ -1,4 +1,4 @@
-// v20-tpsl-autonomous
+// v21-fresh-reserve-slippage
 // TokenPage.jsx
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -872,7 +872,19 @@ function TPSLPanel({
         ? keypair.getPublicKey().toSuiAddress()
         : account.address;
 
-      const isv = initialSharedVersionProp ?? curveState?.initial_shared_version ?? null;
+      // Fetch ISV from indexer at sell time — TPSLPanel doesn't have access
+      // to initialSharedVersionProp or curveState from the outer TokenPage scope
+      let isv = null;
+      try {
+        const IURL = import.meta.env.VITE_INDEXER_URL || '';
+        if (IURL) {
+          const isvRes = await fetch(`${IURL}/token/${curveId}`, { signal: AbortSignal.timeout(3000) });
+          if (isvRes.ok) {
+            const isvData = await isvRes.json();
+            isv = isvData.initialSharedVersion ?? isvData.initial_shared_version ?? null;
+          }
+        }
+      } catch { /* fallback to tx.object */ }
       const tx = new Transaction();
       const curveRef = isv
         ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: isv, mutable: true })
@@ -905,7 +917,7 @@ function TPSLPanel({
       // ── Autonomous path (keypair) ────────────────────────────────────────
       if (keypair) {
         tx.setSender(signerAddress);
-        const autonomousClient = new SuiGraphQLClient({ url: 'https://graphql.testnet.sui.io/graphql' });
+        const autonomousClient = new SuiGraphQLClient({ url: '/api/rpc' });
         const builtTx = await tx.build({ client: autonomousClient });
         const { signature } = await keypair.signTransaction(builtTx);
         const result = await autonomousClient.executeTransaction({
@@ -1426,9 +1438,34 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
 
       if (side === 'buy') {
         const suiInMist = BigInt(Math.floor(amtFloat * Number(MIST_PER_SUI)));
+
+        // ── Fresh reserve fetch — avoid stale-state slippage aborts ──────────
+        // The curveState in component state can be seconds old. Large buys on
+        // active curves fail with E_SLIPPAGE_EXCEEDED (abort 3) if the reserve
+        // moved since the last SSE update. Fetch fresh stats right before quoting.
+        let freshReserveMist = reserveMist;
+        let freshTokensRemaining = tokensRemaining;
+        try {
+          const IURL = import.meta.env.VITE_INDEXER_URL || '';
+          if (IURL) {
+            const fr = await fetch(`${IURL}/token/${curveId}/stats`, { signal: AbortSignal.timeout(3000) });
+            if (fr.ok) {
+              const fs = await fr.json();
+              if (fs.reserve_sui != null) freshReserveMist = BigInt(Math.round(fs.reserve_sui * 1e9));
+              if (fs.token_reserve != null) freshTokensRemaining = BigInt(Math.round(fs.token_reserve));
+            }
+          }
+        } catch { /* fallback to cached state */ }
+
         const [payment] = tx.splitCoins(tx.gas, [tx.pure.u64(suiInMist)]);
-        const bq = buyQuote(reserveMist, tokensRemaining, suiInMist, vSui, vTok);
-        const minOut = bq?.tokensOut != null ? BigInt(Math.floor(Number(bq.tokensOut) * (1 - slippageNum / 100))) : 0n;
+        const bq = buyQuote(freshReserveMist, freshTokensRemaining, suiInMist, vSui, vTok);
+
+        // Auto-bump effective slippage if price impact exceeds user's setting.
+        // Prevents E_SLIPPAGE_EXCEEDED on high-impact buys without forcing user
+        // to manually raise slippage every time.
+        const impactPct = bq?.priceImpact ?? 0;
+        const effectiveSlippage = Math.max(slippageNum, impactPct > 5 ? impactPct + 3 : slippageNum);
+        const minOut = bq?.tokensOut != null ? BigInt(Math.floor(Number(bq.tokensOut) * (1 - effectiveSlippage / 100))) : 0n;
         const buyArgs = isV5
           ? [curveRef, payment, tx.pure.u64(minOut), tx.pure.option('address', null), tx.object(SUI_CLOCK_ID)]
           : [curveRef, payment, tx.pure.u64(minOut)];
