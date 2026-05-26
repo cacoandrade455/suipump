@@ -385,8 +385,27 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
   const [meta,  setMeta]  = useState({ name: '', symbol: '', description: '', iconUrl: '' });
   const [iconUploading, setIconUploading]   = useState(false);
   const [iconUploadError, setIconUploadError] = useState(null);
+  const [transferAddr,  setTransferAddr]  = useState('');
+  const [transferStep,  setTransferStep]  = useState('input'); // 'input' | 'confirm'
 
   const showMsg = (m) => { setMsg(m); setTimeout(() => setMsg(''), 4000); };
+
+  const handleTransferCap = async () => {
+    if (!transferAddr.trim() || !transferAddr.startsWith('0x')) { showMsg('Enter a valid 0x address'); return; }
+    setBusy(true); setMsg('');
+    try {
+      const capId = await getCapId();
+      const tx = new Transaction();
+      tx.transferObjects([tx.object(capId)], transferAddr.trim());
+      const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      if (result.$kind === 'FailedTransaction') throw new Error(result.FailedTransaction.status.error ?? 'Transfer failed');
+      showMsg('CreatorCap transferred ✅');
+      setBusy(false);
+      setTransferStep('input');
+      setTransferAddr('');
+      setTimeout(() => window.location.reload(), 1400);
+    } catch (e) { showMsg(e.message || 'Transfer failed'); setBusy(false); }
+  };
 
   const getCapId = async () => {
     // Use indexer to find CreatorCap object ID — avoids CORS on graphql endpoint
@@ -459,7 +478,7 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
           <span className="text-[9px] font-mono tracking-widest text-lime-400/70">CREATOR TOOLS</span>
         </div>
         <div className="flex gap-1">
-          {['links', ...((METADATA_UPDATE_ENABLED && (isV6Token || isV7Token || isV8Token)) ? ['metadata'] : [])].map(tabName => (
+          {['links', ...((METADATA_UPDATE_ENABLED && (isV6Token || isV7Token || isV8Token)) ? ['metadata'] : []), 'transfer'].map(tabName => (
             <button key={tabName} onClick={() => setTab(tabName)} className={`px-2.5 py-1 rounded-lg text-[9px] font-mono transition-colors ${tab === tabName ? 'bg-lime-400/10 text-lime-400 border border-lime-400/30' : 'text-white/30 hover:text-white/60'}`}>{tabName.toUpperCase()}</button>
           ))}
         </div>
@@ -525,6 +544,63 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
           </div>
         );
       })()}
+
+      {tab === 'transfer' && (
+        <div className="space-y-3">
+          <div className="rounded-xl border border-red-400/20 bg-red-400/5 px-3 py-3 space-y-1.5">
+            <div className="text-[9px] font-mono text-red-400 font-bold tracking-wider">⚠ IRREVERSIBLE ACTION</div>
+            <div className="text-[9px] font-mono text-white/40 leading-relaxed">
+              Transferring the CreatorCap permanently hands over the right to claim all future creator fees on this token.
+              The existing payout addresses stay unchanged — the new cap holder triggers the payouts but does not redirect them.
+              This cannot be undone.
+            </div>
+          </div>
+
+          {transferStep === 'input' && (
+            <div className="space-y-2">
+              <input
+                value={transferAddr}
+                onChange={e => setTransferAddr(e.target.value)}
+                placeholder="Recipient wallet address (0x…)"
+                className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-red-400/50 transition-colors font-mono"
+              />
+              <button
+                onClick={() => {
+                  if (!transferAddr.trim() || !transferAddr.startsWith('0x')) { showMsg('Enter a valid 0x address'); return; }
+                  setTransferStep('confirm');
+                }}
+                className="w-full py-2 rounded-lg text-[10px] font-mono font-bold bg-white/5 border border-red-400/30 text-red-400 hover:bg-red-400/10 transition-colors"
+              >
+                REVIEW TRANSFER
+              </button>
+            </div>
+          )}
+
+          {transferStep === 'confirm' && (
+            <div className="space-y-2">
+              <div className="rounded-xl bg-white/5 border border-white/10 px-3 py-2.5 space-y-1">
+                <div className="text-[8px] font-mono text-white/30 tracking-wider">TRANSFERRING TO</div>
+                <div className="text-[10px] font-mono text-white/70 break-all">{transferAddr}</div>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setTransferStep('input')}
+                  className="flex-1 py-2 rounded-lg text-[10px] font-mono font-bold bg-white/5 border border-white/10 text-white/40 hover:text-white/70 transition-colors"
+                >
+                  GO BACK
+                </button>
+                <button
+                  onClick={handleTransferCap}
+                  disabled={busy}
+                  className={`flex-1 py-2 rounded-lg text-[10px] font-mono font-bold transition-colors ${busy ? 'bg-white/5 text-white/20 cursor-not-allowed' : 'bg-red-400/10 border border-red-400/40 text-red-400 hover:bg-red-400/20'}`}
+                >
+                  {busy ? 'TRANSFERRING…' : 'CONFIRM TRANSFER'}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {msg && <div className={`text-[10px] font-mono text-center ${msg.includes('✅') || msg.includes('🎉') ? 'text-lime-400' : 'text-red-400'}`}>{msg}</div>}
     </div>
