@@ -1,20 +1,14 @@
+// v2-fixed
 // useCopyTrade.js
 // Monitors the global SSE stream for trades from watched wallets.
-// When a watched wallet buys or sells, mirrors the trade proportionally
-// using the trading keypair (no Slush popup).
+// When a watched wallet buys or sells, mirrors the trade using the trading keypair.
 //
-// Storage key: suipump_copytrade_${walletAddress}
-// Schema: {
-//   targets: [{
-//     address: string,       // wallet to copy
-//     label: string,         // optional nickname
-//     enabled: boolean,
-//     scaleSui: number,      // fixed SUI to spend per copied buy (not proportional)
-//     mirrorSells: boolean,  // also mirror sells
-//     slippage: number,
-//   }],
-//   log: [{ ts, targetAddress, action, curveId, name, symbol, suiAmount, success, digest?, error? }]
-// }
+// Fixes vs previous version:
+//  - token_type not in SSE event → fetch from indexer
+//  - getObject (1.x API) → indexer fetch for ISV + reserves
+//  - getCoins → listCoins (2.x API), coins.objects not coins.data
+//  - c.coinObjectId → c.objectId
+//  - signature → signatures: [signature] (SuiGraphQLClient 2.x)
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
@@ -50,6 +44,16 @@ function appendLog(walletAddress, entry) {
   return cfg.log;
 }
 
+// ── Fetch curve data from indexer (ISV + reserves + tokenType) ────────────────
+async function fetchCurveData(curveId) {
+  if (!INDEXER_URL) return null;
+  try {
+    const r = await fetch(`${INDEXER_URL}/token/${curveId}`, { signal: AbortSignal.timeout(4000) });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch { return null; }
+}
+
 // ── Main hook ─────────────────────────────────────────────────────────────────
 
 export function useCopyTrade({ walletAddress, keypair }) {
@@ -57,11 +61,10 @@ export function useCopyTrade({ walletAddress, keypair }) {
   const keypairRef             = useRef(keypair);
   const esRef                  = useRef(null);
   const timerRef               = useRef(null);
-  const firingRef              = useRef(new Set()); // tx digests being mirrored
+  const firingRef              = useRef(new Set());
 
   useEffect(() => { keypairRef.current = keypair; }, [keypair]);
 
-  // Reload config from storage on mount
   useEffect(() => {
     if (walletAddress) {
       setConfig(loadCopyConfig(walletAddress) ?? { targets: [], log: [] });
@@ -75,19 +78,17 @@ export function useCopyTrade({ walletAddress, keypair }) {
 
     const suiInMist = BigInt(Math.floor(target.scaleSui * 1e9));
     const myAddress = kp.getPublicKey().toSuiAddress();
-
     let logEntry = { targetAddress: target.address, action: 'buy', curveId, name, symbol, suiAmount: target.scaleSui, success: false };
 
     try {
-      const client = new SuiGraphQLClient({ url: '/api/rpc' });
-      const IURL_CB = import.meta.env.VITE_INDEXER_URL || '';
-      const cbData = await fetch(`${IURL_CB}/token/${curveId}`, { signal: AbortSignal.timeout(4000) }).then(r => r.ok ? r.json() : null);
-      if (!cbData) throw new Error('Could not fetch curve from indexer');
-      const isv = cbData.initialSharedVersion ?? cbData.initial_shared_version ?? null;
+      // Fetch curve data from indexer — avoids SuiGraphQLClient 2.x getObject API mismatch
+      const curveData = await fetchCurveData(curveId);
+      if (!curveData) throw new Error('Could not fetch curve from indexer');
+      const isv = curveData.initialSharedVersion ?? curveData.initial_shared_version ?? null;
       if (!isv) throw new Error('Could not resolve curve version');
 
-      const reserveMist     = BigInt(Math.round((cbData.stats?.reserve_sui ?? cbData.reserve_sui ?? 0) * 1e9));
-      const tokensRemaining = BigInt(Math.round((cbData.stats?.token_reserve ?? cbData.token_reserve ?? 800_000_000) * 1e6));
+      const reserveMist     = BigInt(Math.round((curveData.stats?.reserve_sui ?? curveData.reserve_sui ?? 0) * 1e9));
+      const tokensRemaining = BigInt(Math.round((curveData.stats?.token_reserve ?? curveData.token_reserve ?? 800_000_000) * 1e6));
       const { virtualSui, virtualTokens } = curveShapeFor(pkgId);
 
       const quote  = buyQuote(reserveMist, tokensRemaining, suiInMist, virtualSui, virtualTokens);
@@ -95,6 +96,7 @@ export function useCopyTrade({ walletAddress, keypair }) {
         ? BigInt(Math.floor(Number(quote.tokensOut) * (1 - target.slippage / 100)))
         : 0n;
 
+      const client = new SuiGraphQLClient({ url: '/api/rpc' });
       const tx = new Transaction();
       tx.setSender(myAddress);
       const curveRef  = tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: isv, mutable: true });
@@ -111,9 +113,9 @@ export function useCopyTrade({ walletAddress, keypair }) {
       });
       tx.transferObjects([tokens, refund], myAddress);
 
-      const builtTx       = await tx.build({ client });
-      const { signature } = await kp.signTransaction(builtTx);
-      const result        = await client.executeTransaction({
+      const builtTx          = await tx.build({ client });
+      const { signature }    = await kp.signTransaction(builtTx);
+      const result           = await client.executeTransaction({
         transaction: builtTx,
         signatures: [signature],
       });
@@ -138,22 +140,25 @@ export function useCopyTrade({ walletAddress, keypair }) {
     try {
       const client = new SuiGraphQLClient({ url: '/api/rpc' });
 
-      // Get our token balance
-      const coins = await client.getCoins({ owner: myAddress, coinType: tokenType });
-      if (!coins.data.length) throw new Error('No tokens to sell');
+      // Get our token balance — SuiGraphQLClient 2.x: listCoins, result.objects, c.objectId
+      const coinsRes = await client.listCoins({ owner: myAddress, coinType: tokenType });
+      const coins    = coinsRes?.objects ?? coinsRes?.data ?? [];
+      if (!coins.length) throw new Error('No tokens to sell');
 
-      const IURL_CS = import.meta.env.VITE_INDEXER_URL || '';
-      const csData = await fetch(`${IURL_CS}/token/${curveId}`, { signal: AbortSignal.timeout(4000) }).then(r => r.ok ? r.json() : null);
-      if (!csData) throw new Error('Could not fetch curve from indexer');
-      const isv = csData.initialSharedVersion ?? csData.initial_shared_version ?? null;
+      // Fetch curve data from indexer
+      const curveData = await fetchCurveData(curveId);
+      if (!curveData) throw new Error('Could not fetch curve from indexer');
+      const isv = curveData.initialSharedVersion ?? curveData.initial_shared_version ?? null;
       if (!isv) throw new Error('Could not resolve curve version');
 
-      const reserveMist     = BigInt(Math.round((csData.stats?.reserve_sui ?? csData.reserve_sui ?? 0) * 1e9));
-      const tokensRemaining = BigInt(Math.round((csData.stats?.token_reserve ?? csData.token_reserve ?? 800_000_000) * 1e6));
+      const reserveMist     = BigInt(Math.round((curveData.stats?.reserve_sui ?? curveData.reserve_sui ?? 0) * 1e9));
+      const tokensRemaining = BigInt(Math.round((curveData.stats?.token_reserve ?? curveData.token_reserve ?? 800_000_000) * 1e6));
       const { virtualSui, virtualTokens } = curveShapeFor(pkgId);
 
       // Sell full balance
-      const totalBalance = coins.data.reduce((sum, c) => sum + BigInt(c.balance), 0n);
+      const totalBalance = coins.reduce((sum, c) => sum + BigInt(c.balance ?? c.coinBalance ?? 0), 0n);
+      if (totalBalance === 0n) throw new Error('Zero balance');
+
       const quote  = sellQuote(reserveMist, tokensRemaining, totalBalance, virtualSui, virtualTokens);
       const minOut = quote?.suiOut != null
         ? BigInt(Math.floor(Number(quote.suiOut) * (1 - target.slippage / 100)))
@@ -163,7 +168,8 @@ export function useCopyTrade({ walletAddress, keypair }) {
       tx.setSender(myAddress);
       const curveRef = tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: isv, mutable: true });
 
-      const coinObjs = coins.data.map(c => tx.object(c.coinObjectId));
+      // SuiGraphQLClient 2.x: objectId not coinObjectId
+      const coinObjs = coins.map(c => tx.object(c.objectId ?? c.coinObjectId));
       if (coinObjs.length > 1) tx.mergeCoins(coinObjs[0], coinObjs.slice(1));
       const [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(totalBalance)]);
 
@@ -224,7 +230,7 @@ export function useCopyTrade({ walletAddress, keypair }) {
           if (digest) firingRef.current.add(digest);
           setTimeout(() => firingRef.current.delete(digest), 30_000);
 
-          // Check if this trader is in our watch list
+          // Check watch list
           const cfg     = loadCopyConfig(walletAddress);
           const targets = cfg?.targets?.filter(t => t.enabled) ?? [];
           const target  = targets.find(t => t.address.toLowerCase() === trader.toLowerCase());
@@ -235,13 +241,23 @@ export function useCopyTrade({ walletAddress, keypair }) {
           const myAddress = keypairRef.current.getPublicKey().toSuiAddress();
           if (trader.toLowerCase() === myAddress.toLowerCase()) return;
 
-          const curveId   = d.curve_id ?? event.curveId;
-          const tokenType = d.token_type ?? d.type_name ?? null;
-          const pkgId     = event.eventType?.split('::')?.[0] ?? '';
-          const name      = d.name   ?? '';
-          const symbol    = d.symbol ?? '';
+          const curveId = d.curve_id ?? event.curveId;
+          if (!curveId) return;
 
-          if (!curveId || !tokenType || !pkgId) return;
+          const pkgId = event.eventType?.split('::')?.[0] ?? '';
+          if (!pkgId) return;
+
+          // token_type is NOT in SSE trade events — fetch from indexer
+          let tokenType = d.token_type ?? d.type_name ?? null;
+          let name      = d.name   ?? '';
+          let symbol    = d.symbol ?? '';
+          if (!tokenType) {
+            const curveData = await fetchCurveData(curveId);
+            tokenType = curveData?.token_type ?? curveData?.tokenType ?? null;
+            name   = name   || curveData?.name   || '';
+            symbol = symbol || curveData?.symbol  || '';
+          }
+          if (!tokenType) return; // indexer not yet enriched
 
           if (isBuy) {
             await executeMirrorBuy(target, curveId, tokenType, pkgId, name, symbol);
@@ -267,9 +283,7 @@ export function useCopyTrade({ walletAddress, keypair }) {
   // ── Public API ────────────────────────────────────────────────────────────
 
   const addTarget = useCallback((address, label, scaleSui, mirrorSells, slippage) => {
-    const updated = {
-      ...loadCopyConfig(walletAddress),
-    };
+    const updated = loadCopyConfig(walletAddress) ?? { targets: [], log: [] };
     updated.targets = [
       ...(updated.targets ?? []).filter(t => t.address.toLowerCase() !== address.toLowerCase()),
       { address: address.trim(), label: label.trim(), enabled: true, scaleSui, mirrorSells, slippage },
@@ -298,7 +312,7 @@ export function useCopyTrade({ walletAddress, keypair }) {
     const updated = loadCopyConfig(walletAddress) ?? { targets: [], log: [] };
     updated.log = [];
     saveCopyConfig(walletAddress, updated);
-    setConfig(updated);
+    setConfig(prev => ({ ...prev, log: [] }));
   }, [walletAddress]);
 
   const activeCount = config.targets?.filter(t => t.enabled).length ?? 0;
