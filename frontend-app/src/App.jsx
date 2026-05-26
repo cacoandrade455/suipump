@@ -165,51 +165,24 @@ function applyLocalOverrides(token) {
 }
 
 function useStats() {
-  const client = useCurrentClient();
   const [stats, setStats] = useState({ poolSui: null, tradeCount: null, volume: null });
 
   useEffect(() => {
+    if (!INDEXER_URL) return;
     let cancelled = false;
     async function load() {
       try {
-        // RPC fallback aggregates trade events across all package versions
-        const ALL_PKGS = ALL_PACKAGE_IDS;
-        const buyTypes  = ALL_PKGS.map(p => `${p}::bonding_curve::TokensPurchased`);
-        const sellTypes = ALL_PKGS.map(p => `${p}::bonding_curve::TokensSold`);
-        // Try indexer first
-        if (INDEXER_URL) {
-          try {
-            const res = await fetch(`${INDEXER_URL}/stats`, { signal: AbortSignal.timeout(5000) });
-            if (res.ok) {
-              const data = await res.json();
-              if (!cancelled) setStats({ poolSui: data.s1PoolSui, tradeCount: data.totalTrades, volume: data.totalVolume });
-              return;
-            }
-          } catch {}
+        const res = await fetch(`${INDEXER_URL}/stats`, { signal: AbortSignal.timeout(5000) });
+        if (res.ok && !cancelled) {
+          const data = await res.json();
+          setStats({ poolSui: data.s1PoolSui, tradeCount: data.totalTrades, volume: data.totalVolume });
         }
-        const eventMap = await paginateMultipleEvents(client, [...buyTypes, ...sellTypes], { order: 'descending', maxPages: 100, pageSize: 100 });
-        const allBuys  = buyTypes.flatMap(t => eventMap[t] ?? []);
-        const allSells = sellTypes.flatMap(t => eventMap[t] ?? []);
-        let protocolMist = 0, volumeMist = 0;
-        for (const e of allBuys) {
-          protocolMist += Number(e.parsedJson?.protocol_fee ?? 0);
-          volumeMist += Number(e.parsedJson?.sui_in ?? 0);
-        }
-        for (const e of allSells) {
-          protocolMist += Number(e.parsedJson?.protocol_fee ?? 0);
-          volumeMist += Number(e.parsedJson?.sui_out ?? 0);
-        }
-        if (!cancelled) setStats({
-          poolSui: (protocolMist * 0.5) / MIST_PER_SUI,
-          tradeCount: allBuys.length + allSells.length,
-          volume: volumeMist / MIST_PER_SUI,
-        });
-      } catch { }
+      } catch {}
     }
     load();
     const timer = setInterval(load, 30_000);
     return () => { cancelled = true; clearInterval(timer); };
-  }, [client]);
+  }, []);
 
   return stats;
 }
@@ -251,42 +224,36 @@ function Sparkline({ points, width = 80, height = 24 }) {
 }
 
 function TokenCard({ token, stats, isCrown, suiUsd = 0, isWatched, onToggleWatch }) {
-  const client = useCurrentClient();
   const navigate = useNavigate();
   const [curveState, setCurveState] = useState(null);
-  const [iconUrl, setIconUrl] = useState(null);
+  // iconUrl comes directly from indexer token list — no RPC needed
+  const iconUrl = token.iconUrl || null;
 
   useEffect(() => {
+    // Load curve state from indexer (no direct RPC — avoids CORS)
+    const IURL = import.meta.env.VITE_INDEXER_URL || '';
+    if (!IURL || !token.curveId) return;
     let cancelled = false;
     async function load() {
       try {
-        const obj = await client.getObject({ objectId: token.curveId, include: { json: true } });
-        if (!cancelled) setCurveState(obj.data?.content?.fields ?? null);
-      } catch { }
+        const res = await fetch(`${IURL}/token/${token.curveId}`, { signal: AbortSignal.timeout(5000) });
+        if (res.ok && !cancelled) {
+          const d = await res.json();
+          // Map indexer fields to curve state shape
+          setCurveState({
+            sui_reserve:    d.suiReserve ?? d.sui_reserve ?? '0',
+            token_reserve:  d.tokenReserve ?? d.token_reserve ?? String(800_000_000 * 1e6),
+            graduated:      d.graduated ?? false,
+            creator_fees:   d.creatorFees ?? d.creator_fees ?? '0',
+            creator:        d.creator ?? null,
+          });
+        }
+      } catch {}
     }
     load();
     const timer = setInterval(load, 10_000);
     return () => { cancelled = true; clearInterval(timer); };
-  }, [token.curveId, client]);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function loadIcon() {
-      try {
-        let tokenType = token.tokenType;
-        if (!tokenType && token.curveId) {
-          const obj = await client.getObject({ objectId: token.curveId });
-          const m = obj.object?.type?.match(/Curve<(.+)>$/);
-          tokenType = m ? m[1] : null;
-        }
-        if (!tokenType) return;
-        const metaRes = await client.getCoinMetadata({ coinType: tokenType });
-        if (!cancelled && metaRes?.coinMetadata?.iconUrl) setIconUrl(metaRes.coinMetadata.iconUrl);
-      } catch {}
-    }
-    loadIcon();
-    return () => { cancelled = true; };
-  }, [token.tokenType, token.curveId, client]);
+  }, [token.curveId]);
 
   const reserveMist = curveState ? BigInt(curveState.sui_reserve) : 0n;
   const tokensRemaining = curveState ? BigInt(curveState.token_reserve) : 0n;
@@ -541,66 +508,57 @@ function MobileWalletButtons() {
 // ── Notifications ─────────────────────────────────────────────────────────────
 
 function useNotifications(walletAddress) {
-  const client = useCurrentClient();
   const [notifications, setNotifications] = useState([]);
   const [unread, setUnread] = useState(0);
   const storageKey = walletAddress ? `suipump_notif_seen_${walletAddress}` : null;
+  const IURL = import.meta.env.VITE_INDEXER_URL || '';
 
   useEffect(() => {
-    if (!walletAddress || !client) return;
+    if (!walletAddress || !IURL) return;
     let cancelled = false;
 
     async function load() {
       try {
-        // Watch all package versions — creators may have tokens on V4/V5/V6/V7.
-        // Event names match the Move contract exactly: CurveCreated, Comment, Graduated.
-        const ALL_PKGS = ALL_PACKAGE_IDS;
-        const createdTypes = ALL_PKGS.map(p => `${p}::bonding_curve::CurveCreated`);
-        const commentTypes = ALL_PKGS.map(p => `${p}::bonding_curve::Comment`);
-        const gradTypes    = ALL_PKGS.map(p => `${p}::bonding_curve::Graduated`);
+        // Load creator's tokens from indexer (no RPC/CORS issue)
+        const tokensRes = await fetch(`${IURL}/tokens?creator=${walletAddress}`, { signal: AbortSignal.timeout(5000) });
+        if (!tokensRes.ok) return;
+        const myTokens = await tokensRes.json();
+        const myCurveIds = new Set(myTokens.map(t => t.curveId).filter(Boolean));
 
-        const eventMap = await paginateMultipleEvents(
-          client,
-          [...createdTypes, ...commentTypes, ...gradTypes],
-          { order: 'descending', maxPages: 5 }
+        if (myCurveIds.size === 0) { if (!cancelled) setNotifications([]); return; }
+
+        // Load comments on creator's tokens
+        const commentResults = await Promise.all(
+          [...myCurveIds].slice(0, 10).map(cid =>
+            fetch(`${IURL}/token/${cid}/comments`, { signal: AbortSignal.timeout(5000) })
+              .then(r => r.ok ? r.json() : [])
+              .then(rows => rows.map(r => ({
+                id: r.tx_digest + '_' + (r.event_seq ?? 0),
+                type: 'comment',
+                curveId: cid,
+                author: r.data?.author ?? '',
+                text: r.data?.text ?? '',
+                timestamp: r.timestamp_ms ? Number(r.timestamp_ms) : 0,
+              })))
+              .catch(() => [])
+          )
         );
 
-        // Merge events of the same kind across all packages
-        const mergeAcross = (types) => types.flatMap(t => eventMap[t] ?? []);
-        const allCreated  = mergeAcross(createdTypes);
-        const allComments = mergeAcross(commentTypes);
-        const allGrads    = mergeAcross(gradTypes);
-
-        const myCurveIds = new Set(
-          allCreated
-            .filter(e => e.parsedJson?.creator === walletAddress)
-            .map(e => e.parsedJson?.curve_id)
-            .filter(Boolean)
+        // Load graduations
+        const gradResults = await Promise.all(
+          [...myCurveIds].slice(0, 10).map(cid =>
+            fetch(`${IURL}/token/${cid}`, { signal: AbortSignal.timeout(5000) })
+              .then(r => r.ok ? r.json() : null)
+              .then(d => d?.graduated ? [{ id: `grad_${cid}`, type: 'graduated', curveId: cid, author: null, text: null, timestamp: d.graduatedAt ?? 0 }] : [])
+              .catch(() => [])
+          )
         );
 
-        const comments = allComments
-          .filter(e => myCurveIds.has(e.parsedJson?.curve_id) && e.parsedJson?.author !== walletAddress)
-          .map(e => ({
-            id: e.id?.txDigest + '_' + e.id?.eventSeq,
-            type: 'comment',
-            curveId: e.parsedJson?.curve_id,
-            author: e.parsedJson?.author,
-            text: e.parsedJson?.text,
-            timestamp: e.timestampMs ? Number(e.timestampMs) : 0,
-          }));
+        const allComments = commentResults.flat().filter(c => c.author !== walletAddress);
+        const allGrads = gradResults.flat();
+        const myCurveIds_placeholder = myCurveIds; // already have it
 
-        const graduations = allGrads
-          .filter(e => myCurveIds.has(e.parsedJson?.curve_id))
-          .map(e => ({
-            id: e.id?.txDigest + '_' + e.id?.eventSeq,
-            type: 'graduated',
-            curveId: e.parsedJson?.curve_id,
-            author: null,
-            text: null,
-            timestamp: e.timestampMs ? Number(e.timestampMs) : 0,
-          }));
-
-        const relevant = [...comments, ...graduations]
+        const relevant = [...allComments, ...allGrads]
           .sort((a, b) => b.timestamp - a.timestamp)
           .slice(0, 20);
 
@@ -1064,38 +1022,27 @@ function StatsBar({ tokenCount, stats, lang = 'en' }) {
 // ── Community Crown featured banner ──────────────────────────────────────────
 
 function CrownBanner({ token, stats, suiUsd }) {
-  const client = useCurrentClient();
   const navigate = useNavigate();
   const [curveState, setCurveState] = useState(null);
-  const [iconUrl, setIconUrl] = useState(null);
+  const iconUrl = token?.iconUrl || null;
 
   useEffect(() => {
-    if (!token) return;
+    const IURL = import.meta.env.VITE_INDEXER_URL || '';
+    if (!IURL || !token?.curveId) return;
     let cancelled = false;
-    client.getObject({ objectId: token.curveId, include: { json: true } })
-      .then(o => { if (!cancelled) setCurveState(o.data?.content?.fields ?? null); })
-      .catch(() => {});
+    fetch(`${IURL}/token/${token.curveId}`, { signal: AbortSignal.timeout(5000) })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (d && !cancelled) setCurveState({
+          sui_reserve:   d.suiReserve ?? d.sui_reserve ?? '0',
+          token_reserve: d.tokenReserve ?? d.token_reserve ?? String(800_000_000 * 1e6),
+          graduated:     d.graduated ?? false,
+          creator_fees:  d.creatorFees ?? d.creator_fees ?? '0',
+          creator:       d.creator ?? null,
+        });
+      }).catch(() => {});
     return () => { cancelled = true; };
-  }, [token?.curveId, client]);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function loadIcon() {
-      try {
-        let tokenType = token?.tokenType;
-        if (!tokenType && token?.curveId) {
-          const obj = await client.getObject({ objectId: token.curveId });
-          const m = obj.object?.type?.match(/Curve<(.+)>$/);
-          tokenType = m ? m[1] : null;
-        }
-        if (!tokenType) return;
-        const metaRes = await client.getCoinMetadata({ coinType: tokenType });
-        if (!cancelled && metaRes?.coinMetadata?.iconUrl) setIconUrl(metaRes.coinMetadata.iconUrl);
-      } catch {}
-    }
-    loadIcon();
-    return () => { cancelled = true; };
-  }, [token?.tokenType, token?.curveId, client]);
+  }, [token?.curveId]);
 
   if (!token) return null;
 
@@ -1172,62 +1119,35 @@ function HomePage({ onLaunch, lang = 'en' }) {
   const account = useCurrentAccount();
   const { tokens, loading, error } = useTokenList();
 
-  // Fetch curve states directly for accurate sorting
-  const client = useCurrentClient();
+  // Fetch curve states from indexer (no direct RPC needed)
   const [curveStates, setCurveStates] = React.useState({});
   React.useEffect(() => {
     if (!tokens || tokens.length === 0) return;
     let cancelled = false;
     async function loadCurveStates() {
+      // Pull curve states from indexer — avoids CORS on graphql.testnet.sui.io
+      const IURL = import.meta.env.VITE_INDEXER_URL || '';
+      if (!IURL) return;
       try {
-        // Query last-trade events across ALL package versions (v4/v5/v6/v7),
-        // not just one — otherwise newer-package tokens get stale sort data.
-        const ALL_PKGS = ALL_PACKAGE_IDS;
-        const eventQueries = [];
-        for (const pkg of ALL_PKGS) {
-          eventQueries.push(
-            paginateEvents(client, `${pkg}::bonding_curve::TokensPurchased`, { order: 'descending', maxPages: 2 }).then(evts => ({ data: evts })).catch(() => ({ data: [] })),
-            paginateEvents(client, `${pkg}::bonding_curve::TokensSold`, { order: 'descending', maxPages: 2 }).then(evts => ({ data: evts })).catch(() => ({ data: [] })),
-          );
-        }
-
-        // Fetch curve objects + last trade events in parallel
-        const [objResults, ...eventResults] = await Promise.all([
-          Promise.all(tokens.map(t => client.getObject({ objectId: t.curveId, include: { json: true } }).catch(() => null))),
-          ...eventQueries,
-        ]);
-
-        if (cancelled) return;
-
-        // Build lastTradeTime map from most recent buy+sell events across all packages
-        const lastTradeTimes = {};
-        for (const res of eventResults) {
-          for (const evt of (res?.data || [])) {
-            const cid = evt.parsedJson?.curve_id;
-            const ts  = evt.timestampMs ? Number(evt.timestampMs) : 0;
-            if (cid && ts > (lastTradeTimes[cid] || 0)) lastTradeTimes[cid] = ts;
-          }
-        }
-
+        const res = await fetch(`${IURL}/tokens/stats`, { signal: AbortSignal.timeout(8000) });
+        if (!res.ok || cancelled) return;
+        const rows = await res.json();
         const map = {};
-        objResults.forEach((res, i) => {
-          const fields = res?.object?.json;
-          if (!fields) return;
-          const curveId   = tokens[i].curveId;
-          const reserveSui = Number(BigInt(fields.sui_reserve ?? 0)) / 1e9;
-          // Use per-token drain threshold for progress (V4/V5/V6/V7 each differ)
-          const tokenPkgId  = tokens.find(t => t.curveId === curveId)?.packageId;
-          const tokenDrain  = curveShapeFor(tokenPkgId).drainSui;
+        for (const s of rows) {
+          const token = tokens.find(t => t.curveId === s.curve_id);
+          if (!token) continue;
+          const reserveSui = Number(s.reserve_sui ?? 0);
+          const tokenDrain = curveShapeFor(token.packageId).drainSui;
           const progress   = Math.min(100, (reserveSui / tokenDrain) * 100);
-          map[curveId] = { reserveSui, progress, lastTradeTime: lastTradeTimes[curveId] || 0 };
-        });
-        setCurveStates(map);
+          map[s.curve_id]  = { reserveSui, progress, lastTradeTime: s.last_trade_time || 0 };
+        }
+        if (!cancelled) setCurveStates(map);
       } catch {}
     }
     loadCurveStates();
     const timer = setInterval(loadCurveStates, 15_000);
     return () => { cancelled = true; clearInterval(timer); };
-  }, [tokens, client]);
+  }, [tokens]);
   const stats = useStats();
   const tokenStats = useTokenStats(tokens);
   const [search, setSearch] = useState('');
@@ -1416,7 +1336,6 @@ function HomePage({ onLaunch, lang = 'en' }) {
 function TokenPageWrapper({ lang, tradeKey }) {
   const { curveId } = useParams();
   const navigate = useNavigate();
-  const client = useCurrentClient();
   const [tokenType, setTokenType] = useState(null);
   const [packageId, setPackageId] = useState(null);
   const [error, setError] = useState(null);
@@ -1425,28 +1344,30 @@ function TokenPageWrapper({ lang, tradeKey }) {
     if (!curveId) return;
     let cancelled = false;
     async function load() {
+      // Use indexer for token type resolution — avoids CORS on graphql.testnet.sui.io
+      const IURL = import.meta.env.VITE_INDEXER_URL || '';
       try {
-        const obj = await client.getObject({ objectId: curveId, include: { json: true } });
-        if (cancelled) return;
-        const typeStr = obj.object?.type ?? '';
-        // typeStr = "0xPKG::bonding_curve::Curve<0xTEMPLATE::module::TOKEN>"
-        // Extract bonding curve package ID from the outer type (before ::bonding_curve)
-        const outerPkgMatch = typeStr.match(/^(0x[0-9a-fA-F]+)::bonding_curve::Curve/);
-        const innerMatch = typeStr.match(/Curve<(.+)>$/);
-        if (innerMatch) {
-          const fullTokenType = innerMatch[1];
-          setTokenType(fullTokenType);
-          if (outerPkgMatch) setPackageId(outerPkgMatch[1]);
-        } else {
-          setError('Could not determine token type');
+        if (IURL) {
+          const res = await fetch(`${IURL}/token/${curveId}`, { signal: AbortSignal.timeout(5000) });
+          if (res.ok) {
+            const d = await res.json();
+            const tokenType = d.tokenType || d.token_type;
+            const packageId = d.packageId || d.package_id;
+            if (tokenType) {
+              if (!cancelled) { setTokenType(tokenType); if (packageId) setPackageId(packageId); }
+              return;
+            }
+          }
         }
+        // No indexer or token not found — show error
+        if (!cancelled) setError('Could not determine token type');
       } catch (err) {
         if (!cancelled) setError(err.message || String(err));
       }
     }
     load();
     return () => { cancelled = true; };
-  }, [curveId, client]);
+  }, [curveId]);
 
   if (error) return <div className="text-xs font-mono text-red-500 p-8">Failed to load token: {error}</div>;
   if (!tokenType) return (

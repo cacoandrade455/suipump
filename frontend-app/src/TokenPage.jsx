@@ -210,7 +210,7 @@ function vestedAmount(total, startMs, durationMs, mode, nowMs) {
   return Math.floor(total * elapsedMonths / totalMonths);
 }
 
-function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, lang }) {
+function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, lang, initialSharedVersion = null }) {
   const client = useCurrentClient();
   const dAppKit = useDAppKit();
 
@@ -238,12 +238,17 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
           if (res.ok) { const rows = await res.json(); mine = rows.map(r => r.lock_id).filter(Boolean); }
         } catch {}
       }
+      // Lock detail fetching needs direct RPC — will work once CORS is resolved
+      // For now, locks are listed but details may not load in browser context
       const out = [];
       for (const lockId of mine) {
-        const obj = await client.getObject({ objectId: lockId, include: { json: true } }).catch(() => null);
-        const f = obj?.object?.json;
-        if (!f) continue;
-        out.push({ id: lockId, total: Number(f.total_amount), claimed: Number(f.claimed), remaining: Number(f.locked), startMs: Number(f.start_ms), durationMs: Number(f.duration_ms), mode: Number(f.mode) });
+        try {
+          const res = await fetch(`${import.meta.env.VITE_INDEXER_URL || ''}/lock/${lockId}`, { signal: AbortSignal.timeout(3000) });
+          if (res.ok) {
+            const f = await res.json();
+            out.push({ id: lockId, total: Number(f.total_amount ?? 0), claimed: Number(f.claimed ?? 0), remaining: Number(f.locked ?? 0), startMs: Number(f.start_ms ?? 0), durationMs: Number(f.duration_ms ?? 0), mode: Number(f.mode ?? 0) });
+          }
+        } catch {}
       }
       setLocks(out);
     } catch {} finally { setLoading(false); }
@@ -255,10 +260,9 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
     if (!account || busy) return;
     setBusy(true); setMsg('');
     try {
-      const objForRef = await client.getObject({ objectId: lockId });
-      const isv = objForRef.object?.owner?.Shared?.initialSharedVersion;
+      // VestLock objects are user-owned, not shared — use tx.object directly
       const tx = new Transaction();
-      const lockRef = isv ? tx.sharedObjectRef({ objectId: lockId, initialSharedVersion: isv, mutable: true }) : tx.object(lockId);
+      const lockRef = tx.object(lockId);
       const [claimed] = tx.moveCall({ target: `${vestingPkg}::bonding_curve::claim_vested`, typeArguments: [tokenType], arguments: [lockRef, tx.object(SUI_CLOCK_ID)] });
       tx.transferObjects([claimed], account.address);
       const claimResult = await dAppKit.signAndExecuteTransaction({ transaction: tx });
@@ -277,10 +281,8 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
       const atomic = BigInt(Math.floor(amt * 10 ** TOKEN_DECIMALS));
       const coins  = await client.listCoins({ owner: account.address, coinType: tokenType });
       if (!coins.objects.length) throw new Error('No token balance');
-      const objForRef = await client.getObject({ objectId: curveId });
-      const isv = objForRef.object?.owner?.Shared?.initialSharedVersion;
       const tx  = new Transaction();
-      const curveRef = isv ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: isv, mutable: false }) : tx.object(curveId);
+      const curveRef = initialSharedVersion ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion, mutable: false }) : tx.object(curveId);
       const coinObjs = coins.objects.map(c => tx.object(c.objectId));
       let tokenCoin;
       if (coinObjs.length === 1) { [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(atomic)]); }
@@ -390,6 +392,15 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
   const showMsg = (m) => { setMsg(m); setTimeout(() => setMsg(''), 4000); };
 
   const getCapId = async () => {
+    // Use indexer to find CreatorCap object ID — avoids CORS on graphql endpoint
+    const IURL_CAP = import.meta.env.VITE_INDEXER_URL || '';
+    if (IURL_CAP) {
+      try {
+        const res = await fetch(`${IURL_CAP}/token/${curveId}/creator-cap?owner=${account.address}`, { signal: AbortSignal.timeout(5000) });
+        if (res.ok) { const d = await res.json(); if (d.objectId) return d.objectId; }
+      } catch {}
+    }
+    // Fallback to direct RPC (may be blocked by CORS in browser)
     const ownedObjs = await client.listOwnedObjects({ owner: account.address, type: `${pkgId}::bonding_curve::CreatorCap`, include: { json: true } });
     const capObj = ownedObjs.objects?.find(o => o.json?.curve_id === curveId) ?? ownedObjs.objects?.[0];
     if (!capObj) throw new Error('CreatorCap not found in wallet');
@@ -397,8 +408,8 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
   };
 
   const getCurveRef = async (tx) => {
-    const objForRef = await client.getObject({ objectId: curveId });
-    const isv = objForRef.object?.owner?.Shared?.initialSharedVersion;
+    // Use initialSharedVersion from curveState (loaded from indexer) — no direct RPC call
+    const isv = curveState?.initial_shared_version ?? null;
     return isv ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: isv, mutable: true }) : tx.object(curveId);
   };
 
@@ -417,11 +428,17 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
     if (curveState?.metadata_updated === true) { showMsg('Already updated — one time only'); return; }
     setBusy(true); setMsg('');
     try {
-      const coinMetaRes = await client.getCoinMetadata({ coinType: tokenType });
-      const metadataId = coinMetaRes?.coinMetadata?.id;
-      if (!metadataId) throw new Error('CoinMetadata object not found');
-      const metaObj = await client.getObject({ objectId: metadataId });
-      const metaSharedVersion = metaObj.object?.owner?.Shared?.initialSharedVersion;
+      // Fetch CoinMetadata object info via indexer proxy — avoids CORS
+      const IURL_CM = import.meta.env.VITE_INDEXER_URL || '';
+      let metadataId = null;
+      let metaSharedVersion = null;
+      if (IURL_CM) {
+        try {
+          const res = await fetch(`${IURL_CM}/token/${curveId}/metadata-object`, { signal: AbortSignal.timeout(5000) });
+          if (res.ok) { const d = await res.json(); metadataId = d.objectId; metaSharedVersion = d.initialSharedVersion; }
+        } catch {}
+      }
+      if (!metadataId) throw new Error('CoinMetadata object not found — indexer may not support this endpoint yet');
       const capId = await getCapId();
       const tx = new Transaction();
       const curveRef = await getCurveRef(tx);
@@ -855,14 +872,13 @@ function TPSLPanel({
         ? keypair.getPublicKey().toSuiAddress()
         : account.address;
 
-      const objForRef = await client.getObject({ objectId: curveId });
-      const isv = objForRef.object?.owner?.Shared?.initialSharedVersion;
+      const isv = curveState?.initial_shared_version ?? null;
       const tx = new Transaction();
       const curveRef = isv
         ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: isv, mutable: true })
         : tx.object(curveId);
 
-      // Get token coins owned by the signer
+      // Get token coins owned by the signer — wallet handles this via dAppKit
       const coins = await client.listCoins({ owner: signerAddress, coinType: tokenType });
       if (!coins.objects.length) throw new Error('No token balance in trading wallet');
       const coinObjs = coins.objects.map(c => tx.object(c.objectId));
@@ -1226,26 +1242,50 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   }, []);
 
   useEffect(() => {
-    if (!curveId || !client) return;
+    if (!curveId) return;
+    const IURL = import.meta.env.VITE_INDEXER_URL || '';
+    if (!IURL) return;
     let cancelled = false;
     async function load() {
       try {
-        const obj = await client.getObject({ objectId: curveId, include: { json: true } });
-        if (!cancelled) setCurveState(obj.object?.json ?? null);
+        const res = await fetch(`${IURL}/token/${curveId}`, { signal: AbortSignal.timeout(5000) });
+        if (res.ok && !cancelled) {
+          const d = await res.json();
+          // Map indexer response to curve state field names expected by component
+          setCurveState({
+            sui_reserve:         String(d.suiReserve ?? d.sui_reserve ?? 0),
+            token_reserve:       String(d.tokenReserve ?? d.token_reserve ?? String(800_000_000 * 1e6)),
+            graduated:           d.graduated ?? false,
+            creator_fees:        String(d.creatorFees ?? d.creator_fees ?? 0),
+            creator:             d.creator ?? null,
+            initial_shared_version: d.initialSharedVersion ?? d.initial_shared_version ?? null,
+            metadata_updated:    d.metadataUpdated ?? d.metadata_updated ?? false,
+            created_at_ms:       d.createdAt ?? d.created_at ?? null,
+          });
+        }
       } catch {}
     }
     load();
     const timer = setInterval(load, 10_000);
     return () => { cancelled = true; clearInterval(timer); };
-  }, [curveId, client]);
+  }, [curveId]);
 
   useEffect(() => {
     if (!tokenType) return;
     let cancelled = false;
-    client.getCoinMetadata({ coinType: tokenType }).then(res => {
-      const m = res?.coinMetadata ?? null;
-      if (!cancelled) { setMetadata(m); const icon = m?.iconUrl; if (icon && !isPlaceholderIcon(icon)) setIconUrl(icon); }
-    }).catch(() => {});
+    // Load metadata from indexer — avoids CORS on graphql.testnet.sui.io
+    const IURL_META = import.meta.env.VITE_INDEXER_URL || '';
+    if (IURL_META) {
+      fetch(`${IURL_META}/token/${curveId}`, { signal: AbortSignal.timeout(5000) })
+        .then(r => r.ok ? r.json() : null)
+        .then(d => {
+          if (!d || cancelled) return;
+          const m = { name: d.name, symbol: d.symbol, description: d.description, iconUrl: d.iconUrl };
+          setMetadata(m);
+          const icon = d.iconUrl;
+          if (icon && !isPlaceholderIcon(icon)) setIconUrl(icon);
+        }).catch(() => {});
+    }
     (async () => {
       try {
         const packageIds = [PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i);
@@ -1323,11 +1363,18 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
     if (!account?.address || !curveId || !client) { setIsCreator(false); return; }
     let cancelled = false;
     const checkPkg = async (pid) => {
-      const res = await client.listOwnedObjects({ owner: account.address, type: `${pid}::bonding_curve::CreatorCap`, include: { json: true } });
-      return res.objects?.some(o => o.json?.curve_id === curveId);
+      // Use indexer to check creator status — avoids CORS
+      const IURL_IC = import.meta.env.VITE_INDEXER_URL || '';
+      if (IURL_IC) {
+        try {
+          const res = await fetch(`${IURL_IC}/token/${curveId}`, { signal: AbortSignal.timeout(3000) });
+          if (res.ok) { const d = await res.json(); return d.creator?.toLowerCase() === account.address?.toLowerCase(); }
+        } catch {}
+      }
+      return false;
     };
-    Promise.all([checkPkg(PACKAGE_ID_V4), ...(PACKAGE_ID_V5 ? [checkPkg(PACKAGE_ID_V5)] : []), ...(PACKAGE_ID_V6 ? [checkPkg(PACKAGE_ID_V6)] : []), ...(PACKAGE_ID_V7 ? [checkPkg(PACKAGE_ID_V7)] : []), ...(PACKAGE_ID_V8_1 ? [checkPkg(PACKAGE_ID_V8_1)] : []), ...(PACKAGE_ID_V8 ? [checkPkg(PACKAGE_ID_V8)] : [])])
-      .then(results => { if (!cancelled) setIsCreator(results.some(Boolean)); }).catch(() => {});
+    checkPkg(PACKAGE_ID_V4)
+      .then(result => { if (!cancelled) setIsCreator(result); }).catch(() => {});
     return () => { cancelled = true; };
   }, [account?.address, curveId, client]);
 
@@ -1365,8 +1412,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
     setTxMsg('');
 
     try {
-      const objForRef = await client.getObject({ objectId: curveId });
-      const initialSharedVersion = objForRef.object?.owner?.Shared?.initialSharedVersion;
+      const initialSharedVersion = curveState?.initial_shared_version ?? null;
       const tx = new Transaction();
       const curveRef = initialSharedVersion
         ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion, mutable: true })
@@ -1525,7 +1571,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
             slippage={slippage}
             keypair={tradeKeyReady ? tradeKeypair : null}
           />
-          <VestingPanel curveId={curveId} tokenType={tokenType} packageId={pkgId} account={account} tokenBalance={tokenBalance} lang={lang} />
+          <VestingPanel curveId={curveId} tokenType={tokenType} packageId={pkgId} account={account} tokenBalance={tokenBalance} lang={lang} initialSharedVersion={curveState?.initial_shared_version ?? null} />
           {isCreator && (
             <CreatorToolsPanel curveId={curveId} tokenType={tokenType} packageIdHint={pkgId} account={account} curveState={curveState} currentDesc={desc} currentTwitter={twitter} currentTelegram={telegram} currentWebsite={website} currentDex={dex} lang={lang} />
           )}

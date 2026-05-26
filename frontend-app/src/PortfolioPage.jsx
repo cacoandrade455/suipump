@@ -1,7 +1,7 @@
 // v17-indexer-claimall
 // PortfolioPage.jsx
 import React, { useState, useEffect, useMemo } from 'react';
-import { useCurrentAccount, useCurrentClient, useDAppKit } from '@mysten/dapp-kit-react';
+import { useCurrentAccount, useDAppKit } from '@mysten/dapp-kit-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Wallet, TrendingUp, Plus } from 'lucide-react';
 import { useTokenList } from './useTokenList.js';
@@ -79,41 +79,29 @@ function HoldingsTab({ account, tokens, client, lang, onTotalValue }) {
           } catch {}
         }
 
-        const results = await Promise.all(
-          tokens.filter(tk => tk.tokenType).map(async (token) => {
-            try {
-              const balance = await client.getBalance({ owner: account.address, coinType: token.tokenType });
-              const rawBalance = BigInt(balance.balance?.balance ?? '0');
-              if (rawBalance === 0n) return null;
-
-              let reserveMist = 0n, tokensRemaining = 0n, graduated = false;
-
-              // Use indexer stats if available
-              const idx = tokenStats[token.curveId];
-              if (idx) {
-                reserveMist = BigInt(Math.floor((idx.reserve_sui ?? 0) * MIST_PER_SUI));
-              } else {
-                const curveObj = await client.getObject({ objectId: token.curveId, include: { json: true } });
-                const fields = curveObj.object?.json;
-                if (fields) {
-                  const rawSui = fields.sui_reserve;
-                  reserveMist = typeof rawSui === 'object' ? BigInt(rawSui?.value ?? 0) : BigInt(rawSui ?? 0);
-                  const rawTok = fields.token_reserve;
-                  tokensRemaining = typeof rawTok === 'object' ? BigInt(rawTok?.value ?? 0) : BigInt(rawTok ?? 0);
-                  graduated = fields.graduated ?? false;
-                }
-              }
-
-              const tokensSold = BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS) - tokensRemaining;
-              const priceMist = priceMistPerToken(reserveMist, tokensSold);
-              const valueInMist = (rawBalance * priceMist) / (10n ** BigInt(TOKEN_DECIMALS));
-              const valueSui = Number(valueInMist) / MIST_PER_SUI;
-              const balanceWhole = Number(rawBalance) / 10 ** TOKEN_DECIMALS;
-
-              return { ...token, balance: balanceWhole, valueSui, graduated };
-            } catch { return null; }
-          })
-        );
+        // Load holdings from indexer /trader endpoint — avoids CORS
+        let results = [];
+        if (INDEXER_URL) {
+          try {
+            const tradRes = await fetch(`${INDEXER_URL}/trader/${viewAddress}`, { signal: AbortSignal.timeout(8000) });
+            if (tradRes.ok) {
+              const positions = await tradRes.json();
+              results = positions
+                .filter(p => p.token_type && p.balance > 0)
+                .map(p => {
+                  const token = tokens.find(t => t.curveId === p.curve_id);
+                  if (!token) return null;
+                  const reserveMist = BigInt(Math.floor((p.reserve_sui ?? 0) * MIST_PER_SUI));
+                  const tokensRemaining = BigInt(Math.floor((p.token_reserve ?? 800_000_000 * 1e6)));
+                  const tokensSold = BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS) - tokensRemaining;
+                  const priceMist = priceMistPerToken(reserveMist, tokensSold);
+                  const rawBalance = BigInt(Math.floor(p.balance * 10 ** TOKEN_DECIMALS));
+                  const valueInMist = (rawBalance * priceMist) / (10n ** BigInt(TOKEN_DECIMALS));
+                  return { ...token, balance: p.balance, valueSui: Number(valueInMist) / MIST_PER_SUI, graduated: p.graduated ?? false };
+                }).filter(Boolean);
+            }
+          } catch {}
+        }
 
         if (cancelled) return;
         const valid = results.filter(Boolean).sort((a, b) => b.valueSui - a.valueSui);
@@ -122,13 +110,9 @@ function HoldingsTab({ account, tokens, client, lang, onTotalValue }) {
         onTotalValue(total);
 
         // Load icons
+        // Icons come from token list (indexer) — no RPC needed
         const icons = {};
-        await Promise.all(valid.map(async (h) => {
-          try {
-            const mRes = await client.getCoinMetadata({ coinType: h.tokenType });
-            if (mRes?.coinMetadata?.iconUrl) icons[h.curveId] = mRes.coinMetadata.iconUrl;
-          } catch {}
-        }));
+        for (const h of valid) { if (h.iconUrl) icons[h.curveId] = h.iconUrl; }
         if (!cancelled) setIconUrls(icons);
       } catch {}
       finally { if (!cancelled) setLoading(false); }
@@ -210,7 +194,7 @@ function TradedTab({ account, tokens, client, lang }) {
                 const icons = {};
                 await Promise.all(enriched.map(async (tk) => {
                   if (!tk.tokenType) return;
-                  try { const mRes = await client.getCoinMetadata({ coinType: tk.tokenType }); if (mRes?.coinMetadata?.iconUrl) icons[tk.curveId] = mRes.coinMetadata.iconUrl; } catch {}
+                  if (tk.iconUrl) icons[tk.curveId] = tk.iconUrl;
                 }));
                 if (!cancelled) setIconUrls(icons);
                 return;
@@ -273,7 +257,7 @@ function TradedTab({ account, tokens, client, lang }) {
         const icons = {};
         await Promise.all(enriched.map(async (tk) => {
           if (!tk.tokenType) return;
-          try { const mRes = await client.getCoinMetadata({ coinType: tk.tokenType }); if (mRes?.coinMetadata?.iconUrl) icons[tk.curveId] = mRes.coinMetadata.iconUrl; } catch {}
+          if (tk.iconUrl) icons[tk.curveId] = tk.iconUrl;
         }));
         if (!cancelled) setIconUrls(icons);
 
@@ -347,12 +331,17 @@ function CreatedTab({ account, tokens, client, lang }) {
           } catch {}
         }
 
+        // Load curve states from indexer
         const curveObjs = await Promise.all(
-          createdTokens.map(tk => client.getObject({ objectId: tk.curveId, include: { json: true } }).catch(() => null))
+          createdTokens.map(tk =>
+            fetch(`${INDEXER_URL}/token/${tk.curveId}`, { signal: AbortSignal.timeout(5000) })
+              .then(r => r.ok ? r.json() : null)
+              .catch(() => null)
+          )
         );
         const iconResults = await Promise.all(
           createdTokens.map(async (tk) => {
-            try { const mRes = await client.getCoinMetadata({ coinType: tk.tokenType }); return { curveId: tk.curveId, iconUrl: mRes?.coinMetadata?.iconUrl || null }; }
+            try { return { curveId: tk.curveId, iconUrl: tk.iconUrl || null }; }
             catch { return { curveId: tk.curveId, iconUrl: null }; }
           })
         );
@@ -362,8 +351,8 @@ function CreatedTab({ account, tokens, client, lang }) {
         for (let i = 0; i < createdTokens.length; i++) {
           const obj = curveObjs[i];
           const tk  = createdTokens[i];
-          if (!obj?.object?.json) continue;
-          const fields = obj.object.json;
+          if (!obj) continue;
+          const fields = obj;
           const reserveMist  = BigInt(fields.sui_reserve ?? 0);
           const reserveSui   = mistToSui(reserveMist);
           const progress     = Math.min(100, (reserveSui / DRAIN_SUI_APPROX) * 100);
@@ -378,13 +367,10 @@ function CreatedTab({ account, tokens, client, lang }) {
         const caps = {};
         await Promise.all(createdTokens.map(async (tk) => {
           try {
-            const ownedObjs = await client.listOwnedObjects({
-              owner: account.address,
-              type: `${tk.packageId}::bonding_curve::CreatorCap`,
-              include: { json: true },
-            });
-            const capObj = ownedObjs.objects?.find(o => o.json?.curve_id === tk.curveId);
-            if (capObj?.objectId) caps[tk.curveId] = capObj.objectId;
+            try {
+              const capRes = await fetch(`${INDEXER_URL}/token/${tk.curveId}/creator-cap?owner=${account.address}`, { signal: AbortSignal.timeout(3000) });
+              if (capRes.ok) { const d = await capRes.json(); if (d.objectId) caps[tk.curveId] = d.objectId; }
+            } catch {}
           } catch {}
         }));
         setCapMap(caps);
@@ -418,8 +404,8 @@ function CreatedTab({ account, tokens, client, lang }) {
       // Verify on-chain fees before building PTB — avoids ENoFees abort
       const verified = await Promise.all(claimable.map(async (tk) => {
         try {
-          const obj = await client.getObject({ objectId: tk.curveId, include: { json: true } });
-          const f = obj.object?.json;
+          const res_obj = await fetch(`${INDEXER_URL}/token/${tk.curveId}`, { signal: AbortSignal.timeout(3000) }).then(r => r.ok ? r.json() : null).catch(() => null);
+          const f = res_obj;
           // creator_fees is Balance<SUI> — serialized as { value: "123" } or plain string
           const raw = f?.creator_fees;
           const fees = typeof raw === 'object' ? Number(raw?.value ?? 0) : Number(raw ?? 0);
@@ -436,8 +422,8 @@ function CreatedTab({ account, tokens, client, lang }) {
       for (const tk of actualClaimable) {
         const pkgId   = tk.packageId;
         const capId   = capMap[tk.curveId];
-        const objForRef = await client.getObject({ objectId: tk.curveId });
-        const initVer   = objForRef.object?.owner?.Shared?.initialSharedVersion;
+        const sharedInfo = await fetch(`${INDEXER_URL}/token/${tk.curveId}`, { signal: AbortSignal.timeout(3000) }).then(r => r.ok ? r.json() : null).catch(() => null);
+        const initVer   = sharedInfo?.initialSharedVersion ?? sharedInfo?.initial_shared_version ?? null;
         const curveRef  = initVer
           ? tx.sharedObjectRef({ objectId: tk.curveId, initialSharedVersion: initVer, mutable: true })
           : tx.object(tk.curveId);
@@ -600,7 +586,6 @@ function setPfp(addr, url) { try { localStorage.setItem(pfpKey(addr), url); } ca
 
 export default function PortfolioPage({ onBack, lang = 'en' }) {
   const account    = useCurrentAccount();
-  const client     = useCurrentClient();
   const { tokens } = useTokenList();
   const navigate   = useNavigate();
   const { walletAddress } = useParams();

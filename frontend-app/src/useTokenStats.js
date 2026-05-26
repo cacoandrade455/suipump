@@ -2,41 +2,10 @@
 // Loads all token stats from indexer on mount, then updates in real-time
 // via SSE — only re-fetches stats for the specific curve that traded.
 import { useState, useEffect, useRef } from 'react';
-import { useCurrentClient } from '@mysten/dapp-kit-react';
+
 
 const INDEXER_URL  = import.meta.env.VITE_INDEXER_URL || '';
 const MIST_PER_SUI = 1e9;
-
-// ── Holder count (RPC, runs every 60s) ────────────────────────────────────────
-async function fetchHolderCount(client, coinType) {
-  const holders = new Set();
-  let cursor = null;
-  let pages  = 0;
-  while (pages < 20) {
-    let result;
-    try {
-      // New API: listCoins
-      result = await client.listCoins({ owner: '0x0', coinType, cursor, limit: 50 });
-    } catch { break; }
-    for (const coin of result.objects ?? []) {
-      if (coin.balance && coin.balance !== '0') {
-        holders.add(coin.objectId);
-        if (coin.owner) {
-          const ownerAddr = coin.owner?.$kind === 'AddressOwner'
-            ? coin.owner.AddressOwner
-            : coin.owner?.$kind === 'ObjectOwner'
-              ? coin.owner.ObjectOwner
-              : null;
-          if (ownerAddr) holders.add(ownerAddr);
-        }
-      }
-    }
-    if (!result.hasNextPage) break;
-    cursor = result.cursor;
-    pages++;
-  }
-  return holders.size;
-}
 
 function mapIndexerRow(s, holderCounts) {
   return {
@@ -60,9 +29,7 @@ function mapIndexerRow(s, holderCounts) {
 }
 
 export function useTokenStats(tokens) {
-  const client          = useCurrentClient();
   const [stats, setStats] = useState({});
-  const holderCountsRef = useRef({});
   const esRef           = useRef(null);
   const timerRef        = useRef(null);
 
@@ -76,7 +43,7 @@ export function useTokenStats(tokens) {
       .then(rows => {
         const map = {};
         for (const s of rows) {
-          map[s.curve_id] = mapIndexerRow(s, holderCountsRef.current);
+          map[s.curve_id] = mapIndexerRow(s;
         }
         setStats(map);
       })
@@ -151,7 +118,7 @@ export function useTokenStats(tokens) {
               if (!s) return;
               setStats(prev => ({
                 ...prev,
-                [curveId]: mapIndexerRow(s, holderCountsRef.current),
+                [curveId]: mapIndexerRow(s,
               }));
             })
             .catch(() => {});
@@ -168,34 +135,6 @@ export function useTokenStats(tokens) {
     connect();
     return () => { esRef.current?.close(); clearTimeout(timerRef.current); };
   }, []);
-
-  // ── Holder count (RPC, 60s) ───────────────────────────────────────────────
-  useEffect(() => {
-    if (!tokens || tokens.length === 0) return;
-    const queryable = tokens.filter(t => t.tokenType);
-    if (queryable.length === 0) return;
-    let cancelled = false;
-
-    async function loadHolders() {
-      for (const token of queryable) {
-        if (cancelled) return;
-        try {
-          const count = await fetchHolderCount(client, token.tokenType);
-          if (cancelled) return;
-          holderCountsRef.current[token.curveId] = count;
-          setStats(prev => {
-            if (!prev[token.curveId]) return prev;
-            return { ...prev, [token.curveId]: { ...prev[token.curveId], holderCount: count } };
-          });
-        } catch {}
-        await new Promise(r => setTimeout(r, 300));
-      }
-    }
-
-    const initial  = setTimeout(loadHolders, 5_000);
-    const interval = setInterval(loadHolders, 60_000);
-    return () => { cancelled = true; clearTimeout(initial); clearInterval(interval); };
-  }, [tokens, client]);
 
   return stats;
 }

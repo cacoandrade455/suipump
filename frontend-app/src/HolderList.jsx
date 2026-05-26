@@ -1,6 +1,5 @@
 // HolderList.jsx — SSE triggers re-fetch on trade, no time-based polling
 import React, { useState, useEffect, useRef } from 'react';
-import { useCurrentClient } from '@mysten/dapp-kit-react';
 import { Users, BarChart2 } from 'lucide-react';
 import { ALL_PACKAGE_IDS } from './constants.js';
 import { paginateMultipleEvents } from './paginateEvents.js';
@@ -42,7 +41,6 @@ async function fetchTradeEvents(client, curveId) {
 }
 
 export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = null }) {
-  const client   = useCurrentClient();
   const [tab,     setTab]     = useState('holders');
   const [holders, setHolders] = useState([]);
   const [traders, setTraders] = useState([]);
@@ -62,17 +60,16 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = n
       for (const e of sells) { const a = e.parsedJson?.seller; if (a) candidates.add(a); }
 
       let holderList = [];
-      if (tokenType && candidates.size > 0) {
-        const balances = await Promise.all([...candidates].map(async (addr) => {
-          try {
-            // New API: getBalance returns { balance: { balance, coinBalance, ... } }
-            const res = await client.getBalance({ owner: addr, coinType: tokenType });
-            return { addr, raw: BigInt(res.balance?.balance ?? '0') };
-          } catch { return { addr, raw: 0n }; }
-        }));
-        holderList = balances
-          .filter(b => b.raw > 0n)
-          .sort((a, b) => (b.raw > a.raw ? 1 : b.raw < a.raw ? -1 : 0));
+      // Load holder balances from indexer — avoids CORS on graphql endpoint
+      if (INDEXER_URL) {
+        try {
+          const res = await fetch(`${INDEXER_URL}/token/${curveId}/holders`, { signal: AbortSignal.timeout(5000) });
+          if (res.ok) {
+            const rows = await res.json();
+            holderList = rows.map(r => ({ addr: r.address, raw: BigInt(r.balance ?? 0) }))
+              .filter(b => b.raw > 0n);
+          }
+        } catch {}
       }
 
       // Compute P&L from trade events
