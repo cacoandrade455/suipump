@@ -8,6 +8,10 @@ const INDEXER_URL  = import.meta.env.VITE_INDEXER_URL || '';
 const MIST_PER_SUI = 1e9;
 
 function mapIndexerRow(s, holderCounts) {
+  // api.js sends start_price = vSui/1B for all tokens (even zero-trade)
+  // and last_price using (vSui + reserve) / 1B formula (correct, matches OHLC)
+  const lastPrice  = s.last_price  ?? s.start_price ?? null;
+  const firstPrice = s.first_price ?? s.start_price ?? null;
   return {
     volume:        s.volume_sui,
     trades:        s.trades,
@@ -15,15 +19,15 @@ function mapIndexerRow(s, holderCounts) {
     sells:         s.sells,
     recentTrades:  s.recent_trades,
     lastTradeTime: s.last_trade_time,
-    lastPrice:     s.last_price,
-    firstPrice:    s.first_price,
+    lastPrice,
+    firstPrice,
     volume24h:     s.volume_24h,
     commentCount:  s.comment_count,
-    pctChange:     s.first_price && s.last_price && s.first_price > 0
-      ? ((s.last_price - s.first_price) / s.first_price) * 100
+    pctChange:     firstPrice && lastPrice && firstPrice > 0
+      ? ((lastPrice - firstPrice) / firstPrice) * 100
       : null,
     sparkline24h:  s.sparkline24h || [],
-    holderCount:   holderCounts[s.curve_id] ?? 0,
+    holderCount:   holderCounts?.[s.curve_id] ?? 0,
     devBuyMist:    0,
   };
 }
@@ -82,7 +86,13 @@ export function useTokenStats(tokens) {
               volume24h: 0, commentCount: 0, pctChange: null,
               sparkline24h: [], holderCount: 0, devBuyMist: 0,
             };
-            const price      = tok > 0 ? sui / tok : cur.lastPrice;
+            // Use (vSui + new_sui_reserve) / 1B — matches OHLC chart exactly
+            const token = tokens?.find(t => t.curveId === curveId);
+            const { virtualSui: vSui } = curveShapeFor(token?.packageId);
+            const newReserveMist = Number(d.new_sui_reserve ?? 0);
+            const price = newReserveMist > 0
+              ? (vSui + newReserveMist / MIST_PER_SUI) / 1_000_000_000
+              : cur.lastPrice;
             const now        = Date.now();
             const oneDayAgo  = now - 86_400_000;
             const tsMs       = event.ts ?? now;
