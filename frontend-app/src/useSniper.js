@@ -162,18 +162,18 @@ export function useSniper({ walletAddress, keypair }) {
       // Create a fresh SuiGraphQLClient for signing (keypair path)
       const client = new SuiGraphQLClient({ url: '/api/rpc' });
 
-      // Get curve shared object ref
-      const objForRef = await client.getObject({ id: curveId, options: { showOwner: true, showContent: true } });
-      const isv = objForRef.data?.owner?.Shared?.initial_shared_version;
+      // Fetch curve data from indexer — avoids SuiGraphQLClient 2.x API mismatch
+      const IURL_S = import.meta.env.VITE_INDEXER_URL || '';
+      const tokenData = await fetch(`${IURL_S}/token/${curveId}`, { signal: AbortSignal.timeout(4000) }).then(r => r.ok ? r.json() : null);
+      if (!tokenData) throw new Error('Could not fetch curve from indexer');
+      const isv = tokenData.initialSharedVersion ?? tokenData.initial_shared_version ?? null;
       if (!isv) throw new Error('Could not resolve curve version');
 
       const vSui  = curveShapeFor(pkgId).virtualSui;
       const vTok  = curveShapeFor(pkgId).virtualTokens;
 
-      // Get current reserve for quote
-      const fields = objForRef.data?.content?.fields ?? {};
-      const reserveMist    = BigInt(fields.sui_reserve    ?? 0);
-      const tokensRemaining = BigInt(fields.token_reserve ?? 0);
+      const reserveMist    = BigInt(Math.round((tokenData.stats?.reserve_sui ?? tokenData.reserve_sui ?? 0) * 1e9));
+      const tokensRemaining = BigInt(Math.round((tokenData.stats?.token_reserve ?? tokenData.token_reserve ?? 800_000_000) * 1e6));
 
       const quote  = buyQuote(reserveMist, tokensRemaining, suiInMist, vSui, vTok);
       const minOut = quote?.tokensOut != null
@@ -338,12 +338,13 @@ export function useSniper({ walletAddress, keypair }) {
       if (!coins.data.length) return;
       const cfg         = loadSniperConfig(walletAddress) ?? config;
       const totalAtomic = coins.data.reduce((s, c) => s + BigInt(c.balance), 0n);
-      const objForRef   = await client.getObject({ id: curveId, options: { showOwner: true, showContent: true } });
-      const isv         = objForRef.data?.owner?.Shared?.initial_shared_version;
+      const IURL_EGS = import.meta.env.VITE_INDEXER_URL || '';
+      const gsData      = await fetch(`${IURL_EGS}/token/${curveId}`, { signal: AbortSignal.timeout(4000) }).then(r => r.ok ? r.json() : null);
+      if (!gsData) return;
+      const isv         = gsData.initialSharedVersion ?? gsData.initial_shared_version ?? null;
       if (!isv) return;
-      const fields          = objForRef.data?.content?.fields ?? {};
-      const reserveMist     = BigInt(fields.sui_reserve    ?? 0);
-      const tokensRemaining = BigInt(fields.token_reserve  ?? 0);
+      const reserveMist     = BigInt(Math.round((gsData.stats?.reserve_sui ?? gsData.reserve_sui ?? 0) * 1e9));
+      const tokensRemaining = BigInt(Math.round((gsData.stats?.token_reserve ?? gsData.token_reserve ?? 800_000_000) * 1e6));
       const { virtualSui, virtualTokens } = curveShapeFor(pkgId);
       const sq      = sellQuote(reserveMist, tokensRemaining, totalAtomic, virtualSui, virtualTokens);
       const minOut  = sq?.suiOut != null ? BigInt(Math.floor(Number(sq.suiOut) * (1 - cfg.gradSnipeSlippage / 100))) : 0n;
@@ -405,12 +406,13 @@ export function useSniper({ walletAddress, keypair }) {
           const client    = new SuiGraphQLClient({ url: '/api/rpc' });
           const myAddress = kp.getPublicKey().toSuiAddress();
           const suiInMist = BigInt(Math.floor(cfg2.gradSnipeSuiAmount * 1e9));
-          const objForRef = await client.getObject({ id: curveId, options: { showOwner: true, showContent: true } });
-          const isv       = objForRef.data?.owner?.Shared?.initial_shared_version;
+          const IURL_GS = import.meta.env.VITE_INDEXER_URL || '';
+          const gradData = await fetch(`${IURL_GS}/token/${curveId}`, { signal: AbortSignal.timeout(4000) }).then(r => r.ok ? r.json() : null);
+          if (!gradData) { gradBought.current.delete(curveId); return; }
+          const isv       = gradData.initialSharedVersion ?? gradData.initial_shared_version ?? null;
           if (!isv) { gradBought.current.delete(curveId); return; }
-          const fields          = objForRef.data?.content?.fields ?? {};
-          const reserveMist     = BigInt(fields.sui_reserve    ?? 0);
-          const tokensRemaining = BigInt(fields.token_reserve  ?? 0);
+          const reserveMist     = BigInt(Math.round((gradData.stats?.reserve_sui ?? gradData.reserve_sui ?? 0) * 1e9));
+          const tokensRemaining = BigInt(Math.round((gradData.stats?.token_reserve ?? gradData.token_reserve ?? 800_000_000) * 1e6));
           const quote  = buyQuote(reserveMist, tokensRemaining, suiInMist, virtualSui, virtualTokens);
           const minOut = quote?.tokensOut != null ? BigInt(Math.floor(Number(quote.tokensOut) * (1 - cfg2.gradSnipeSlippage / 100))) : 0n;
           const tx = new Transaction();
