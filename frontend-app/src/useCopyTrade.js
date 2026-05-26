@@ -114,7 +114,7 @@ export function useCopyTrade({ walletAddress, keypair }) {
       const { signature } = await kp.signTransaction(builtTx);
       const result        = await client.executeTransaction({
         transaction: builtTx,
-        signature,
+        signatures: [signature],
       });
 
       logEntry = { ...logEntry, success: result?.errors == null, digest: result?.data?.executeTransaction?.digest };
@@ -180,7 +180,7 @@ export function useCopyTrade({ walletAddress, keypair }) {
       const { signature } = await kp.signTransaction(builtTx);
       const result        = await client.executeTransaction({
         transaction: builtTx,
-        signature,
+        signatures: [signature],
       });
 
       const suiReceived = Number(quote?.suiOut ?? 0) / 1e9;

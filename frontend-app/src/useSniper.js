@@ -202,7 +202,7 @@ export function useSniper({ walletAddress, keypair }) {
       const { signature } = await kp.signTransaction(builtTx);
       const result = await client.executeTransaction({
         transaction: builtTx,
-        signature,
+        signatures: [signature],
       });
 
       const digest  = result?.data?.executeTransaction?.digest;

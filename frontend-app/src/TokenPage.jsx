@@ -922,7 +922,7 @@ function TPSLPanel({
         const { signature } = await keypair.signTransaction(builtTx);
         const result = await autonomousClient.executeTransaction({
           transaction: builtTx,
-          signature,
+          signatures: [signature],
         });
         const success = result?.errors == null;
         setTriggerMsg(m => m ? { ...m, status: success ? 'done' : 'error', digest: result?.data?.executeTransaction?.digest } : m);
