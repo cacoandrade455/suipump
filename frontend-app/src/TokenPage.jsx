@@ -118,18 +118,14 @@ function getTokenPackageId(tokenType) {
 }
 
 function resolvePackageId(tokenType, packageIdHint) {
+  // packageIdHint comes from the indexer and is always the correct bonding
+  // curve package. Use it first. getTokenPackageId() tries to match the coin
+  // package against curve package IDs which can never work — they're always
+  // different addresses. Only fall back to it if hint is missing.
+  if (packageIdHint) return packageIdHint;
   const fromType = getTokenPackageId(tokenType);
   if (fromType) return fromType;
-  if (packageIdHint) {
-    if (PACKAGE_ID_V8_1 && packageIdHint === PACKAGE_ID_V8_1) return PACKAGE_ID_V8_1;
-    if (PACKAGE_ID_V8 && packageIdHint === PACKAGE_ID_V8) return PACKAGE_ID_V8;
-    if (PACKAGE_ID_V7 && packageIdHint === PACKAGE_ID_V7) return PACKAGE_ID_V7;
-    if (PACKAGE_ID_V6 && packageIdHint === PACKAGE_ID_V6) return PACKAGE_ID_V6;
-    if (PACKAGE_ID_V5 && packageIdHint === PACKAGE_ID_V5) return PACKAGE_ID_V5;
-    if (packageIdHint === PACKAGE_ID_V4) return PACKAGE_ID_V4;
-    return packageIdHint;
-  }
-  return PACKAGE_ID_V4;
+  return PACKAGE_ID_V8;
 }
 
 const SLIPPAGE_PRESETS = ['0.5', '1', '2', '5'];
