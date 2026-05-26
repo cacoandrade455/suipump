@@ -96,16 +96,14 @@ export function useDCA({ walletAddress, keypair }) {
     try {
       const client = new SuiGraphQLClient({ url: '/api/rpc' });
 
-      const objForRef = await client.getObject({
-        id: order.curveId,
-        options: { showOwner: true, showContent: true },
-      });
-      const isv    = objForRef.data?.owner?.Shared?.initial_shared_version;
+      const IURL_D = import.meta.env.VITE_INDEXER_URL || '';
+      const dcaData = await fetch(`${IURL_D}/token/${order.curveId}`, { signal: AbortSignal.timeout(4000) }).then(r => r.ok ? r.json() : null);
+      if (!dcaData) throw new Error('Could not fetch curve from indexer');
+      const isv    = dcaData.initialSharedVersion ?? dcaData.initial_shared_version ?? null;
       if (!isv) throw new Error('Could not resolve curve version');
 
-      const fields         = objForRef.data?.content?.fields ?? {};
-      const reserveMist    = BigInt(fields.sui_reserve    ?? 0);
-      const tokensRemaining = BigInt(fields.token_reserve ?? 0);
+      const reserveMist    = BigInt(Math.round((dcaData.stats?.reserve_sui ?? dcaData.reserve_sui ?? 0) * 1e9));
+      const tokensRemaining = BigInt(Math.round((dcaData.stats?.token_reserve ?? dcaData.token_reserve ?? 800_000_000) * 1e6));
 
       const vSui  = curveShapeFor(order.pkgId).virtualSui;
       const vTok  = curveShapeFor(order.pkgId).virtualTokens;

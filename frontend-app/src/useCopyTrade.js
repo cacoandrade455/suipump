@@ -80,13 +80,14 @@ export function useCopyTrade({ walletAddress, keypair }) {
 
     try {
       const client = new SuiGraphQLClient({ url: '/api/rpc' });
-      const objForRef = await client.getObject({ id: curveId, options: { showOwner: true, showContent: true } });
-      const isv = objForRef.data?.owner?.Shared?.initial_shared_version;
+      const IURL_CB = import.meta.env.VITE_INDEXER_URL || '';
+      const cbData = await fetch(`${IURL_CB}/token/${curveId}`, { signal: AbortSignal.timeout(4000) }).then(r => r.ok ? r.json() : null);
+      if (!cbData) throw new Error('Could not fetch curve from indexer');
+      const isv = cbData.initialSharedVersion ?? cbData.initial_shared_version ?? null;
       if (!isv) throw new Error('Could not resolve curve version');
 
-      const fields          = objForRef.data?.content?.fields ?? {};
-      const reserveMist     = BigInt(fields.sui_reserve    ?? 0);
-      const tokensRemaining = BigInt(fields.token_reserve  ?? 0);
+      const reserveMist     = BigInt(Math.round((cbData.stats?.reserve_sui ?? cbData.reserve_sui ?? 0) * 1e9));
+      const tokensRemaining = BigInt(Math.round((cbData.stats?.token_reserve ?? cbData.token_reserve ?? 800_000_000) * 1e6));
       const { virtualSui, virtualTokens } = curveShapeFor(pkgId);
 
       const quote  = buyQuote(reserveMist, tokensRemaining, suiInMist, virtualSui, virtualTokens);
@@ -141,13 +142,14 @@ export function useCopyTrade({ walletAddress, keypair }) {
       const coins = await client.getCoins({ owner: myAddress, coinType: tokenType });
       if (!coins.data.length) throw new Error('No tokens to sell');
 
-      const objForRef = await client.getObject({ id: curveId, options: { showOwner: true, showContent: true } });
-      const isv = objForRef.data?.owner?.Shared?.initial_shared_version;
+      const IURL_CS = import.meta.env.VITE_INDEXER_URL || '';
+      const csData = await fetch(`${IURL_CS}/token/${curveId}`, { signal: AbortSignal.timeout(4000) }).then(r => r.ok ? r.json() : null);
+      if (!csData) throw new Error('Could not fetch curve from indexer');
+      const isv = csData.initialSharedVersion ?? csData.initial_shared_version ?? null;
       if (!isv) throw new Error('Could not resolve curve version');
 
-      const fields          = objForRef.data?.content?.fields ?? {};
-      const reserveMist     = BigInt(fields.sui_reserve    ?? 0);
-      const tokensRemaining = BigInt(fields.token_reserve  ?? 0);
+      const reserveMist     = BigInt(Math.round((csData.stats?.reserve_sui ?? csData.reserve_sui ?? 0) * 1e9));
+      const tokensRemaining = BigInt(Math.round((csData.stats?.token_reserve ?? csData.token_reserve ?? 800_000_000) * 1e6));
       const { virtualSui, virtualTokens } = curveShapeFor(pkgId);
 
       // Sell full balance

@@ -115,8 +115,10 @@ export function useRebalance({ walletAddress, keypair }) {
       for (const pos of positions) {
         if (!pos.curve_id || !pos.token_type) continue;
         try {
-          const obj = await client.getObject({ id: pos.curve_id, options: { showContent: true } });
-          const fields = obj.data?.content?.fields ?? {};
+          const IURL_R = import.meta.env.VITE_INDEXER_URL || '';
+          const rData = await fetch(`${IURL_R}/token/${pos.curve_id}`, { signal: AbortSignal.timeout(4000) }).then(r => r.ok ? r.json() : null).catch(() => null);
+          const reserveMistNum = rData ? Math.round((rData.stats?.reserve_sui ?? rData.reserve_sui ?? 0) * 1e9) : 0;
+          const fields = { sui_reserve: reserveMistNum, token_reserve: Math.round((rData?.stats?.token_reserve ?? rData?.token_reserve ?? 800_000_000) * 1e6) };
           const reserveMist    = Number(fields.sui_reserve ?? 0);
           const { virtualSui } = curveShapeFor(pos.package_id);
           const totalPoolSui   = reserveMist / 1e9 + virtualSui;
