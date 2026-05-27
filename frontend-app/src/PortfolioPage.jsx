@@ -55,28 +55,10 @@ function TokenRow({ token, iconUrl, right, onClick }) {
 
 // ── Canvas PnL card helpers ───────────────────────────────────────────────────
 
-// Mascot loaded from /mascot.png (public folder)
-// For dump state we tint red using a color overlay
-function drawMascotOnCanvas(ctx, img, isUp, x, y, size) {
+function drawMascotOnCanvas(ctx, img, x, y, size) {
   if (!img) return;
   ctx.save();
-  if (isUp) {
-    // Pump: normal green mascot, slight upward tilt
-    ctx.translate(x + size/2, y + size/2);
-    ctx.rotate(-0.08);
-    ctx.drawImage(img, -size/2, -size/2, size, size);
-  } else {
-    // Dump: red tinted, tilted/crashing, upside-down
-    ctx.translate(x + size/2, y + size/2);
-    ctx.rotate(0.3);
-    ctx.drawImage(img, -size/2, -size/2, size, size);
-    // Red tint overlay
-    ctx.globalCompositeOperation = 'multiply';
-    ctx.fillStyle = '#ff3333';
-    ctx.fillRect(-size/2, -size/2, size, size);
-    ctx.globalCompositeOperation = 'source-over';
-    // Clip to mascot shape isn't trivial, so use lighter blend instead
-  }
+  ctx.drawImage(img, x, y, size, size);
   ctx.restore();
 }
 
@@ -85,23 +67,23 @@ function drawPnlCard({ canvas, name, symbol, pnlSui, pnlPct, spent, entryPrice, 
   canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext('2d');
   const isUp = pnlSui >= 0;
-  const pnlColor = isUp ? '#84cc16' : '#ef4444';
-  const bgColor1 = isUp ? '#020d02' : '#0d0202';
-  const bgColor2 = isUp ? '#071507' : '#150707';
+  const pnlColor = isUp ? '#a3e635' : '#ef4444';
+  const bgColor1 = isUp ? '#050f02' : '#0f0202';
+  const bgColor2 = isUp ? '#0a1f04' : '#1a0404';
 
   // Background
   const bg = ctx.createLinearGradient(0, 0, W, H);
   bg.addColorStop(0, bgColor1); bg.addColorStop(1, bgColor2);
   ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
 
-  // Glow effect top-right
-  const glow = ctx.createRadialGradient(W*0.8, H*0.2, 0, W*0.8, H*0.2, 300);
-  glow.addColorStop(0, isUp ? '#84cc1618' : '#ef444418');
+  // Lime glow bottom-left
+  const glow = ctx.createRadialGradient(0, H, 0, 0, H, 400);
+  glow.addColorStop(0, isUp ? '#84cc1625' : '#ef444420');
   glow.addColorStop(1, 'transparent');
   ctx.fillStyle = glow; ctx.fillRect(0, 0, W, H);
 
   // Border
-  ctx.strokeStyle = pnlColor + '40'; ctx.lineWidth = 1.5;
+  ctx.strokeStyle = pnlColor + '60'; ctx.lineWidth = 2;
   ctx.beginPath();
   const r = 20;
   ctx.moveTo(r, 0); ctx.lineTo(W-r, 0); ctx.quadraticCurveTo(W, 0, W, r);
@@ -111,7 +93,7 @@ function drawPnlCard({ canvas, name, symbol, pnlSui, pnlPct, spent, entryPrice, 
   ctx.closePath(); ctx.stroke();
 
   // Header — logo + name
-  ctx.font = 'bold 14px monospace'; ctx.fillStyle = pnlColor;
+  ctx.font = 'bold 14px monospace'; ctx.fillStyle = '#a3e635';
   ctx.fillText('🔥 SUIPUMP', 42, 52);
   ctx.font = 'bold 28px monospace'; ctx.fillStyle = '#ffffff';
   ctx.fillText(name || 'Unknown', 42, 95);
@@ -125,7 +107,7 @@ function drawPnlCard({ canvas, name, symbol, pnlSui, pnlPct, spent, entryPrice, 
   // Multiplier
   const mult = spent > 0 ? ((spent + pnlSui) / spent) : 1;
   const multStr = mult >= 1 ? `${mult.toFixed(2)}x` : `${mult.toFixed(2)}x`;
-  ctx.font = `bold 88px monospace`; ctx.fillStyle = pnlColor;
+  ctx.font = 'bold 88px monospace'; ctx.fillStyle = pnlColor;
   ctx.fillText(multStr, 42, 250);
 
   // PnL amount
@@ -166,7 +148,7 @@ function drawPnlCard({ canvas, name, symbol, pnlSui, pnlPct, spent, entryPrice, 
   ctx.font = 'bold 13px monospace'; ctx.fillStyle = badgeColor;
   ctx.fillText(badgeText, W - 160, 448);
 
-  // Mascot drawn async after image load — handled in PnlShareButton
+  // Mascot drawn after image load in PnlShareButton
 }
 
 function PnlShareButton({ tk, unrealizedPnl, currentPrice }) {
@@ -183,8 +165,7 @@ function PnlShareButton({ tk, unrealizedPnl, currentPrice }) {
         spent: tk.suiSpent, entryPrice: tk.avgEntryPrice,
         currentPrice: currentPrice || 0, isClosed: tk.isClosed,
       });
-      // Draw mascot on top
-      drawMascotOnCanvas(canvas.getContext('2d'), mascotImg, isUp, canvas.width - 280, 20, 260);
+      drawMascotOnCanvas(canvas.getContext('2d'), mascotImg, canvas.width - 290, 10, 280);
       const link = document.createElement('a');
       link.download = `suipump-${tk.symbol || 'pnl'}.png`;
       link.href = canvas.toDataURL('image/png');
@@ -194,7 +175,7 @@ function PnlShareButton({ tk, unrealizedPnl, currentPrice }) {
     const img = new Image();
     img.onload = () => doRender(img);
     img.onerror = () => doRender(null);
-    img.src = '/mascot.png';
+    img.src = isUp ? '/mascot_pump.png' : '/mascot_dump.png';
   };
 
   return (
