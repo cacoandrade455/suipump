@@ -22,6 +22,7 @@ function getVirtuals(packageId) {
   if (packageId.startsWith('0x785c')) return { vSui: 10000 }; // V5
   if (packageId.startsWith('0x21d5')) return { vSui: 10000 }; // V6
   if (packageId.startsWith('0xfb8f')) return { vSui: 5000  }; // V7
+  if (packageId.startsWith('0x7196')) return { vSui: 4369  }; // V9
   return { vSui: 3500 };                                        // V8, V8_1
 }
 
