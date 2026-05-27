@@ -64,6 +64,96 @@ app.get('/health', (req, res) => res.json({ status: 'ok', ts: Date.now() }));
 
 // ── SSE stream ────────────────────────────────────────────────────────────────
 
+
+
+// ── /token/:id/locks?owner=:address ──────────────────────────────────────────
+// Returns lock_ids for a beneficiary on a specific curve.
+app.get('/token/:id/locks', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { owner } = req.query;
+    if (!owner) return res.status(400).json({ error: 'owner param required' });
+
+    const result = await pool.query(
+      `SELECT lock_id, total_amount, claimed,
+              (total_amount - claimed) AS locked,
+              start_ms, duration_ms, mode, beneficiary
+       FROM vesting_locks
+       WHERE curve_id = $1 AND beneficiary = $2
+       ORDER BY start_ms DESC`,
+      [id, owner]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    // Table may not exist yet — return empty array gracefully
+    res.json([]);
+  }
+});
+
+// ── /lock/:lockId ─────────────────────────────────────────────────────────────
+// Returns details for a single VestingLock by its object ID.
+app.get('/lock/:lockId', async (req, res) => {
+  try {
+    const { lockId } = req.params;
+    const result = await pool.query(
+      `SELECT lock_id, curve_id, beneficiary,
+              total_amount, claimed,
+              (total_amount - claimed) AS locked,
+              start_ms, duration_ms, mode
+       FROM vesting_locks
+       WHERE lock_id = $1`,
+      [lockId]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'lock not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── /token/:id/metadata-object ────────────────────────────────────────────────
+// Returns the CoinMetadata object ID and initialSharedVersion for a token.
+// Used by the frontend update_metadata PTB.
+app.get('/token/:id/metadata-object', async (req, res) => {
+  try {
+    const { id } = req.params;
+    // Get token_type from DB
+    const row = await pool.query(
+      'SELECT token_type FROM curves WHERE curve_id = $1', [id]
+    );
+    if (!row.rows.length) return res.status(404).json({ error: 'curve not found' });
+    const tokenType = row.rows[0].token_type;
+    if (!tokenType) return res.status(404).json({ error: 'token_type not found' });
+
+    // Query GraphQL for CoinMetadata object
+    const GRAPHQL_URL = process.env.SUI_GRAPHQL_URL ?? 'https://graphql.testnet.sui.io/graphql';
+    const query = `{
+      coinMetadata(coinType: "${tokenType}") {
+        address
+        asMoveObject { contents { json } }
+        owner { ... on Shared { initialSharedVersion } }
+      }
+    }`;
+    const gqlRes = await fetch(GRAPHQL_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query }),
+      signal: AbortSignal.timeout(8000),
+    });
+    const gqlData = await gqlRes.json();
+    const meta = gqlData?.data?.coinMetadata;
+    if (!meta?.address) return res.status(404).json({ error: 'CoinMetadata not found on-chain' });
+
+    res.json({
+      objectId:             meta.address,
+      initialSharedVersion: meta.owner?.initialSharedVersion ?? null,
+      tokenType,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/stream', (req, res) => {
   const curveId = req.query.curveId ?? null;
   const id      = sseNextId++;
