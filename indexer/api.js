@@ -164,6 +164,96 @@ app.get('/tokens/stats', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── /token/:id/locks?owner=:address ──────────────────────────────────────────
+// Returns lock_ids for a beneficiary on a specific curve.
+app.get('/token/:id/locks', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { owner } = req.query;
+    if (!owner) return res.status(400).json({ error: 'owner param required' });
+
+    const result = await pool.query(
+      `SELECT lock_id, total_amount, claimed,
+              (total_amount - claimed) AS locked,
+              start_ms, duration_ms, mode, beneficiary
+       FROM vesting_locks
+       WHERE curve_id = $1 AND beneficiary = $2
+       ORDER BY start_ms DESC`,
+      [id, owner]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    // Table may not exist yet — return empty array gracefully
+    res.json([]);
+  }
+});
+
+// ── /lock/:lockId ─────────────────────────────────────────────────────────────
+// Returns details for a single VestingLock by its object ID.
+app.get('/lock/:lockId', async (req, res) => {
+  try {
+    const { lockId } = req.params;
+    const result = await pool.query(
+      `SELECT lock_id, curve_id, beneficiary,
+              total_amount, claimed,
+              (total_amount - claimed) AS locked,
+              start_ms, duration_ms, mode
+       FROM vesting_locks
+       WHERE lock_id = $1`,
+      [lockId]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'lock not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── /token/:id/metadata-object ────────────────────────────────────────────────
+app.get('/token/:id/metadata-object', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Read from DB first — populated by backfillMetadataObject at index time
+    const row = await pool.query(
+      'SELECT token_type, metadata_object_id, metadata_shared_version FROM curves WHERE curve_id = $1',
+      [id]
+    );
+    if (!row.rows.length) return res.status(404).json({ error: 'curve not found' });
+    const { token_type: tokenType, metadata_object_id, metadata_shared_version } = row.rows[0];
+    if (!tokenType) return res.status(404).json({ error: 'token_type not found' });
+
+    // If already stored, return immediately
+    if (metadata_object_id && metadata_shared_version) {
+      return res.json({
+        objectId:             metadata_object_id,
+        initialSharedVersion: Number(metadata_shared_version),
+        tokenType,
+      });
+    }
+
+    // Not stored yet — trigger backfill async and query GQL for objectId now
+    const { backfillMetadataObject } = await import('./db.js');
+    backfillMetadataObject(id).catch(() => {});
+
+    const GRAPHQL_URL = process.env.SUI_GRAPHQL_URL ?? 'https://graphql.testnet.sui.io/graphql';
+    const r = await fetch(GRAPHQL_URL, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: '{ coinMetadata(coinType: "' + tokenType + '") { address } }' }),
+      signal: AbortSignal.timeout(8000),
+    });
+    const d = await r.json();
+    const objectId = d?.data?.coinMetadata?.address ?? null;
+    if (!objectId) return res.status(404).json({ error: 'CoinMetadata not found on-chain' });
+
+    // ISV not yet in DB — return null for now, backfill will store it
+    // Frontend will retry on next page load once backfill completes
+    res.json({ objectId, initialSharedVersion: null, tokenType, backfilling: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Single token ──────────────────────────────────────────────────────────────
 
 app.get('/token/:curveId', async (req, res) => {
@@ -375,97 +465,6 @@ app.get('/debug/metadata/:type(*)', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
-// ── /token/:id/locks?owner=:address ──────────────────────────────────────────
-// Returns lock_ids for a beneficiary on a specific curve.
-app.get('/token/:id/locks', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { owner } = req.query;
-    if (!owner) return res.status(400).json({ error: 'owner param required' });
-
-    const result = await pool.query(
-      `SELECT lock_id, total_amount, claimed,
-              (total_amount - claimed) AS locked,
-              start_ms, duration_ms, mode, beneficiary
-       FROM vesting_locks
-       WHERE curve_id = $1 AND beneficiary = $2
-       ORDER BY start_ms DESC`,
-      [id, owner]
-    );
-    res.json(result.rows);
-  } catch (err) {
-    // Table may not exist yet — return empty array gracefully
-    res.json([]);
-  }
-});
-
-// ── /lock/:lockId ─────────────────────────────────────────────────────────────
-// Returns details for a single VestingLock by its object ID.
-app.get('/lock/:lockId', async (req, res) => {
-  try {
-    const { lockId } = req.params;
-    const result = await pool.query(
-      `SELECT lock_id, curve_id, beneficiary,
-              total_amount, claimed,
-              (total_amount - claimed) AS locked,
-              start_ms, duration_ms, mode
-       FROM vesting_locks
-       WHERE lock_id = $1`,
-      [lockId]
-    );
-    if (!result.rows.length) return res.status(404).json({ error: 'lock not found' });
-    res.json(result.rows[0]);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ── /token/:id/metadata-object ────────────────────────────────────────────────
-app.get('/token/:id/metadata-object', async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    // Read from DB first — populated by backfillMetadataObject at index time
-    const row = await pool.query(
-      'SELECT token_type, metadata_object_id, metadata_shared_version FROM curves WHERE curve_id = $1',
-      [id]
-    );
-    if (!row.rows.length) return res.status(404).json({ error: 'curve not found' });
-    const { token_type: tokenType, metadata_object_id, metadata_shared_version } = row.rows[0];
-    if (!tokenType) return res.status(404).json({ error: 'token_type not found' });
-
-    // If already stored, return immediately
-    if (metadata_object_id && metadata_shared_version) {
-      return res.json({
-        objectId:             metadata_object_id,
-        initialSharedVersion: Number(metadata_shared_version),
-        tokenType,
-      });
-    }
-
-    // Not stored yet — trigger backfill async and query GQL for objectId now
-    const { backfillMetadataObject } = await import('./db.js');
-    backfillMetadataObject(id).catch(() => {});
-
-    const GRAPHQL_URL = process.env.SUI_GRAPHQL_URL ?? 'https://graphql.testnet.sui.io/graphql';
-    const r = await fetch(GRAPHQL_URL, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: '{ coinMetadata(coinType: "' + tokenType + '") { address } }' }),
-      signal: AbortSignal.timeout(8000),
-    });
-    const d = await r.json();
-    const objectId = d?.data?.coinMetadata?.address ?? null;
-    if (!objectId) return res.status(404).json({ error: 'CoinMetadata not found on-chain' });
-
-    // ISV not yet in DB — return null for now, backfill will store it
-    // Frontend will retry on next page load once backfill completes
-    res.json({ objectId, initialSharedVersion: null, tokenType, backfilling: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
 
 // ── PostgreSQL LISTEN — receives events from background worker ───────────────
 
