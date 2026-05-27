@@ -7,6 +7,7 @@ import { ArrowLeft, Wallet, TrendingUp, Plus } from 'lucide-react';
 import { useTokenList } from './useTokenList.js';
 import { priceMistPerToken, mistToSui } from './curve.js';
 import { Transaction } from '@mysten/sui/transactions';
+import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { TOKEN_DECIMALS, DRAIN_SUI_APPROX, ALL_PACKAGE_IDS } from './constants.js';
 import { paginateMultipleEvents } from './paginateEvents.js';
 import { t } from './i18n.js';
@@ -415,7 +416,7 @@ function TradedTab({ account, tokens, lang }) {
 
 // ── CREATED tab ───────────────────────────────────────────────────────────────
 
-function CreatedTab({ account, tokens, lang }) {
+function CreatedTab({ account, tokens, lang, tradeKeypair }) {
   const navigate = useNavigate();
   const dAppKit = useDAppKit();
   const client  = useCurrentClient();
@@ -591,8 +592,18 @@ function CreatedTab({ account, tokens, lang }) {
           typeArguments: [tk.tokenType],
           arguments: [tx.object(capId), curveRef],
         });
-        const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-        if (result.$kind === 'Transaction') claimed++;
+        if (tradeKeypair) {
+          // Autonomous path — no wallet popup
+          const autoClient = new SuiGraphQLClient({ url: '/api/rpc' });
+          tx.setSender(account.address);
+          const builtTx = await tx.build({ client: autoClient });
+          const { signature } = await tradeKeypair.signTransaction(builtTx);
+          const execResult = await autoClient.executeTransaction({ transaction: builtTx, signatures: [signature] });
+          if (execResult?.errors == null) claimed++;
+        } else {
+          const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+          if (result.$kind === 'Transaction') claimed++;
+        }
       }
       setClaimMsg(claimed > 0 ? `Claimed from ${claimed} token${claimed !== 1 ? 's' : ''} ✓` : 'Nothing to claim');
     } catch (e) {
@@ -654,7 +665,7 @@ function CreatedTab({ account, tokens, lang }) {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
-export default function PortfolioPage({ onBack, lang = 'en' }) {
+export default function PortfolioPage({ onBack, lang = 'en', tradeKeypair = null }) {
   const account    = useCurrentAccount();
   const { tokens } = useTokenList();
   const navigate   = useNavigate();
@@ -875,6 +886,7 @@ export default function PortfolioPage({ onBack, lang = 'en' }) {
                 account={viewAccount}
                 tokens={tokens}
                 lang={lang}
+                tradeKeypair={tradeKeypair}
               />
             )}
           </div>
