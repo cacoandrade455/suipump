@@ -1348,7 +1348,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
             sui_reserve:            String(stats.reserve_sui != null ? Math.round(stats.reserve_sui * 1e9) : (d.suiReserve ?? d.sui_reserve ?? 0)),
             token_reserve:          String(stats.token_reserve != null ? Math.round(stats.token_reserve * 1e6) : (d.tokenReserve ?? d.token_reserve ?? String(800_000_000 * 1e6))),
             graduated:              d.graduated ?? false,
-            creator_fees:           String(stats.creator_fees_sui != null ? Math.round(stats.creator_fees_sui * 1e9) : (d.creatorFees ?? d.creator_fees ?? 0)),
+            creator_fees:           '0', // always overwritten by on-chain GraphQL fetch below
             creator:                d.creator ?? null,
             initial_shared_version: d.initialSharedVersion ?? d.initial_shared_version ?? null,
             metadata_updated:       d.metadataUpdated ?? d.metadata_updated ?? false,
@@ -1369,13 +1369,19 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
     let cancelled = false;
     async function fetchOnChainFees() {
       try {
-        // Query curve object fields via GraphQL to get live creator_fees balance
+        // Direct fetch — client.graphql() silently fails for some queries
         const gql = `{ object(address: "${curveId}") { asMoveObject { contents { json } } } }`;
-        const res = await client.graphql({ query: gql });
-        const json = res?.data?.object?.asMoveObject?.contents?.json;
+        const r = await fetch('https://graphql.testnet.sui.io/graphql', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: gql }),
+          signal: AbortSignal.timeout(8000),
+        });
+        const result = await r.json();
+        const json = result?.data?.object?.asMoveObject?.contents?.json;
         if (json && json.creator_fees != null && !cancelled) {
           const feeMist = typeof json.creator_fees === 'object'
-            ? String(json.creator_fees?.value ?? 0)   // Balance<SUI> wraps a u64 value field
+            ? String(json.creator_fees?.value ?? 0)
             : String(json.creator_fees ?? 0);
           setCurveState(prev => prev ? { ...prev, creator_fees: feeMist } : prev);
         }
