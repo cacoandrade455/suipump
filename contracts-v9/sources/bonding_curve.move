@@ -444,12 +444,16 @@ module suipump::bonding_curve {
         let mut payouts = vector<Payout>[];
         let mut i = 0;
         while (i < n) {
-            let bps = *vector::borrow(&bps_values, i);
+            let addr = *vector::borrow(&addresses, i);
+            let bps  = *vector::borrow(&bps_values, i);
+            // Duplicate address check: scan previous entries
+            let mut j = 0;
+            while (j < i) {
+                assert!(vector::borrow(&payouts, j).recipient != addr, EBadPayouts);
+                j = j + 1;
+            };
             total_bps = total_bps + bps;
-            vector::push_back(&mut payouts, Payout {
-                recipient: *vector::borrow(&addresses, i),
-                bps,
-            });
+            vector::push_back(&mut payouts, Payout { recipient: addr, bps });
             i = i + 1;
         };
         assert!(total_bps == BPS_DENOMINATOR, EBadPayouts);
@@ -1179,6 +1183,23 @@ module suipump::bonding_curve {
     public fun lp_fees_accumulated<T>(c: &Curve<T>): u64 { c.lp_fees_accumulated }
     public fun current_grad_threshold<T>(c: &Curve<T>): u64 { c.current_grad_threshold }
     public fun creator<T>(c: &Curve<T>): address { c.creator }
+
+
+    public fun graduation_target<T>(c: &Curve<T>): u8 { c.graduation_target }
+    public fun metadata_updated<T>(c: &Curve<T>): bool { c.metadata_updated }
+    public fun created_at_ms<T>(c: &Curve<T>): u64 { c.created_at_ms }
+    public fun pool_id<T>(c: &Curve<T>): Option<ID> { c.pool_id }
+    public fun creator_lp_nft_id<T>(c: &Curve<T>): Option<ID> { c.creator_lp_nft_id }
+
+    // VestingLock accessors
+    public fun lock_total<T>(l: &VestingLock<T>): u64 { l.total_amount }
+    public fun lock_claimed<T>(l: &VestingLock<T>): u64 { l.claimed }
+    public fun lock_remaining<T>(l: &VestingLock<T>): u64 { balance::value(&l.locked) }
+    public fun lock_beneficiary<T>(l: &VestingLock<T>): address { l.beneficiary }
+    #[test_only]
+    public fun lock_vested_at<T>(l: &VestingLock<T>, now_ms: u64): u64 {
+        vested_amount(l.total_amount, l.start_ms, l.duration_ms, l.mode, now_ms)
+    }
 
     // ---------- Test-only init (identical to v8) ----------
     #[test_only]
