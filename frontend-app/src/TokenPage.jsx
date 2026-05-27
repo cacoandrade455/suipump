@@ -408,7 +408,15 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
   const showMsg = (m) => { setMsg(m); setTimeout(() => setMsg(''), 4000); };
 
   const getCapId = async () => {
-    // Search all package versions for a CreatorCap matching this curve
+    // 1. Try indexer first — single fast call, no CORS issues
+    const IURL_CAP = import.meta.env.VITE_INDEXER_URL || '';
+    if (IURL_CAP) {
+      try {
+        const res = await fetch(`${IURL_CAP}/token/${curveId}/creator-cap?owner=${account.address}`, { signal: AbortSignal.timeout(5000) });
+        if (res.ok) { const d = await res.json(); if (d.objectId) return d.objectId; }
+      } catch {}
+    }
+    // 2. Fallback: query GraphQL directly for each package version
     for (const pid of ALL_PACKAGE_IDS) {
       try {
         const gqlCap = `{ address(address: "${account.address}") { objects(filter: { type: "${pid}::bonding_curve::CreatorCap" }) { nodes { address contents { json } } } } }`;
@@ -602,10 +610,18 @@ function TradePanelContent({
     if (!account || !panelCurveId || !panelTokenType || claiming) return;
     setClaiming(true); setClaimMsg('');
     try {
-      // Search all package versions for CreatorCap — token may be on any version
+      // Try indexer first for cap lookup
       let capId = null;
       let capPkgId = pkgId;
-      for (const searchPkg of ALL_PACKAGE_IDS) {
+      const IURL_CLAIM = import.meta.env.VITE_INDEXER_URL || '';
+      if (IURL_CLAIM) {
+        try {
+          const capRes = await fetch(`${IURL_CLAIM}/token/${panelCurveId}/creator-cap?owner=${account.address}`, { signal: AbortSignal.timeout(5000) });
+          if (capRes.ok) { const capData = await capRes.json(); if (capData.objectId) capId = capData.objectId; }
+        } catch {}
+      }
+      // Fallback: Search all package versions for CreatorCap via GraphQL
+      if (!capId) for (const searchPkg of ALL_PACKAGE_IDS) {
         try {
           const gqlPC = `{ address(address: "${account.address}") { objects(filter: { type: "${searchPkg}::bonding_curve::CreatorCap" }) { nodes { address contents { json } } } } }`;
           const pcRes = await client2.graphql({ query: gqlPC });
@@ -1475,6 +1491,18 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
     let cancelled = false;
     // Gate on cap ownership — not creator address. Disappears automatically after transfer.
     async function checkCapOwnership() {
+      // Try indexer first — fast single call
+      const IURL_IC = import.meta.env.VITE_INDEXER_URL || '';
+      if (IURL_IC) {
+        try {
+          const icRes = await fetch(`${IURL_IC}/token/${curveId}/creator-cap?owner=${account.address}`, { signal: AbortSignal.timeout(5000) });
+          if (icRes.ok) {
+            const d = await icRes.json();
+            if (d.objectId) { if (!cancelled) setIsCreator(true); return; }
+          }
+        } catch {}
+      }
+      // Fallback: GraphQL per package
       for (const pid of ALL_PACKAGE_IDS) {
         try {
           const gqlIC = `{ address(address: "${account.address}") { objects(filter: { type: "${pid}::bonding_curve::CreatorCap" }) { nodes { address contents { json } } } } }`;
