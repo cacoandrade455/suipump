@@ -1243,6 +1243,7 @@ export default function App() {
           <Route path="/whitepaper" element={<WhitepaperPage onBack={() => navigate('/')} lang={lang} />} />
           <Route path="/leaderboard" element={<LeaderboardPage onBack={() => navigate('/')} lang={lang} />} />
           <Route path="/portfolio" element={<PortfolioPage onBack={() => navigate('/')} lang={lang} />} />
+          <Route path="/portfolio/:walletAddress" element={<PortfolioPage onBack={() => navigate(-1)} lang={lang} />} />
           <Route path="/roadmap" element={<RoadmapPage onBack={() => navigate('/')} lang={lang} />} />
           <Route path="*" element={<NotFoundPage onBack={() => navigate('/')} />} />
         </Routes>
