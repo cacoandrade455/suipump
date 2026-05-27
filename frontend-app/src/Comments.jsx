@@ -9,8 +9,8 @@ function getPfp(addr) { try { return localStorage.getItem(`suipump_pfp_${addr}`)
 import {
   ALL_PACKAGE_IDS,
   PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6,
-  PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8, PACKAGE_ID_V9,
-  COMMENT_FEE_MIST, isV7OrLater, isV9OrLater,
+  PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8,
+  COMMENT_FEE_MIST, isV7OrLater,
 } from './constants.js';
 
 const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
@@ -260,7 +260,7 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
         const [feeCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(BigInt(COMMENT_FEE_MIST))]);
         tx.moveCall({
           target: `${packageId}::bonding_curve::post_comment`,
-          arguments: [curveRef, tx.pure.string(trimmed), feeCoin],
+          arguments: [curveRef, feeCoin, tx.pure.string(trimmed)],
         });
       } else {
         tx.moveCall({
