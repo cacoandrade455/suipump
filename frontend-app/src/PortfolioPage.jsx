@@ -560,6 +560,21 @@ function CreatedTab({ account, tokens, lang }) {
         const capId = capsByPkg[tk.curveId];
         if (!capId) continue; // skip tokens where we don't own the creator cap
 
+        // Check on-chain creator_fees — skip if zero to avoid ENoFees abort
+        let onChainFeesMist = 0n;
+        try {
+          const feeGql = `{ object(address: "${tk.curveId}") { asMoveObject { contents { json } } } }`;
+          const feeR = await fetch('https://graphql.testnet.sui.io/graphql', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query: feeGql }), signal: AbortSignal.timeout(5000),
+          });
+          const feeResult = await feeR.json();
+          const feeJson = feeResult?.data?.object?.asMoveObject?.contents?.json;
+          const rawFee = feeJson?.creator_fees;
+          onChainFeesMist = BigInt(typeof rawFee === 'object' ? (rawFee?.value ?? 0) : (rawFee ?? 0));
+        } catch {}
+        if (onChainFeesMist === 0n) continue; // nothing to claim
+
         // Fetch ISV for sharedObjectRef
         let isv = null;
         try {
