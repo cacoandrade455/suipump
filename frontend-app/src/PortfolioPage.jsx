@@ -55,63 +55,205 @@ function TokenRow({ token, iconUrl, right, onClick }) {
 
 // ── Canvas PnL card helpers ───────────────────────────────────────────────────
 
-function drawPnlCard({ canvas, name, symbol, pnlSui, pnlPct, spent, entryPrice, currentPrice, isClosed, mascotImg }) {
-  const W = 800, H = 420;
+function drawMascot(ctx, isUp, x, y, size) {
+  // Draw our green flame mascot — pump = riding rocket, dump = crashing
+  const s = size / 200; // scale factor
+  ctx.save();
+  ctx.translate(x, y);
+
+  if (isUp) {
+    // ── PUMP mascot: flame guy riding rocket upward ──
+    // Rocket body
+    ctx.fillStyle = '#4ade80';
+    ctx.beginPath(); ctx.ellipse(100*s, 160*s, 28*s, 55*s, -0.3, 0, Math.PI*2); ctx.fill();
+    // Rocket tip
+    ctx.fillStyle = '#86efac';
+    ctx.beginPath(); ctx.moveTo(72*s, 120*s); ctx.lineTo(100*s, 70*s); ctx.lineTo(128*s, 120*s); ctx.closePath(); ctx.fill();
+    // Rocket fin left
+    ctx.fillStyle = '#22c55e';
+    ctx.beginPath(); ctx.moveTo(75*s, 185*s); ctx.lineTo(55*s, 210*s); ctx.lineTo(80*s, 205*s); ctx.closePath(); ctx.fill();
+    // Rocket fin right
+    ctx.beginPath(); ctx.moveTo(125*s, 185*s); ctx.lineTo(145*s, 210*s); ctx.lineTo(120*s, 205*s); ctx.closePath(); ctx.fill();
+    // Rocket flame exhaust
+    ctx.fillStyle = '#fbbf24';
+    ctx.beginPath(); ctx.ellipse(100*s, 225*s, 18*s, 28*s, 0, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#f97316';
+    ctx.beginPath(); ctx.ellipse(100*s, 240*s, 10*s, 18*s, 0, 0, Math.PI*2); ctx.fill();
+    // Flame body (mascot sitting on rocket)
+    ctx.fillStyle = '#84cc16';
+    ctx.beginPath(); ctx.ellipse(100*s, 90*s, 35*s, 40*s, 0, 0, Math.PI*2); ctx.fill();
+    // Flame hair
+    ctx.fillStyle = '#a3e635';
+    ctx.beginPath(); ctx.moveTo(75*s, 70*s); ctx.quadraticCurveTo(65*s, 30*s, 85*s, 15*s); ctx.quadraticCurveTo(90*s, 45*s, 100*s, 55*s); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(100*s, 55*s); ctx.quadraticCurveTo(105*s, 20*s, 120*s, 10*s); ctx.quadraticCurveTo(120*s, 45*s, 125*s, 70*s); ctx.fill();
+    // Eyes (happy)
+    ctx.fillStyle = '#000';
+    ctx.beginPath(); ctx.arc(88*s, 88*s, 5*s, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(112*s, 88*s, 5*s, 0, Math.PI*2); ctx.fill();
+    // Smile
+    ctx.strokeStyle = '#000'; ctx.lineWidth = 3*s;
+    ctx.beginPath(); ctx.arc(100*s, 96*s, 12*s, 0.2, Math.PI-0.2); ctx.stroke();
+    // Thumbs up arms
+    ctx.strokeStyle = '#84cc16'; ctx.lineWidth = 8*s; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(65*s, 95*s); ctx.lineTo(45*s, 80*s); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(135*s, 95*s); ctx.lineTo(155*s, 80*s); ctx.stroke();
+    ctx.fillStyle = '#84cc16';
+    ctx.beginPath(); ctx.arc(42*s, 77*s, 9*s, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(158*s, 77*s, 9*s, 0, Math.PI*2); ctx.fill();
+    // Speed lines behind rocket
+    ctx.strokeStyle = '#84cc1640'; ctx.lineWidth = 3*s;
+    for (let i = 0; i < 5; i++) {
+      const ly = (130 + i * 20)*s;
+      ctx.beginPath(); ctx.moveTo(20*s, ly); ctx.lineTo(60*s, ly); ctx.stroke();
+    }
+  } else {
+    // ── DUMP mascot: flame guy crashing down, red ──
+    ctx.save(); ctx.translate(100*s, 100*s); ctx.rotate(0.4); ctx.translate(-100*s, -100*s);
+    // Broken rocket
+    ctx.fillStyle = '#7f1d1d';
+    ctx.beginPath(); ctx.ellipse(100*s, 150*s, 25*s, 45*s, 0, 0, Math.PI*2); ctx.fill();
+    // Smoke puffs
+    ctx.fillStyle = '#374151';
+    ctx.beginPath(); ctx.arc(80*s, 95*s, 20*s, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(105*s, 75*s, 15*s, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(90*s, 60*s, 12*s, 0, Math.PI*2); ctx.fill();
+    // Red flame body
+    ctx.fillStyle = '#dc2626';
+    ctx.beginPath(); ctx.ellipse(100*s, 85*s, 35*s, 40*s, 0, 0, Math.PI*2); ctx.fill();
+    // Red flame hair
+    ctx.fillStyle = '#ef4444';
+    ctx.beginPath(); ctx.moveTo(75*s, 65*s); ctx.quadraticCurveTo(60*s, 25*s, 80*s, 10*s); ctx.quadraticCurveTo(88*s, 42*s, 100*s, 50*s); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(100*s, 50*s); ctx.quadraticCurveTo(112*s, 18*s, 125*s, 8*s); ctx.quadraticCurveTo(122*s, 40*s, 128*s, 65*s); ctx.fill();
+    // Eyes (angry X eyes)
+    ctx.strokeStyle = '#000'; ctx.lineWidth = 3*s;
+    ctx.beginPath(); ctx.moveTo(83*s, 80*s); ctx.lineTo(93*s, 90*s); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(93*s, 80*s); ctx.lineTo(83*s, 90*s); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(107*s, 80*s); ctx.lineTo(117*s, 90*s); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(117*s, 80*s); ctx.lineTo(107*s, 90*s); ctx.stroke();
+    // Frown
+    ctx.beginPath(); ctx.arc(100*s, 105*s, 10*s, Math.PI+0.3, -0.3); ctx.stroke();
+    // Arms flailing
+    ctx.strokeStyle = '#dc2626'; ctx.lineWidth = 8*s; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(68*s, 85*s); ctx.lineTo(42*s, 65*s); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(132*s, 85*s); ctx.lineTo(158*s, 65*s); ctx.stroke();
+    ctx.restore();
+    // Down arrows
+    ctx.strokeStyle = '#ef444450'; ctx.lineWidth = 4*s;
+    for (let i = 0; i < 3; i++) {
+      const ax = (40 + i * 60)*s, ay = 30*s;
+      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(ax, ay+40*s);
+      ctx.moveTo(ax-8*s, ay+28*s); ctx.lineTo(ax, ay+40*s); ctx.lineTo(ax+8*s, ay+28*s);
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+function drawPnlCard({ canvas, name, symbol, pnlSui, pnlPct, spent, entryPrice, currentPrice, isClosed }) {
+  const W = 900, H = 480;
   canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext('2d');
   const isUp = pnlSui >= 0;
+  const pnlColor = isUp ? '#84cc16' : '#ef4444';
+  const bgColor1 = isUp ? '#020d02' : '#0d0202';
+  const bgColor2 = isUp ? '#071507' : '#150707';
 
+  // Background
   const bg = ctx.createLinearGradient(0, 0, W, H);
-  bg.addColorStop(0, '#050505');
-  bg.addColorStop(1, '#0d1a05');
+  bg.addColorStop(0, bgColor1); bg.addColorStop(1, bgColor2);
   ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
 
-  ctx.strokeStyle = isUp ? '#84cc1630' : '#ef444430';
-  ctx.lineWidth = 1;
-  ctx.strokeRect(1, 1, W - 2, H - 2);
+  // Glow effect top-right
+  const glow = ctx.createRadialGradient(W*0.8, H*0.2, 0, W*0.8, H*0.2, 300);
+  glow.addColorStop(0, isUp ? '#84cc1618' : '#ef444418');
+  glow.addColorStop(1, 'transparent');
+  ctx.fillStyle = glow; ctx.fillRect(0, 0, W, H);
 
-  ctx.font = 'bold 13px monospace'; ctx.fillStyle = '#84cc16';
-  ctx.fillText('SUIPUMP.ORG', 40, 48);
+  // Border
+  ctx.strokeStyle = pnlColor + '40'; ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  const r = 20;
+  ctx.moveTo(r, 0); ctx.lineTo(W-r, 0); ctx.quadraticCurveTo(W, 0, W, r);
+  ctx.lineTo(W, H-r); ctx.quadraticCurveTo(W, H, W-r, H);
+  ctx.lineTo(r, H); ctx.quadraticCurveTo(0, H, 0, H-r);
+  ctx.lineTo(0, r); ctx.quadraticCurveTo(0, 0, r, 0);
+  ctx.closePath(); ctx.stroke();
 
-  ctx.font = 'bold 32px monospace'; ctx.fillStyle = '#ffffff';
-  ctx.fillText(name || 'Unknown', 40, 100);
-  ctx.font = '16px monospace'; ctx.fillStyle = '#84cc1699';
-  ctx.fillText(`$${symbol}`, 40, 128);
+  // Header — logo + name
+  ctx.font = 'bold 14px monospace'; ctx.fillStyle = pnlColor;
+  ctx.fillText('🔥 SUIPUMP', 42, 52);
+  ctx.font = 'bold 28px monospace'; ctx.fillStyle = '#ffffff';
+  ctx.fillText(name || 'Unknown', 42, 95);
+  ctx.font = '15px monospace'; ctx.fillStyle = pnlColor + 'aa';
+  ctx.fillText(`$${symbol}`, 42, 120);
 
-  const pnlColor = isUp ? '#84cc16' : '#ef4444';
-  ctx.font = 'bold 72px monospace'; ctx.fillStyle = pnlColor;
-  ctx.fillText(`${isUp ? '+' : ''}${pnlSui.toFixed(3)} SUI`, 40, 230);
+  // Divider
+  ctx.strokeStyle = '#ffffff15'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(42, 138); ctx.lineTo(W-42, 138); ctx.stroke();
 
-  ctx.font = 'bold 28px monospace'; ctx.fillStyle = pnlColor + 'cc';
-  ctx.fillText(`${isUp ? '▲' : '▼'} ${Math.abs(pnlPct).toFixed(1)}%`, 40, 278);
+  // Multiplier
+  const mult = spent > 0 ? ((spent + pnlSui) / spent) : 1;
+  const multStr = mult >= 1 ? `${mult.toFixed(2)}x` : `${mult.toFixed(2)}x`;
+  ctx.font = `bold 88px monospace`; ctx.fillStyle = pnlColor;
+  ctx.fillText(multStr, 42, 250);
 
-  ctx.font = '14px monospace'; ctx.fillStyle = '#ffffff55';
-  ctx.fillText(`Spent: ${spent.toFixed(3)} SUI`, 40, 330);
-  if (entryPrice > 0) ctx.fillText(`Entry: ${entryPrice.toFixed(8)} SUI/token`, 40, 354);
-  if (currentPrice > 0) ctx.fillText(`Now:   ${currentPrice.toFixed(8)} SUI/token`, 40, 378);
+  // PnL amount
+  const sign = isUp ? '+' : '';
+  ctx.font = 'bold 22px monospace'; ctx.fillStyle = pnlColor + 'cc';
+  ctx.fillText(`${sign}${pnlSui.toFixed(3)} SUI ${isUp ? 'TOTAL PROFIT' : 'TOTAL LOSS'}`, 42, 290);
 
-  ctx.font = 'bold 13px monospace';
-  ctx.fillStyle = isClosed ? '#ffffff40' : '#84cc16';
-  const badge = isClosed ? 'CLOSED' : 'OPEN';
-  ctx.fillText(badge, W - 112, 62);
-  if (mascotImg) { ctx.globalCompositeOperation = 'screen'; ctx.drawImage(mascotImg, W - 320, H - 370, 310, 310); ctx.globalCompositeOperation = 'source-over'; }
+  // Divider 2
+  ctx.strokeStyle = '#ffffff15'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(42, 315); ctx.lineTo(W-42, 315); ctx.stroke();
+
+  // Stats row
+  ctx.font = 'bold 12px monospace'; ctx.fillStyle = '#ffffff60';
+  ctx.fillText('INVESTED', 42, 345);
+  ctx.fillText('ENTRY MC', 280, 345);
+  ctx.fillText('CURRENT MC', 480, 345);
+
+  ctx.font = 'bold 18px monospace'; ctx.fillStyle = '#ffffff';
+  ctx.fillText(`${spent.toFixed(2)} SUI`, 42, 372);
+
+  const fmtMc = (p) => {
+    if (!p || p <= 0) return '—';
+    const mc = p * 1_000_000_000;
+    if (mc >= 1e6) return `$${(mc/1e6).toFixed(1)}M`;
+    if (mc >= 1e3) return `$${(mc/1e3).toFixed(1)}k`;
+    return `$${mc.toFixed(0)}`;
+  };
+  ctx.fillText(fmtMc(entryPrice), 280, 372);
+  ctx.fillText(fmtMc(currentPrice), 480, 372);
+
+  // Footer
+  ctx.font = 'bold 13px monospace'; ctx.fillStyle = '#ffffff40';
+  ctx.fillText('SUIPUMP  |  suipump.org', 42, 448);
+
+  // Status badge
+  const badgeText = isClosed ? '● Closed' : (isUp ? '● Pumping' : '● Dumping');
+  const badgeColor = isClosed ? '#ffffff30' : pnlColor;
+  ctx.font = 'bold 13px monospace'; ctx.fillStyle = badgeColor;
+  ctx.fillText(badgeText, W - 160, 448);
+
+  // Draw mascot
+  drawMascot(ctx, isUp, W - 270, 30, 240);
 }
 
-function PnlShareButton({ tk, unrealizedPnl, currentPrice, mascotDataUrl }) {
+function PnlShareButton({ tk, unrealizedPnl, currentPrice }) {
   const handleShare = () => {
     const canvas = document.createElement('canvas');
     const totalPnl = (tk.realizedPnl || 0) + (unrealizedPnl || 0);
-    const pnlPct = tk.suiSpent > 0 ? (totalPnl / tk.suiSpent) * 100 : 0;
-    let mascotImg = null;
-    if (mascotDataUrl) { mascotImg = new Image(); mascotImg.src = mascotDataUrl; }
-    const draw = () => {
-      drawPnlCard({ canvas, name: tk.name, symbol: tk.symbol, pnlSui: totalPnl, pnlPct, spent: tk.suiSpent, entryPrice: tk.avgEntryPrice, currentPrice: currentPrice || 0, isClosed: tk.isClosed, mascotImg });
-      const link = document.createElement('a');
-      link.download = `suipump-${tk.symbol}-pnl.png`;
-      link.href = canvas.toDataURL('image/png');
-      link.click();
-    };
-    if (mascotImg) { mascotImg.onload = draw; mascotImg.onerror = draw; } else { draw(); }
+    drawPnlCard({
+      canvas, name: tk.name, symbol: tk.symbol,
+      pnlSui: totalPnl,
+      pnlPct: tk.suiSpent > 0 ? (totalPnl / tk.suiSpent) * 100 : 0,
+      spent: tk.suiSpent, entryPrice: tk.avgEntryPrice,
+      currentPrice: currentPrice || 0, isClosed: tk.isClosed,
+    });
+    const link = document.createElement('a');
+    link.download = `suipump-${tk.symbol || 'pnl'}.png`;
+    link.href = canvas.toDataURL('image/png');
+    link.click();
   };
   return (
     <button onClick={e => { e.stopPropagation(); handleShare(); }}
@@ -250,6 +392,7 @@ function TradedTab({ account, tokens, lang }) {
   const [tradedTokens, setTradedTokens] = useState([]);
   const [loading, setLoading] = useState(true);
   const [iconUrls, setIconUrls] = useState({});
+  const [currentPrices, setCurrentPrices] = useState({});
 
   useEffect(() => {
     if (!account?.address) { setLoading(false); return; }
@@ -287,8 +430,21 @@ function TradedTab({ account, tokens, lang }) {
                 if (!cancelled) { setTradedTokens(enriched); setLoading(false); }
 
                 const icons = {};
-                for (const tk of enriched) { if (tk.iconUrl) icons[tk.curveId] = tk.iconUrl; }
+                const prices = {};
+                for (const tk of enriched) {
+                  if (tk.iconUrl) icons[tk.curveId] = tk.iconUrl;
+                }
                 if (!cancelled) setIconUrls(icons);
+
+                // Fetch current prices from indexer stats
+                try {
+                  const statsRes = await fetch(`${INDEXER_URL}/tokens/stats`, { signal: AbortSignal.timeout(5000) });
+                  if (statsRes.ok) {
+                    const statsRows = await statsRes.json();
+                    for (const s of statsRows) { if (s.last_price) prices[s.curve_id] = s.last_price; }
+                    if (!cancelled) setCurrentPrices(prices);
+                  }
+                } catch {}
                 return;
               }
             }
@@ -319,10 +475,11 @@ function TradedTab({ account, tokens, lang }) {
           <TokenRow key={tk.curveId} token={tk} iconUrl={iconUrls[tk.curveId]}
             onClick={() => navigate(`/token/${tk.curveId}`)}
             right={
-              <div className="text-right shrink-0 space-y-0.5">
+              <div className="text-right shrink-0 space-y-1">
                 <div className={`text-xs font-mono font-bold ${isUp ? 'text-lime-400' : 'text-red-400'}`}>{fmtPnl(pnl)}</div>
                 <div className="text-[10px] font-mono text-white/30">{tk.buys}B / {tk.sells}S</div>
                 {tk.isClosed && <div className="text-[9px] font-mono text-white/20">CLOSED</div>}
+                <PnlShareButton tk={tk} unrealizedPnl={0} currentPrice={currentPrices[tk.curveId] ?? 0} />
               </div>
             }
           />
