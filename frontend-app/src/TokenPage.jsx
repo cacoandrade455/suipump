@@ -419,9 +419,9 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
     // 2. Fallback: query GraphQL directly for each package version
     for (const pid of ALL_PACKAGE_IDS) {
       try {
-        const gqlCap = `{ address(address: "${account.address}") { objects(filter: { type: "${pid}::bonding_curve::CreatorCap" }) { nodes { address contents { json } } } } }`;
+        const gqlCap = `{ owner(address: "${account.address}") { objects(filter: { type: "${pid}::bonding_curve::CreatorCap" }) { nodes { address contents { json } } } } }`;
         const capRes = await client.graphql({ query: gqlCap });
-        const capNodes = capRes?.data?.address?.objects?.nodes ?? [];
+        const capNodes = capRes?.data?.owner?.objects?.nodes ?? [];
         const capObj = capNodes.find(n => n.contents?.json?.curve_id === curveId);
         if (capObj) return capObj.address;
       } catch {}
@@ -623,9 +623,9 @@ function TradePanelContent({
       // Fallback: Search all package versions for CreatorCap via GraphQL
       if (!capId) for (const searchPkg of ALL_PACKAGE_IDS) {
         try {
-          const gqlPC = `{ address(address: "${account.address}") { objects(filter: { type: "${searchPkg}::bonding_curve::CreatorCap" }) { nodes { address contents { json } } } } }`;
+          const gqlPC = `{ owner(address: "${account.address}") { objects(filter: { type: "${searchPkg}::bonding_curve::CreatorCap" }) { nodes { address contents { json } } } } }`;
           const pcRes = await client2.graphql({ query: gqlPC });
-          const pcNodes = pcRes?.data?.address?.objects?.nodes ?? [];
+          const pcNodes = pcRes?.data?.owner?.objects?.nodes ?? [];
           const match = pcNodes.find(n => n.contents?.json?.curve_id === panelCurveId);
           if (match) { capId = match.address; capPkgId = searchPkg; break; }
         } catch {}
@@ -1505,9 +1505,9 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
       // Fallback: GraphQL per package
       for (const pid of ALL_PACKAGE_IDS) {
         try {
-          const gqlIC = `{ address(address: "${account.address}") { objects(filter: { type: "${pid}::bonding_curve::CreatorCap" }) { nodes { address contents { json } } } } }`;
+          const gqlIC = `{ owner(address: "${account.address}") { objects(filter: { type: "${pid}::bonding_curve::CreatorCap" }) { nodes { address contents { json } } } } }`;
           const icRes = await client.graphql({ query: gqlIC });
-          const icNodes = icRes?.data?.address?.objects?.nodes ?? [];
+          const icNodes = icRes?.data?.owner?.objects?.nodes ?? [];
           const capMatch = icNodes.find(n => n.contents?.json?.curve_id === curveId);
           if (capMatch) { if (!cancelled) setIsCreator(true); return; }
         } catch {}
