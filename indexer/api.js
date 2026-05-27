@@ -269,6 +269,20 @@ app.get('/lock/:lockId', async (req, res) => {
 
 
 
+
+// ── /internal/store-metadata-isv (POST) ──────────────────────────────────────
+app.post('/internal/store-metadata-isv', async (req, res) => {
+  try {
+    const { curveId, metadataObjectId, initialSharedVersion } = req.body;
+    if (!curveId || !metadataObjectId) return res.status(400).json({ error: 'missing fields' });
+    await pool.query(
+      'UPDATE curves SET metadata_object_id = $2, metadata_shared_version = $3 WHERE curve_id = $1',
+      [curveId, metadataObjectId, initialSharedVersion ?? null]
+    );
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ── /debug/isv/:id ────────────────────────────────────────────────────────────
 app.get('/debug/isv/:id', async (req, res) => {
   try {

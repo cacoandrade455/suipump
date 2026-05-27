@@ -237,6 +237,10 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
       const newTokenType = treasuryCapEntry[1].match(/<(.+)>/)?.[1];
       if (!newTokenType) throw new Error('Could not parse token type');
 
+      // Extract CoinMetadata objectId from Tx1 — type includes 'CoinMetadata'
+      const metaEntry1 = Object.entries(objectTypes1).find(([, t]) => t?.includes('CoinMetadata'));
+      const tx1MetadataId = metaEntry1?.[0] ?? null;
+
       setTxStep('tx2');
 
       // Determine graduation target u8
@@ -360,6 +364,27 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
       const curveEvent = res2.Transaction.events?.find(e => e.eventType?.includes('CurveCreated'));
       const curveId = curveEvent?.json?.curve_id;
       setNewCurveId(curveId);
+
+      // POST metadata objectId + ISV to indexer for instant availability
+      try {
+        const IURL_LM = import.meta.env.VITE_INDEXER_URL || '';
+        if (IURL_LM && curveId && tx1MetadataId) {
+          // ISV = version from Tx1 objectChanges for the metadata object
+          const objChanges1 = res1.Transaction?.objectChanges ?? [];
+          const metaChange = objChanges1.find(c => (c.objectId ?? c.id) === tx1MetadataId);
+          const metaIsv = metaChange?.version ?? metaChange?.initialSharedVersion ?? null;
+          fetch(`${IURL_LM}/internal/store-metadata-isv`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              curveId,
+              metadataObjectId: tx1MetadataId,
+              initialSharedVersion: metaIsv ? Number(metaIsv) : null,
+            }),
+          }).catch(() => {});
+        }
+      } catch {}
+
       setTxStep('done');
       if (onLaunched) onLaunched({ curveId, tokenType: newTokenType, name: tokenName, symbol: tokenSymbol });
     } catch (err) {
