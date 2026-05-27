@@ -249,7 +249,7 @@ app.get('/token/:curveId/creator-cap', async (req, res) => {
     const gqlClient = new SuiGraphQLClient({ url: GRAPHQL_URL });
 
     const gql = `{
-      address(address: "${owner}") {
+      owner(address: "${owner}") {
         objects(filter: { type: "${packageId}::bonding_curve::CreatorCap" }) {
           nodes {
             address
@@ -259,7 +259,7 @@ app.get('/token/:curveId/creator-cap', async (req, res) => {
       }
     }`;
     const result = await gqlClient.graphql({ query: gql });
-    const nodes = result?.data?.address?.objects?.nodes ?? [];
+    const nodes = result?.data?.owner?.objects?.nodes ?? [];
     const cap = nodes.find(n => n.contents?.json?.curve_id === curveId);
     if (!cap) return res.status(404).json({ error: 'CreatorCap not found for this wallet' });
     res.json({ objectId: cap.address });
