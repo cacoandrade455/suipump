@@ -55,96 +55,27 @@ function TokenRow({ token, iconUrl, right, onClick }) {
 
 // ── Canvas PnL card helpers ───────────────────────────────────────────────────
 
-function drawMascot(ctx, isUp, x, y, size) {
-  // Draw our green flame mascot — pump = riding rocket, dump = crashing
-  const s = size / 200; // scale factor
+// Mascot loaded from /mascot.png (public folder)
+// For dump state we tint red using a color overlay
+function drawMascotOnCanvas(ctx, img, isUp, x, y, size) {
+  if (!img) return;
   ctx.save();
-  ctx.translate(x, y);
-
   if (isUp) {
-    // ── PUMP mascot: flame guy riding rocket upward ──
-    // Rocket body
-    ctx.fillStyle = '#4ade80';
-    ctx.beginPath(); ctx.ellipse(100*s, 160*s, 28*s, 55*s, -0.3, 0, Math.PI*2); ctx.fill();
-    // Rocket tip
-    ctx.fillStyle = '#86efac';
-    ctx.beginPath(); ctx.moveTo(72*s, 120*s); ctx.lineTo(100*s, 70*s); ctx.lineTo(128*s, 120*s); ctx.closePath(); ctx.fill();
-    // Rocket fin left
-    ctx.fillStyle = '#22c55e';
-    ctx.beginPath(); ctx.moveTo(75*s, 185*s); ctx.lineTo(55*s, 210*s); ctx.lineTo(80*s, 205*s); ctx.closePath(); ctx.fill();
-    // Rocket fin right
-    ctx.beginPath(); ctx.moveTo(125*s, 185*s); ctx.lineTo(145*s, 210*s); ctx.lineTo(120*s, 205*s); ctx.closePath(); ctx.fill();
-    // Rocket flame exhaust
-    ctx.fillStyle = '#fbbf24';
-    ctx.beginPath(); ctx.ellipse(100*s, 225*s, 18*s, 28*s, 0, 0, Math.PI*2); ctx.fill();
-    ctx.fillStyle = '#f97316';
-    ctx.beginPath(); ctx.ellipse(100*s, 240*s, 10*s, 18*s, 0, 0, Math.PI*2); ctx.fill();
-    // Flame body (mascot sitting on rocket)
-    ctx.fillStyle = '#84cc16';
-    ctx.beginPath(); ctx.ellipse(100*s, 90*s, 35*s, 40*s, 0, 0, Math.PI*2); ctx.fill();
-    // Flame hair
-    ctx.fillStyle = '#a3e635';
-    ctx.beginPath(); ctx.moveTo(75*s, 70*s); ctx.quadraticCurveTo(65*s, 30*s, 85*s, 15*s); ctx.quadraticCurveTo(90*s, 45*s, 100*s, 55*s); ctx.fill();
-    ctx.beginPath(); ctx.moveTo(100*s, 55*s); ctx.quadraticCurveTo(105*s, 20*s, 120*s, 10*s); ctx.quadraticCurveTo(120*s, 45*s, 125*s, 70*s); ctx.fill();
-    // Eyes (happy)
-    ctx.fillStyle = '#000';
-    ctx.beginPath(); ctx.arc(88*s, 88*s, 5*s, 0, Math.PI*2); ctx.fill();
-    ctx.beginPath(); ctx.arc(112*s, 88*s, 5*s, 0, Math.PI*2); ctx.fill();
-    // Smile
-    ctx.strokeStyle = '#000'; ctx.lineWidth = 3*s;
-    ctx.beginPath(); ctx.arc(100*s, 96*s, 12*s, 0.2, Math.PI-0.2); ctx.stroke();
-    // Thumbs up arms
-    ctx.strokeStyle = '#84cc16'; ctx.lineWidth = 8*s; ctx.lineCap = 'round';
-    ctx.beginPath(); ctx.moveTo(65*s, 95*s); ctx.lineTo(45*s, 80*s); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(135*s, 95*s); ctx.lineTo(155*s, 80*s); ctx.stroke();
-    ctx.fillStyle = '#84cc16';
-    ctx.beginPath(); ctx.arc(42*s, 77*s, 9*s, 0, Math.PI*2); ctx.fill();
-    ctx.beginPath(); ctx.arc(158*s, 77*s, 9*s, 0, Math.PI*2); ctx.fill();
-    // Speed lines behind rocket
-    ctx.strokeStyle = '#84cc1640'; ctx.lineWidth = 3*s;
-    for (let i = 0; i < 5; i++) {
-      const ly = (130 + i * 20)*s;
-      ctx.beginPath(); ctx.moveTo(20*s, ly); ctx.lineTo(60*s, ly); ctx.stroke();
-    }
+    // Pump: normal green mascot, slight upward tilt
+    ctx.translate(x + size/2, y + size/2);
+    ctx.rotate(-0.08);
+    ctx.drawImage(img, -size/2, -size/2, size, size);
   } else {
-    // ── DUMP mascot: flame guy crashing down, red ──
-    ctx.save(); ctx.translate(100*s, 100*s); ctx.rotate(0.4); ctx.translate(-100*s, -100*s);
-    // Broken rocket
-    ctx.fillStyle = '#7f1d1d';
-    ctx.beginPath(); ctx.ellipse(100*s, 150*s, 25*s, 45*s, 0, 0, Math.PI*2); ctx.fill();
-    // Smoke puffs
-    ctx.fillStyle = '#374151';
-    ctx.beginPath(); ctx.arc(80*s, 95*s, 20*s, 0, Math.PI*2); ctx.fill();
-    ctx.beginPath(); ctx.arc(105*s, 75*s, 15*s, 0, Math.PI*2); ctx.fill();
-    ctx.beginPath(); ctx.arc(90*s, 60*s, 12*s, 0, Math.PI*2); ctx.fill();
-    // Red flame body
-    ctx.fillStyle = '#dc2626';
-    ctx.beginPath(); ctx.ellipse(100*s, 85*s, 35*s, 40*s, 0, 0, Math.PI*2); ctx.fill();
-    // Red flame hair
-    ctx.fillStyle = '#ef4444';
-    ctx.beginPath(); ctx.moveTo(75*s, 65*s); ctx.quadraticCurveTo(60*s, 25*s, 80*s, 10*s); ctx.quadraticCurveTo(88*s, 42*s, 100*s, 50*s); ctx.fill();
-    ctx.beginPath(); ctx.moveTo(100*s, 50*s); ctx.quadraticCurveTo(112*s, 18*s, 125*s, 8*s); ctx.quadraticCurveTo(122*s, 40*s, 128*s, 65*s); ctx.fill();
-    // Eyes (angry X eyes)
-    ctx.strokeStyle = '#000'; ctx.lineWidth = 3*s;
-    ctx.beginPath(); ctx.moveTo(83*s, 80*s); ctx.lineTo(93*s, 90*s); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(93*s, 80*s); ctx.lineTo(83*s, 90*s); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(107*s, 80*s); ctx.lineTo(117*s, 90*s); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(117*s, 80*s); ctx.lineTo(107*s, 90*s); ctx.stroke();
-    // Frown
-    ctx.beginPath(); ctx.arc(100*s, 105*s, 10*s, Math.PI+0.3, -0.3); ctx.stroke();
-    // Arms flailing
-    ctx.strokeStyle = '#dc2626'; ctx.lineWidth = 8*s; ctx.lineCap = 'round';
-    ctx.beginPath(); ctx.moveTo(68*s, 85*s); ctx.lineTo(42*s, 65*s); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(132*s, 85*s); ctx.lineTo(158*s, 65*s); ctx.stroke();
-    ctx.restore();
-    // Down arrows
-    ctx.strokeStyle = '#ef444450'; ctx.lineWidth = 4*s;
-    for (let i = 0; i < 3; i++) {
-      const ax = (40 + i * 60)*s, ay = 30*s;
-      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(ax, ay+40*s);
-      ctx.moveTo(ax-8*s, ay+28*s); ctx.lineTo(ax, ay+40*s); ctx.lineTo(ax+8*s, ay+28*s);
-      ctx.stroke();
-    }
+    // Dump: red tinted, tilted/crashing, upside-down
+    ctx.translate(x + size/2, y + size/2);
+    ctx.rotate(0.3);
+    ctx.drawImage(img, -size/2, -size/2, size, size);
+    // Red tint overlay
+    ctx.globalCompositeOperation = 'multiply';
+    ctx.fillStyle = '#ff3333';
+    ctx.fillRect(-size/2, -size/2, size, size);
+    ctx.globalCompositeOperation = 'source-over';
+    // Clip to mascot shape isn't trivial, so use lighter blend instead
   }
   ctx.restore();
 }
@@ -235,26 +166,37 @@ function drawPnlCard({ canvas, name, symbol, pnlSui, pnlPct, spent, entryPrice, 
   ctx.font = 'bold 13px monospace'; ctx.fillStyle = badgeColor;
   ctx.fillText(badgeText, W - 160, 448);
 
-  // Draw mascot
-  drawMascot(ctx, isUp, W - 270, 30, 240);
+  // Mascot drawn async after image load — handled in PnlShareButton
 }
 
 function PnlShareButton({ tk, unrealizedPnl, currentPrice }) {
   const handleShare = () => {
     const canvas = document.createElement('canvas');
     const totalPnl = (tk.realizedPnl || 0) + (unrealizedPnl || 0);
-    drawPnlCard({
-      canvas, name: tk.name, symbol: tk.symbol,
-      pnlSui: totalPnl,
-      pnlPct: tk.suiSpent > 0 ? (totalPnl / tk.suiSpent) * 100 : 0,
-      spent: tk.suiSpent, entryPrice: tk.avgEntryPrice,
-      currentPrice: currentPrice || 0, isClosed: tk.isClosed,
-    });
-    const link = document.createElement('a');
-    link.download = `suipump-${tk.symbol || 'pnl'}.png`;
-    link.href = canvas.toDataURL('image/png');
-    link.click();
+    const isUp = totalPnl >= 0;
+
+    const doRender = (mascotImg) => {
+      drawPnlCard({
+        canvas, name: tk.name, symbol: tk.symbol,
+        pnlSui: totalPnl,
+        pnlPct: tk.suiSpent > 0 ? (totalPnl / tk.suiSpent) * 100 : 0,
+        spent: tk.suiSpent, entryPrice: tk.avgEntryPrice,
+        currentPrice: currentPrice || 0, isClosed: tk.isClosed,
+      });
+      // Draw mascot on top
+      drawMascotOnCanvas(canvas.getContext('2d'), mascotImg, isUp, canvas.width - 280, 20, 260);
+      const link = document.createElement('a');
+      link.download = `suipump-${tk.symbol || 'pnl'}.png`;
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    };
+
+    const img = new Image();
+    img.onload = () => doRender(img);
+    img.onerror = () => doRender(null);
+    img.src = '/mascot.png';
   };
+
   return (
     <button onClick={e => { e.stopPropagation(); handleShare(); }}
       className="flex items-center gap-1 px-2 py-1 rounded-lg bg-lime-400/10 border border-lime-400/20 text-lime-400 text-[9px] font-mono font-bold hover:bg-lime-400/20 transition-colors">
