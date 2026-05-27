@@ -1234,7 +1234,7 @@ export default function App() {
   const handleLaunched = ({ curveId }) => { setShowLaunch(false); navigate(`/token/${curveId}`); };
 
   const { tokens: allTokens } = useTokenList();
-  const tradeKey = useTradeKey();`n  const appStats = useStats();
+  const tradeKey = useTradeKey();
 
   // Strategy hooks lifted to app level — survive modal open/close
   // Only stop when the browser tab is closed
@@ -1252,7 +1252,7 @@ export default function App() {
       }} />
       <ScrollToTop />
       <Header onLaunch={() => setShowLaunch(true)} lang={lang} setLang={handleLang} onToggleFeed={() => setShowFeed(o => !o)} showFeed={showFeed} onStrategies={() => setShowStrategies(true)} />
-      <LiveTicker stats={appStats} />
+      <LiveTicker stats={stats} />
       <NetworkBanner />
       <StrategiesLockedBanner tradeKey={tradeKey} onOpenStrategies={() => setShowStrategies(true)} />
 
