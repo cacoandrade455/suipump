@@ -536,6 +536,8 @@ export default function PortfolioPage({ onBack, lang = 'en' }) {
   const [pfpUrl, setPfpUrl]         = useState('');
   const [editingPfp, setEditingPfp] = useState(false);
   const [pfpInput, setPfpInput]     = useState('');
+  const [pfpUploading, setPfpUploading] = useState(false);
+  const [pfpError, setPfpError]     = useState('');
 
   useEffect(() => {
     if (viewAddress) setPfpUrl(getPfp(viewAddress));
@@ -565,6 +567,32 @@ export default function PortfolioPage({ onBack, lang = 'en' }) {
     if (url && viewAddress) { setPfp(viewAddress, url); setPfpUrl(url); }
     setEditingPfp(false);
     setPfpInput('');
+    setPfpError('');
+  }
+
+  async function handlePfpUpload(file) {
+    if (!file || !viewAddress) return;
+    setPfpUploading(true); setPfpError('');
+    try {
+      const fd = new FormData();
+      fd.append('image', file);
+      const res = await fetch('https://api.imgur.com/3/image', {
+        method: 'POST',
+        headers: { Authorization: 'Client-ID 546c25a59c58ad7' },
+        body: fd,
+      });
+      const json = await res.json();
+      if (!json.success) throw new Error(json.data?.error || 'Upload failed');
+      const url = json.data.link;
+      setPfp(viewAddress, url);
+      setPfpUrl(url);
+      setEditingPfp(false);
+      setPfpInput('');
+    } catch (err) {
+      setPfpError(err.message || 'Upload failed');
+    } finally {
+      setPfpUploading(false);
+    }
   }
 
   const TABS = [
@@ -645,15 +673,28 @@ export default function PortfolioPage({ onBack, lang = 'en' }) {
 
           {/* PFP edit */}
           {editingPfp && isOwnWallet && (
-            <div className="px-5 py-3 border-b border-white/5 flex gap-2">
-              <input
-                value={pfpInput}
-                onChange={e => setPfpInput(e.target.value)}
-                placeholder="Paste image URL…"
-                className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-xs font-mono text-white placeholder-white/20 focus:outline-none focus:border-lime-400/40"
-                onKeyDown={e => e.key === 'Enter' && savePfp()}
-              />
-              <button onClick={savePfp} className="px-3 py-1.5 bg-lime-400 text-black text-xs font-mono font-bold rounded-lg hover:bg-lime-300 transition-colors">Save</button>
+            <div className="px-5 py-3 border-b border-white/5 space-y-2">
+              {/* File upload — primary */}
+              <label className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-lg px-3 py-2 cursor-pointer hover:border-lime-400/40 transition-colors">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-white/40 shrink-0"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                <span className="text-xs font-mono text-white/40 flex-1">
+                  {pfpUploading ? 'Uploading…' : 'Upload image'}
+                </span>
+                <input type="file" accept="image/*" className="hidden" disabled={pfpUploading}
+                  onChange={e => { const f = e.target.files?.[0]; if (f) handlePfpUpload(f); }} />
+              </label>
+              {/* URL fallback */}
+              <div className="flex gap-2">
+                <input
+                  value={pfpInput}
+                  onChange={e => setPfpInput(e.target.value)}
+                  placeholder="or paste image URL…"
+                  className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-xs font-mono text-white placeholder-white/20 focus:outline-none focus:border-lime-400/40"
+                  onKeyDown={e => e.key === 'Enter' && savePfp()}
+                />
+                <button onClick={savePfp} className="px-3 py-1.5 bg-lime-400 text-black text-xs font-mono font-bold rounded-lg hover:bg-lime-300 transition-colors">Save</button>
+              </div>
+              {pfpError && <div className="text-[9px] font-mono text-red-400">{pfpError}</div>}
             </div>
           )}
 
