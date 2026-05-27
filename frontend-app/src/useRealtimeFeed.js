@@ -110,7 +110,7 @@ export function useRealtimeFeed(curveId = null) {
 // Trades are deduplicated by tx_digest+ts so HTTP backfill never doubles SSE events.
 // Exposes latestOhlcPoint so useTPSL can consume price updates without its own connection.
 
-export function useTokenPageFeed(curveId) {
+export function useTokenPageFeed(curveId, packageId) {
   const [trades,          setTrades]          = useState([]);
   const [ohlc,            setOhlc]            = useState([]);
   const [loading,         setLoading]         = useState(true);
@@ -169,9 +169,13 @@ export function useTokenPageFeed(curveId) {
 
           if (!cancelled) setTrades(prev => [trade, ...prev].slice(0, MAX_TRADES));
 
-          // OHLC point for chart + TP/SL
-          if (trade.tokens > 0) {
-            const pt = { time: Math.floor(event.ts / 1000), price: trade.sui / trade.tokens, kind: trade.kind };
+          // OHLC point for chart + TP/SL — use curve price formula, not trade ratio
+          // price = (virtualSui + new_sui_reserve) / 1_000_000_000
+          const newReserveMist = Number(d.new_sui_reserve ?? 0);
+          if (newReserveMist > 0) {
+            const { virtualSui: vSuiFeed } = curveShapeFor(packageId);
+            const curvePriceSui = (vSuiFeed + newReserveMist / 1e9) / 1_000_000_000;
+            const pt = { time: Math.floor(event.ts / 1000), price: curvePriceSui, kind: trade.kind };
             if (!cancelled) {
               setOhlc(prev => [...prev, pt]);
               setLatestOhlcPoint(pt);

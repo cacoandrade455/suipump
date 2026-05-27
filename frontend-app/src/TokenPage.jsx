@@ -1273,7 +1273,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
 
   // ── Shared SSE feed — one connection for chart + trades ──────────────────
   // Must be declared before any hook that consumes feedOhlc/feedTrades
-  const { trades: feedTrades, ohlc: feedOhlc, loading: feedLoading, connected: feedConnected } = useTokenPageFeed(curveId);
+  const { trades: feedTrades, ohlc: feedOhlc, loading: feedLoading, connected: feedConnected } = useTokenPageFeed(curveId, packageIdHint);
 
   const [suiUsd,          setSuiUsd]          = useState(0);
   const [curveState,      setCurveState]      = useState(null);
