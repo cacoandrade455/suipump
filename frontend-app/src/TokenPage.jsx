@@ -13,7 +13,7 @@ import { useTokenPageFeed } from './useRealtimeFeed.js';
 import HolderList from './HolderList.jsx';
 import Comments from './Comments.jsx';
 import AIAnalysis from './AIAnalysis.jsx';
-import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8, PACKAGE_ID_V9, ALL_PACKAGE_IDS, MIST_PER_SUI, DRAIN_SUI_APPROX, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_SUI_V6, VIRTUAL_SUI_V7, VIRTUAL_SUI_V8, VIRTUAL_SUI_V9, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, VIRTUAL_TOKENS_V6, VIRTUAL_TOKENS_V7, VIRTUAL_TOKENS_V8, VIRTUAL_TOKENS_V9, DRAIN_SUI_V4, DRAIN_SUI_V5, DRAIN_SUI_V6, DRAIN_SUI_V7, DRAIN_SUI_V8, DRAIN_SUI_V9, isNewCurve, isV5OrLater, isV7OrLater, isV8OrLater, isV9OrLater, supportsMetadataUpdate, curveShapeFor } from './constants.js';
+import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8, ALL_PACKAGE_IDS, MIST_PER_SUI, DRAIN_SUI_APPROX, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_SUI_V6, VIRTUAL_SUI_V7, VIRTUAL_SUI_V8, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, VIRTUAL_TOKENS_V6, VIRTUAL_TOKENS_V7, VIRTUAL_TOKENS_V8, DRAIN_SUI_V4, DRAIN_SUI_V5, DRAIN_SUI_V6, DRAIN_SUI_V7, DRAIN_SUI_V8, isNewCurve, isV5OrLater, isV7OrLater, isV8OrLater, supportsMetadataUpdate , curveShapeFor } from './constants.js';
 import { buyQuote, sellQuote } from './curve.js';
 import { t } from './i18n.js';
 
@@ -110,7 +110,6 @@ function isPlaceholderDesc(desc) {
 function getTokenPackageId(tokenType) {
   if (!tokenType) return null;
   if (PACKAGE_ID_V9 && tokenType.startsWith(PACKAGE_ID_V9)) return PACKAGE_ID_V9;
-  if (PACKAGE_ID_V9  && tokenType.startsWith(PACKAGE_ID_V9))  return PACKAGE_ID_V9;
   if (PACKAGE_ID_V8_1 && tokenType.startsWith(PACKAGE_ID_V8_1)) return PACKAGE_ID_V8_1;
   if (PACKAGE_ID_V8 && tokenType.startsWith(PACKAGE_ID_V8)) return PACKAGE_ID_V8;
   if (PACKAGE_ID_V7 && tokenType.startsWith(PACKAGE_ID_V7)) return PACKAGE_ID_V7;
@@ -128,7 +127,7 @@ function resolvePackageId(tokenType, packageIdHint) {
   if (packageIdHint) return packageIdHint;
   const fromType = getTokenPackageId(tokenType);
   if (fromType) return fromType;
-  return PACKAGE_ID;
+  return PACKAGE_ID_V8;
 }
 
 const SLIPPAGE_PRESETS = ['0.5', '1', '2', '5'];
@@ -1489,7 +1488,10 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   const priceMist       = curveState ? priceMistPerToken(reserveMist, tokensSold, vSui, vTok) : 0n;
   const priceSui        = Number(priceMist) / 1e9;
   const priceUsd        = priceSui * suiUsd;
-  const marketCapSui    = priceSui * TOTAL_SUPPLY_WHOLE;
+  // Pump.fun-style mcap: real_sui_reserve × (total_supply / lp_supply)
+  // Scales from ~$0 at launch to ~$66K at graduation (12,305 SUI raised)
+  const LP_SUPPLY_WHOLE  = 200_000_000;
+  const marketCapSui    = (Number(reserveMist) / 1e9) * (TOTAL_SUPPLY_WHOLE / LP_SUPPLY_WHOLE);
   const graduated       = curveState?.graduated ?? false;
   const creatorFeesMist = curveState ? BigInt(curveState.creator_fees ?? 0) : 0n;
   const creatorAddr     = curveState?.creator ?? null;
