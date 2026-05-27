@@ -77,7 +77,7 @@ app.get('/debug/metadata/:type(*)', async (req, res) => {
     // Try coinMetadata
     const r1 = await fetch(GRAPHQL_URL, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: '{ coinMetadata(coinType: "' + tokenType + '") { address owner { __typename ... on Shared { initialSharedVersion } ... on Immutable { _typename } } } }' }),
+      body: JSON.stringify({ query: '{ coinMetadata(coinType: "' + tokenType + '") { address owner { ... on Shared { initialSharedVersion }  } } }' }),
       signal: AbortSignal.timeout(8000),
     });
     const d1 = await r1.json();
@@ -85,7 +85,7 @@ app.get('/debug/metadata/:type(*)', async (req, res) => {
     // Try objects
     const r2 = await fetch(GRAPHQL_URL, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: '{ objects(filter: { type: "' + metaType + '" } first: 1) { nodes { address owner { __typename ... on Shared { initialSharedVersion } ... on Immutable { _typename } } } } }' }),
+      body: JSON.stringify({ query: '{ objects(filter: { type: "' + metaType + '" } first: 1) { nodes { address owner { ... on Shared { initialSharedVersion }  } } } }' }),
       signal: AbortSignal.timeout(8000),
     });
     const d2 = await r2.json();
@@ -158,7 +158,7 @@ app.get('/token/:id/metadata-object', async (req, res) => {
 
     // Query 1: coinMetadata field (works for frozen V7 — address + owner)
     const q1body = JSON.stringify({ query:
-      '{ coinMetadata(coinType: "' + tokenType + '") { address owner { ... on Shared { initialSharedVersion } ... on Immutable { _typename } } } }'
+      '{ coinMetadata(coinType: "' + tokenType + '") { address owner { ... on Shared { initialSharedVersion }  } } }'
     });
     const r1 = await fetch(GRAPHQL_URL, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
