@@ -9,8 +9,8 @@ function getPfp(addr) { try { return localStorage.getItem(`suipump_pfp_${addr}`)
 import {
   ALL_PACKAGE_IDS,
   PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6,
-  PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8,
-  COMMENT_FEE_MIST, isV7OrLater,
+  PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8, PACKAGE_ID_V9,
+  COMMENT_FEE_MIST, isV7OrLater, isV9OrLater,
 } from './constants.js';
 
 const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
@@ -253,7 +253,7 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
 
       // post_comment takes &mut Curve<T> — MUST use sharedObjectRef
       const curveRef = isv
-        ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: isv, mutable: true })
+        ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: String(isv), mutable: true })
         : tx.object(curveId);
 
       if (isV7 && COMMENT_FEE_MIST && BigInt(COMMENT_FEE_MIST) > 0n) {
