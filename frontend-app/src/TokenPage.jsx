@@ -411,9 +411,11 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
     // Search all package versions for a CreatorCap matching this curve
     for (const pid of ALL_PACKAGE_IDS) {
       try {
-        const ownedObjs = await client.listOwnedObjects({ owner: account.address, type: `${pid}::bonding_curve::CreatorCap`, include: { json: true } });
-        const capObj = ownedObjs.objects?.find(o => o.json?.curve_id === curveId) ?? null;
-        if (capObj) return capObj.objectId;
+        const gqlCap = `{ address(address: "${account.address}") { objects(filter: { type: "${pid}::bonding_curve::CreatorCap" }) { nodes { address contents { json } } } } }`;
+        const capRes = await client.graphql({ query: gqlCap });
+        const capNodes = capRes?.data?.address?.objects?.nodes ?? [];
+        const capObj = capNodes.find(n => n.contents?.json?.curve_id === curveId);
+        if (capObj) return capObj.address;
       } catch {}
     }
     throw new Error('CreatorCap not found in wallet');
@@ -605,13 +607,11 @@ function TradePanelContent({
       let capPkgId = pkgId;
       for (const searchPkg of ALL_PACKAGE_IDS) {
         try {
-          const owned = await client2.listOwnedObjects({
-            owner: account.address,
-            type: `${searchPkg}::bonding_curve::CreatorCap`,
-            include: { json: true },
-          });
-          const match = owned.objects?.find(o => o.json?.curve_id === panelCurveId);
-          if (match) { capId = match.objectId; capPkgId = searchPkg; break; }
+          const gqlPC = `{ address(address: "${account.address}") { objects(filter: { type: "${searchPkg}::bonding_curve::CreatorCap" }) { nodes { address contents { json } } } } }`;
+          const pcRes = await client2.graphql({ query: gqlPC });
+          const pcNodes = pcRes?.data?.address?.objects?.nodes ?? [];
+          const match = pcNodes.find(n => n.contents?.json?.curve_id === panelCurveId);
+          if (match) { capId = match.address; capPkgId = searchPkg; break; }
         } catch {}
       }
       if (!capId) throw new Error('CreatorCap not found in wallet');
@@ -1477,9 +1477,11 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
     async function checkCapOwnership() {
       for (const pid of ALL_PACKAGE_IDS) {
         try {
-          const ownedObjs = await client.listOwnedObjects({ owner: account.address, type: `${pid}::bonding_curve::CreatorCap`, include: { json: true } });
-          const capObj = ownedObjs.objects?.find(o => o.json?.curve_id === curveId) ?? null;
-          if (capObj) { if (!cancelled) setIsCreator(true); return; }
+          const gqlIC = `{ address(address: "${account.address}") { objects(filter: { type: "${pid}::bonding_curve::CreatorCap" }) { nodes { address contents { json } } } } }`;
+          const icRes = await client.graphql({ query: gqlIC });
+          const icNodes = icRes?.data?.address?.objects?.nodes ?? [];
+          const capMatch = icNodes.find(n => n.contents?.json?.curve_id === curveId);
+          if (capMatch) { if (!cancelled) setIsCreator(true); return; }
         } catch {}
       }
       if (!cancelled) setIsCreator(false);
