@@ -227,8 +227,9 @@ function HoldingsTab({ account, tokens, lang, onTotalValue }) {
             if (tradRes.ok) {
               const positions = await tradRes.json();
               results = positions
-                .filter(p => p.balance > 0)
+                .filter(p => (p.net_tokens ?? p.balance ?? 0) > 0)
                 .map(p => {
+                  const balance = p.net_tokens ?? p.balance ?? 0;
                   const token = tokens.find(t => t.curveId === p.curve_id);
                   if (!token) return null;
 
@@ -238,7 +239,7 @@ function HoldingsTab({ account, tokens, lang, onTotalValue }) {
                   let valueSui = 0;
                   if (stats?.last_price && stats.last_price > 0) {
                     // last_price is in SUI per token (e.g. 0.0000035)
-                    valueSui = p.balance * stats.last_price;
+                    valueSui = balance * stats.last_price;
                   } else {
                     // Fallback: manual calc using reserve from indexer stats
                     const reserveSui = stats?.reserve_sui ?? 0;
@@ -246,14 +247,14 @@ function HoldingsTab({ account, tokens, lang, onTotalValue }) {
                     const tokensRemaining = BigInt(Math.round((stats?.token_reserve ?? 800_000_000) * 1e6));
                     const tokensSold = BigInt(800_000_000) * BigInt(1e6) - tokensRemaining;
                     const priceMist = priceMistPerToken(reserveMist, tokensSold);
-                    const rawBalance = BigInt(Math.round(p.balance * 1e6));
+                    const rawBalance = BigInt(Math.round(balance * 1e6));
                     const valueInMist = (rawBalance * priceMist) / BigInt(1e6);
                     valueSui = Number(valueInMist) / MIST_PER_SUI;
                   }
 
                   return {
                     ...token,
-                    balance: p.balance,
+                    balance: balance,
                     valueSui,
                     graduated: p.graduated ?? false,
                   };
