@@ -156,18 +156,8 @@ app.get('/token/:id/metadata-object', async (req, res) => {
 
     // Fallback: search for CoinMetadata<T> object directly
     if (!objectId) {
-      const metaType = \`0x2::coin::CoinMetadata<\${tokenType}>\`;
-      const query2 = \`{
-        objects(filter: { type: "\${metaType}" }, first: 1) {
-          nodes {
-            address
-            owner {
-              ... on Shared { initialSharedVersion }
-              ... on Immutable { _typename }
-            }
-          }
-        }
-      }\`;
+      const metaType = '0x2::coin::CoinMetadata<' + tokenType + '>';
+      const query2 = '{objects(filter:{type:\"' + metaType + '\"} first:1){nodes{address owner{...on Shared{initialSharedVersion}...on Immutable{_typename}}}}}';
       const r2 = await fetch(GRAPHQL_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
