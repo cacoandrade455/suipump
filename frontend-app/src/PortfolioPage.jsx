@@ -540,14 +540,12 @@ function CreatedTab({ account, tokens, lang }) {
       const capsByPkg = {};
       for (const pkgId of ALL_PACKAGE_IDS) {
         try {
-          const owned = await client.listOwnedObjects({
-            owner: account.address,
-            type: `${pkgId}::bonding_curve::CreatorCap`,
-            include: { json: true },
-          });
-          for (const obj of owned.objects ?? []) {
-            const curveId = obj.json?.curve_id;
-            if (curveId) capsByPkg[curveId] = obj.objectId;
+          const gqlCA = `{ address(address: "${account.address}") { objects(filter: { type: "${pkgId}::bonding_curve::CreatorCap" }) { nodes { address contents { json } } } } }`;
+          const caRes = await client.graphql({ query: gqlCA });
+          const caNodes = caRes?.data?.address?.objects?.nodes ?? [];
+          for (const node of caNodes) {
+            const curveId = node.contents?.json?.curve_id;
+            if (curveId) capsByPkg[curveId] = node.address;
           }
         } catch {}
       }
