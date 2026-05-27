@@ -485,7 +485,7 @@ function CreatedTab({ account, tokens, lang }) {
           const obj = curveObjs[i];
           const idxStat = indexerStats[tk.curveId] ?? {};
           statsMap[tk.curveId] = {
-            creatorFeesSui: obj?.stats?.creator_fees_sui ?? idxStat.creator_fees_sui ?? 0,
+            creatorFeesSui: 0, // populated below via on-chain GraphQL
             volumeSui:      idxStat.volume_sui  ?? 0,
             trades:         idxStat.trades      ?? 0,
             progress:       idxStat.progress    ?? 0,
@@ -496,6 +496,25 @@ function CreatedTab({ account, tokens, lang }) {
         if (!cancelled) {
           setCurveStats(statsMap);
           const icons = {};
+          // Fetch real on-chain creator_fees for each token via GraphQL
+          const feePromises = createdTokens.map(async tk => {
+            try {
+              const gql = `{ object(address: "${tk.curveId}") { asMoveObject { contents { json } } } }`;
+              const r = await client.graphql({ query: gql });
+              const json = r?.data?.object?.asMoveObject?.contents?.json;
+              if (json?.creator_fees != null) {
+                const mist = typeof json.creator_fees === 'object'
+                  ? Number(json.creator_fees?.value ?? 0)
+                  : Number(json.creator_fees ?? 0);
+                setCurveStats(prev => ({
+                  ...prev,
+                  [tk.curveId]: { ...(prev[tk.curveId] ?? {}), creatorFeesSui: mist / 1e9 },
+                }));
+              }
+            } catch {}
+          });
+          await Promise.allSettled(feePromises);
+
           for (const tk of createdTokens) { if (tk.iconUrl) icons[tk.curveId] = tk.iconUrl; }
           setIconUrls(icons);
           setLoading(false);
@@ -574,7 +593,7 @@ function CreatedTab({ account, tokens, lang }) {
 
   return (
     <>
-      {false && totalClaimable > 0.001 && (
+      {totalClaimable > 0.001 && (
         <div className="px-5 py-3 border-b border-white/5 flex items-center justify-between">
           <span className="text-[10px] font-mono text-white/40">
             {fmt(totalClaimable, 4)} SUI claimable
