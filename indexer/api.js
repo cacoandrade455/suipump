@@ -268,6 +268,55 @@ app.get('/lock/:lockId', async (req, res) => {
 });
 
 
+
+// ── /debug/isv/:id ────────────────────────────────────────────────────────────
+app.get('/debug/isv/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const GRAPHQL_URL = process.env.SUI_GRAPHQL_URL ?? 'https://graphql.testnet.sui.io/graphql';
+
+    // Get curve tx digest
+    const evtRow = await pool.query(
+      "SELECT tx_digest FROM events WHERE curve_id = $1 AND event_type LIKE '%CurveCreated' LIMIT 1",
+      [id]
+    );
+    const curveTxDigest = evtRow.rows[0]?.tx_digest ?? null;
+
+    // Get metadata object id
+    const curveRow = await pool.query('SELECT metadata_object_id FROM curves WHERE curve_id = $1', [id]);
+    const objectId = curveRow.rows[0]?.metadata_object_id ?? null;
+
+    // Get dependencies of curve tx
+    let deps = [], depResults = [];
+    if (curveTxDigest) {
+      const r2 = await fetch(GRAPHQL_URL, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: '{ transactionBlock(digest: "' + curveTxDigest + '") { effects { dependencies { digest } } } }' }),
+        signal: AbortSignal.timeout(8000),
+      });
+      const d2 = await r2.json();
+      deps = d2?.data?.transactionBlock?.effects?.dependencies ?? [];
+
+      // Check each dep for the metadata object
+      for (const dep of deps) {
+        const r3 = await fetch(GRAPHQL_URL, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: '{ transactionBlock(digest: "' + dep.digest + '") { effects { objectChanges { nodes { address outputState { version } } } } } }' }),
+          signal: AbortSignal.timeout(8000),
+        });
+        const d3 = await r3.json();
+        const changes = d3?.data?.transactionBlock?.effects?.objectChanges?.nodes ?? [];
+        const found = changes.find(c => c.address === objectId);
+        depResults.push({ digest: dep.digest, changeCount: changes.length, foundMetadata: !!found, version: found?.outputState?.version ?? null });
+      }
+    }
+
+    res.json({ curveTxDigest, objectId, deps: deps.map(d => d.digest), depResults });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── /debug/clear-metadata-isv/:id ────────────────────────────────────────────
 app.get('/debug/clear-metadata-isv/:id', async (req, res) => {
   try {
@@ -299,20 +348,21 @@ app.get('/token/:id/metadata-object', async (req, res) => {
     }
     if (!objectId) return res.status(404).json({ error: 'CoinMetadata not found on-chain' });
 
+    // Use SuiGraphQLClient.getObject — returns owner.Shared.initialSharedVersion correctly
     let isv = null;
-    const evtRow = await pool.query("SELECT tx_digest FROM events WHERE curve_id = $1 AND event_type LIKE '%CurveCreated' LIMIT 1", [id]);
-    if (evtRow.rows[0]?.tx_digest) {
-      const curveTxDigest = evtRow.rows[0].tx_digest;
-      const r2 = await fetch(GRAPHQL_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: '{ transactionBlock(digest: "' + curveTxDigest + '") { effects { dependencies { digest } } } }' }), signal: AbortSignal.timeout(8000) });
-      const d2 = await r2.json();
-      const deps = d2?.data?.transactionBlock?.effects?.dependencies ?? [];
-      for (const dep of deps) {
-        const r3 = await fetch(GRAPHQL_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: '{ transactionBlock(digest: "' + dep.digest + '") { effects { objectChanges { nodes { address outputState { version } } } } } }' }), signal: AbortSignal.timeout(8000) });
-        const d3 = await r3.json();
-        const changes = d3?.data?.transactionBlock?.effects?.objectChanges?.nodes ?? [];
-        for (const c of changes) { if (c.address === objectId) { isv = Number(c.outputState?.version ?? 0) || null; break; } }
-        if (isv) break;
-      }
+    try {
+      const { SuiGraphQLClient } = await import('@mysten/sui/graphql');
+      const gqlClient = new SuiGraphQLClient({ url: GRAPHQL_URL });
+      const objResult = await gqlClient.getObject({ id: objectId });
+      // Try multiple field paths — SDK version differences
+      isv = objResult?.object?.owner?.Shared?.initialSharedVersion
+         ?? objResult?.data?.owner?.Shared?.initial_shared_version
+         ?? objResult?.data?.owner?.Shared?.initialSharedVersion
+         ?? null;
+      if (isv) isv = Number(isv);
+      console.log('getObject ISV result:', JSON.stringify(objResult?.object?.owner ?? objResult?.data?.owner));
+    } catch (e) {
+      console.error('getObject ISV failed:', e.message);
     }
 
     await pool.query('UPDATE curves SET metadata_object_id = $2, metadata_shared_version = $3 WHERE curve_id = $1', [id, objectId, isv]);
