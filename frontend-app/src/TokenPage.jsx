@@ -473,7 +473,7 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
       const capId = await getCapId();
       const tx = new Transaction();
       const curveRef = await getCurveRef(tx);
-      const metadataRef = metaSharedVersion ? tx.sharedObjectRef({ objectId: metadataId, initialSharedVersion: metaSharedVersion, mutable: true }) : tx.object(metadataId);
+      const metadataRef = metaSharedVersion ? tx.sharedObjectRef({ objectId: metadataId, initialSharedVersion: String(metaSharedVersion), mutable: true }) : tx.object(metadataId);
       tx.moveCall({
         target: `${metadataPkg}::bonding_curve::update_metadata`,
         typeArguments: [tokenType],
