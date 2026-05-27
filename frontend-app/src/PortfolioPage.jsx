@@ -553,11 +553,8 @@ function CreatedTab({ account, tokens, lang }) {
       }
 
       for (const tk of createdTokens) {
-        const fees = curveStats[tk.curveId]?.creatorFeesSui ?? 0;
-        if (fees < 0.001) continue;
-
         const capId = capsByPkg[tk.curveId];
-        if (!capId) continue;
+        if (!capId) continue; // skip tokens where we don't own the creator cap
 
         // Fetch ISV for sharedObjectRef
         let isv = null;
@@ -593,10 +590,10 @@ function CreatedTab({ account, tokens, lang }) {
 
   return (
     <>
-      {totalClaimable > 0.001 && (
+      {createdTokens.length > 0 && account && (
         <div className="px-5 py-3 border-b border-white/5 flex items-center justify-between">
           <span className="text-[10px] font-mono text-white/40">
-            {fmt(totalClaimable, 4)} SUI claimable
+            {totalClaimable > 0 ? `${fmt(totalClaimable, 4)} SUI claimable` : 'Claim creator fees'}
           </span>
           <button
             onClick={handleClaimAll}
