@@ -28,6 +28,7 @@ const PACKAGES = {
   V7:   '0xfb8f3f3e4e8d53130ac140906eebea6b6740bfaf0c971aec607fbc723be951f0',
   V8_1: '0x145a1e79b83cc17680dbfe4f96839cd359c7db380ac15463ecb6dc30f9849b69',
   V8:   '0xbb4ee050239f59dfd983501ce101698ba27857f77aff2d437cec568fe0062546',
+  V9:   '0x719698e5138582d78ee95317271e8bce05769569a4f58c940a7f1b424d90ffe2',
 };
 
 const ADMIN_CAPS = {
@@ -37,9 +38,10 @@ const ADMIN_CAPS = {
   [PACKAGES.V7]:   '0x1dc44030adaa6e366666a8e095fc29a5a55c8ae614f04c5e93c062a85b475527',
   [PACKAGES.V8_1]: '0xdb22e067d9cf53cfab37bc6d4b626ff98c770bc59b8a192d007aca449e8f7103',
   [PACKAGES.V8]:   '0x9779a2466f2e30ca5e139f636cc9ca1c44e025da29203d781cc2645ebb62bb35',
+  [PACKAGES.V9]:   '0x2e0989604424ffa96f58618795285dac09d8eaf2fd0d35f4a7e9bbc22bea2bf7',
 };
 
-const GRAD_THRESHOLD_MIST = 9_000n * 1_000_000_000n;
+const GRAD_THRESHOLD_MIST = 9_000n * 1_000_000_000n; // V4-V8 static; V9 base is 12,305 but inline grad handles it
 const POLL_INTERVAL_MS    = 30_000;
 
 const inProgress = new Set();
@@ -77,7 +79,7 @@ async function callGraduate(client, curveId, tokenType, pkgId, keypair) {
   const sv = await getSharedVersion(client, curveId);
   const tx = new Transaction();
 
-  if (pkgId === PACKAGES.V8 || pkgId === PACKAGES.V8_1) {
+  if (pkgId === PACKAGES.V9 || pkgId === PACKAGES.V8 || pkgId === PACKAGES.V8_1) {
     const meta   = await client.core.getCoinMetadata({ coinType: tokenType });
     const metaId = meta?.id;
     if (!metaId) throw new Error(`CoinMetadata not found for ${tokenType}`);

@@ -39,7 +39,7 @@ const ALL_PACKAGE_IDS = [
   '0xfb8f3f3e4e8d53130ac140906eebea6b6740bfaf0c971aec607fbc723be951f0', // V7
   '0x145a1e79b83cc17680dbfe4f96839cd359c7db380ac15463ecb6dc30f9849b69', // V8_1
   '0xbb4ee050239f59dfd983501ce101698ba27857f77aff2d437cec568fe0062546', // V8
-  // V9 added after upgrade deploy
+  '0x719698e5138582d78ee95317271e8bce05769569a4f58c940a7f1b424d90ffe2', // V9
 ];
 
 // Packages that use V5+ buy() signature (with referral + clock)
@@ -56,6 +56,12 @@ const V7_PLUS = new Set([
   '0xfb8f3f3e4e8d53130ac140906eebea6b6740bfaf0c971aec607fbc723be951f0', // V7
   '0x145a1e79b83cc17680dbfe4f96839cd359c7db380ac15463ecb6dc30f9849b69', // V8_1
   '0xbb4ee050239f59dfd983501ce101698ba27857f77aff2d437cec568fe0062546', // V8
+  '0x719698e5138582d78ee95317271e8bce05769569a4f58c940a7f1b424d90ffe2', // V9
+]);
+
+// Packages that use V9+ buy() signature (adds sui_price_scaled: u64 arg)
+const V9_PLUS = new Set([
+  '0x719698e5138582d78ee95317271e8bce05769569a4f58c940a7f1b424d90ffe2', // V9
 ]);
 
 const SUI_CLOCK_ID = '0x6';

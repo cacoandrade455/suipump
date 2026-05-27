@@ -21,6 +21,7 @@ const ALL_PACKAGES = [
   { ver:'V7',   id:'0xfb8f3f3e4e8d53130ac140906eebea6b6740bfaf0c971aec607fbc723be951f0', adminCap:'0x1dc44030adaa6e366666a8e095fc29a5a55c8ae614f04c5e93c062a85b475527' },
   { ver:'V8_1', id:'0x145a1e79b83cc17680dbfe4f96839cd359c7db380ac15463ecb6dc30f9849b69', adminCap:'0x9779a2466f2e30ca5e139f636cc9ca1c44e025da29203d781cc2645ebb62bb35' },
   { ver:'V8',   id:'0xbb4ee050239f59dfd983501ce101698ba27857f77aff2d437cec568fe0062546', adminCap:'0x9779a2466f2e30ca5e139f636cc9ca1c44e025da29203d781cc2645ebb62bb35' },
+  { ver:'V9',   id:'0x719698e5138582d78ee95317271e8bce05769569a4f58c940a7f1b424d90ffe2', adminCap:'0x2e0989604424ffa96f58618795285dac09d8eaf2fd0d35f4a7e9bbc22bea2bf7' },
 ];
 const V7_PLUS = new Set(ALL_PACKAGES.slice(3).map(p => p.id));
 function fmtSui(mist) { return (Number(mist)/1e9).toFixed(4)+' SUI'; }

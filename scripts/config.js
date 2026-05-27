@@ -8,9 +8,9 @@ import { fromB64, fromBase64 } from '@mysten/sui/utils';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 
-// ── V8 (active until V9 upgrade) ─────────────────────────────────────────────
-export const PACKAGE_ID   = '0xbb4ee050239f59dfd983501ce101698ba27857f77aff2d437cec568fe0062546';
-export const ADMIN_CAP_ID = '0x9779a2466f2e30ca5e139f636cc9ca1c44e025da29203d781cc2645ebb62bb35';
+// ── V9 (active) ──────────────────────────────────────────────────────────────
+export const PACKAGE_ID   = '0x719698e5138582d78ee95317271e8bce05769569a4f58c940a7f1b424d90ffe2';
+export const ADMIN_CAP_ID = '0x2e0989604424ffa96f58618795285dac09d8eaf2fd0d35f4a7e9bbc22bea2bf7';
 export const CURVE_ID     = '0xf7c137e90c5a5c9e716c91fdd3561d55e6ba3c11c37a9741b0bfde03dc9d812f';
 export const TOKEN_TYPE   = `${PACKAGE_ID}::token_template::TOKEN_TEMPLATE`;
 
