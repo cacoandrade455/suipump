@@ -109,6 +109,7 @@ function isPlaceholderDesc(desc) {
 
 function getTokenPackageId(tokenType) {
   if (!tokenType) return null;
+  if (PACKAGE_ID_V9 && tokenType.startsWith(PACKAGE_ID_V9)) return PACKAGE_ID_V9;
   if (PACKAGE_ID_V8_1 && tokenType.startsWith(PACKAGE_ID_V8_1)) return PACKAGE_ID_V8_1;
   if (PACKAGE_ID_V8 && tokenType.startsWith(PACKAGE_ID_V8)) return PACKAGE_ID_V8;
   if (PACKAGE_ID_V7 && tokenType.startsWith(PACKAGE_ID_V7)) return PACKAGE_ID_V7;
@@ -1593,7 +1594,24 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
         const impactPct = bq?.priceImpact ?? 0;
         const effectiveSlippage = Math.max(slippageNum, impactPct > 5 ? impactPct + 3 : slippageNum);
         const minOut = bq?.tokensOut != null ? BigInt(Math.floor(Number(bq.tokensOut) * (1 - effectiveSlippage / 100))) : 0n;
-        const buyArgs = isV5
+        // V9: buy(curve, payment, min_out, referral, sui_price_scaled, clock)
+        // Fetch live SUI price for oracle; pass 0 as fallback if unavailable
+        let suiPriceScaled = 0n;
+        try {
+          const priceRes = await fetch(
+            'https://api.binance.com/api/v3/ticker/price?symbol=SUIUSDT',
+            { signal: AbortSignal.timeout(2000) }
+          );
+          if (priceRes.ok) {
+            const priceData = await priceRes.json();
+            const priceUsd = parseFloat(priceData.price ?? '0');
+            if (priceUsd > 0) suiPriceScaled = BigInt(Math.floor(priceUsd * 1000));
+          }
+        } catch { /* fallback: 0 triggers stored/BASE_GRAD threshold */ }
+        const isV9 = isV9OrLater(pkgId);
+        const buyArgs = isV9
+          ? [curveRef, payment, tx.pure.u64(minOut), tx.pure.option('address', null), tx.pure.u64(suiPriceScaled), tx.object(SUI_CLOCK_ID)]
+          : isV5
           ? [curveRef, payment, tx.pure.u64(minOut), tx.pure.option('address', null), tx.object(SUI_CLOCK_ID)]
           : [curveRef, payment, tx.pure.u64(minOut)];
         const [tokens, refund] = tx.moveCall({ target: `${pkgId}::bonding_curve::buy`, typeArguments: [tokenType], arguments: buyArgs });
