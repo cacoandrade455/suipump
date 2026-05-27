@@ -350,17 +350,24 @@ app.get('/token/:id/metadata-object', async (req, res) => {
 
     // Use SuiGraphQLClient.getObject — returns owner.Shared.initialSharedVersion correctly
     let isv = null;
+    // Use transactionBlocks(changedObject) to find the tx that created this object
+    // The first tx to touch the metadata object is the coin publish tx (Tx1)
+    // Its outputState.version for this object = ISV
     try {
-      const { SuiGraphQLClient } = await import('@mysten/sui/graphql');
-      const gqlClient = new SuiGraphQLClient({ url: GRAPHQL_URL });
-      const objResult = await gqlClient.getObject({ id: objectId });
-      // Try multiple field paths — SDK version differences
-      isv = objResult?.object?.owner?.Shared?.initialSharedVersion
-         ?? objResult?.data?.owner?.Shared?.initial_shared_version
-         ?? objResult?.data?.owner?.Shared?.initialSharedVersion
-         ?? null;
-      if (isv) isv = Number(isv);
-      console.log('getObject ISV result:', JSON.stringify(objResult?.object?.owner ?? objResult?.data?.owner));
+      const q3 = '{ transactionBlocks(first: 1 filter: { changedObject: "' + objectId + '" }) { nodes { effects { objectChanges { nodes { address outputState { version } } } } } } }';
+      const r3 = await fetch(GRAPHQL_URL, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: q3 }), signal: AbortSignal.timeout(10000),
+      });
+      const d3 = await r3.json();
+      const firstTx = d3?.data?.transactionBlocks?.nodes?.[0];
+      const changes = firstTx?.effects?.objectChanges?.nodes ?? [];
+      const metaChange = changes.find(c => c.address === objectId);
+      if (metaChange?.outputState?.version) {
+        isv = Number(metaChange.outputState.version);
+      }
+    } catch (e) {
+      console.error('ISV lookup failed:', e.message);
     } catch (e) {
       console.error('getObject ISV failed:', e.message);
     }
