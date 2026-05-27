@@ -426,10 +426,33 @@ function CreatedTab({ account, tokens, lang }) {
   const [claimingAll, setClaimingAll] = useState(false);
   const [claimMsg, setClaimMsg]       = useState('');
 
-  const createdTokens = useMemo(() => {
-    if (!account?.address) return [];
-    return tokens.filter(tk => tk.creator === account.address);
-  }, [tokens, account?.address]);
+  const [createdTokens, setCreatedTokens] = useState([]);
+
+  // Fetch all tokens created by this wallet directly from indexer — avoids pagination limits
+  useEffect(() => {
+    if (!account?.address || !INDEXER_URL) { setLoading(false); return; }
+    let cancelled = false;
+    fetch(`${INDEXER_URL}/tokens?creator=${account.address}`, { signal: AbortSignal.timeout(8000) })
+      .then(r => r.ok ? r.json() : [])
+      .then(rows => {
+        if (cancelled) return;
+        // Normalize field names (indexer returns camelCase)
+        const normalized = rows.map(r => ({
+          curveId:      r.curveId   ?? r.curve_id,
+          creator:      r.creator,
+          name:         r.name,
+          symbol:       r.symbol,
+          iconUrl:      r.iconUrl   ?? r.icon_url,
+          tokenType:    r.tokenType ?? r.token_type,
+          packageId:    r.packageId ?? r.package_id,
+          createdAt:    r.createdAt ?? r.created_at,
+        }));
+        setCreatedTokens(normalized);
+      })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [account?.address]);
 
   useEffect(() => {
     if (!createdTokens.length) { setLoading(false); return; }
@@ -551,7 +574,7 @@ function CreatedTab({ account, tokens, lang }) {
 
   return (
     <>
-      {totalClaimable > 0.001 && (
+      {false && totalClaimable > 0.001 && (
         <div className="px-5 py-3 border-b border-white/5 flex items-center justify-between">
           <span className="text-[10px] font-mono text-white/40">
             {fmt(totalClaimable, 4)} SUI claimable
@@ -584,9 +607,7 @@ function CreatedTab({ account, tokens, lang }) {
                   ? <div className="text-[9px] font-mono text-emerald-400">GRAD</div>
                   : <div className="text-[9px] font-mono text-white/20">{fmt(stats.progress, 1)}%</div>
                 }
-                {(stats.creatorFeesSui ?? 0) > 0.001 && (
-                  <div className="text-[9px] font-mono text-lime-400/70">{fmt(stats.creatorFeesSui, 4)} claimable</div>
-                )}
+    {/* claimable fees hidden — indexer estimate is unreliable, use token page to claim */}
               </div>
             }
           />
