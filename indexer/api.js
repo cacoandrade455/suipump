@@ -113,95 +113,52 @@ app.get('/lock/:lockId', async (req, res) => {
 
 // ── /token/:id/metadata-object ────────────────────────────────────────────────
 // Returns the CoinMetadata object ID and initialSharedVersion for a token.
-// Used by the frontend update_metadata PTB.
 app.get('/token/:id/metadata-object', async (req, res) => {
   try {
     const { id } = req.params;
-    // Get token_type from DB
-    const row = await pool.query(
-      'SELECT token_type FROM curves WHERE curve_id = $1', [id]
-    );
+    const row = await pool.query('SELECT token_type FROM curves WHERE curve_id = $1', [id]);
     if (!row.rows.length) return res.status(404).json({ error: 'curve not found' });
     const tokenType = row.rows[0].token_type;
     if (!tokenType) return res.status(404).json({ error: 'token_type not found' });
 
     const GRAPHQL_URL = process.env.SUI_GRAPHQL_URL ?? 'https://graphql.testnet.sui.io/graphql';
 
-    // Try coinMetadata query first (works for frozen V7 metadata)
-    // Then fall back to objectConnection query (works for shared V8/V9 metadata)
-    let objectId = null;
-    let initialSharedVersion = null;
+    // Use SuiGraphQLClient.getCoinMetadata — handles both frozen (V7) and shared (V8/V9)
+    const { SuiGraphQLClient } = await import('@mysten/sui/graphql');
+    const gqlClient = new SuiGraphQLClient({ url: GRAPHQL_URL });
+    const meta = await gqlClient.getCoinMetadata({ coinType: tokenType });
 
-    const query1 = `{
-      coinMetadata(coinType: "${tokenType}") {
-        address
-        owner {
-          ... on Shared { initialSharedVersion }
-          ... on Immutable { _typename }
-        }
-      }
-    }`;
-    const r1 = await fetch(GRAPHQL_URL, {
+    if (meta?.coinMetadata?.id) {
+      return res.json({
+        objectId:             meta.coinMetadata.id,
+        initialSharedVersion: meta.coinMetadata.initialSharedVersion ?? null,
+        tokenType,
+      });
+    }
+
+    // Fallback: query objects by type
+    const metaType = '0x2::coin::CoinMetadata<' + tokenType + '>';
+    const query = JSON.stringify({
+      query: `{ objects(filter: { type: "${metaType}" } first: 1) { nodes { address owner { ... on Shared { initialSharedVersion } ... on Immutable { _typename } } } } }`
+    });
+    const r = await fetch(GRAPHQL_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: query1 }),
+      body: query,
       signal: AbortSignal.timeout(8000),
     });
-    const d1 = await r1.json();
-    const meta1 = d1?.data?.coinMetadata;
-    if (meta1?.address) {
-      objectId = meta1.address;
-      initialSharedVersion = meta1.owner?.initialSharedVersion ?? null;
-    }
+    const d = await r.json();
+    const node = d?.data?.objects?.nodes?.[0];
+    if (!node?.address) return res.status(404).json({ error: 'CoinMetadata not found on-chain' });
 
-    // Fallback: search for CoinMetadata<T> object directly
-    if (!objectId) {
-      const metaType = '0x2::coin::CoinMetadata<' + tokenType + '>';
-      const query2 = '{objects(filter:{type:\"' + metaType + '\"} first:1){nodes{address owner{...on Shared{initialSharedVersion}...on Immutable{_typename}}}}}';
-      const r2 = await fetch(GRAPHQL_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: query2 }),
-        signal: AbortSignal.timeout(8000),
-      });
-      const d2 = await r2.json();
-      const node = d2?.data?.objects?.nodes?.[0];
-      if (node?.address) {
-        objectId = node.address;
-        initialSharedVersion = node.owner?.initialSharedVersion ?? null;
-      }
-    }
-
-    if (!objectId) return res.status(404).json({ error: 'CoinMetadata not found on-chain' });
-
-    res.json({ objectId, initialSharedVersion, tokenType });
+    res.json({
+      objectId:             node.address,
+      initialSharedVersion: node.owner?.initialSharedVersion ?? null,
+      tokenType,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
-
-app.get('/stream', (req, res) => {
-  const curveId = req.query.curveId ?? null;
-  const id      = sseNextId++;
-
-  res.setHeader('Content-Type',      'text/event-stream');
-  res.setHeader('Cache-Control',     'no-cache');
-  res.setHeader('Connection',        'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no');
-  res.flushHeaders();
-
-  const heartbeat = setInterval(() => {
-    try { res.write(': heartbeat\n\n'); }
-    catch { clearInterval(heartbeat); sseClients.delete(id); }
-  }, 30_000);
-
-  sseClients.set(id, { res, curveId });
-  res.write(`data: ${JSON.stringify({ type: 'connected', id })}\n\n`);
-
-  req.on('close', () => {
-    clearInterval(heartbeat);
-    sseClients.delete(id);
-  });
 });
 
 // ── Global stats ──────────────────────────────────────────────────────────────
