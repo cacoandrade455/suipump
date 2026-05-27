@@ -238,37 +238,25 @@ app.get('/token/:id/metadata-object', async (req, res) => {
     }
     if (!objectId) return res.status(404).json({ error: 'CoinMetadata not found on-chain' });
 
-    // Get ISV — from DB if available, else derive from the curve's creation tx
+    // Get ISV — from DB if available, else use SuiGraphQLClient.getObject
     let isv = metadata_shared_version ? Number(metadata_shared_version) : null;
     if (!isv) {
-      // The CoinMetadata object was created in the coin publish tx (Tx1),
-      // right before the curve creation tx (Tx2).
-      // Query GQL for the objectChange that created this object to find its ISV.
-      const q2 = '{ transactionBlockConnection(filter: { changedObject: "' + objectId + '" } last: 100) { nodes { digest effects { objectChanges { nodes { address inputState { version } outputState { version } } } } } } }';
-      const r2 = await fetch(GRAPHQL_URL, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: q2 }),
-        signal: AbortSignal.timeout(10000),
-      });
-      const d2 = await r2.json();
-      // Find the tx where the object was CREATED (no inputState version = creation)
-      const txNodes = d2?.data?.transactionBlockConnection?.nodes ?? [];
-      for (const tx of txNodes) {
-        const changes = tx?.effects?.objectChanges?.nodes ?? [];
-        for (const c of changes) {
-          if (c.address === objectId && !c.inputState) {
-            // outputState.version at creation = ISV
-            isv = Number(c.outputState?.version ?? 0) || null;
-            break;
-          }
+      try {
+        const { SuiGraphQLClient } = await import('@mysten/sui/graphql');
+        const gqlClient = new SuiGraphQLClient({ url: GRAPHQL_URL });
+        const objData = await gqlClient.getObject({ id: objectId });
+        const rawIsv = objData?.object?.owner?.Shared?.initialSharedVersion
+                    ?? objData?.data?.owner?.Shared?.initial_shared_version
+                    ?? null;
+        if (rawIsv) {
+          isv = Number(rawIsv);
+          await pool.query(
+            'UPDATE curves SET metadata_object_id = $2, metadata_shared_version = $3 WHERE curve_id = $1',
+            [id, objectId, isv]
+          );
         }
-        if (isv) break;
-      }
-      if (isv) {
-        await pool.query(
-          'UPDATE curves SET metadata_object_id = $2, metadata_shared_version = $3 WHERE curve_id = $1',
-          [id, objectId, isv]
-        );
+      } catch (e) {
+        console.error('getObject for ISV failed:', e.message);
       }
     }
 
