@@ -329,9 +329,12 @@ app.get('/debug/clear-metadata-isv/:id', async (req, res) => {
 app.get('/token/:id/metadata-object', async (req, res) => {
   try {
     const { id } = req.params;
-    const row = await pool.query('SELECT token_type, metadata_object_id, metadata_shared_version FROM curves WHERE curve_id = $1', [id]);
+    const row = await pool.query(
+      'SELECT token_type, metadata_object_id, metadata_shared_version, package_id FROM curves WHERE curve_id = $1',
+      [id]
+    );
     if (!row.rows.length) return res.status(404).json({ error: 'curve not found' });
-    const { token_type: tokenType, metadata_object_id, metadata_shared_version } = row.rows[0];
+    const { token_type: tokenType, metadata_object_id, metadata_shared_version, package_id: curvePkgId } = row.rows[0];
     if (!tokenType) return res.status(404).json({ error: 'token_type not found' });
 
     if (metadata_object_id && metadata_shared_version) {
@@ -340,85 +343,58 @@ app.get('/token/:id/metadata-object', async (req, res) => {
 
     const GRAPHQL_URL = process.env.SUI_GRAPHQL_URL ?? 'https://graphql.testnet.sui.io/graphql';
 
+    // Get objectId
     let objectId = metadata_object_id ?? null;
     if (!objectId) {
-      const r1 = await fetch(GRAPHQL_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: '{ coinMetadata(coinType: "' + tokenType + '") { address } }' }), signal: AbortSignal.timeout(8000) });
+      const r1 = await fetch(GRAPHQL_URL, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: '{ coinMetadata(coinType: "' + tokenType + '") { address } }' }),
+        signal: AbortSignal.timeout(8000),
+      });
       const d1 = await r1.json();
       objectId = d1?.data?.coinMetadata?.address ?? null;
     }
     if (!objectId) return res.status(404).json({ error: 'CoinMetadata not found on-chain' });
 
-    // Use SuiGraphQLClient.getObject — returns owner.Shared.initialSharedVersion correctly
+    // Get ISV by querying the package that contains the token type
+    // The token type package was published in Tx1 which also created CoinMetadata
     let isv = null;
-    // Use transactionBlocks(changedObject) to find the tx that created this object
-    // The first tx to touch the metadata object is the coin publish tx (Tx1)
-    // Its outputState.version for this object = ISV
-    try {
-      const q3 = '{ transactionBlocks(first: 1 filter: { changedObject: "' + objectId + '" }) { nodes { effects { objectChanges { nodes { address outputState { version } } } } } } }';
-      const r3 = await fetch(GRAPHQL_URL, {
+    const tokenPkg = tokenType.split('::')[0];
+    if (tokenPkg) {
+      // Query the package publish tx — it created the metadata object
+      const q2 = '{ object(address: "' + tokenPkg + '") { previousTransactionBlock { digest } } }';
+      const r2 = await fetch(GRAPHQL_URL, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: q3 }), signal: AbortSignal.timeout(10000),
+        body: JSON.stringify({ query: q2 }), signal: AbortSignal.timeout(8000),
       });
-      const d3 = await r3.json();
-      const firstTx = d3?.data?.transactionBlocks?.nodes?.[0];
-      const changes = firstTx?.effects?.objectChanges?.nodes ?? [];
-      const metaChange = changes.find(c => c.address === objectId);
-      if (metaChange?.outputState?.version) {
-        isv = Number(metaChange.outputState.version);
+      const d2 = await r2.json();
+      const publishDigest = d2?.data?.object?.previousTransactionBlock?.digest ?? null;
+
+      if (publishDigest) {
+        const q3 = '{ transactionBlock(digest: "' + publishDigest + '") { effects { objectChanges { nodes { address outputState { version } } } } } }';
+        const r3 = await fetch(GRAPHQL_URL, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: q3 }), signal: AbortSignal.timeout(8000),
+        });
+        const d3 = await r3.json();
+        const changes = d3?.data?.transactionBlock?.effects?.objectChanges?.nodes ?? [];
+        const metaChange = changes.find(c => c.address === objectId);
+        if (metaChange?.outputState?.version) {
+          isv = Number(metaChange.outputState.version);
+        }
       }
-    } catch (e) {
-      console.error('ISV lookup failed:', e.message);
-    } catch (e) {
-      console.error('getObject ISV failed:', e.message);
     }
 
-    await pool.query('UPDATE curves SET metadata_object_id = $2, metadata_shared_version = $3 WHERE curve_id = $1', [id, objectId, isv]);
+    if (isv) {
+      await pool.query(
+        'UPDATE curves SET metadata_object_id = $2, metadata_shared_version = $3 WHERE curve_id = $1',
+        [id, objectId, isv]
+      );
+    }
+
     res.json({ objectId, initialSharedVersion: isv, tokenType });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// ── /debug/metadata/:tokenType ───────────────────────────────────────────────
-app.get('/debug/metadata/:type(*)', async (req, res) => {
-  try {
-    const tokenType = req.params.type;
-    const GRAPHQL_URL = process.env.SUI_GRAPHQL_URL ?? 'https://graphql.testnet.sui.io/graphql';
-    const metaType = '0x2::coin::CoinMetadata<' + tokenType + '>';
-
-    // Try coinMetadata
-    const r1 = await fetch(GRAPHQL_URL, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: '{ coinMetadata(coinType: "' + tokenType + '") { address owner { ... on Shared { initialSharedVersion }  } } }' }),
-      signal: AbortSignal.timeout(8000),
-    });
-    const d1 = await r1.json();
-
-    // Try objects
-    const r2 = await fetch(GRAPHQL_URL, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: '{ objects(filter: { type: "' + metaType + '" } first: 1) { nodes { address owner { ... on Shared { initialSharedVersion }  } } } }' }),
-      signal: AbortSignal.timeout(8000),
-    });
-    const d2 = await r2.json();
-
-    res.json({ coinMetadata: d1, objectsQuery: d2 });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-
-async function startPgListener() {
-  const client = new pg.Client({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
-  try {
-    await client.connect();
-    await client.query('LISTEN suipump_events');
-    client.on('notification', (msg) => { try { const event = JSON.parse(msg.payload); emitEvent(event.eventType, event.data, event.curveId); } catch {} });
-    client.on('error', (err) => { console.error('  PG listener error:', err.message); client.end().catch(() => {}); setTimeout(startPgListener, 5_000); });
-    console.log('  ✓ PostgreSQL LISTEN active — suipump_events');
-  } catch (err) { console.error('  PG listener connect failed:', err.message); setTimeout(startPgListener, 5_000); }
-}
-
-export function startApi() {
-  app.listen(PORT, () => console.log(`  ✓ API listening on port ${PORT}`));
-  startPgListener().catch(err => console.error('PG listener failed:', err.message));
-}
