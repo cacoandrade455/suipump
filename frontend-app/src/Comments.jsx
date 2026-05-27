@@ -9,7 +9,7 @@ function getPfp(addr) { try { return localStorage.getItem(`suipump_pfp_${addr}`)
 import {
   ALL_PACKAGE_IDS,
   PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6,
-  PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8, PACKAGE_ID_V9,
+  PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8,
   COMMENT_FEE_MIST, isV7OrLater, isV9OrLater,
 } from './constants.js';
 
@@ -259,14 +259,14 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
       if (isV7 && COMMENT_FEE_MIST && BigInt(COMMENT_FEE_MIST) > 0n) {
         const [feeCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(BigInt(COMMENT_FEE_MIST))]);
         if (isV9OrLater(packageId)) {
-          // V9: post_comment(curve, text, payment, author, ctx)
+          // V9: post_comment<T>(curve, text, payment, author, ctx)
           tx.moveCall({
             target: `${packageId}::bonding_curve::post_comment`,
             typeArguments: [tokenType],
             arguments: [curveRef, tx.pure.string(trimmed), feeCoin, tx.pure.address(account.address)],
           });
         } else {
-          // V7/V8: post_comment(curve, payment, text, ctx)
+          // V7/V8: post_comment<T>(curve, payment, text, ctx)
           tx.moveCall({
             target: `${packageId}::bonding_curve::post_comment`,
             typeArguments: [tokenType],
