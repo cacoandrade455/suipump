@@ -1,173 +1,164 @@
-// claim_fees.js
-// Claims accumulated protocol fees from ALL SuiPump curves via AdminCap.
-// Queries every CurveCreated event, checks each curve for protocol fees,
-// and claims from any that have a non-zero balance.
-//
-// Usage:
-//   node claim_fees.js              — claims from all curves
-//   node claim_fees.js <CURVE_ID>   — claims from a specific curve only
+// claim_fees.js — uses indexer for all data, GQL only for signing
+// Usage: node scripts/claim_fees.js [CURVE_ID]
 
-import { client, loadKeypair, PACKAGE_ID, ADMIN_CAP_ID, fmtSui } from './config.js';
+import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { Transaction } from '@mysten/sui/transactions';
+import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
+import { fromBase64 } from '@mysten/sui/utils';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 
-// All package versions — fees live on curves from every version.
-const PACKAGE_ID_V4 = '0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8';
-const PACKAGE_ID_V5 = '0x785c0604cb6c60a8547501e307d2b0ca7a586ff912c8abff4edfb88db65b7236';
-const PACKAGE_ID_V6 = '0x21d5b1284d5f1d4d14214654f414ffca20c757ee9f9db7701d3ffaaac62cd768';
-const PACKAGE_ID_V7 = '0xfb8f3f3e4e8d53130ac140906eebea6b6740bfaf0c971aec607fbc723be951f0';
-const ALL_PACKAGE_IDS = [PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7];
+const GRAPHQL_URL = process.env.SUI_GRAPHQL_URL  ?? 'https://graphql.testnet.sui.io/graphql';
+const INDEXER_URL = process.env.INDEXER_URL       ?? 'https://suipump-62s2.onrender.com';
 
-// V7+ has a separate airdrop fee bucket claimed via claim_airdrop_fees.
-const isV7 = (pkg) => pkg === PACKAGE_ID_V7;
+const client = new SuiGraphQLClient({ url: GRAPHQL_URL });
+
+const ALL_PACKAGES = [
+  { ver:'V4',   id:'0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8', adminCap:'0xfc80d407147af9445d7042a6a538524b5a483cc995fdbf0c795ce7eab506b6f9' },
+  { ver:'V5',   id:'0x785c0604cb6c60a8547501e307d2b0ca7a586ff912c8abff4edfb88db65b7236', adminCap:'0xfc80d407147af9445d7042a6a538524b5a483cc995fdbf0c795ce7eab506b6f9' },
+  { ver:'V6',   id:'0x21d5b1284d5f1d4d14214654f414ffca20c757ee9f9db7701d3ffaaac62cd768', adminCap:'0xfc80d407147af9445d7042a6a538524b5a483cc995fdbf0c795ce7eab506b6f9' },
+  { ver:'V7',   id:'0xfb8f3f3e4e8d53130ac140906eebea6b6740bfaf0c971aec607fbc723be951f0', adminCap:'0x1dc44030adaa6e366666a8e095fc29a5a55c8ae614f04c5e93c062a85b475527' },
+  { ver:'V8_1', id:'0x145a1e79b83cc17680dbfe4f96839cd359c7db380ac15463ecb6dc30f9849b69', adminCap:'0x9779a2466f2e30ca5e139f636cc9ca1c44e025da29203d781cc2645ebb62bb35' },
+  { ver:'V8',   id:'0xbb4ee050239f59dfd983501ce101698ba27857f77aff2d437cec568fe0062546', adminCap:'0x9779a2466f2e30ca5e139f636cc9ca1c44e025da29203d781cc2645ebb62bb35' },
+];
+const V7_PLUS = new Set(ALL_PACKAGES.slice(3).map(p => p.id));
+function fmtSui(mist) { return (Number(mist)/1e9).toFixed(4)+' SUI'; }
+
+function loadKeypair() {
+  if (process.env.SUI_PRIVATE_KEY) {
+    const raw = fromBase64(process.env.SUI_PRIVATE_KEY);
+    return Ed25519Keypair.fromSecretKey(raw.length > 32 ? raw.slice(1) : raw);
+  }
+  const keys = JSON.parse(readFileSync(join(homedir(),'.sui','sui_config','sui.keystore'),'utf-8'));
+  return Ed25519Keypair.fromSecretKey(fromBase64(keys[0]).slice(1));
+}
+
+function resolvePackage(typeStr) {
+  return ALL_PACKAGES.find(p => typeStr?.includes(p.id)) ?? null;
+}
+function resolvePackage2(packageId) {
+  return ALL_PACKAGES.find(p => p.id === packageId) ?? ALL_PACKAGES.at(-1);
+}
+
+async function fetchJson(url) {
+  const r = await fetch(url, { signal: AbortSignal.timeout(10000) });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+// Get on-chain fees directly via raw GQL fetch (bypasses SDK wrapper)
+async function fetchOnChainFees(curveId) {
+  const query = `{ object(address: "${curveId}") { type { repr } owner { ... on Shared { initialSharedVersion } } asMoveObject { contents { json } } } }`;
+  const r = await fetch(GRAPHQL_URL, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query }), signal: AbortSignal.timeout(10000),
+  });
+  const result = await r.json();
+  const obj = result?.data?.object;
+  if (!obj) return null;
+  const json = obj.asMoveObject?.contents?.json ?? {};
+  // Parse token type from on-chain type string — always accurate
+  const typeRepr = obj.type?.repr ?? '';
+  const onChainTokenType = typeRepr.match(/Curve<(.+)>$/)?.[1] ?? null;
+  const onChainIsv = obj.owner?.initialSharedVersion ?? null;
+  return {
+    protocolFees:     BigInt(json.protocol_fees ?? 0),
+    airdropFees:      BigInt(json.airdrop_fees  ?? 0),
+    name:             json.name   ?? '?',
+    symbol:           json.symbol ?? '?',
+    onChainTokenType,
+    onChainIsv,
+    onChainTypeRepr:  typeRepr,
+  };
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
 
 const keypair = loadKeypair();
 const address = keypair.toSuiAddress();
 const specificCurve = process.argv[2] ?? null;
 
 console.log('━'.repeat(60));
-console.log('  SUIPUMP — claim all protocol + airdrop fees');
+console.log('  SUIPUMP — collect protocol + airdrop fees');
 console.log('━'.repeat(60));
-console.log(`  wallet:     ${address}`);
-console.log(`  admin cap:  ${ADMIN_CAP_ID}`);
-console.log();
+console.log(`  wallet:  ${address}`);
+console.log(`  indexer: ${INDEXER_URL}\n`);
 
-// --- Fetch all curve IDs from CurveCreated events across ALL packages ---
-let curveIds = [];
-
+// Get curve list from indexer
+let tokens;
 if (specificCurve) {
-  curveIds = [specificCurve];
-  console.log(`  Mode: single curve`);
+  // fetch single token info
+  tokens = [await fetchJson(`${INDEXER_URL}/token/${specificCurve}`)];
 } else {
-  console.log(`  Fetching all curves from CurveCreated events (V4-V7)...`);
-  for (const pkg of ALL_PACKAGE_IDS) {
-    try {
-      const events = await client.queryEvents({
-        query: { MoveEventType: `${pkg}::bonding_curve::CurveCreated` },
-        limit: 1000,
-        order: 'ascending',
-      });
-      const ids = events.data.map(e => e.parsedJson?.curve_id).filter(Boolean);
-      curveIds.push(...ids);
-    } catch {
-      // package may have no events — skip
-    }
-  }
-  // de-dup
-  curveIds = [...new Set(curveIds)];
-  console.log(`  Found ${curveIds.length} curve(s) across all versions`);
+  console.log('  Fetching all curves from indexer...');
+  tokens = await fetchJson(`${INDEXER_URL}/tokens`);
+  console.log(`  Found ${tokens.length} curves\n`);
 }
 
-console.log();
+let totalClaimed = 0n, claimCount = 0, skipped = 0;
 
-// --- Check each curve for protocol + airdrop fees ---
-let totalClaimed = 0n;
-let claimCount = 0;
+for (const token of tokens) {
+  const curveId   = token.curveId ?? token.curve_id;
+  const packageId = token.packageId ?? token.package_id;
+  const tokenType = token.tokenType ?? token.token_type;
+  const isv       = token.initialSharedVersion ?? token.initial_shared_version ?? null;
+  const name      = token.name ?? '?';
+  const symbol    = token.symbol ?? '?';
 
-// Resolve which package a curve belongs to from its type string.
-function resolvePackageId(typeStr) {
-  if (typeStr?.includes(PACKAGE_ID_V7)) return PACKAGE_ID_V7;
-  if (typeStr?.includes(PACKAGE_ID_V6)) return PACKAGE_ID_V6;
-  if (typeStr?.includes(PACKAGE_ID_V5)) return PACKAGE_ID_V5;
-  if (typeStr?.includes(PACKAGE_ID_V4)) return PACKAGE_ID_V4;
-  return PACKAGE_ID;
-}
+  if (!curveId || !packageId || !tokenType) { skipped++; continue; }
 
-for (const curveId of curveIds) {
   try {
-    const curveObj = await client.getObject({
-      id: curveId,
-      options: { showContent: true, showType: true },
-    });
+    // Fetch real on-chain fees
+    const fees = await fetchOnChainFees(curveId);
+    if (!fees) { process.stdout.write('.'); continue; }
 
-    if (curveObj.error || !curveObj.data?.content?.fields) {
-      console.log(`  ⚠ Could not fetch curve ${curveId.slice(0, 12)}... — skipping`);
-      continue;
-    }
+    const { protocolFees, airdropFees } = fees;
+    const resolvedTokenType = fees.onChainTokenType ?? tokenType;
+    const resolvedIsv       = fees.onChainIsv       ?? isv;
+    const pkg = resolvePackage(fees.onChainTypeRepr) ?? resolvePackage2(packageId);
+    const claimAmt = protocolFees + (V7_PLUS.has(pkg.id) ? airdropFees : 0n);
 
-    const fields = curveObj.data.content.fields;
-    const typeStr = curveObj.data.type ?? '';
-    const pkgId = resolvePackageId(typeStr);
-    const protocolFees = BigInt(fields.protocol_fees ?? 0);
-    // V7+ curves have a separate airdrop_fees balance.
-    const airdropFees = BigInt(fields.airdrop_fees ?? 0);
+    if (claimAmt === 0n) { process.stdout.write('.'); continue; }
 
-    console.log(`  ${fields.name} ($${fields.symbol})`);
-    console.log(`    curve:          ${curveId.slice(0, 20)}...`);
-    console.log(`    package:        ${pkgId.slice(0, 10)}... (${isV7(pkgId) ? 'v7' : 'legacy'})`);
-    console.log(`    protocol_fees:  ${fmtSui(protocolFees)}`);
-    if (isV7(pkgId)) {
-      console.log(`    airdrop_fees:   ${fmtSui(airdropFees)}`);
-    }
+    console.log(`\n  ${name} ($${symbol})`);
+    console.log(`    protocol: ${fmtSui(protocolFees)}${V7_PLUS.has(pkg.id) ? `  airdrop: ${fmtSui(airdropFees)}` : ''}`);
+    console.log(`    → claiming ${fmtSui(claimAmt)}...`);
 
-    if (protocolFees === 0n && airdropFees === 0n) {
-      console.log(`    → nothing to claim, skipping`);
-      console.log();
-      continue;
-    }
-
-    const match = typeStr.match(/Curve<(.+)>$/);
-    if (!match) {
-      console.log(`    ⚠ Could not parse token type — skipping`);
-      console.log();
-      continue;
-    }
-    const tokenType = match[1];
-
-    // Single PTB: claim protocol fees, and (V7+) airdrop fees too.
     const tx = new Transaction();
-    const coinsToTransfer = [];
+    const curveRef = resolvedIsv
+      ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: Number(resolvedIsv), mutable: true })
+      : tx.object(curveId);
 
-    if (protocolFees > 0n) {
-      const suiOut = tx.moveCall({
-        target: `${pkgId}::bonding_curve::claim_protocol_fees`,
-        typeArguments: [tokenType],
-        arguments: [tx.object(ADMIN_CAP_ID), tx.object(curveId)],
-      });
-      coinsToTransfer.push(suiOut);
-    }
-    if (isV7(pkgId) && airdropFees > 0n) {
-      const airdropOut = tx.moveCall({
-        target: `${pkgId}::bonding_curve::claim_airdrop_fees`,
-        typeArguments: [tokenType],
-        arguments: [tx.object(ADMIN_CAP_ID), tx.object(curveId)],
-      });
-      coinsToTransfer.push(airdropOut);
-    }
+    const coins = [];
+    if (protocolFees > 0n)
+      coins.push(tx.moveCall({ target:`${pkg.id}::bonding_curve::claim_protocol_fees`, typeArguments:[resolvedTokenType], arguments:[tx.object(pkg.adminCap), curveRef] }));
+    if (V7_PLUS.has(pkg.id) && airdropFees > 0n)
+      coins.push(tx.moveCall({ target:`${pkg.id}::bonding_curve::claim_airdrop_fees`,  typeArguments:[resolvedTokenType], arguments:[tx.object(pkg.adminCap), curveRef] }));
+    tx.transferObjects(coins, address);
 
-    const claimingNow = protocolFees + (isV7(pkgId) ? airdropFees : 0n);
-    console.log(`    → claiming ${fmtSui(claimingNow)}...`);
-    tx.transferObjects(coinsToTransfer, address);
+    tx.setSender(address);
+    const builtTx = await tx.build({ client });
+    const { signature } = await keypair.signTransaction(builtTx);
+    const execRes = await client.executeTransaction({ transaction: builtTx, signatures: [signature] });
 
-    const result = await client.signAndExecuteTransaction({
-      signer: keypair,
-      transaction: tx,
-      options: { showEffects: true },
-    });
-
-    if (result.effects.status.status === 'success') {
-      console.log(`    ✓ Claimed! digest: ${result.digest}`);
-      console.log(`    https://testnet.suivision.xyz/txblock/${result.digest}`);
-      totalClaimed += claimingNow;
-      claimCount++;
+    if (execRes?.errors?.length) {
+      console.log(`    ❌ ${execRes.errors[0]?.message}`);
     } else {
-      console.log(`    ❌ Failed: ${result.effects.status.error}`);
+      const digest = execRes?.data?.executeTransaction?.digest ?? '?';
+      console.log(`    ✓ ${digest}`);
+      console.log(`    https://testnet.suivision.xyz/txblock/${digest}`);
+      totalClaimed += claimAmt;
+      claimCount++;
     }
 
-    console.log();
-    await new Promise(r => setTimeout(r, 1000));
+    await new Promise(r => setTimeout(r, 400));
 
-  } catch (err) {
-    console.log(`  ❌ Error on curve ${curveId.slice(0, 12)}...: ${err.message || String(err)}`);
-    console.log();
+  } catch(e) {
+    console.log(`\n  ❌ ${curveId?.slice(0,16)}...: ${e.message}`);
   }
 }
 
-// --- Summary ---
-console.log('━'.repeat(60));
-console.log(`  DONE — claimed from ${claimCount} curve(s)`);
-console.log(`  Total claimed: ${fmtSui(totalClaimed)}`);
-console.log();
-
-const newBalance = await client.getBalance({ owner: address });
-console.log(`  Wallet balance: ${fmtSui(newBalance.totalBalance)}`);
+console.log('\n'+'━'.repeat(60));
+console.log(`  Done — ${claimCount} claimed · ${skipped} skipped · ${fmtSui(totalClaimed)} total`);
 console.log('━'.repeat(60));
