@@ -13,7 +13,7 @@ import { useTokenPageFeed } from './useRealtimeFeed.js';
 import HolderList from './HolderList.jsx';
 import Comments from './Comments.jsx';
 import AIAnalysis from './AIAnalysis.jsx';
-import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8, PACKAGE_ID_V9, ALL_PACKAGE_IDS, MIST_PER_SUI, DRAIN_SUI_APPROX, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_SUI_V6, VIRTUAL_SUI_V7, VIRTUAL_SUI_V8, VIRTUAL_SUI_V9, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, VIRTUAL_TOKENS_V6, VIRTUAL_TOKENS_V7, VIRTUAL_TOKENS_V8, VIRTUAL_TOKENS_V9, DRAIN_SUI_V4, DRAIN_SUI_V5, DRAIN_SUI_V6, DRAIN_SUI_V7, DRAIN_SUI_V8, DRAIN_SUI_V9, isNewCurve, isV5OrLater, isV7OrLater, isV8OrLater, isV9OrLater, supportsMetadataUpdate, curveShapeFor } from './constants.js';
+import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8, ALL_PACKAGE_IDS, MIST_PER_SUI, DRAIN_SUI_APPROX, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_SUI_V6, VIRTUAL_SUI_V7, VIRTUAL_SUI_V8, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, VIRTUAL_TOKENS_V6, VIRTUAL_TOKENS_V7, VIRTUAL_TOKENS_V8, DRAIN_SUI_V4, DRAIN_SUI_V5, DRAIN_SUI_V6, DRAIN_SUI_V7, DRAIN_SUI_V8, isNewCurve, isV5OrLater, isV7OrLater, isV8OrLater, supportsMetadataUpdate , curveShapeFor } from './constants.js';
 import { buyQuote, sellQuote } from './curve.js';
 import { t } from './i18n.js';
 
@@ -110,7 +110,6 @@ function isPlaceholderDesc(desc) {
 function getTokenPackageId(tokenType) {
   if (!tokenType) return null;
   if (PACKAGE_ID_V9 && tokenType.startsWith(PACKAGE_ID_V9)) return PACKAGE_ID_V9;
-  if (PACKAGE_ID_V9  && tokenType.startsWith(PACKAGE_ID_V9))  return PACKAGE_ID_V9;
   if (PACKAGE_ID_V8_1 && tokenType.startsWith(PACKAGE_ID_V8_1)) return PACKAGE_ID_V8_1;
   if (PACKAGE_ID_V8 && tokenType.startsWith(PACKAGE_ID_V8)) return PACKAGE_ID_V8;
   if (PACKAGE_ID_V7 && tokenType.startsWith(PACKAGE_ID_V7)) return PACKAGE_ID_V7;
@@ -128,7 +127,7 @@ function resolvePackageId(tokenType, packageIdHint) {
   if (packageIdHint) return packageIdHint;
   const fromType = getTokenPackageId(tokenType);
   if (fromType) return fromType;
-  return PACKAGE_ID;
+  return PACKAGE_ID_V8;
 }
 
 const SLIPPAGE_PRESETS = ['0.5', '1', '2', '5'];
@@ -396,7 +395,7 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
   const isV6Token = !!(PACKAGE_ID_V6 && pkgId === PACKAGE_ID_V6);
   const isV7Token = isV7OrLater(pkgId);
   const isV8Token = isV8OrLater(pkgId);
-  const metadataPkg = pkgId === PACKAGE_ID_V8_1 ? PACKAGE_ID_V8_1 : isV8Token ? PACKAGE_ID_V8 : PACKAGE_ID_V7;
+  const metadataPkg = isV9OrLater(pkgId) ? PACKAGE_ID_V9 : pkgId === PACKAGE_ID_V8_1 ? PACKAGE_ID_V8_1 : isV8Token ? PACKAGE_ID_V8 : PACKAGE_ID_V7;
   const METADATA_UPDATE_ENABLED = true;
 
   const [tab,  setTab]  = useState('links');
@@ -453,7 +452,7 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
 
   const handleUpdateMetadata = async () => {
     if (!meta.name && !meta.symbol && !meta.description && !meta.iconUrl) { showMsg('Fill in at least one field'); return; }
-    if (!isV7Token || !metadataPkg) { showMsg('On-chain metadata update is V7 only'); return; }
+    if (!(isV7Token || isV8Token || isV9OrLater(pkgId)) || !metadataPkg) { showMsg('Metadata update requires V7+ token'); return; }
     const windowClosesAt = curveState?.created_at_ms ? Number(curveState.created_at_ms) + 24 * 60 * 60 * 1000 : 0;
     if (windowClosesAt > 0 && Date.now() >= windowClosesAt) { showMsg('24h window has closed'); return; }
     if (curveState?.metadata_updated === true) { showMsg('Already updated — one time only'); return; }
@@ -493,7 +492,7 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
           <span className="text-[9px] font-mono tracking-widest text-lime-400/70">CREATOR TOOLS</span>
         </div>
         <div className="flex gap-1">
-          {['links', ...((METADATA_UPDATE_ENABLED && (isV6Token || isV7Token || isV8Token)) ? ['metadata'] : [])].map(tabName => (
+          {['links', ...((METADATA_UPDATE_ENABLED && (isV6Token || isV7Token || isV8Token || isV9OrLater(pkgId))) ? ['metadata'] : [])].map(tabName => (
             <button key={tabName} onClick={() => setTab(tabName)} className={`px-2.5 py-1 rounded-lg text-[9px] font-mono transition-colors ${tab === tabName ? 'bg-lime-400/10 text-lime-400 border border-lime-400/30' : 'text-white/30 hover:text-white/60'}`}>{tabName.toUpperCase()}</button>
           ))}
         </div>
@@ -510,7 +509,7 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
         </div>
       )}
 
-      {METADATA_UPDATE_ENABLED && tab === 'metadata' && (isV6Token || isV7Token || isV8Token) && (() => {
+      {METADATA_UPDATE_ENABLED && tab === 'metadata' && (isV6Token || isV7Token || isV8Token || isV9OrLater(pkgId)) && (() => {
         const windowClosesAt = curveState?.created_at_ms ? Number(curveState.created_at_ms) + 24 * 60 * 60 * 1000 : 0;
         const nowMs      = Date.now();
         const windowOpen = windowClosesAt > 0 && nowMs < windowClosesAt;
@@ -1414,7 +1413,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
     }
     (async () => {
       try {
-        const packageIds = [PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i);
+        const packageIds = ALL_PACKAGE_IDS.filter(Boolean).filter((v, i, a) => a.indexOf(v) === i);
         let found = null;
         for (const pid of packageIds) {
           if (found) break;
