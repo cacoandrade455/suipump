@@ -408,7 +408,7 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
   const showMsg = (m) => { setMsg(m); setTimeout(() => setMsg(''), 4000); };
 
   const getCapId = async () => {
-    // 1. Try indexer first — single fast call, no CORS issues
+    // 1. Try indexer /creator-cap endpoint
     const IURL_CAP = import.meta.env.VITE_INDEXER_URL || '';
     if (IURL_CAP) {
       try {
@@ -416,14 +416,21 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
         if (res.ok) { const d = await res.json(); if (d.objectId) return d.objectId; }
       } catch {}
     }
-    // 2. Fallback: query GraphQL directly for each package version
+    // 2. Direct Sui GQL fetch (bypasses dapp-kit-react client wrapper)
+    const GRAPHQL_URL = 'https://graphql.testnet.sui.io/graphql';
     for (const pid of ALL_PACKAGE_IDS) {
       try {
-        const gqlCap = `{ owner(address: "${account.address}") { objects(filter: { type: "${pid}::bonding_curve::CreatorCap" }) { nodes { address contents { json } } } } }`;
-        const capRes = await client.graphql({ query: gqlCap });
-        const capNodes = capRes?.data?.owner?.objects?.nodes ?? [];
-        const capObj = capNodes.find(n => n.contents?.json?.curve_id === curveId);
-        if (capObj) return capObj.address;
+        const query = `{ address(address: "${account.address}") { objects(filter: { type: "${pid}::bonding_curve::CreatorCap" }) { nodes { address contents { json } } } } }`;
+        const r = await fetch(GRAPHQL_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query }),
+          signal: AbortSignal.timeout(8000),
+        });
+        const result = await r.json();
+        const nodes = result?.data?.address?.objects?.nodes ?? [];
+        const cap = nodes.find(n => n.contents?.json?.curve_id === curveId);
+        if (cap) return cap.address;
       } catch {}
     }
     throw new Error('CreatorCap not found in wallet');
@@ -620,15 +627,24 @@ function TradePanelContent({
           if (capRes.ok) { const capData = await capRes.json(); if (capData.objectId) capId = capData.objectId; }
         } catch {}
       }
-      // Fallback: Search all package versions for CreatorCap via GraphQL
-      if (!capId) for (const searchPkg of ALL_PACKAGE_IDS) {
-        try {
-          const gqlPC = `{ owner(address: "${account.address}") { objects(filter: { type: "${searchPkg}::bonding_curve::CreatorCap" }) { nodes { address contents { json } } } } }`;
-          const pcRes = await client2.graphql({ query: gqlPC });
-          const pcNodes = pcRes?.data?.owner?.objects?.nodes ?? [];
-          const match = pcNodes.find(n => n.contents?.json?.curve_id === panelCurveId);
-          if (match) { capId = match.address; capPkgId = searchPkg; break; }
-        } catch {}
+      // Fallback: Direct Sui GQL fetch (bypasses dapp-kit-react client wrapper)
+      if (!capId) {
+        const GRAPHQL_URL_P = 'https://graphql.testnet.sui.io/graphql';
+        for (const searchPkg of ALL_PACKAGE_IDS) {
+          try {
+            const query = `{ address(address: "${account.address}") { objects(filter: { type: "${searchPkg}::bonding_curve::CreatorCap" }) { nodes { address contents { json } } } } }`;
+            const r = await fetch(GRAPHQL_URL_P, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ query }),
+              signal: AbortSignal.timeout(8000),
+            });
+            const result = await r.json();
+            const nodes = result?.data?.address?.objects?.nodes ?? [];
+            const match = nodes.find(n => n.contents?.json?.curve_id === panelCurveId);
+            if (match) { capId = match.address; capPkgId = searchPkg; break; }
+          } catch {}
+        }
       }
       if (!capId) throw new Error('CreatorCap not found in wallet');
 
@@ -1486,37 +1502,17 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   const _overrideIcon = _metaOverride.iconUrl || null;
 
   const [isCreator, setIsCreator] = React.useState(false);
+  // isCreator: true when wallet address matches the curve's creator field.
+  // This is fast, reliable, and doesn't require a GQL call.
+  // curveState.creator is loaded from the indexer on mount.
   React.useEffect(() => {
-    if (!account?.address || !curveId || !client) { setIsCreator(false); return; }
-    let cancelled = false;
-    // Gate on cap ownership — not creator address. Disappears automatically after transfer.
-    async function checkCapOwnership() {
-      // Try indexer first — fast single call
-      const IURL_IC = import.meta.env.VITE_INDEXER_URL || '';
-      if (IURL_IC) {
-        try {
-          const icRes = await fetch(`${IURL_IC}/token/${curveId}/creator-cap?owner=${account.address}`, { signal: AbortSignal.timeout(5000) });
-          if (icRes.ok) {
-            const d = await icRes.json();
-            if (d.objectId) { if (!cancelled) setIsCreator(true); return; }
-          }
-        } catch {}
-      }
-      // Fallback: GraphQL per package
-      for (const pid of ALL_PACKAGE_IDS) {
-        try {
-          const gqlIC = `{ owner(address: "${account.address}") { objects(filter: { type: "${pid}::bonding_curve::CreatorCap" }) { nodes { address contents { json } } } } }`;
-          const icRes = await client.graphql({ query: gqlIC });
-          const icNodes = icRes?.data?.owner?.objects?.nodes ?? [];
-          const capMatch = icNodes.find(n => n.contents?.json?.curve_id === curveId);
-          if (capMatch) { if (!cancelled) setIsCreator(true); return; }
-        } catch {}
-      }
-      if (!cancelled) setIsCreator(false);
+    if (!account?.address) { setIsCreator(false); return; }
+    if (curveState?.creator) {
+      setIsCreator(curveState.creator === account.address);
+    } else {
+      setIsCreator(false);
     }
-    checkCapOwnership();
-    return () => { cancelled = true; };
-  }, [account?.address, curveId, client]);
+  }, [account?.address, curveState?.creator]);
 
   // ── actions ───────────────────────────────────────────────────────────────
 
