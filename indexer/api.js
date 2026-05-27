@@ -125,30 +125,66 @@ app.get('/token/:id/metadata-object', async (req, res) => {
     const tokenType = row.rows[0].token_type;
     if (!tokenType) return res.status(404).json({ error: 'token_type not found' });
 
-    // Query GraphQL for CoinMetadata object
     const GRAPHQL_URL = process.env.SUI_GRAPHQL_URL ?? 'https://graphql.testnet.sui.io/graphql';
-    const query = `{
+
+    // Try coinMetadata query first (works for frozen V7 metadata)
+    // Then fall back to objectConnection query (works for shared V8/V9 metadata)
+    let objectId = null;
+    let initialSharedVersion = null;
+
+    const query1 = `{
       coinMetadata(coinType: "${tokenType}") {
         address
-        asMoveObject { contents { json } }
-        owner { ... on Shared { initialSharedVersion } }
+        owner {
+          ... on Shared { initialSharedVersion }
+          ... on Immutable { _typename }
+        }
       }
     }`;
-    const gqlRes = await fetch(GRAPHQL_URL, {
+    const r1 = await fetch(GRAPHQL_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query }),
+      body: JSON.stringify({ query: query1 }),
       signal: AbortSignal.timeout(8000),
     });
-    const gqlData = await gqlRes.json();
-    const meta = gqlData?.data?.coinMetadata;
-    if (!meta?.address) return res.status(404).json({ error: 'CoinMetadata not found on-chain' });
+    const d1 = await r1.json();
+    const meta1 = d1?.data?.coinMetadata;
+    if (meta1?.address) {
+      objectId = meta1.address;
+      initialSharedVersion = meta1.owner?.initialSharedVersion ?? null;
+    }
 
-    res.json({
-      objectId:             meta.address,
-      initialSharedVersion: meta.owner?.initialSharedVersion ?? null,
-      tokenType,
-    });
+    // Fallback: search for CoinMetadata<T> object directly
+    if (!objectId) {
+      const metaType = \`0x2::coin::CoinMetadata<\${tokenType}>\`;
+      const query2 = \`{
+        objects(filter: { type: "\${metaType}" }, first: 1) {
+          nodes {
+            address
+            owner {
+              ... on Shared { initialSharedVersion }
+              ... on Immutable { _typename }
+            }
+          }
+        }
+      }\`;
+      const r2 = await fetch(GRAPHQL_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: query2 }),
+        signal: AbortSignal.timeout(8000),
+      });
+      const d2 = await r2.json();
+      const node = d2?.data?.objects?.nodes?.[0];
+      if (node?.address) {
+        objectId = node.address;
+        initialSharedVersion = node.owner?.initialSharedVersion ?? null;
+      }
+    }
+
+    if (!objectId) return res.status(404).json({ error: 'CoinMetadata not found on-chain' });
+
+    res.json({ objectId, initialSharedVersion, tokenType });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
