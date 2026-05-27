@@ -1488,10 +1488,14 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   const priceMist       = curveState ? priceMistPerToken(reserveMist, tokensSold, vSui, vTok) : 0n;
   const priceSui        = Number(priceMist) / 1e9;
   const priceUsd        = priceSui * suiUsd;
-  // Pump.fun-style mcap: real_sui_reserve × (total_supply / lp_supply)
-  // Scales from ~$0 at launch to ~$66K at graduation (12,305 SUI raised)
-  const LP_SUPPLY_WHOLE  = 200_000_000;
-  const marketCapSui    = (Number(reserveMist) / 1e9) * (TOTAL_SUPPLY_WHOLE / LP_SUPPLY_WHOLE);
+  // Pump.fun-style mcap using constant-product curve price × total supply.
+  // Formula: price = (vSui + realSui)² / (vSui * vTok)
+  //          mcap  = price * TOTAL_SUPPLY
+  // Gives ~$4.4K at launch → ~$66K at graduation = 15x ✓
+  const _realSui    = Number(reserveMist) / 1e9;
+  const _k          = vSui * vTok;
+  const _priceSui   = _k > 0 ? (vSui + _realSui) * (vSui + _realSui) / _k : 0;
+  const marketCapSui = _priceSui * TOTAL_SUPPLY_WHOLE;
   const graduated       = curveState?.graduated ?? false;
   const creatorFeesMist = curveState ? BigInt(curveState.creator_fees ?? 0) : 0n;
   const creatorAddr     = curveState?.creator ?? null;
