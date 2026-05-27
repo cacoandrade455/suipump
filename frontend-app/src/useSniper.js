@@ -29,7 +29,7 @@ import { Transaction } from '@mysten/sui/transactions';
 import { saveTPSL, makeLevel } from './useTPSL.js';
 import {
   PACKAGE_ID_V8, MIST_PER_SUI,
-  isV5OrLater, isV7OrLater, curveShapeFor,
+  isV5OrLater, isV9OrLater, isV7OrLater, curveShapeFor,
 } from './constants.js';
 import { buyQuote, sellQuote } from './curve.js';
 
@@ -186,9 +186,11 @@ export function useSniper({ walletAddress, keypair }) {
       const curveRef  = tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: isv, mutable: true });
       const [payment] = tx.splitCoins(tx.gas, [tx.pure.u64(suiInMist)]);
 
-      const buyArgs = isV5OrLater(pkgId)
-        ? [curveRef, payment, tx.pure.u64(minOut), tx.pure.option('address', null), tx.object(SUI_CLOCK_ID)]
-        : [curveRef, payment, tx.pure.u64(minOut)];
+      const buyArgs = isV9OrLater(pkgId)
+        ? [curveRef, payment, tx.pure.u64(minOut), tx.pure.option('address', null), tx.object(SUI_CLOCK_ID), tx.pure.u64(0)]
+        : isV5OrLater(pkgId)
+          ? [curveRef, payment, tx.pure.u64(minOut), tx.pure.option('address', null), tx.object(SUI_CLOCK_ID)]
+          : [curveRef, payment, tx.pure.u64(minOut)];
 
       const [tokens, refund] = tx.moveCall({
         target: `${pkgId}::bonding_curve::buy`,
