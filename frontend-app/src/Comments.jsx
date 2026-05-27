@@ -9,8 +9,8 @@ function getPfp(addr) { try { return localStorage.getItem(`suipump_pfp_${addr}`)
 import {
   ALL_PACKAGE_IDS,
   PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6,
-  PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8,
-  COMMENT_FEE_MIST, isV7OrLater,
+  PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8, PACKAGE_ID_V9,
+  COMMENT_FEE_MIST, isV7OrLater, isV9OrLater,
 } from './constants.js';
 
 const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
@@ -155,7 +155,7 @@ function CommentItem({ comment, replies, account, curveId, onReplyPosted }) {
   );
 }
 
-export default function Comments({ curveId, packageId, initialSharedVersion = null }) {
+export default function Comments({ curveId, packageId, initialSharedVersion = null, tokenType = null }) {
   const account = useCurrentAccount();
   const dAppKit = useDAppKit();
 
@@ -258,14 +258,26 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
 
       if (isV7 && COMMENT_FEE_MIST && BigInt(COMMENT_FEE_MIST) > 0n) {
         const [feeCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(BigInt(COMMENT_FEE_MIST))]);
-        tx.moveCall({
-          target: `${packageId}::bonding_curve::post_comment`,
-          arguments: [curveRef, feeCoin, tx.pure.string(trimmed)],
-        });
+        if (isV9OrLater(packageId)) {
+          // V9: post_comment(curve, text, payment, author, ctx)
+          tx.moveCall({
+            target: `${packageId}::bonding_curve::post_comment`,
+            typeArguments: [tokenType],
+            arguments: [curveRef, tx.pure.string(trimmed), feeCoin, tx.pure.address(account.address)],
+          });
+        } else {
+          // V7/V8: post_comment(curve, payment, text, ctx)
+          tx.moveCall({
+            target: `${packageId}::bonding_curve::post_comment`,
+            typeArguments: [tokenType],
+            arguments: [curveRef, feeCoin, tx.pure.string(trimmed)],
+          });
+        }
       } else {
+        // V4/V5/V6: post_comment(curve_id, text, ctx) — no fee, no type arg
         tx.moveCall({
           target: `${packageId}::bonding_curve::post_comment`,
-          arguments: [curveRef, tx.pure.string(trimmed)],
+          arguments: [tx.pure.address(curveId), tx.pure.string(trimmed)],
         });
       }
 
