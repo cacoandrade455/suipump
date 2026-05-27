@@ -4,7 +4,7 @@ import pg from 'pg';
 import cors from 'cors';
 import {
   getGlobalStats, getTokenStats, getTradeHistory,
-  getAllCurves, pool, getLock, getLocksForCurve,
+  getAllCurves, pool,
 } from './db.js';
 
 const PORT = parseInt(process.env.PORT || '3001');
@@ -340,28 +340,54 @@ app.get('/trader/:address', async (req, res) => {
                 WHEN (e.event_type LIKE '%TokensPurchased' OR e.event_type LIKE '%TokensBought')
                   THEN (e.data->>'tokens_out')::float / 1e6
                 ELSE -(e.data->>'tokens_in')::float / 1e6
-              END) AS balance,
+              END) AS net_tokens,
+              SUM(CASE WHEN (e.event_type LIKE '%TokensPurchased' OR e.event_type LIKE '%TokensBought')
+                THEN (e.data->>'sui_in')::float / 1e9 ELSE 0 END) AS sui_spent,
+              SUM(CASE WHEN e.event_type LIKE '%TokensSold'
+                THEN (e.data->>'sui_out')::float / 1e9 ELSE 0 END) AS sui_received,
+              COUNT(CASE WHEN (e.event_type LIKE '%TokensPurchased' OR e.event_type LIKE '%TokensBought')
+                THEN 1 END) AS buys,
+              COUNT(CASE WHEN e.event_type LIKE '%TokensSold' THEN 1 END) AS sells,
+              SUM(CASE WHEN (e.event_type LIKE '%TokensPurchased' OR e.event_type LIKE '%TokensBought')
+                THEN (e.data->>'tokens_out')::float / 1e6 ELSE 0 END) AS tokens_bought,
+              SUM(CASE WHEN e.event_type LIKE '%TokensSold'
+                THEN (e.data->>'tokens_in')::float / 1e6 ELSE 0 END) AS tokens_sold,
               MAX(CASE WHEN (e.event_type LIKE '%TokensPurchased' OR e.event_type LIKE '%TokensBought')
                 THEN (e.data->>'new_sui_reserve')::float ELSE NULL END) AS last_reserve_mist
        FROM events e
        LEFT JOIN curves c ON c.curve_id = e.curve_id
        WHERE (e.data->>'buyer' = $1 OR e.data->>'seller' = $1)
          AND (e.event_type LIKE '%TokensPurchased' OR e.event_type LIKE '%TokensBought' OR e.event_type LIKE '%TokensSold')
-       GROUP BY e.curve_id, c.name, c.symbol, c.icon_url, c.token_type, c.package_id, c.graduated
-       HAVING SUM(CASE
-         WHEN (e.event_type LIKE '%TokensPurchased' OR e.event_type LIKE '%TokensBought')
-           THEN (e.data->>'tokens_out')::float / 1e6
-         ELSE -(e.data->>'tokens_in')::float / 1e6
-       END) > 0`,
+       GROUP BY e.curve_id, c.name, c.symbol, c.icon_url, c.token_type, c.package_id, c.graduated`,
       [address]
     );
-    res.json(result.rows.map(r => ({
-      ...r,
-      iconUrl: r.icon_url,
-      tokenType: r.token_type,
-      packageId: r.package_id,
-      reserve_sui: Number(r.last_reserve_mist ?? 0) / MIST,
-    })));
+    res.json(result.rows.map(r => {
+      const suiSpent    = Number(r.sui_spent    ?? 0);
+      const tokensBought = Number(r.tokens_bought ?? 0);
+      const avgEntry    = tokensBought > 0 ? suiSpent / tokensBought : 0;
+      const netTokens   = Number(r.net_tokens ?? 0);
+      return {
+        curve_id:       r.curve_id,
+        name:           r.name,
+        symbol:         r.symbol,
+        icon_url:       r.icon_url,
+        token_type:     r.token_type,
+        package_id:     r.package_id,
+        graduated:      r.graduated,
+        iconUrl:        r.icon_url,
+        tokenType:      r.token_type,
+        packageId:      r.package_id,
+        net_tokens:     netTokens,
+        sui_spent:      suiSpent,
+        sui_received:   Number(r.sui_received   ?? 0),
+        buys:           Number(r.buys           ?? 0),
+        sells:          Number(r.sells          ?? 0),
+        tokens_bought:  tokensBought,
+        tokens_sold:    Number(r.tokens_sold    ?? 0),
+        avg_entry_price: avgEntry,
+        reserve_sui:    Number(r.last_reserve_mist ?? 0) / MIST,
+      };
+    }));
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -542,48 +568,6 @@ async function startPgListener() {
 }
 
 export function startApi() {
-  // ── Vesting lock endpoints ──────────────────────────────────────────────────
-
-  app.get('/lock/:lockId', async (req, res) => {
-    try {
-      const lock = await getLock(req.params.lockId);
-      if (!lock) return res.status(404).json({ error: 'Lock not found' });
-      res.json({
-        lock_id:      lock.lock_id,
-        curve_id:     lock.curve_id,
-        beneficiary:  lock.beneficiary,
-        total_amount: String(lock.total_amount),
-        claimed:      String(lock.claimed),
-        locked:       String(BigInt(lock.total_amount) - BigInt(lock.claimed)),
-        start_ms:     String(lock.start_ms),
-        duration_ms:  String(lock.duration_ms),
-        mode:         Number(lock.mode),
-      });
-    } catch (err) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  app.get('/token/:curveId/locks', async (req, res) => {
-    try {
-      const { owner } = req.query;
-      const locks = await getLocksForCurve(req.params.curveId, owner ?? null);
-      res.json(locks.map(lock => ({
-        lock_id:      lock.lock_id,
-        curve_id:     lock.curve_id,
-        beneficiary:  lock.beneficiary,
-        total_amount: String(lock.total_amount),
-        claimed:      String(lock.claimed),
-        locked:       String(BigInt(lock.total_amount) - BigInt(lock.claimed)),
-        start_ms:     String(lock.start_ms),
-        duration_ms:  String(lock.duration_ms),
-        mode:         Number(lock.mode),
-      })));
-    } catch (err) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
   app.listen(PORT, () => console.log(`  ✓ API listening on port ${PORT}`));
   startPgListener().catch(err => console.error('PG listener failed:', err.message));
 }
