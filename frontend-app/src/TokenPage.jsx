@@ -466,7 +466,7 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
       if (IURL_CM) {
         try {
           const res = await fetch(`${IURL_CM}/token/${curveId}/metadata-object`, { signal: AbortSignal.timeout(5000) });
-          if (res.ok) { const d = await res.json(); metadataId = d.objectId; metaSharedVersion = d.initialSharedVersion; }
+          if (res.ok) { const d = await res.json(); metadataId = d.objectId; metaSharedVersion = d.initialSharedVersion ?? null; console.log('[metadata-object]', d); }
         } catch {}
       }
       if (!metadataId) throw new Error('CoinMetadata object not found — indexer may not support this endpoint yet');
