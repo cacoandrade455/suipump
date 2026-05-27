@@ -17,7 +17,7 @@ export const translations = {
     // Header
     testnet: 'TESTNET',
     live: 'LIVE',
-    s1Airdrop: 'S1 AIRDROP',
+    s1Airdrop: 'AIRDROP',
     stats: 'STATS',
     leaderboard: 'LEADERBOARD',
     portfolio: 'PORTFOLIO',
