@@ -466,14 +466,14 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
       if (IURL_CM) {
         try {
           const res = await fetch(`${IURL_CM}/token/${curveId}/metadata-object`, { signal: AbortSignal.timeout(5000) });
-          if (res.ok) { const d = await res.json(); metadataId = d.objectId; metaSharedVersion = d.initialSharedVersion ?? null; console.log('[metadata-object]', d); }
+          if (res.ok) { const d = await res.json(); metadataId = d.objectId; metaSharedVersion = d.initialSharedVersion; }
         } catch {}
       }
       if (!metadataId) throw new Error('CoinMetadata object not found — indexer may not support this endpoint yet');
       const capId = await getCapId();
       const tx = new Transaction();
       const curveRef = await getCurveRef(tx);
-      const metadataRef = metaSharedVersion ? tx.sharedObjectRef({ objectId: metadataId, initialSharedVersion: String(metaSharedVersion), mutable: true }) : tx.object(metadataId);
+      const metadataRef = metaSharedVersion ? tx.sharedObjectRef({ objectId: metadataId, initialSharedVersion: metaSharedVersion, mutable: true }) : tx.object(metadataId);
       tx.moveCall({
         target: `${metadataPkg}::bonding_curve::update_metadata`,
         typeArguments: [tokenType],
@@ -1292,7 +1292,7 @@ function CommentsBlock({ curveId, packageId, lang, initialSharedVersion = null }
   return (
     <div>
       <div className="text-[10px] font-mono text-white/35 tracking-widest mb-2">{t(lang, 'comments')}</div>
-      <Comments curveId={curveId} packageId={packageId} initialSharedVersion={initialSharedVersion} />
+      <Comments curveId={curveId} packageId={packageId} initialSharedVersion={initialSharedVersion} tokenType={tokenType} />
     </div>
   );
 }
