@@ -889,6 +889,27 @@ function Header({ onLaunch, lang, setLang, onToggleFeed, showFeed, onStrategies 
   );
 }
 
+// ── Live Ticker ──────────────────────────────────────────────────────────────
+function LiveTicker({ stats }) {
+  if (!stats) return null;
+  const items = [
+    { label: 'S1 POOL', value: stats.poolSui   != null ? `${stats.poolSui.toFixed(2)} SUI`   : '—' },
+    { label: 'VOLUME',  value: stats.volume     != null ? `${fmt(stats.volume)} SUI`           : '—' },
+    { label: 'TRADES',  value: stats.tradeCount != null ? stats.tradeCount.toLocaleString()    : '—' },
+    { label: 'TOKENS',  value: stats.tokenCount != null ? stats.tokenCount                     : '—' },
+  ];
+  return (
+    <div className="w-full bg-lime-400/5 border-b border-lime-400/10 px-4 py-1.5 flex items-center justify-center gap-6 overflow-x-auto">
+      {items.map(({ label, value }) => (
+        <div key={label} className="flex items-center gap-1.5 shrink-0">
+          <span className="text-[9px] font-mono text-lime-400/40 tracking-widest">{label}</span>
+          <span className="text-[10px] font-mono font-bold text-lime-400/80">{value}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── Home page ─────────────────────────────────────────────────────────────────
 function HomePage({ onLaunch, lang = 'en' }) {
   const { isWatched, toggle: toggleWatch } = useWatchlist();
@@ -1231,6 +1252,7 @@ export default function App() {
       }} />
       <ScrollToTop />
       <Header onLaunch={() => setShowLaunch(true)} lang={lang} setLang={handleLang} onToggleFeed={() => setShowFeed(o => !o)} showFeed={showFeed} onStrategies={() => setShowStrategies(true)} />
+      <LiveTicker stats={appStats} />
       <NetworkBanner />
       <StrategiesLockedBanner tradeKey={tradeKey} onOpenStrategies={() => setShowStrategies(true)} />
 
