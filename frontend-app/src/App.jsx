@@ -1228,6 +1228,7 @@ export default function App() {
   const [showLaunch,     setShowLaunch]     = useState(false);
   const [showStrategies, setShowStrategies] = useState(false);
   const [showFeed,       setShowFeed]       = useState(false);
+  const appStats = useStats();
   const [lang, setLang] = useState(() => localStorage.getItem('suipump_lang') || 'en');
 
   const handleLang     = (code) => { setLang(code); localStorage.setItem('suipump_lang', code); };
@@ -1252,7 +1253,7 @@ export default function App() {
       }} />
       <ScrollToTop />
       <Header onLaunch={() => setShowLaunch(true)} lang={lang} setLang={handleLang} onToggleFeed={() => setShowFeed(o => !o)} showFeed={showFeed} onStrategies={() => setShowStrategies(true)} />
-      <LiveTicker stats={stats} />
+      <LiveTicker stats={appStats} />
       <NetworkBanner />
       <StrategiesLockedBanner tradeKey={tradeKey} onOpenStrategies={() => setShowStrategies(true)} />
 
