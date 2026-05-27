@@ -1288,7 +1288,7 @@ function TradesHoldersBlock({ curveId, tokenType, suiUsd, lang, creator, trades,
   );
 }
 
-function CommentsBlock({ curveId, packageId, lang, initialSharedVersion = null }) {
+function CommentsBlock({ curveId, packageId, lang, initialSharedVersion = null, tokenType = null }) {
   return (
     <div>
       <div className="text-[10px] font-mono text-white/35 tracking-widest mb-2">{t(lang, 'comments')}</div>
@@ -1744,7 +1744,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
           <div className="lg:hidden"><TradePanelContent {...tradePanelProps} /></div>
 
           <TradesHoldersBlock curveId={curveId} tokenType={tokenType} suiUsd={suiUsd} lang={lang} creator={creatorAddr} trades={feedTrades} connected={feedConnected} loading={feedLoading} symbol={symbol} />
-          <CommentsBlock curveId={curveId} packageId={pkgId} lang={lang} initialSharedVersion={initialSharedVersionProp ?? curveState?.initial_shared_version ?? null} />
+          <CommentsBlock curveId={curveId} packageId={pkgId} lang={lang} initialSharedVersion={initialSharedVersionProp ?? curveState?.initial_shared_version ?? null} tokenType={tokenType} />
         </div>
 
         {/* Right column */}
