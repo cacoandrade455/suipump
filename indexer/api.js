@@ -66,6 +66,36 @@ app.get('/health', (req, res) => res.json({ status: 'ok', ts: Date.now() }));
 
 
 
+
+// ── /debug/metadata/:tokenType ───────────────────────────────────────────────
+app.get('/debug/metadata/:type(*)', async (req, res) => {
+  try {
+    const tokenType = req.params.type;
+    const GRAPHQL_URL = process.env.SUI_GRAPHQL_URL ?? 'https://graphql.testnet.sui.io/graphql';
+    const metaType = '0x2::coin::CoinMetadata<' + tokenType + '>';
+
+    // Try coinMetadata
+    const r1 = await fetch(GRAPHQL_URL, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: '{ coinMetadata(coinType: "' + tokenType + '") { address owner { __typename ... on Shared { initialSharedVersion } ... on Immutable { _typename } } } }' }),
+      signal: AbortSignal.timeout(8000),
+    });
+    const d1 = await r1.json();
+
+    // Try objects
+    const r2 = await fetch(GRAPHQL_URL, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: '{ objects(filter: { type: "' + metaType + '" } first: 1) { nodes { address owner { __typename ... on Shared { initialSharedVersion } ... on Immutable { _typename } } } } }' }),
+      signal: AbortSignal.timeout(8000),
+    });
+    const d2 = await r2.json();
+
+    res.json({ coinMetadata: d1, objectsQuery: d2 });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── /token/:id/locks?owner=:address ──────────────────────────────────────────
 // Returns lock_ids for a beneficiary on a specific curve.
 app.get('/token/:id/locks', async (req, res) => {
