@@ -1252,7 +1252,7 @@ export default function App() {
       }} />
       <ScrollToTop />
       <Header onLaunch={() => setShowLaunch(true)} lang={lang} setLang={handleLang} onToggleFeed={() => setShowFeed(o => !o)} showFeed={showFeed} onStrategies={() => setShowStrategies(true)} />
-      <LiveTicker stats={appStats} />
+      <LiveTicker stats={stats} />
       <NetworkBanner />
       <StrategiesLockedBanner tradeKey={tradeKey} onOpenStrategies={() => setShowStrategies(true)} />
 
