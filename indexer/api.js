@@ -223,32 +223,48 @@ app.get('/token/:id/metadata-object', async (req, res) => {
     const { token_type: tokenType, metadata_object_id, metadata_shared_version } = row.rows[0];
     if (!tokenType) return res.status(404).json({ error: 'token_type not found' });
 
-    // If already stored, return immediately
-    if (metadata_object_id && metadata_shared_version) {
-      return res.json({
-        objectId:             metadata_object_id,
-        initialSharedVersion: Number(metadata_shared_version),
-        tokenType,
-      });
-    }
-
-    // Not stored yet — trigger backfill async and query GQL for objectId now
-    const { backfillMetadataObject } = await import('./db.js');
-    backfillMetadataObject(id).catch(() => {});
-
     const GRAPHQL_URL = process.env.SUI_GRAPHQL_URL ?? 'https://graphql.testnet.sui.io/graphql';
-    const r = await fetch(GRAPHQL_URL, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: '{ coinMetadata(coinType: "' + tokenType + '") { address } }' }),
-      signal: AbortSignal.timeout(8000),
-    });
-    const d = await r.json();
-    const objectId = d?.data?.coinMetadata?.address ?? null;
+
+    // Get objectId — from DB if available, else GQL
+    let objectId = metadata_object_id ?? null;
+    if (!objectId) {
+      const r1 = await fetch(GRAPHQL_URL, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: '{ coinMetadata(coinType: "' + tokenType + '") { address } }' }),
+        signal: AbortSignal.timeout(8000),
+      });
+      const d1 = await r1.json();
+      objectId = d1?.data?.coinMetadata?.address ?? null;
+    }
     if (!objectId) return res.status(404).json({ error: 'CoinMetadata not found on-chain' });
 
-    // ISV not yet in DB — return null for now, backfill will store it
-    // Frontend will retry on next page load once backfill completes
-    res.json({ objectId, initialSharedVersion: null, tokenType, backfilling: true });
+    // Get ISV — from DB if available, else query the object directly
+    let isv = metadata_shared_version ? Number(metadata_shared_version) : null;
+    if (!isv) {
+      // Query the object by address — version field = ISV for shared objects
+      const r2 = await fetch(GRAPHQL_URL, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: '{ object(address: "' + objectId + '") { version } }' }),
+        signal: AbortSignal.timeout(8000),
+      });
+      const d2 = await r2.json();
+      const version = d2?.data?.object?.version ?? null;
+      if (version) {
+        isv = Number(version);
+        // Persist to DB for next time
+        await pool.query(
+          'UPDATE curves SET metadata_object_id = $2, metadata_shared_version = $3 WHERE curve_id = $1',
+          [id, objectId, isv]
+        );
+      }
+    }
+
+    // If already stored, return immediately
+    if (objectId && isv) {
+      return res.json({ objectId, initialSharedVersion: isv, tokenType });
+    }
+
+    res.json({ objectId, initialSharedVersion: isv, tokenType });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
