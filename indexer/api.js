@@ -126,8 +126,21 @@ app.get('/stats', async (req, res) => {
 // ── All tokens ────────────────────────────────────────────────────────────────
 
 app.get('/tokens', async (req, res) => {
-  try { res.json(await getAllCurves()); }
-  catch (err) { res.status(500).json({ error: err.message }); }
+  try {
+    const { creator } = req.query;
+    if (creator) {
+      const result = await pool.query(
+        `SELECT c.curve_id AS "curveId", c.creator, c.name, c.symbol,
+                c.icon_url AS "iconUrl", c.token_type AS "tokenType",
+                c.package_id AS "packageId", c.created_at AS "createdAt",
+                c.graduated
+         FROM curves c WHERE c.creator = $1 ORDER BY c.created_at DESC`,
+        [creator]
+      );
+      return res.json(result.rows);
+    }
+    res.json(await getAllCurves());
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ── Single token ──────────────────────────────────────────────────────────────
@@ -393,22 +406,7 @@ app.get('/trader/:address', async (req, res) => {
 
 // ── Creator tokens ────────────────────────────────────────────────────────────
 
-app.get('/tokens', async (req, res) => {
-  try {
-    const { creator } = req.query;
-    if (creator) {
-      const result = await pool.query(
-        `SELECT c.curve_id AS "curveId", c.creator, c.name, c.symbol,
-                c.icon_url AS "iconUrl", c.token_type AS "tokenType",
-                c.package_id AS "packageId", c.created_at AS "createdAt"
-         FROM curves c WHERE c.creator = $1 ORDER BY c.created_at DESC`,
-        [creator]
-      );
-      return res.json(result.rows);
-    }
-    res.json(await getAllCurves());
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
+// duplicate /tokens route removed
 
 // ── Recent trades (live feed) ─────────────────────────────────────────────────
 
