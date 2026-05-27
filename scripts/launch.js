@@ -1,4 +1,4 @@
-// launch.js — Full two-transaction token launch (V8 active)
+// launch.js — Full two-transaction token launch (V9 active)
 //
 // Tx 1: Publish the patched coin_template bytecode.
 //       V8 template: public_share_object(metadata) — NOT public_freeze_object.
@@ -28,6 +28,7 @@ const PACKAGE_ID_V7    = '0xfb8f3f3e4e8d53130ac140906eebea6b6740bfaf0c971aec607f
 //   cd contracts-v8 && sui client publish --gas-budget 100000000
 // Then update VITE_PACKAGE_ID_V8 in Vercel env as well.
 const PACKAGE_ID_V8    = process.env.PACKAGE_ID_V8 || '';
+const PACKAGE_ID_V9    = '0x719698e5138582d78ee95317271e8bce05769569a4f58c940a7f1b424d90ffe2';
 
 const SUI_CLOCK_ID     = '0x0000000000000000000000000000000000000000000000000000000000000006';
 const LAUNCH_FEE_MIST  = 2_000_000_000n;
@@ -35,6 +36,7 @@ const LAUNCH_FEE_MIST  = 2_000_000_000n;
 const isV4  = PACKAGE_ID === PACKAGE_ID_V4;
 const isV7  = PACKAGE_ID === PACKAGE_ID_V7;
 const isV8  = PACKAGE_ID_V8 ? PACKAGE_ID === PACKAGE_ID_V8 : false;
+const isV9  = PACKAGE_ID === PACKAGE_ID_V9;
 
 // Vesting (V7+) — must match bonding_curve.move
 const VEST_MODE = { cliff: 0, linear: 1, monthly: 2 };
@@ -102,8 +104,8 @@ if (!['cetus', 'deepbook', 'turbos'].includes(dexArg)) {
 // Dev-buy lock validation (V7/V8 only)
 let lockEnabled = false, lockMode = 0, lockDurationMs = 0n;
 if (lockModeArg) {
-  if (!isV7 && !isV8) {
-    console.error('--lock-mode requires V7 or V8 package (vesting is V7+ only).');
+  if (!isV7 && !isV8 && !isV9) {
+    console.error('--lock-mode requires V7 or V8 or V9 package (vesting is V7+ only).');
     process.exit(1);
   }
   if (devBuySui <= 0) {
@@ -207,7 +209,7 @@ const PLACEHOLDER_DESC = 'Template description placeholder that is intentionally
 const PLACEHOLDER_ICON = 'https://suipump.test/icon-placeholder.png';
 
 // ---------- Print summary ----------
-const pkgLabel = isV8 ? 'v8' : isV7 ? 'v7' : isV4 ? 'v4' : 'v5/v6';
+const pkgLabel = isV9 ? 'v9' : isV8 ? 'v8' : isV7 ? 'v7' : isV4 ? 'v4' : 'v5/v6';
 console.log('━'.repeat(60));
 console.log('  SUIPUMP — launch');
 console.log('━'.repeat(60));
@@ -341,16 +343,26 @@ if (isV4) {
   if (devBuySui > 0) {
     const devBuyMist = BigInt(Math.floor(devBuySui * 1e9));
     const devBuyCoin = tx2.splitCoins(tx2.gas, [tx2.pure.u64(devBuyMist)]);
+    const buyArgs = isV9
+      ? [
+          curve,
+          devBuyCoin,
+          tx2.pure.u64(0),              // min_tokens_out = 0
+          tx2.pure.option('address', null), // referral = none
+          tx2.object(SUI_CLOCK_ID),
+          tx2.pure.u64(0),              // sui_price_scaled = 0 (use fallback threshold)
+        ]
+      : [
+          curve,
+          devBuyCoin,
+          tx2.pure.u64(0),              // min_tokens_out = 0
+          tx2.pure.option('address', null), // referral = none
+          tx2.object(SUI_CLOCK_ID),
+        ];
     const [tokens, refund] = tx2.moveCall({
       target: `${PACKAGE_ID}::bonding_curve::buy`,
       typeArguments: [newTokenType],
-      arguments: [
-        curve,
-        devBuyCoin,
-        tx2.pure.u64(0),              // min_tokens_out = 0 (dev-buy, no slippage guard)
-        tx2.pure.option('address', null), // referral = none
-        tx2.object(SUI_CLOCK_ID),
-      ],
+      arguments: buyArgs,
     });
 
     if (lockEnabled) {

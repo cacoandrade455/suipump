@@ -294,7 +294,17 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
         const [devPayment] = tx2.splitCoins(tx2.gas, [tx2.pure.u64(devBuyMist)]);
 
         let buyArgs;
-        if (PACKAGE_ID_V5) {
+        if (isV9OrLater(PACKAGE_ID)) {
+          // V9+ buy: adds sui_price_scaled as 6th arg (0 = use oracle fallback)
+          buyArgs = [
+            curve,
+            devPayment,
+            tx2.pure.u64(0),
+            tx2.pure.option('address', null),
+            tx2.object(SUI_CLOCK_ID),
+            tx2.pure.u64(0),              // sui_price_scaled = 0 (fallback)
+          ];
+        } else if (PACKAGE_ID_V5) {
           // V5+ buy: curve, payment, min_tokens_out, referral (none), clock
           buyArgs = [
             curve,

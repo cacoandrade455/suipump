@@ -21,21 +21,29 @@ const PACKAGE_ID_V4  = '0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978
 const PACKAGE_ID_V5  = '0x785c0604cb6c60a8547501e307d2b0ca7a586ff912c8abff4edfb88db65b7236';
 const PACKAGE_ID_V6  = '0x21d5b1284d5f1d4d14214654f414ffca20c757ee9f9db7701d3ffaaac62cd768';
 const PACKAGE_ID_V7  = '0xfb8f3f3e4e8d53130ac140906eebea6b6740bfaf0c971aec607fbc723be951f0';
+const PACKAGE_ID_V8_1= '0x145a1e79b83cc17680dbfe4f96839cd359c7db380ac15463ecb6dc30f9849b69';
+const PACKAGE_ID_V8  = '0xbb4ee050239f59dfd983501ce101698ba27857f77aff2d437cec568fe0062546';
+const PACKAGE_ID_V9  = '0x719698e5138582d78ee95317271e8bce05769569a4f58c940a7f1b424d90ffe2';
 const SUI_CLOCK_ID   = '0x0000000000000000000000000000000000000000000000000000000000000006';
 const WALLETS_FILE   = join(__dir, 'sim_wallets.json');
 
 // Resolve which package a curve belongs to, from its type string.
 function resolvePackageId(typeStr) {
-  if (typeStr?.includes(PACKAGE_ID_V7)) return PACKAGE_ID_V7;
-  if (typeStr?.includes(PACKAGE_ID_V6)) return PACKAGE_ID_V6;
-  if (typeStr?.includes(PACKAGE_ID_V5)) return PACKAGE_ID_V5;
-  if (typeStr?.includes(PACKAGE_ID_V4)) return PACKAGE_ID_V4;
+  if (typeStr?.includes(PACKAGE_ID_V9))   return PACKAGE_ID_V9;
+  if (typeStr?.includes(PACKAGE_ID_V8))   return PACKAGE_ID_V8;
+  if (typeStr?.includes(PACKAGE_ID_V8_1)) return PACKAGE_ID_V8_1;
+  if (typeStr?.includes(PACKAGE_ID_V7))   return PACKAGE_ID_V7;
+  if (typeStr?.includes(PACKAGE_ID_V6))   return PACKAGE_ID_V6;
+  if (typeStr?.includes(PACKAGE_ID_V5))   return PACKAGE_ID_V5;
+  if (typeStr?.includes(PACKAGE_ID_V4))   return PACKAGE_ID_V4;
   return PACKAGE_ID; // active package fallback
 }
 
 // V4 buy/sell take no referral/clock; V5+ buy adds them; V7+ sell adds referral.
 const isV4Pkg = (pkg) => pkg === PACKAGE_ID_V4;
 const isV7Pkg = (pkg) => pkg === PACKAGE_ID_V7;
+const isV7OrLaterPkg = (pkg) => [PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8, PACKAGE_ID_V9].includes(pkg);
+const isV9Pkg = (pkg) => pkg === PACKAGE_ID_V9;
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -216,7 +224,9 @@ async function buyThenSell(keypair, address, curveId, tokenType, packageId, wall
       // V5+ buy: (curve, payment, min_out, referral, clock)
       const buyArgs = isV4
         ? [curveRef, payment, buyTx.pure.u64(0)]
-        : [curveRef, payment, buyTx.pure.u64(0), buyTx.pure.option('address', null), buyTx.object(SUI_CLOCK_ID)];
+        : isV9Pkg(packageId)
+          ? [curveRef, payment, buyTx.pure.u64(0), buyTx.pure.option('address', null), buyTx.object(SUI_CLOCK_ID), buyTx.pure.u64(0)]
+          : [curveRef, payment, buyTx.pure.u64(0), buyTx.pure.option('address', null), buyTx.object(SUI_CLOCK_ID)];
 
       const [tokens, refund] = buyTx.moveCall({
         target: `${packageId}::bonding_curve::buy`,
@@ -262,7 +272,7 @@ async function buyThenSell(keypair, address, curveId, tokenType, packageId, wall
 
       // V4/V5/V6 sell: (curve, coin, min_out)
       // V7+ sell: (curve, coin, min_out, referral)
-      const sellArgs = isV7
+      const sellArgs = isV7OrLaterPkg(packageId)
         ? [curveRef2, tokenToSell, sellTx.pure.u64(0), sellTx.pure.option('address', null)]
         : [curveRef2, tokenToSell, sellTx.pure.u64(0)];
 
