@@ -14,6 +14,7 @@ import AirdropPage from './AirdropPage.jsx';
 import WhitepaperPage from './WhitepaperPage.jsx';
 import LeaderboardPage from './LeaderboardPage.jsx';
 import PortfolioPage from './PortfolioPage.jsx';
+import S1AirdropCounter from './S1AirdropCounter.jsx';
 import RoadmapPage from './RoadmapPage.jsx';
 import StatsPage from './StatsPage.jsx';
 import { LANGUAGES, translations, t } from './i18n.js';
@@ -762,6 +763,26 @@ function FlagImg({ code }) {
   );
 }
 
+// ── Live stats ticker ────────────────────────────────────────────────────────
+function LiveTicker({ stats }) {
+  const items = [
+    { label: 'S1 POOL', value: stats.poolSui != null ? `${stats.poolSui.toFixed(2)} SUI` : '—' },
+    { label: 'VOLUME',  value: stats.volume  != null ? `${Number(stats.volume).toFixed(0)} SUI` : '—' },
+    { label: 'TRADES',  value: stats.tradeCount ?? '—' },
+    { label: 'TOKENS',  value: stats.tokenCount ?? '—' },
+  ];
+  return (
+    <div className="w-full bg-lime-400/[0.04] border-b border-lime-400/10 px-4 py-1.5 flex items-center justify-center gap-6 overflow-hidden">
+      {items.map(({ label, value }) => (
+        <div key={label} className="flex items-center gap-1.5 shrink-0">
+          <span className="text-[9px] font-mono text-lime-400/40 tracking-widest">{label}</span>
+          <span className="text-[10px] font-mono font-bold text-lime-400/80">{value}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── Header ────────────────────────────────────────────────────────────────────
 function Header({ onLaunch, lang, setLang, onToggleFeed, showFeed, onStrategies }) {
   const account = useCurrentAccount();
@@ -793,7 +814,7 @@ function Header({ onLaunch, lang, setLang, onToggleFeed, showFeed, onStrategies 
               { label: t(lang, 'leaderboard'), path: '/leaderboard' },
               { label: t(lang, 'stats'),       path: '/stats' },
               { label: t(lang, 'portfolio'),   path: '/portfolio' },
-              { label: t(lang, 's1Airdrop'),   path: '/airdrop' },
+              { label: 'AIRDROP',               path: '/airdrop' },
               { label: t(lang, 'whitepaper'),  path: '/whitepaper' },
               { label: t(lang, 'roadmap'),     path: '/roadmap' },
             ].map(({ label, path }) => (
@@ -1231,6 +1252,7 @@ export default function App() {
       }} />
       <ScrollToTop />
       <Header onLaunch={() => setShowLaunch(true)} lang={lang} setLang={handleLang} onToggleFeed={() => setShowFeed(o => !o)} showFeed={showFeed} onStrategies={() => setShowStrategies(true)} />
+      <LiveTicker stats={stats} />
       <NetworkBanner />
       <StrategiesLockedBanner tradeKey={tradeKey} onOpenStrategies={() => setShowStrategies(true)} />
 
