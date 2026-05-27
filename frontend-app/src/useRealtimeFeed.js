@@ -7,6 +7,7 @@
 //   const { events, connected } = useRealtimeFeed(); // all events
 
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { curveShapeFor } from './constants.js';
 
 const INDEXER_URL  = import.meta.env.VITE_INDEXER_URL || '';
 const MIST_PER_SUI = 1e9;

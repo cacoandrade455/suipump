@@ -226,6 +226,46 @@ app.get('/token/:curveId/ohlc', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── Creator cap lookup ───────────────────────────────────────────────────────
+// Returns the CreatorCap objectId for a given curve + owner wallet.
+// Frontend uses this to avoid GraphQL CORS issues when claiming fees.
+
+app.get('/token/:curveId/creator-cap', async (req, res) => {
+  try {
+    const { curveId } = req.params;
+    const { owner } = req.query;
+    if (!owner) return res.status(400).json({ error: 'owner query param required' });
+
+    // Look up curve's package_id so we know the CreatorCap type
+    const curveRes = await pool.query('SELECT package_id FROM curves WHERE curve_id = $1', [curveId]);
+    if (!curveRes.rows.length) return res.status(404).json({ error: 'curve not found' });
+    const packageId = curveRes.rows[0].package_id;
+    if (!packageId) return res.status(404).json({ error: 'package_id not found for curve' });
+
+    // Query GraphQL for owned CreatorCap objects matching this curve
+    const { SuiGraphQLClient } = await import('@mysten/sui/graphql');
+    const NETWORK = process.env.NETWORK ?? 'testnet';
+    const GRAPHQL_URL = process.env.SUI_GRAPHQL_URL ?? `https://graphql.${NETWORK}.sui.io/graphql`;
+    const gqlClient = new SuiGraphQLClient({ url: GRAPHQL_URL });
+
+    const gql = `{
+      address(address: "${owner}") {
+        objects(filter: { type: "${packageId}::bonding_curve::CreatorCap" }) {
+          nodes {
+            address
+            contents { json }
+          }
+        }
+      }
+    }`;
+    const result = await gqlClient.graphql({ query: gql });
+    const nodes = result?.data?.address?.objects?.nodes ?? [];
+    const cap = nodes.find(n => n.contents?.json?.curve_id === curveId);
+    if (!cap) return res.status(404).json({ error: 'CreatorCap not found for this wallet' });
+    res.json({ objectId: cap.address });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ── Token holders ─────────────────────────────────────────────────────────────
 
 app.get('/token/:curveId/holders', async (req, res) => {
