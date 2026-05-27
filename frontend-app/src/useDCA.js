@@ -10,7 +10,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { Transaction } from '@mysten/sui/transactions';
 import { saveTPSL, makeLevel } from './useTPSL.js';
-import { isV5OrLater, curveShapeFor } from './constants.js';
+import { isV5OrLater, isV9OrLater, curveShapeFor } from './constants.js';
 import { buyQuote } from './curve.js';
 
 const INDEXER_URL  = import.meta.env.VITE_INDEXER_URL || '';
@@ -91,9 +91,11 @@ async function executeBuy({ kp, order, suiAmount, walletAddress }) {
   const curveRef  = tx.sharedObjectRef({ objectId: order.curveId, initialSharedVersion: isv, mutable: true });
   const [payment] = tx.splitCoins(tx.gas, [tx.pure.u64(suiInMist)]);
 
-  const buyArgs = isV5OrLater(order.pkgId)
-    ? [curveRef, payment, tx.pure.u64(minOut), tx.pure.option('address', null), tx.object(SUI_CLOCK_ID)]
-    : [curveRef, payment, tx.pure.u64(minOut)];
+  const buyArgs = isV9OrLater(order.pkgId)
+    ? [curveRef, payment, tx.pure.u64(minOut), tx.pure.option('address', null), tx.object(SUI_CLOCK_ID), tx.pure.u64(0)]
+    : isV5OrLater(order.pkgId)
+      ? [curveRef, payment, tx.pure.u64(minOut), tx.pure.option('address', null), tx.object(SUI_CLOCK_ID)]
+      : [curveRef, payment, tx.pure.u64(minOut)];
 
   const [tokens, refund] = tx.moveCall({
     target: `${order.pkgId}::bonding_curve::buy`,
