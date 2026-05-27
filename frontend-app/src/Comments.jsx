@@ -3,6 +3,9 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useCurrentAccount, useDAppKit } from '@mysten/dapp-kit-react';
 import { Transaction } from '@mysten/sui/transactions';
 import { Send, Reply, ChevronDown, ChevronUp } from 'lucide-react';
+import { Link } from 'react-router-dom';
+
+function getPfp(addr) { try { return localStorage.getItem(`suipump_pfp_${addr}`) || ''; } catch { return ''; } }
 import {
   ALL_PACKAGE_IDS,
   PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6,
@@ -80,13 +83,18 @@ function CommentItem({ comment, replies, account, curveId, onReplyPosted }) {
   return (
     <div className="px-4 py-3 hover:bg-white/[0.02] transition-colors">
       <div className="flex items-start gap-2.5">
-        <div className="w-6 h-6 rounded-full flex-shrink-0 mt-0.5 flex items-center justify-center text-[9px] font-bold text-black"
-          style={{ backgroundColor: walletColor(comment.author) }}>
-          {comment.author?.slice(2, 4).toUpperCase()}
-        </div>
+        <Link to={`/portfolio/${comment.author}`} className="w-6 h-6 rounded-full flex-shrink-0 mt-0.5 overflow-hidden block hover:ring-1 hover:ring-lime-400/40 transition-all">
+          {getPfp(comment.author)
+            ? <img src={getPfp(comment.author)} alt="" className="w-full h-full object-cover" />
+            : <div className="w-full h-full flex items-center justify-center text-[9px] font-bold text-black"
+                style={{ backgroundColor: walletColor(comment.author) }}>
+                {comment.author?.slice(2, 4).toUpperCase()}
+              </div>
+          }
+        </Link>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1">
-            <span className="text-[10px] font-mono text-white/50">{shortAddr(comment.author)}</span>
+            <Link to={`/portfolio/${comment.author}`} className="text-[10px] font-mono text-white/50 hover:text-lime-400 transition-colors">{shortAddr(comment.author)}</Link>
             <span className="text-[10px] font-mono text-white/25">{timeAgo(comment.timestamp)}</span>
           </div>
           <p className="text-sm text-white/70 leading-relaxed break-words">{comment.text}</p>
@@ -132,7 +140,7 @@ function CommentItem({ comment, replies, account, curveId, onReplyPosted }) {
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-0.5">
-                      <span className="text-[10px] font-mono text-white/50">{shortAddr(r.author)}</span>
+                      <Link to={`/portfolio/${r.author}`} className="text-[10px] font-mono text-white/50 hover:text-lime-400 transition-colors">{shortAddr(r.author)}</Link>
                       <span className="text-[10px] font-mono text-white/25">{timeAgo(r.timestamp)}</span>
                     </div>
                     <p className="text-xs text-white/60 leading-relaxed break-words">{r.text}</p>

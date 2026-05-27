@@ -1,6 +1,7 @@
 // HolderList.jsx — SSE triggers re-fetch on trade, no time-based polling
 import React, { useState, useEffect, useRef } from 'react';
 import { Users, BarChart2, Lock } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { ALL_PACKAGE_IDS } from './constants.js';
 
 const INDEXER_URL  = import.meta.env.VITE_INDEXER_URL || '';
@@ -160,7 +161,7 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = n
                   <span className="text-[10px] font-mono text-white/20 w-4">{i + 1}</span>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5">
-                      <span className="text-[10px] font-mono text-white/60 truncate">{shortAddr(h.addr)}</span>
+                      <Link to={`/portfolio/${h.addr}`} className="text-[10px] font-mono text-white/60 truncate hover:text-lime-400 transition-colors">{shortAddr(h.addr)}</Link>
                       {isCreator && <span className="text-[8px] font-mono text-lime-400/60 border border-lime-400/20 px-1 rounded">DEV</span>}
                     </div>
                     <div className="h-1 bg-white/5 rounded-full mt-1 overflow-hidden">
@@ -184,7 +185,7 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = n
               <div key={t.addr} className="px-4 py-2.5 flex items-center gap-3">
                 <span className="text-[10px] font-mono text-white/20 w-4">{i + 1}</span>
                 <div className="flex-1 min-w-0">
-                  <span className="text-[10px] font-mono text-white/60">{shortAddr(t.addr)}</span>
+                  <Link to={`/portfolio/${t.addr}`} className="text-[10px] font-mono text-white/60 hover:text-lime-400 transition-colors">{shortAddr(t.addr)}</Link>
                   <div className="text-[9px] font-mono mt-0.5 flex items-center gap-1">
                     <span className="text-white/30">{t.buyCount + t.sellCount}T</span>
                     <span className="text-white/20">·</span>
@@ -225,7 +226,7 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = n
                 <div key={lk.lock_id} className="px-4 py-3 space-y-1.5">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-1.5">
-                      <span className="text-[10px] font-mono text-white/60">{shortAddr(lk.beneficiary)}</span>
+                      <Link to={`/portfolio/${lk.beneficiary}`} className="text-[10px] font-mono text-white/60 hover:text-lime-400 transition-colors">{shortAddr(lk.beneficiary)}</Link>
                       <span className="text-[8px] font-mono text-lime-400/50 border border-lime-400/20 px-1 rounded">{modeLabel}</span>
                     </div>
                     <span className="text-[10px] font-mono text-white/40">
