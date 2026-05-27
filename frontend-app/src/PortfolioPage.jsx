@@ -538,14 +538,20 @@ function CreatedTab({ account, tokens, lang }) {
     try {
       // Find all CreatorCaps owned by this wallet across all package versions
       const capsByPkg = {};
+      // Direct fetch to Sui GraphQL — bypasses dapp-kit-react wrapper
+      const GRAPHQL_URL_CA = 'https://graphql.testnet.sui.io/graphql';
       for (const pkgId of ALL_PACKAGE_IDS) {
         try {
-          const gqlCA = `{ owner(address: "${account.address}") { objects(filter: { type: "${pkgId}::bonding_curve::CreatorCap" }) { nodes { address contents { json } } } } }`;
-          const caRes = await client.graphql({ query: gqlCA });
-          const caNodes = caRes?.data?.owner?.objects?.nodes ?? [];
-          for (const node of caNodes) {
-            const curveId = node.contents?.json?.curve_id;
-            if (curveId) capsByPkg[curveId] = node.address;
+          const query = `{ address(address: "${account.address}") { objects(filter: { type: "${pkgId}::bonding_curve::CreatorCap" }) { nodes { address contents { json } } } } }`;
+          const r = await fetch(GRAPHQL_URL_CA, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query }), signal: AbortSignal.timeout(8000),
+          });
+          const result = await r.json();
+          const nodes = result?.data?.address?.objects?.nodes ?? [];
+          for (const node of nodes) {
+            const cId = node.contents?.json?.curve_id;
+            if (cId) capsByPkg[cId] = node.address;
           }
         } catch {}
       }
