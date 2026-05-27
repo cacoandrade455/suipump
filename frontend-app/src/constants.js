@@ -17,6 +17,9 @@ export const PACKAGE_ID_V8_1 =
 // V8: active — duplicate payout check, correct comment error codes, init_for_testing
 export const PACKAGE_ID_V8 =
   '0xbb4ee050239f59dfd983501ce101698ba27857f77aff2d437cec568fe0062546';
+// V9: sqrt-dampened oracle graduation threshold, buy() takes sui_price_scaled
+export const PACKAGE_ID_V9 =
+  '0x719698e5138582d78ee95317271e8bce05769569a4f58c940a7f1b424d90ffe2';
 
 // ── Capabilities ─────────────────────────────────────────────────────────────
 export const ADMIN_CAP_V7 =
@@ -27,10 +30,14 @@ export const ADMIN_CAP_V8 =
   '0x9779a2466f2e30ca5e139f636cc9ca1c44e025da29203d781cc2645ebb62bb35';
 export const UPGRADE_CAP_V8 =
   '0xb2b30793fbee200c3aa2352d266fcf07499363a15392b84b1ca722891f4a3599';
+export const ADMIN_CAP_V9 =
+  '0x2e0989604424ffa96f58618795285dac09d8eaf2fd0d35f4a7e9bbc22bea2bf7';
+export const UPGRADE_CAP_V9 =
+  '0xb3d8067ef98271c7edc58843e46f2e4cf2c12dad6537a3a1f1008f057db41e0e';
 
 // ── Active package ────────────────────────────────────────────────────────────
-export const PACKAGE_ID = PACKAGE_ID_V8;
-export const ADMIN_CAP  = ADMIN_CAP_V8;
+export const PACKAGE_ID = PACKAGE_ID_V9;
+export const ADMIN_CAP  = ADMIN_CAP_V9;
 
 // ── All package IDs — READ paths must cover every version ────────────────────
 export const ALL_PACKAGE_IDS = [
@@ -40,6 +47,7 @@ export const ALL_PACKAGE_IDS = [
   PACKAGE_ID_V7,
   PACKAGE_ID_V8_1,
   PACKAGE_ID_V8,
+  PACKAGE_ID_V9,
 ];
 
 export const CURVE_ID    = '0xf7c137e90c5a5c9e716c91fdd3561d55e6ba3c11c37a9741b0bfde03dc9d812f';
@@ -79,13 +87,20 @@ export const VIRTUAL_SUI_V8    = 3_500;
 export const VIRTUAL_TOKENS_V8 = 1_073_000_000;
 export const DRAIN_SUI_V8      = 9_000;
 
+export const VIRTUAL_SUI_V9    = 4_369;
+export const VIRTUAL_TOKENS_V9 = 1_073_000_000;
+export const DRAIN_SUI_V9      = 12_305;
+
 // ── Active virtual reserves ───────────────────────────────────────────────────
-export const VIRTUAL_SUI      = VIRTUAL_SUI_V8;
-export const VIRTUAL_TOKENS   = VIRTUAL_TOKENS_V8;
-export const DRAIN_SUI_APPROX = DRAIN_SUI_V8;
+export const VIRTUAL_SUI      = VIRTUAL_SUI_V9;
+export const VIRTUAL_TOKENS   = VIRTUAL_TOKENS_V9;
+export const DRAIN_SUI_APPROX = DRAIN_SUI_V9;
 
 // ── Per-package curve shape ───────────────────────────────────────────────────
 export function curveShapeFor(pkgId) {
+  if (pkgId === PACKAGE_ID_V9) {
+    return { virtualSui: VIRTUAL_SUI_V9, virtualTokens: VIRTUAL_TOKENS_V9, drainSui: DRAIN_SUI_V9 };
+  }
   if (pkgId === PACKAGE_ID_V8 || pkgId === PACKAGE_ID_V8_1) {
     return { virtualSui: VIRTUAL_SUI_V8, virtualTokens: VIRTUAL_TOKENS_V8, drainSui: DRAIN_SUI_V8 };
   }
@@ -105,23 +120,29 @@ export function curveShapeFor(pkgId) {
 export function isNewCurve(pkgId) {
   return pkgId === PACKAGE_ID_V5 || pkgId === PACKAGE_ID_V6
       || pkgId === PACKAGE_ID_V7 || pkgId === PACKAGE_ID_V8_1
-      || pkgId === PACKAGE_ID_V8;
+      || pkgId === PACKAGE_ID_V8
+      || pkgId === PACKAGE_ID_V9;
 }
 export function isV5OrLater(pkgId) {
   return pkgId === PACKAGE_ID_V5 || pkgId === PACKAGE_ID_V6
       || pkgId === PACKAGE_ID_V7 || pkgId === PACKAGE_ID_V8_1
-      || pkgId === PACKAGE_ID_V8;
+      || pkgId === PACKAGE_ID_V8 || pkgId === PACKAGE_ID_V9;
 }
 export function supportsMetadataUpdate(pkgId) {
   return pkgId === PACKAGE_ID_V6 || pkgId === PACKAGE_ID_V7
-      || pkgId === PACKAGE_ID_V8_1 || pkgId === PACKAGE_ID_V8;
+      || pkgId === PACKAGE_ID_V8_1 || pkgId === PACKAGE_ID_V8
+      || pkgId === PACKAGE_ID_V9;
 }
 export function isV7OrLater(pkgId) {
   return pkgId === PACKAGE_ID_V7 || pkgId === PACKAGE_ID_V8_1
-      || pkgId === PACKAGE_ID_V8;
+      || pkgId === PACKAGE_ID_V8 || pkgId === PACKAGE_ID_V9;
 }
 export function isV8OrLater(pkgId) {
-  return pkgId === PACKAGE_ID_V8_1 || pkgId === PACKAGE_ID_V8;
+  return pkgId === PACKAGE_ID_V8_1 || pkgId === PACKAGE_ID_V8
+      || pkgId === PACKAGE_ID_V9;
+}
+export function isV9OrLater(pkgId) {
+  return pkgId === PACKAGE_ID_V9;
 }
 
 // ── Graduation targets ────────────────────────────────────────────────────────
