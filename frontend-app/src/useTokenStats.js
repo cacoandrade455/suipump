@@ -2,6 +2,7 @@
 // Loads all token stats from indexer on mount, then updates in real-time
 // via SSE — only re-fetches stats for the specific curve that traded.
 import { useState, useEffect, useRef } from 'react';
+import { curveShapeFor } from './constants.js';
 
 
 const INDEXER_URL  = import.meta.env.VITE_INDEXER_URL || '';
