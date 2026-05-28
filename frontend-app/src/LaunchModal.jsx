@@ -140,6 +140,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
   const [lockMode, setLockMode] = useState(VEST_MODE_CLIFF);   // 0 cliff / 1 linear / 2 monthly
   const [lockDuration, setLockDuration] = useState('30d');     // 7d / 30d / 180d / 365d
   const [launching, setLaunching] = useState(false);
+  const [iconLoaded, setIconLoaded] = useState(null); // null | 'ok' | 'error'
   const [txStep, setTxStep] = useState(null);
   const [tx1Digest, setTx1Digest] = useState(null);
   const [tx2Digest, setTx2Digest] = useState(null);
@@ -181,6 +182,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
       const json = await res.json();
       if (!json.success) throw new Error(json.data?.error || 'Upload failed');
       setForm(f => ({ ...f, iconUrl: json.data.link, uploading: false }));
+      setIconLoaded('ok');
     } catch (err) {
       setForm(f => ({ ...f, uploadError: err.message, uploading: false }));
     }
@@ -482,10 +484,26 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
                 <div className="flex gap-2">
                   <input
                     value={form.iconUrl}
-                    onChange={e => setForm({ ...form, iconUrl: e.target.value })}
+                    onChange={e => { setForm({ ...form, iconUrl: e.target.value }); setIconLoaded(null); }}
                     placeholder="https://i.imgur.com/..."
                     className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-lime-400/50 transition-colors"
                   />
+                  {/* Live preview thumbnail — loads as soon as URL is set */}
+                  {form.iconUrl && !form.uploading && (
+                    <div className="shrink-0 w-10 h-10 rounded-xl overflow-hidden border border-white/10 bg-white/5 flex items-center justify-center">
+                      {iconLoaded !== 'error' && (
+                        <img
+                          src={form.iconUrl}
+                          alt="preview"
+                          className="w-full h-full object-cover"
+                          onLoad={() => setIconLoaded('ok')}
+                          onError={() => setIconLoaded('error')}
+                        />
+                      )}
+                      {iconLoaded === 'error' && <span className="text-lg">✗</span>}
+                      {iconLoaded === null && <span className="text-[8px] font-mono text-white/20 animate-pulse">…</span>}
+                    </div>
+                  )}
                   <label className="shrink-0 px-3 py-2.5 bg-white/5 border border-white/10 rounded-xl text-[10px] font-mono text-white/50 hover:text-white hover:border-lime-400/30 transition-colors cursor-pointer">
                     {form.uploading ? <span className="animate-pulse">…</span> : t(lang, 'uploadImage')}
                     <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
@@ -493,6 +511,12 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
                 </div>
                 {form.uploadError && (
                   <div className="mt-1 text-[10px] font-mono text-red-400">{form.uploadError}</div>
+                )}
+                {iconLoaded === 'error' && (
+                  <div className="mt-1 text-[10px] font-mono text-red-400">⚠ Image failed to load — check the URL</div>
+                )}
+                {iconLoaded === 'ok' && (
+                  <div className="mt-1 text-[10px] font-mono text-lime-400/60">✓ Image loaded</div>
                 )}
                 <div className="mt-1 text-[9px] font-mono text-white/20">{t(lang, 'orPasteUrl')}</div>
               </div>
