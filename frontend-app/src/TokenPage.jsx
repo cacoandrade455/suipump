@@ -1637,6 +1637,22 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
         if (sq?.suiOut) setSuiBalance(prev => prev + Number(sq.suiOut) / 1e9);
       }
 
+      // Immediately refresh curve reserves so the progress bar moves without waiting for poll.
+      // Small delay gives the indexer a moment to process the event.
+      const IURL_REFRESH = import.meta.env.VITE_INDEXER_URL || '';
+      if (IURL_REFRESH) {
+        setTimeout(async () => {
+          try {
+            const r = await fetch(`${IURL_REFRESH}/token/${curveId}/stats`, { signal: AbortSignal.timeout(3000) });
+            if (r.ok) {
+              const d = await r.json();
+              if (d.reserve_sui   != null) setFreshReserveMist(BigInt(Math.round(d.reserve_sui * 1e9)));
+              if (d.token_reserve != null) setFreshTokensRemaining(BigInt(Math.round(d.token_reserve * 1e6)));
+            }
+          } catch {}
+        }, 1500);
+      }
+
       setTxStatus('success'); setTxMsg(side === 'buy' ? 'Buy successful! 🎉' : 'Sell successful!'); setAmount('');
       setTimeout(() => { setTxStatus(null); setTxMsg(''); }, 3000);
     } catch (err) {
