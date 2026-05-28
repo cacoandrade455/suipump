@@ -12,26 +12,29 @@ const app  = express();
 app.use(cors());
 app.use(express.json());
 
-// ── Virtual reserves per package — must match frontend curve.js ───────────────
-const MIST         = 1_000_000_000;
-const TOTAL_SUPPLY = 1_000_000_000; // 1B tokens
+// ── Virtual reserves per package — must match frontend constants.js ─────────
+const MIST = 1_000_000_000;
 
+// vTok = virtual token reserve (same across all versions — defines curve shape)
+// vSui = virtual SUI reserve (varies per version — sets launch price)
 function getVirtuals(packageId) {
-  if (!packageId) return { vSui: 3500 };
-  if (packageId.startsWith('0x2154')) return { vSui: 30000 }; // V4
-  if (packageId.startsWith('0x785c')) return { vSui: 10000 }; // V5
-  if (packageId.startsWith('0x21d5')) return { vSui: 10000 }; // V6
-  if (packageId.startsWith('0xfb8f')) return { vSui: 5000  }; // V7
-  if (packageId.startsWith('0x7196')) return { vSui: 4369  }; // V9
-  return { vSui: 3500 };                                        // V8, V8_1
+  const vTok = 1_073_000_000; // all versions
+  if (!packageId) return { vSui: 3500, vTok };
+  if (packageId.startsWith('0x2154')) return { vSui: 30000, vTok }; // V4
+  if (packageId.startsWith('0x785c')) return { vSui: 10000, vTok }; // V5
+  if (packageId.startsWith('0x21d5')) return { vSui: 10000, vTok }; // V6
+  if (packageId.startsWith('0xfb8f')) return { vSui:  5000, vTok }; // V7
+  if (packageId.startsWith('0x7196')) return { vSui:  4369, vTok }; // V9
+  return { vSui: 3500, vTok };                                        // V8, V8_1
 }
 
-// price = (virtualSui + realSuiReserve) / TOTAL_SUPPLY
-// This formula matches the OHLC chart and token page header exactly.
-// new_sui_reserve is in MIST — convert to SUI first.
-function priceFromReserve(vSui, newSuiReserveMist) {
-  const totalPoolSui = vSui + Number(newSuiReserveMist ?? 0) / MIST;
-  return totalPoolSui / TOTAL_SUPPLY;
+// Spot price in SUI per whole token — constant-product formula.
+// price = (vSui + realSui)^2 / (vSui x vTok)
+// Matches TokenPage header exactly. new_sui_reserve is in MIST.
+function priceFromReserve(vSui, vTok, newSuiReserveMist) {
+  const realSui = Number(newSuiReserveMist ?? 0) / MIST;
+  const k = vSui * vTok;
+  return k > 0 ? (vSui + realSui) * (vSui + realSui) / k : 0;
 }
 
 // ── SSE client registry ───────────────────────────────────────────────────────
@@ -115,13 +118,13 @@ app.get('/tokens/stats', async (req, res) => {
     ]);
     const sparklineMap = {};
     for (const row of sparklineRes.rows) {
-      const { vSui } = getVirtuals(row.package_id);
-      sparklineMap[row.curve_id] = (row.points || []).map(p => ({ t: Number(p.t), p: priceFromReserve(vSui, p.r) })).filter(p => p.p > 0 && p.t > 0);
+      const { vSui, vTok } = getVirtuals(row.package_id);
+      sparklineMap[row.curve_id] = (row.points || []).map(p => ({ t: Number(p.t), p: priceFromReserve(vSui, vTok, p.r) })).filter(p => p.p > 0 && p.t > 0);
     }
     res.json(statsRes.rows.map(s => {
-      const { vSui } = getVirtuals(s.package_id);
-      const startPrice = vSui / TOTAL_SUPPLY;
-      const lastPrice = s.reserve_sui > 0 ? priceFromReserve(vSui, s.reserve_sui * MIST) : (s.last_price ?? startPrice);
+      const { vSui, vTok } = getVirtuals(s.package_id);
+      const startPrice = vSui / vTok;
+      const lastPrice = s.reserve_sui > 0 ? priceFromReserve(vSui, vTok, s.reserve_sui * MIST) : (s.last_price ?? startPrice);
       return { ...s, start_price: startPrice, last_price: lastPrice, sparkline24h: sparklineMap[s.curve_id] || [] };
     }));
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -159,7 +162,7 @@ app.get('/token/:curveId/comments', async (req, res) => {
 app.get('/token/:curveId/ohlc', async (req, res) => {
   try {
     const result = await pool.query(`SELECT data, timestamp_ms, event_type, e.curve_id, c.package_id FROM events e LEFT JOIN curves c ON c.curve_id = e.curve_id WHERE e.curve_id = $1 AND (e.event_type LIKE '%TokensPurchased' OR e.event_type LIKE '%TokensBought' OR e.event_type LIKE '%TokensSold') ORDER BY timestamp_ms ASC`, [req.params.curveId]);
-    res.json(result.rows.map(row => { const d = row.data; const ts = row.timestamp_ms ? Math.floor(Number(row.timestamp_ms) / 1000) : 0; const isBuy = row.event_type.includes('TokensPurchased') || row.event_type.includes('TokensBought'); const { vSui } = getVirtuals(row.package_id); return { time: ts, price: priceFromReserve(vSui, d.new_sui_reserve ?? 0), kind: isBuy ? 'buy' : 'sell', sui: isBuy ? Number(d.sui_in ?? 0) / MIST : Number(d.sui_out ?? 0) / MIST }; }));
+    res.json(result.rows.map(row => { const d = row.data; const ts = row.timestamp_ms ? Math.floor(Number(row.timestamp_ms) / 1000) : 0; const isBuy = row.event_type.includes('TokensPurchased') || row.event_type.includes('TokensBought'); const { vSui, vTok } = getVirtuals(row.package_id); return { time: ts, price: priceFromReserve(vSui, vTok, d.new_sui_reserve ?? 0), kind: isBuy ? 'buy' : 'sell', sui: isBuy ? Number(d.sui_in ?? 0) / MIST : Number(d.sui_out ?? 0) / MIST }; }));
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
