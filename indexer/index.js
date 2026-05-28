@@ -150,6 +150,7 @@ async function processEvent(eventType, evt, packageId) {
       curveId:   evt.parsedJson?.curve_id ?? null,
       data:      evt.parsedJson,
       ts:        evt.timestampMs ? Number(evt.timestampMs) : Date.now(),
+      digest:    evt.id?.txDigest ?? null,
     });
     await pool.query(`SELECT pg_notify('suipump_events', $1)`, [payload]);
   } catch {}

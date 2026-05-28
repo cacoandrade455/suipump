@@ -212,8 +212,11 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
           const event = JSON.parse(e.data);
           if (event.type === 'Comment') {
             const d = event.data ?? {};
+            // ID format matches indexer: txDigest + '_0'
+            // event.digest is populated by the indexer's pg_notify payload
+            const txDigest = event.digest ?? d.tx_digest ?? null;
+            const id = txDigest ? `${txDigest}_0` : `sse_${Date.now()}_${Math.random()}`;
             setComments(prev => {
-              const id = (d.tx_digest || event.txDigest || `${Date.now()}`) + '_sse';
               if (prev.find(c => c.id === id)) return prev;
               return [...prev, { id, author: d.author ?? '', text: d.text ?? '', timestamp: event.ts ?? Date.now(), curveId }];
             });
@@ -282,15 +285,16 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
       }
 
       const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      if (result.$kind === 'FailedTransaction') throw new Error(result.FailedTransaction.status.error ?? 'Post failed');
+      if (result.FailedTransaction) throw new Error(result.FailedTransaction.status.error ?? 'Post failed');
 
+      const txDigest = result.digest ?? result.Transaction?.digest ?? null;
       setText('');
-      // Optimistic update
-      setComments(prev => [...prev, {
-        id: result.Transaction.digest,
-        author: account.address, text: trimmed,
-        timestamp: Date.now(), curveId,
-      }]);
+      // Optimistic update — ID matches indexer format (txDigest_0) so SSE dedup works
+      setComments(prev => {
+        const id = txDigest ? `${txDigest}_0` : `opt_${Date.now()}`;
+        if (prev.find(c => c.id === id)) return prev;
+        return [...prev, { id, author: account.address, text: trimmed, timestamp: Date.now(), curveId }];
+      });
     } catch (err) {
       setPostErr(err.message || 'Failed to post comment');
     } finally {
