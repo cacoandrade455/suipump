@@ -1313,7 +1313,6 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   const [curveState,      setCurveState]      = useState(null);
   const [metadata,        setMetadata]        = useState(null);
   const [iconUrl,         setIconUrl]         = useState(null);
-  const [curveCreatedData, setCurveCreatedData] = useState(null);
   const [suiBalance,      setSuiBalance]      = useState(0);
   const [tokenBalance,    setTokenBalance]    = useState(0);
   const [side,            setSide]            = useState('buy');
@@ -1324,6 +1323,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   const [copied,          setCopied]          = useState(false);
   const [shared,          setShared]          = useState(false);
   const [linkCopied,      setLinkCopied]      = useState(false);
+  // curveCreatedData removed — queryEvents was a no-op; indexer covers name/symbol
 
   // ── data loading ──────────────────────────────────────────────────────────
 
@@ -1333,104 +1333,67 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
     return () => clearInterval(timer);
   }, []);
 
+  // Single effect fires indexer + on-chain fees simultaneously via Promise.all.
+  // Previously 3 separate effects that also hit /token/:curveId twice. Now one
+  // round of network calls on mount, polling at 10s.
   useEffect(() => {
     if (!curveId) return;
     const IURL = import.meta.env.VITE_INDEXER_URL || '';
-    if (!IURL) return;
     let cancelled = false;
-    async function load() {
-      try {
-        const res = await fetch(`${IURL}/token/${curveId}`, { signal: AbortSignal.timeout(5000) });
-        if (res.ok && !cancelled) {
-          const d = await res.json();
-          // Map indexer response to curve state field names expected by component
-          // Handle both camelCase (getAllCurves alias) and snake_case (raw SELECT c.*)
-          const stats = d.stats ?? {};
-          setCurveState({
-            sui_reserve:            String(stats.reserve_sui != null ? Math.round(stats.reserve_sui * 1e9) : (d.suiReserve ?? d.sui_reserve ?? 0)),
-            token_reserve:          String(stats.token_reserve != null ? Math.round(stats.token_reserve * 1e6) : (d.tokenReserve ?? d.token_reserve ?? String(800_000_000 * 1e6))),
-            graduated:              d.graduated ?? false,
-            creator_fees:           '0', // always overwritten by on-chain GraphQL fetch below
-            creator:                d.creator ?? null,
-            initial_shared_version: d.initialSharedVersion ?? d.initial_shared_version ?? null,
-            metadata_updated:       d.metadataUpdated ?? d.metadata_updated ?? false,
-            created_at_ms:          d.createdAt ?? d.created_at ?? null,
-            package_id:             d.packageId ?? d.package_id ?? null,
-          });
-        }
-      } catch {}
-    }
-    load();
-    const timer = setInterval(load, 10_000);
-    return () => { cancelled = true; clearInterval(timer); };
-  }, [curveId]);
 
-  // ── Fetch real on-chain creator_fees — indexer estimate is stale after claims ──
-  useEffect(() => {
-    if (!curveId || !client) return;
-    let cancelled = false;
-    async function fetchOnChainFees() {
-      try {
-        // Direct fetch — client.graphql() silently fails for some queries
-        const gql = `{ object(address: "${curveId}") { asMoveObject { contents { json } } } }`;
-        const r = await fetch('https://graphql.testnet.sui.io/graphql', {
+    async function loadAll() {
+      const feesGql = `{ object(address: "${curveId}") { asMoveObject { contents { json } } } }`;
+
+      const [indexerData, feesResult] = await Promise.all([
+        IURL
+          ? fetch(`${IURL}/token/${curveId}`, { signal: AbortSignal.timeout(5000) })
+              .then(r => r.ok ? r.json() : null)
+              .catch(() => null)
+          : Promise.resolve(null),
+        fetch('https://graphql.testnet.sui.io/graphql', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: gql }),
+          body: JSON.stringify({ query: feesGql }),
           signal: AbortSignal.timeout(8000),
-        });
-        const result = await r.json();
-        const json = result?.data?.object?.asMoveObject?.contents?.json;
-        if (json && json.creator_fees != null && !cancelled) {
-          const feeMist = typeof json.creator_fees === 'object'
-            ? String(json.creator_fees?.value ?? 0)
-            : String(json.creator_fees ?? 0);
-          setCurveState(prev => prev ? { ...prev, creator_fees: feeMist } : prev);
-        }
-      } catch {}
-    }
-    fetchOnChainFees();
-    // Refresh every 15s and after any tx (via curveId dependency)
-    const t = setInterval(fetchOnChainFees, 15_000);
-    return () => { cancelled = true; clearInterval(t); };
-  }, [curveId, client]);
+        }).then(r => r.json()).catch(() => null),
+      ]);
 
-  useEffect(() => {
-    if (!tokenType) return;
-    let cancelled = false;
-    // Load metadata from indexer — avoids CORS on graphql.testnet.sui.io
-    const IURL_META = import.meta.env.VITE_INDEXER_URL || '';
-    if (IURL_META) {
-      fetch(`${IURL_META}/token/${curveId}`, { signal: AbortSignal.timeout(5000) })
-        .then(r => r.ok ? r.json() : null)
-        .then(d => {
-          if (!d || cancelled) return;
-          // /token/:curveId returns snake_case from raw SELECT c.* 
-          const icon = d.iconUrl || d.icon_url || null;
-          const m = { name: d.name, symbol: d.symbol, description: d.description, iconUrl: icon };
-          setMetadata(m);
-          if (icon && !isPlaceholderIcon(icon)) setIconUrl(icon);
-        }).catch(() => {});
+      if (cancelled) return;
+
+      // ── indexer data → curveState + metadata (one fetch, two consumers) ──
+      if (indexerData) {
+        const d = indexerData;
+        const stats = d.stats ?? {};
+        setCurveState({
+          sui_reserve:            String(stats.reserve_sui != null ? Math.round(stats.reserve_sui * 1e9) : (d.suiReserve ?? d.sui_reserve ?? 0)),
+          token_reserve:          String(stats.token_reserve != null ? Math.round(stats.token_reserve * 1e6) : (d.tokenReserve ?? d.token_reserve ?? String(800_000_000 * 1e6))),
+          graduated:              d.graduated ?? false,
+          creator_fees:           '0', // overwritten below by on-chain fees
+          creator:                d.creator ?? null,
+          initial_shared_version: d.initialSharedVersion ?? d.initial_shared_version ?? null,
+          metadata_updated:       d.metadataUpdated ?? d.metadata_updated ?? false,
+          created_at_ms:          d.createdAt ?? d.created_at ?? null,
+          package_id:             d.packageId ?? d.package_id ?? null,
+        });
+        const icon = d.iconUrl || d.icon_url || null;
+        setMetadata({ name: d.name, symbol: d.symbol, description: d.description, iconUrl: icon });
+        if (icon && !isPlaceholderIcon(icon)) setIconUrl(icon);
+      }
+
+      // ── on-chain creator_fees (always fresh, never stale after claims) ──
+      const json = feesResult?.data?.object?.asMoveObject?.contents?.json;
+      if (json?.creator_fees != null) {
+        const feeMist = typeof json.creator_fees === 'object'
+          ? String(json.creator_fees?.value ?? 0)
+          : String(json.creator_fees ?? 0);
+        setCurveState(prev => prev ? { ...prev, creator_fees: feeMist } : prev);
+      }
     }
-    (async () => {
-      try {
-        const packageIds = ALL_PACKAGE_IDS.filter(Boolean).filter((v, i, a) => a.indexOf(v) === i);
-        let found = null;
-        for (const pid of packageIds) {
-          if (found) break;
-          let cursor = null;
-          for (let page = 0; page < 10 && !found; page++) {
-            const res = { data: [], nextCursor: null, hasNextPage: false }; // queryEvents removed; CurveCreated data comes from indexer
-            found = null; // queryEvents removed; curve data comes from indexer
-            if (!res.hasNextPage) break;
-            cursor = res.nextCursor;
-          }
-        }
-        if (found?.parsedJson && !cancelled) setCurveCreatedData(found.parsedJson);
-      } catch {}
-    })();
-    return () => { cancelled = true; };
-  }, [tokenType, client, curveId]);
+
+    loadAll();
+    const timer = setInterval(loadAll, 10_000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [curveId]);
 
   useEffect(() => {
     if (!account || !client) return;
@@ -1504,8 +1467,8 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   const _metaOverride  = (() => { try { return JSON.parse(localStorage.getItem(`suipump_meta_${curveId}`)  || '{}'); } catch { return {}; } })();
   const _linksOverride = (() => { try { return JSON.parse(localStorage.getItem(`suipump_links_${curveId}`) || '{}'); } catch { return {}; } })();
 
-  const name   = _metaOverride.name   || curveCreatedData?.name   || metadata?.name   || '';
-  const symbol = _metaOverride.symbol || curveCreatedData?.symbol || metadata?.symbol || '';
+  const name   = _metaOverride.name   || metadata?.name   || '';
+  const symbol = _metaOverride.symbol || metadata?.symbol || '';
   const _rawDesc = (_metaOverride.description || _linksOverride.desc || metadata?.description || '').trim();
   const rawDesc  = isPlaceholderDesc(_rawDesc) ? '' : _rawDesc;
   const _parsed  = parseDescription(rawDesc);
