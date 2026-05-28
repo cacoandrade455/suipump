@@ -154,22 +154,38 @@ function calcReturnTargets(reserveMist, tokensRemaining, suiInMist, vSui, vTok, 
   const buyResult = buyQuote(reserveMist, tokensRemaining, suiInMist, vSui, vTok);
   if (!buyResult?.tokensOut || buyResult.tokensOut <= 0n) return null;
 
-  const tokensReceived  = buyResult.tokensOut;
-  const suiSpent        = suiInMist;
-  const newReserveMist  = reserveMist + buyResult.actualSwap + buyResult.fees.lp;
+  const tokensReceived     = buyResult.tokensOut;
+  const suiSpent           = suiInMist;
+  const newReserveMist     = reserveMist + buyResult.actualSwap + buyResult.fees.lp;
   const newTokensRemaining = tokensRemaining - tokensReceived;
-  // Use the actual graduation threshold for this package version
-  const DRAIN_MIST      = BigInt(Math.round(drainSui)) * BigInt(MIST_PER_SUI);
+  const DRAIN_MIST         = BigInt(Math.round(drainSui)) * BigInt(MIST_PER_SUI);
+
+  // AMM constant after the buy — used to derive future token state at any reserve.
+  // As the pool reserve grows (more buyers), tokens are depleted accordingly.
+  // Effective tokens = vTok_atomic - tokensSold = (vTok - CURVE_SUPPLY)*1e6 + tokensRemaining
+  const vSuiMist           = BigInt(vSui) * BigInt(MIST_PER_SUI);
+  const vTokAtomic         = BigInt(vTok) * 10n ** BigInt(TOKEN_DECIMALS);
+  const CURVE_SUPPLY_ATOMIC = BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS);
+  const effTokensAfterBuy  = vTokAtomic - CURVE_SUPPLY_ATOMIC + newTokensRemaining;
+  const k                  = (vSuiMist + newReserveMist) * effTokensAfterBuy;
+
+  // Derive real tokensRemaining from the invariant at any future reserve level.
+  // This correctly accounts for tokens bought by other traders as price rises.
+  function futureTokensRemainingAt(futureSuiReserveMist) {
+    const futureEff = k / (vSuiMist + futureSuiReserveMist);
+    const result    = futureEff - (vTokAtomic - CURVE_SUPPLY_ATOMIC);
+    return result < 0n ? 0n : result;
+  }
 
   function sellProceedsAtReserve(futureSuiReserve) {
     try {
-      const result = sellQuote(futureSuiReserve, newTokensRemaining, tokensReceived, vSui, vTok);
+      const futTokRemaining = futureTokensRemainingAt(futureSuiReserve);
+      const result = sellQuote(futureSuiReserve, futTokRemaining, tokensReceived, vSui, vTok);
       return result?.suiOut ?? 0n;
     } catch { return 0n; }
   }
 
   function findReserveForMultiplier(multiplier) {
-    // target: sell proceeds >= multiplier * suiSpent
     const targetProceeds = (suiSpent * BigInt(Math.round(multiplier * 100))) / 100n;
     if (sellProceedsAtReserve(DRAIN_MIST) < targetProceeds) return null; // not reachable before grad
     let lo = newReserveMist;
@@ -186,9 +202,11 @@ function calcReturnTargets(reserveMist, tokensRemaining, suiInMist, vSui, vTok, 
   return [2, 5, 10].map(mult => {
     const reserveNeeded = findReserveForMultiplier(mult);
     if (!reserveNeeded) return { mult, reachable: false };
-    const soldAtTarget = BigInt(800_000_000) * 10n ** 6n - newTokensRemaining;
-    const priceAtTarget = Number(priceMistPerToken(reserveNeeded, soldAtTarget, vSui, vTok)) / 1e9;
-    const mcapSui = priceAtTarget * TOTAL_SUPPLY_WHOLE;
+    // Use future token state for accurate mcap at the target reserve
+    const futTokAtTarget = futureTokensRemainingAt(reserveNeeded);
+    const soldAtTarget   = CURVE_SUPPLY_ATOMIC - futTokAtTarget;
+    const priceAtTarget  = Number(priceMistPerToken(reserveNeeded, soldAtTarget, vSui, vTok)) / 1e9;
+    const mcapSui        = priceAtTarget * TOTAL_SUPPLY_WHOLE;
     return {
       mult,
       reachable:  true,
