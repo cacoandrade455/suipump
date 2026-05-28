@@ -69,6 +69,16 @@ function fmtUsd(suiAmt, suiUsd, decimals = 2) {
   return `$${usd.toFixed(decimals + 2)}`;
 }
 
+// Adaptive price formatter — shows 4 significant figures for small prices.
+// Avoids the $0.000006 vs $0.000005987 rounding confusion.
+function fmtPrice(usd) {
+  if (usd == null || isNaN(usd) || usd === 0) return '$0';
+  if (usd >= 1_000) return `$${(usd / 1_000).toFixed(2)}k`;
+  if (usd >= 1)     return `$${usd.toFixed(4)}`;
+  if (usd >= 0.01)  return `$${usd.toFixed(6)}`;
+  return `$${usd.toPrecision(4)}`;
+}
+
 async function fetchSuiUsd() {
   try {
     const r = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=SUIUSDT');
@@ -138,7 +148,7 @@ const SLIPPAGE_PRESETS = ['0.5', '1', '2', '5'];
 // reach for 2x / 5x / 10x returns after fees on both sides.
 // Uses binary search on future SUI reserve to find the sell price that yields
 // the target proceeds. Fully deterministic curve math — no RPC needed.
-function calcReturnTargets(reserveMist, tokensRemaining, suiInMist, vSui, vTok, suiUsd) {
+function calcReturnTargets(reserveMist, tokensRemaining, suiInMist, vSui, vTok, suiUsd, drainSui = 9000) {
   if (!reserveMist || !tokensRemaining || !suiInMist || suiInMist <= 0n) return null;
 
   const buyResult = buyQuote(reserveMist, tokensRemaining, suiInMist, vSui, vTok);
@@ -148,7 +158,8 @@ function calcReturnTargets(reserveMist, tokensRemaining, suiInMist, vSui, vTok, 
   const suiSpent        = suiInMist;
   const newReserveMist  = reserveMist + buyResult.actualSwap + buyResult.fees.lp;
   const newTokensRemaining = tokensRemaining - tokensReceived;
-  const DRAIN_MIST      = BigInt(9000) * BigInt(MIST_PER_SUI);
+  // Use the actual graduation threshold for this package version
+  const DRAIN_MIST      = BigInt(Math.round(drainSui)) * BigInt(MIST_PER_SUI);
 
   function sellProceedsAtReserve(futureSuiReserve) {
     try {
@@ -586,7 +597,7 @@ function TradePanelContent({
   suiBalance, tokenBalance, isCreator, creatorFeesMist,
   curveId: panelCurveId, tokenType: panelTokenType, packageIdHint: panelPkgHint, curveState,
   // curve math for return calculator
-  reserveMist, tokensRemaining, vSui, vTok,
+  reserveMist, tokensRemaining, vSui, vTok, drainSui,
 }) {
   const dAppKit = useDAppKit();
   const client2 = useCurrentClient();
@@ -691,9 +702,9 @@ function TradePanelContent({
     if (!reserveMist || !tokensRemaining || !vSui || !vTok) return null;
     try {
       const suiInMist = BigInt(Math.floor(parseFloat(amount) * Number(MIST_PER_SUI)));
-      return calcReturnTargets(reserveMist, tokensRemaining, suiInMist, vSui, vTok, suiUsd);
+      return calcReturnTargets(reserveMist, tokensRemaining, suiInMist, vSui, vTok, suiUsd, drainSui);
     } catch { return null; }
-  }, [showReturnCalc, side, amount, reserveMist, tokensRemaining, vSui, vTok, suiUsd]);
+  }, [showReturnCalc, side, amount, reserveMist, tokensRemaining, vSui, vTok, suiUsd, drainSui]);
 
   return (
     <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 space-y-4">
@@ -736,7 +747,7 @@ function TradePanelContent({
       <div className="grid grid-cols-2 gap-2 pt-1 border-t border-white/5">
         <div>
           <div className="text-[10px] font-mono text-white/35 mb-0.5">{t(lang, 'price')}</div>
-          <div className="text-white/70 text-xs font-mono">{suiUsd > 0 ? `$${priceUsd.toFixed(6)}` : `${fmt(priceSui, 6)} SUI`}</div>
+          <div className="text-white/70 text-xs font-mono">{suiUsd > 0 ? fmtPrice(priceUsd) : `${fmt(priceSui, 6)} SUI`}</div>
         </div>
         <div>
           <div className="text-[10px] font-mono text-white/35 mb-0.5">{t(lang, 'inSui')}</div>
@@ -1671,7 +1682,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
     priceSui, priceUsd, suiUsd, symbol, graduated,
     suiBalance, tokenBalance, isCreator, creatorFeesMist,
     curveId, tokenType, packageIdHint: pkgId, curveState,
-    reserveMist, tokensRemaining, vSui, vTok,
+    reserveMist, tokensRemaining, vSui, vTok, drainSui,
   };
 
   // ── render ────────────────────────────────────────────────────────────────
@@ -1718,7 +1729,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
                 </div>
               </div>
               <div className="text-right shrink-0">
-                <div className="text-white text-sm font-mono font-bold">{suiUsd > 0 ? `$${priceUsd.toFixed(6)}` : `${fmt(priceSui, 6)} SUI`}</div>
+                <div className="text-white text-sm font-mono font-bold">{suiUsd > 0 ? fmtPrice(priceUsd) : `${fmt(priceSui, 6)} SUI`}</div>
                 <div className="text-white/35 text-[10px] font-mono">{t(lang, 'price')}</div>
                 <div className="text-white/70 text-xs font-mono mt-1">{suiUsd > 0 ? fmtUsd(marketCapSui, suiUsd) : `${fmt(marketCapSui)} SUI`}</div>
                 <div className="text-white/35 text-[10px] font-mono">{t(lang, 'mcap')}</div>
