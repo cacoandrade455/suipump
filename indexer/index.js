@@ -12,7 +12,7 @@ import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import {
   pool, initSchema, getCursor, saveCursor, insertEvent,
-  upsertCurve, recomputeStats, enrichCurveMetadata, backfillMissingIcons,
+  upsertCurve, recomputeStats, recomputeHolders, enrichCurveMetadata, backfillMissingIcons,
   upsertLock, updateLockClaimed,
 } from './db.js';
 import { startGraduationWatcher } from './auto_graduate.js';
@@ -168,6 +168,13 @@ async function processEvent(eventType, evt, packageId) {
     eventType.includes('Comment')
   )) {
     await recomputeStats(curveId);
+  }
+
+  if (curveId && (
+    eventType.includes('TokensPurchased') ||
+    eventType.includes('TokensSold')
+  )) {
+    await recomputeHolders(curveId);
   }
 
   if (eventType.includes('TokensLocked')) {

@@ -102,6 +102,16 @@ export async function initSchema() {
 
     CREATE INDEX IF NOT EXISTS idx_vesting_locks_curve_id    ON vesting_locks (curve_id);
     CREATE INDEX IF NOT EXISTS idx_vesting_locks_beneficiary ON vesting_locks (beneficiary);
+
+    CREATE TABLE IF NOT EXISTS token_holders (
+      curve_id   TEXT    NOT NULL,
+      address    TEXT    NOT NULL,
+      balance    DOUBLE PRECISION NOT NULL DEFAULT 0,
+      updated_at BIGINT,
+      PRIMARY KEY (curve_id, address)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_token_holders_curve_id ON token_holders (curve_id);
   `);
   console.log('✓ Schema initialized');
 }
@@ -308,6 +318,46 @@ export async function recomputeStats(curveId) {
     [curveId, volumeSui, volume24h, buys + sells, buys, sells,
      lastTradeTime, lastPrice, firstPrice, recentTrades, commentCount,
      lastReserveSui, creatorFeesSui, now]
+  );
+}
+
+// ── Holders recompute ─────────────────────────────────────────────────────────
+// Materializes net token balances from all buy/sell events into token_holders.
+// Called on every trade — O(trades for this curve), fast with index on curve_id.
+
+export async function recomputeHolders(curveId) {
+  const TOK = 1_000_000;
+  const [buysRes, sellsRes] = await Promise.all([
+    pool.query(
+      `SELECT data->>'buyer' AS address, SUM((data->>'tokens_out')::float) AS tokens
+       FROM events WHERE curve_id = $1
+         AND (event_type LIKE '%TokensPurchased' OR event_type LIKE '%TokensBought')
+       GROUP BY data->>'buyer'`,
+      [curveId]
+    ),
+    pool.query(
+      `SELECT data->>'seller' AS address, SUM((data->>'tokens_in')::float) AS tokens
+       FROM events WHERE curve_id = $1 AND event_type LIKE '%TokensSold'
+       GROUP BY data->>'seller'`,
+      [curveId]
+    ),
+  ]);
+
+  const hmap = {};
+  for (const r of buysRes.rows)  { if (r.address) hmap[r.address] = (hmap[r.address] ?? 0) + Number(r.tokens ?? 0) / TOK; }
+  for (const r of sellsRes.rows) { if (r.address) hmap[r.address] = (hmap[r.address] ?? 0) - Number(r.tokens ?? 0) / TOK; }
+
+  const now = Date.now();
+  // Upsert all holders in one query using unnest for efficiency
+  const addresses = Object.keys(hmap);
+  if (addresses.length === 0) return;
+  const balances = addresses.map(a => hmap[a]);
+
+  await pool.query(
+    `INSERT INTO token_holders (curve_id, address, balance, updated_at)
+     SELECT $1, unnest($2::text[]), unnest($3::float8[]), $4
+     ON CONFLICT (curve_id, address) DO UPDATE SET balance = EXCLUDED.balance, updated_at = EXCLUDED.updated_at`,
+    [curveId, addresses, balances, now]
   );
 }
 
