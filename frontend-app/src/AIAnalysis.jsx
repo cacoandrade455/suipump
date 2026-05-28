@@ -227,7 +227,7 @@ Token data:
       )}
 
       <div className="mt-3 pt-2 border-t border-white/5 flex items-center justify-end">
-        <span className="text-[9px] font-mono text-white/15 tracking-widest">ANALYSIS BY CLAUDE · ANTHROPIC</span>
+        <span className="text-[9px] font-mono text-white/15 tracking-widest">AI ANALYSIS · LLAMA 3.3 · GROQ</span>
       </div>
     </div>
   );
