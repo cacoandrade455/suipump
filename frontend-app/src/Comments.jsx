@@ -202,9 +202,11 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
 
     load();
 
-    // SSE for real-time comments
+    // SSE for real-time comments — stable ref pattern:
+    // cancelled flag guards both connect() and the reconnect timeout so no
+    // phantom EventSources survive after unmount or curveId change.
     function connect() {
-      if (!INDEXER_URL) return;
+      if (cancelled || !INDEXER_URL) return;
       const es = new EventSource(`${INDEXER_URL}/stream?curveId=${curveId}`);
       esRef.current = es;
       es.onmessage = (e) => {
@@ -223,13 +225,18 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
           }
         } catch {}
       };
-      es.onerror = () => { es.close(); timerRef.current = setTimeout(connect, 3000); };
+      es.onerror = () => {
+        es.close();
+        esRef.current = null;
+        if (!cancelled) timerRef.current = setTimeout(connect, 3000);
+      };
     }
     connect();
 
     return () => {
       cancelled = true;
       esRef.current?.close();
+      esRef.current = null;
       clearTimeout(timerRef.current);
     };
   }, [curveId]);
