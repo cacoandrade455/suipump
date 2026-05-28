@@ -73,7 +73,11 @@ export default function AIAnalysis({ curveId, tokenType, name, symbol, progress,
         } catch {}
       }
 
-      const holderCount = holderRaws.length;
+      // Fallback: if indexer holders table hasn't populated yet (new token),
+      // derive holder count from unique buyer addresses in trade history.
+      const holderCount = holderRaws.length > 0
+        ? holderRaws.length
+        : candidates.size;
 
       // Top-3 concentration as % of total 1B supply
       const TOTAL_SUPPLY_ATOMIC = 1_000_000_000 * TOKEN_SCALE;
@@ -227,7 +231,7 @@ Token data:
       )}
 
       <div className="mt-3 pt-2 border-t border-white/5 flex items-center justify-end">
-        <span className="text-[9px] font-mono text-white/15 tracking-widest">AI ANALYSIS · LLAMA 3.3 · GROQ</span>
+        <span className="text-[9px] font-mono text-white/15 tracking-widest">ANALYSIS BY CLAUDE · ANTHROPIC</span>
       </div>
     </div>
   );
