@@ -1,13 +1,21 @@
-// api/analyze.js — Vercel serverless function
-// Proxies AI token analysis through Groq (Llama 3.3 70B).
+// api/analyze.js — Vercel serverless function (Groq / Llama 3.3 70B)
 // Set GROQ_API_KEY in Vercel environment variables.
 
-export default async function handler(req, res) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
+module.exports = async function handler(req, res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.status(200).end();
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const { prompt } = req.body ?? {};
+  // Parse body — Vercel may or may not auto-parse depending on config
+  let body = req.body;
+  if (typeof body === 'string') {
+    try { body = JSON.parse(body); } catch { body = {}; }
+  }
+  body = body ?? {};
+
+  const { prompt } = body;
   if (!prompt) return res.status(400).json({ error: 'Missing prompt' });
 
   const apiKey = process.env.GROQ_API_KEY;
@@ -29,7 +37,6 @@ export default async function handler(req, res) {
     });
 
     const data = await groqRes.json();
-
     if (!groqRes.ok) {
       return res.status(groqRes.status).json({ error: data.error?.message ?? 'Groq error' });
     }
@@ -39,4 +46,4 @@ export default async function handler(req, res) {
   } catch (err) {
     return res.status(500).json({ error: err.message || 'Internal error' });
   }
-}
+};
