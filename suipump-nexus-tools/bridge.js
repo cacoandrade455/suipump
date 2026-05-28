@@ -81,16 +81,17 @@ function makeClient(rpcUrl) {
 }
 
 async function resolveCurve(client, curveId) {
-  const obj = await client.getObject({ id: curveId, options: { showContent: true, showType: true, showOwner: true } });
-  if (!obj.data) throw new Error(`Curve ${curveId} not found`);
-  const curveType = obj.data.type;
-  const pkgId     = curveType?.split('::')[0];
-  const tokenType = curveType?.match(/Curve<(.+)>$/)?.[1];
+  // v2: objectId (not id), result at obj.object.* (not obj.data.*)
+  const obj = await client.getObject({ objectId: curveId });
+  if (!obj?.object) throw new Error(`Curve ${curveId} not found`);
+  const curveType     = obj.object.type ?? '';
+  const pkgId         = curveType.split('::')[0];
+  const tokenType     = curveType.match(/Curve<(.+)>$/)?.[1];
   if (!tokenType) throw new Error(`Could not parse token type from curve ${curveId}`);
   if (!pkgId)     throw new Error(`Could not parse package ID from curve ${curveId}`);
-  const sharedVersion = obj.data.owner?.Shared?.initial_shared_version;
+  const sharedVersion = obj.object.owner?.Shared?.initialSharedVersion;
   if (!sharedVersion) throw new Error(`Curve ${curveId} is not a shared object`);
-  return { pkgId, tokenType, fields: obj.data.content?.fields ?? {}, sharedVersion };
+  return { pkgId, tokenType, sharedVersion };
 }
 
 function jsonResp(res, status, body) {
@@ -142,6 +143,7 @@ async function handleBuy(body) {
   const { pkgId, tokenType, sharedVersion } = await resolveCurve(client, curveId);
 
   const minOut   = BigInt(minTokensOut ?? 0);
+  const isV9Plus = V9_PLUS.has(pkgId);
   const isV5Plus = V5_PLUS.has(pkgId);
 
   const tx       = new Transaction();
@@ -149,11 +151,25 @@ async function handleBuy(body) {
   const [payment] = tx.splitCoins(tx.gas, [tx.pure.u64(suiMist)]);
   const clockRef = tx.sharedObjectRef({ objectId: SUI_CLOCK_ID, initialSharedVersion: 1, mutable: false });
 
-  const buyArgs = isV5Plus
-    ? [curveRef, payment, tx.pure.u64(minOut), tx.pure.option('address', referral ?? null), clockRef]
-    : [curveRef, payment, tx.pure.u64(minOut)];
+  // V9: buy(curve, payment, min_out, referral, sui_price_scaled, clock)
+  // V5-V8: buy(curve, payment, min_out, referral, clock)
+  // V4: buy(curve, payment, min_out)
+  let buyArgs;
+  if (isV9Plus) {
+    // Fetch live SUI price for oracle — fallback to 0 (uses stored BASE_GRAD)
+    let suiPriceScaled = 0n;
+    try {
+      const pr = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=SUIUSDT', { signal: AbortSignal.timeout(2000) });
+      if (pr.ok) { const pd = await pr.json(); const p = parseFloat(pd.price ?? '0'); if (p > 0) suiPriceScaled = BigInt(Math.floor(p * 1000)); }
+    } catch {}
+    buyArgs = [curveRef, payment, tx.pure.u64(minOut), tx.pure.option('address', referral ?? null), tx.pure.u64(suiPriceScaled), clockRef];
+  } else if (isV5Plus) {
+    buyArgs = [curveRef, payment, tx.pure.u64(minOut), tx.pure.option('address', referral ?? null), clockRef];
+  } else {
+    buyArgs = [curveRef, payment, tx.pure.u64(minOut)];
+  }
 
-  if (isV5Plus) {
+  if (isV5Plus || isV9Plus) {
     const [tokens, refund] = tx.moveCall({
       target: `${pkgId}::bonding_curve::buy`,
       typeArguments: [tokenType],
@@ -175,16 +191,19 @@ async function handleBuy(body) {
     include: { balanceChanges: true },
   });
 
-  if (result.$kind === 'FailedTransaction') {
-    throw new Error(`buy() failed: ${result.FailedTransaction.status.error}`);
+  if (result.errors?.length) {
+    throw new Error(`buy() failed: ${result.errors[0]?.message ?? JSON.stringify(result.errors)}`);
   }
 
-  const tokenChange = result.Transaction.balanceChanges?.find(b =>
-    b.address === address && b.coinType !== '0x2::sui::SUI'
+  const balChanges = result.data?.executeTransaction?.effects?.balanceChanges ?? [];
+  const normalAddr = b => b.address?.address ?? b.address;
+  const normalType = b => b.coinType?.repr    ?? b.coinType;
+  const tokenChange = balChanges.find(b =>
+    normalAddr(b) === address && normalType(b) !== '0x2::sui::SUI'
   );
 
   return {
-    txDigest:       result.Transaction.digest,
+    txDigest:       result.data?.executeTransaction?.digest,
     suiSpent:       (Number(suiMist) / Number(MIST_PER_SUI)).toFixed(9),
     tokensReceived: tokenChange ? (Number(BigInt(tokenChange.amount)) / 1e6).toFixed(6) : 'unknown',
     tokenType,
@@ -240,16 +259,19 @@ async function handleSell(body) {
     include: { balanceChanges: true },
   });
 
-  if (result.$kind === 'FailedTransaction') {
-    throw new Error(`sell() failed: ${result.FailedTransaction.status.error}`);
+  if (result.errors?.length) {
+    throw new Error(`sell() failed: ${result.errors[0]?.message ?? JSON.stringify(result.errors)}`);
   }
 
-  const suiChange = result.Transaction.balanceChanges?.find(b =>
-    b.address === address && b.coinType === '0x2::sui::SUI'
+  const balChangesSell = result.data?.executeTransaction?.effects?.balanceChanges ?? [];
+  const normAddrS = b => b.address?.address ?? b.address;
+  const normTypeS = b => b.coinType?.repr    ?? b.coinType;
+  const suiChange = balChangesSell.find(b =>
+    normAddrS(b) === address && normTypeS(b) === '0x2::sui::SUI'
   );
 
   return {
-    txDigest:    result.Transaction.digest,
+    txDigest:    result.data?.executeTransaction?.digest,
     tokensSold:  tokenAmount,
     suiReceived: suiChange ? (Number(BigInt(suiChange.amount)) / 1e9).toFixed(6) : 'unknown',
   };
@@ -294,17 +316,20 @@ async function handleClaim(body) {
     include: { balanceChanges: true },
   });
 
-  if (result.$kind === 'FailedTransaction') {
-    throw new Error(`claim_creator_fees() failed: ${result.FailedTransaction.status.error}`);
+  if (result.errors?.length) {
+    throw new Error(`claim_creator_fees() failed: ${result.errors[0]?.message ?? JSON.stringify(result.errors)}`);
   }
 
-  const suiChange = result.Transaction.balanceChanges?.find(b =>
-    b.address === address && b.coinType === '0x2::sui::SUI'
+  const balChangesClaim = result.data?.executeTransaction?.effects?.balanceChanges ?? [];
+  const normAddrC = b => b.address?.address ?? b.address;
+  const normTypeC = b => b.coinType?.repr    ?? b.coinType;
+  const suiChangeClaim = balChangesClaim.find(b =>
+    normAddrC(b) === address && normTypeC(b) === '0x2::sui::SUI'
   );
 
   return {
-    txDigest:   result.Transaction.digest,
-    suiClaimed: suiChange ? (Number(BigInt(suiChange.amount)) / 1e9).toFixed(6) : 'unknown',
+    txDigest:   result.data?.executeTransaction?.digest,
+    suiClaimed: suiChangeClaim ? (Number(BigInt(suiChangeClaim.amount)) / 1e9).toFixed(6) : 'unknown',
   };
 }
 
@@ -377,12 +402,32 @@ async function handleStatus(body) {
   if (!curveId) throw new Error('curveId required');
 
   const client = makeClient(rpcUrl);
-  const obj = await client.getObject({ id: curveId, options: { showContent: true, showType: true } });
-  if (!obj.data) throw new Error(`Curve ${curveId} not found`);
 
-  const fields    = obj.data.content?.fields ?? {};
-  const tokenType = obj.data.type?.match(/Curve<(.+)>$/)?.[1];
-  const pkgId     = obj.data.type?.split('::')?.[0];
+  // v2: objectId (not id), result at obj.object.*
+  const obj = await client.getObject({ objectId: curveId });
+  if (!obj?.object) throw new Error(`Curve ${curveId} not found`);
+  const curveTypeStatus = obj.object.type ?? '';
+  const tokenType = curveTypeStatus.match(/Curve<(.+)>$/)?.[1];
+  const pkgId     = curveTypeStatus.split('::')[0];
+
+  // Fetch curve fields from indexer stats (avoids GQL content query complexity)
+  let fields = {};
+  try {
+    const statsRes = await fetch(`${INDEXER_URL}/token/${curveId}/stats`);
+    if (statsRes.ok) {
+      const s = await statsRes.json();
+      fields = {
+        sui_reserve:    String(Math.round((s.reserve_sui   ?? 0) * 1e9)),
+        token_reserve:  String(Math.round((s.token_reserve ?? 0) * 1e6)),
+        creator_fees:   String(Math.round((s.creator_fees_sui ?? 0) * 1e9)),
+        protocol_fees:  '0',
+        airdrop_fees:   '0',
+        graduated:      false,
+        paused:         false,
+        graduation_target: 0,
+      };
+    }
+  } catch {}
 
   const suiReserveMist     = BigInt(fields.sui_reserve    ?? 0);
   const tokenReserveAtomic = BigInt(fields.token_reserve  ?? 0);
