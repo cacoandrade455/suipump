@@ -9,6 +9,7 @@ import { INTERVAL_OPTIONS } from './useDCA.js';
 import { REBALANCE_INTERVALS } from './useRebalance.js';
 import { loadTPSL, clearTPSL } from './useTPSL.js';
 import { loadLimitOrders } from './useLimitOrder.js';
+import { loadAllBuybackConfigs, BUYBACK_THRESHOLD_SUI } from './useCreatorBuyback.js';
 
 const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
 
@@ -1044,9 +1045,13 @@ function LimitOrderTab({ limitOrder, hasKey, isReady, onClose }) {
 function ActiveStrategiesTab({ sniper, dca, copyTrade, rebalance, limitOrder }) {
   const account = useCurrentAccount();
   const [tpslConfigs, setTpslConfigs] = useState([]);
+  const [buybackConfigs, setBuybackConfigs] = useState([]);
 
   useEffect(() => {
-    if (account?.address) setTpslConfigs(loadAllTPSL(account.address));
+    if (account?.address) {
+      setTpslConfigs(loadAllTPSL(account.address));
+      setBuybackConfigs(loadAllBuybackConfigs(account.address));
+    }
   }, [account?.address]);
 
   const handleClearTPSL = (curveId) => {
@@ -1056,13 +1061,14 @@ function ActiveStrategiesTab({ sniper, dca, copyTrade, rebalance, limitOrder }) 
 
   const hasAnything = sniper?.isActive || (dca?.activeOrders?.length ?? 0) > 0
     || copyTrade?.isActive || rebalance?.isActive || tpslConfigs.length > 0
-    || (limitOrder?.pendingOrders?.length ?? 0) > 0;
+    || (limitOrder?.pendingOrders?.length ?? 0) > 0
+    || buybackConfigs.length > 0;
 
   if (!account) return <div className="py-12 text-center text-[11px] font-mono text-white/30">Connect your wallet</div>;
   if (!hasAnything) return (
     <div className="py-12 text-center space-y-2">
       <div className="text-[11px] font-mono text-white/20">No active strategies</div>
-      <div className="text-[9px] font-mono text-white/15">Enable sniper, DCA, copy trade, rebalance, or limit orders to see them here</div>
+      <div className="text-[9px] font-mono text-white/15">Enable sniper, DCA, copy trade, rebalance, limit orders, or auto-buyback to see them here</div>
     </div>
   );
 
@@ -1143,6 +1149,27 @@ function ActiveStrategiesTab({ sniper, dca, copyTrade, rebalance, limitOrder }) 
         </div>
       )}
 
+      {buybackConfigs.length > 0 && (
+        <div className="space-y-1.5">
+          <div className="text-[9px] font-mono text-white/30 tracking-widest">AUTO-BUYBACK</div>
+          {buybackConfigs.map(cfg => (
+            <div key={cfg.curveId} className="rounded-xl border border-lime-400/15 bg-lime-950/10 px-3 py-2.5">
+              <div className="flex items-center justify-between">
+                <div className="min-w-0">
+                  <div className="text-[10px] font-mono font-bold text-white truncate">
+                    {cfg.name || cfg.curveId.slice(0,8)+'…'}{cfg.symbol && <span className="text-lime-400/70 ml-1">${cfg.symbol}</span>}
+                  </div>
+                  <div className="text-[8px] font-mono text-white/30 mt-0.5">
+                    🔄 {cfg.pct}% reinvested · triggers at {BUYBACK_THRESHOLD_SUI} SUI
+                  </div>
+                </div>
+                <span className="text-[8px] font-mono text-lime-400/50 shrink-0 ml-2">ACTIVE</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {tpslConfigs.length > 0 && (
         <div className="space-y-1.5">
           <div className="text-[9px] font-mono text-white/30 tracking-widest">ACTIVE TP/SL</div>
@@ -1177,7 +1204,8 @@ export default function StrategiesModal({ onClose, tradeKey, sniper, dca, copyTr
 
   const anyActive = sniper?.isActive || (dca?.activeOrders?.length ?? 0) > 0
     || copyTrade?.isActive || rebalance?.isActive
-    || (limitOrder?.pendingOrders?.length ?? 0) > 0;
+    || (limitOrder?.pendingOrders?.length ?? 0) > 0
+    || buybackConfigs.length > 0;
 
   useEffect(() => {
     const handler = (e) => { if (e.key === 'Escape') onClose(); };
