@@ -265,7 +265,7 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
       const [claimed] = tx.moveCall({ target: `${vestingPkg}::bonding_curve::claim_vested`, typeArguments: [tokenType], arguments: [lockRef, tx.object(SUI_CLOCK_ID)] });
       tx.transferObjects([claimed], account.address);
       const claimResult = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      if (claimResult.$kind === 'FailedTransaction') throw new Error(claimResult.FailedTransaction.status.error ?? 'Claim failed');
+      if (claimResult.FailedTransaction) throw new Error(claimResult.FailedTransaction.status.error ?? 'Claim failed');
       setMsg('Claimed ✓'); setBusy(false); setTimeout(() => { setMsg(''); loadLocks(); }, 1500);
     } catch (e) { setMsg(e.message || 'Claim failed'); setBusy(false); }
   };
@@ -300,7 +300,7 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
       const durationMs = VEST_DURATIONS_MS[lockDuration] ?? VEST_DURATIONS_MS['30d'];
       tx.moveCall({ target: `${vestingPkg}::bonding_curve::lock_tokens`, typeArguments: [tokenType], arguments: [curveRef, tokenCoin, tx.pure.u8(lockMode), tx.pure.u64(durationMs), tx.object(SUI_CLOCK_ID)] });
       const lockResult = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      if (lockResult.$kind === 'FailedTransaction') throw new Error(lockResult.FailedTransaction.status.error ?? 'Lock failed');
+      if (lockResult.FailedTransaction) throw new Error(lockResult.FailedTransaction.status.error ?? 'Lock failed');
       setMsg('Locked ✓'); setBusy(false); setLockAmount(''); setShowLockForm(false); setTimeout(() => { setMsg(''); loadLocks(); }, 1500);
     } catch (e) { setMsg(e.message || 'Lock failed'); setBusy(false); }
   };
@@ -388,7 +388,7 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
 
 // ── Creator Tools Panel ───────────────────────────────────────────────────────
 
-function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveState, currentDesc, currentTwitter, currentTelegram, currentWebsite, currentDex, lang }) {
+function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveState, currentDesc, currentTwitter, currentTelegram, currentWebsite, currentDex, lang, onMetadataUpdated = null }) {
   const client = useCurrentClient();
   const dAppKit = useDAppKit();
   const pkgId   = resolvePackageId(tokenType, packageIdHint);
@@ -448,7 +448,9 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
     if (!links.desc && !links.twitter && !links.telegram && !links.website) { showMsg('Fill in at least one field'); return; }
     localStorage.setItem(`suipump_links_${curveId}`, JSON.stringify({ updatedAt: Date.now(), desc: links.desc.trim() || null, twitter: links.twitter.trim() || null, telegram: links.telegram.trim() || null, website: links.website.trim() || null, dex: links.dex || 'cetus' }));
     showMsg('Links updated! ✅');
-    setTimeout(() => window.location.reload(), 1200);
+    if (onMetadataUpdated) {
+      onMetadataUpdated({ description: links.desc.trim() || null });
+    }
   };
 
   const handleUpdateMetadata = async () => {
@@ -480,8 +482,17 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
         arguments: [tx.object(capId), curveRef, metadataRef, tx.pure.option('string', meta.name.trim() || null), tx.pure.option('string', meta.symbol.trim() || null), tx.pure.option('string', meta.description.trim() || null), tx.pure.option('string', meta.iconUrl.trim() || null), tx.object(SUI_CLOCK_ID)],
       });
       const metaResult = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      if (metaResult.$kind === 'FailedTransaction') throw new Error(metaResult.FailedTransaction.status.error ?? 'Update failed');
-      showMsg('Metadata updated on-chain ✅'); setBusy(false); setTimeout(() => window.location.reload(), 1400);
+      if (metaResult.FailedTransaction) throw new Error(metaResult.FailedTransaction.status.error ?? 'Update failed');
+      showMsg('Metadata updated on-chain ✅'); setBusy(false);
+      // Update in-place — no full reload
+      if (onMetadataUpdated) {
+        onMetadataUpdated({
+          name:        meta.name.trim()        || null,
+          symbol:      meta.symbol.trim()      || null,
+          description: meta.description.trim() || null,
+          iconUrl:     meta.iconUrl.trim()     || null,
+        });
+      }
     } catch (e) { showMsg(e.message || 'Update failed'); setBusy(false); }
   };
 
@@ -669,7 +680,7 @@ function TradePanelContent({
         arguments: [tx.object(capId), curveRef],
       });
       const feeResult = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      if (feeResult.$kind === 'FailedTransaction') throw new Error(feeResult.FailedTransaction.status.error ?? 'Claim failed');
+      if (feeResult.FailedTransaction) throw new Error(feeResult.FailedTransaction.status.error ?? 'Claim failed');
       setClaimMsg('Fees claimed! 🎉'); setClaiming(false); setTimeout(() => setClaimMsg(''), 3000);
     } catch (err) { setClaimMsg(err.message || 'Claim failed'); setClaiming(false); }
   };
@@ -753,7 +764,7 @@ function TradePanelContent({
               {side === 'buy' ? t(lang, 'amount') : `AMOUNT ($${symbol})`}
             </div>
             <div className="flex gap-2">
-              <input type="number" min="0" step="any" value={amount} onChange={e => setAmount(e.target.value)}
+              <input type="number" inputMode="decimal" min="0" step="any" value={amount} onChange={e => setAmount(e.target.value)}
                 placeholder={side === 'buy' ? '0.00' : '0'}
                 className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-sm font-mono text-white placeholder-white/20 focus:outline-none focus:border-lime-400/50 focus:bg-lime-400/5 transition-colors" />
               <button onClick={() => {
@@ -919,6 +930,7 @@ function TPSLPanel({
   reserveMist, tokensRemaining, vSui, vTok,
   slippage,
   keypair,        // Ed25519Keypair | null — if set, signs autonomously (no Slush popup)
+  initialSharedVersion = null, // passed from parent — avoids re-fetch on every trigger
 }) {
   const client = useCurrentClient();
   const dAppKit = useDAppKit();
@@ -945,19 +957,8 @@ function TPSLPanel({
         ? keypair.getPublicKey().toSuiAddress()
         : account.address;
 
-      // Fetch ISV from indexer at sell time — TPSLPanel doesn't have access
-      // to initialSharedVersionProp or curveState from the outer TokenPage scope
-      let isv = null;
-      try {
-        const IURL = import.meta.env.VITE_INDEXER_URL || '';
-        if (IURL) {
-          const isvRes = await fetch(`${IURL}/token/${curveId}`, { signal: AbortSignal.timeout(3000) });
-          if (isvRes.ok) {
-            const isvData = await isvRes.json();
-            isv = isvData.initialSharedVersion ?? isvData.initial_shared_version ?? null;
-          }
-        }
-      } catch { /* fallback to tx.object */ }
+      // Use ISV passed as prop — already loaded by parent, no extra fetch needed
+      const isv = initialSharedVersion ?? null;
       const tx = new Transaction();
       const curveRef = isv
         ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: isv, mutable: true })
@@ -1005,7 +1006,7 @@ function TPSLPanel({
 
       // ── Slush fallback (no keypair) ──────────────────────────────────────
       const sellResult = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      if (sellResult.$kind === 'FailedTransaction') throw new Error(sellResult.FailedTransaction.status.error ?? 'Sell failed');
+      if (sellResult.FailedTransaction) throw new Error(sellResult.FailedTransaction.status.error ?? 'Sell failed');
       setTriggerMsg(m => m ? { ...m, status: 'done' } : m);
       setSelling(false);
     } catch (err) {
@@ -1289,9 +1290,20 @@ function TradesHoldersBlock({ curveId, tokenType, suiUsd, lang, creator, trades,
 }
 
 function CommentsBlock({ curveId, packageId, lang, initialSharedVersion = null, tokenType = null }) {
+  const [commentCount, setCommentCount] = React.useState(null);
+  React.useEffect(() => {
+    if (!curveId) return;
+    const IURL = import.meta.env.VITE_INDEXER_URL || '';
+    if (!IURL) return;
+    fetch(`${IURL}/token/${curveId}/comments`, { signal: AbortSignal.timeout(4000) })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (Array.isArray(d)) setCommentCount(d.length); })
+      .catch(() => {});
+  }, [curveId]);
+  const label = commentCount != null ? `${t(lang, 'comments')} (${commentCount})` : t(lang, 'comments');
   return (
     <div>
-      <div className="text-[10px] font-mono text-white/35 tracking-widest mb-2">{t(lang, 'comments')}</div>
+      <div className="text-[10px] font-mono text-white/35 tracking-widest mb-2">{label}</div>
       <Comments curveId={curveId} packageId={packageId} initialSharedVersion={initialSharedVersion} tokenType={tokenType} />
     </div>
   );
@@ -1479,6 +1491,13 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   const dex      = _linksOverride.dex      || _parsed.dex;
   const _overrideIcon = _metaOverride.iconUrl || null;
 
+  const [displayProgress, setDisplayProgress] = React.useState(0);
+  React.useEffect(() => {
+    if (progress <= 0) return;
+    const t = setTimeout(() => setDisplayProgress(progress), 120);
+    return () => clearTimeout(t);
+  }, [progress]);
+
   const [isCreator, setIsCreator] = React.useState(false);
   // isCreator: true when wallet address matches the curve's creator field.
   // This is fast, reliable, and doesn't require a GQL call.
@@ -1605,7 +1624,19 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
       }
 
       const tradeResult = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      if (tradeResult.$kind === 'FailedTransaction') throw new Error(tradeResult.FailedTransaction.status.error ?? 'Transaction failed');
+      if (tradeResult.FailedTransaction) throw new Error(tradeResult.FailedTransaction.status.error ?? 'Transaction failed');
+
+      // Optimistic balance update — immediately reflect expected change before next poll
+      if (side === 'buy') {
+        setSuiBalance(prev => Math.max(0, prev - amtFloat));
+        const bq = buyQuote(reserveMist, tokensRemaining, BigInt(Math.floor(amtFloat * Number(MIST_PER_SUI))), vSui, vTok);
+        if (bq?.tokensOut) setTokenBalance(prev => prev + Number(bq.tokensOut) / 10 ** TOKEN_DECIMALS);
+      } else {
+        setTokenBalance(prev => Math.max(0, prev - amtFloat));
+        const sq = sellQuote(reserveMist, tokensRemaining, BigInt(Math.floor(amtFloat * 10 ** TOKEN_DECIMALS)), vSui, vTok);
+        if (sq?.suiOut) setSuiBalance(prev => prev + Number(sq.suiOut) / 1e9);
+      }
+
       setTxStatus('success'); setTxMsg(side === 'buy' ? 'Buy successful! 🎉' : 'Sell successful!'); setAmount('');
       setTimeout(() => { setTxStatus(null); setTxMsg(''); }, 3000);
     } catch (err) {
@@ -1684,7 +1715,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
                 <span className="text-lime-400">{progress.toFixed(1)}%</span>
               </div>
               <div className="h-2 bg-white/5 rounded-full overflow-hidden">
-                <div className="h-full bg-gradient-to-r from-lime-600 to-lime-400 rounded-full transition-all duration-500" style={{ width: `${progress}%` }} />
+                <div className="h-full bg-gradient-to-r from-lime-600 to-lime-400 rounded-full transition-all duration-700" style={{ width: `${displayProgress}%` }} />
               </div>
               <div className="flex items-center justify-between text-[10px] font-mono text-white/25 mt-1">
                 <span>{fmt(mistToSui(reserveMist))} {t(lang, 'suiRaised')}</span>
@@ -1727,10 +1758,22 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
             vTok={vTok}
             slippage={slippage}
             keypair={tradeKeyReady ? tradeKeypair : null}
+            initialSharedVersion={initialSharedVersionProp ?? curveState?.initial_shared_version ?? null}
           />
           <VestingPanel curveId={curveId} tokenType={tokenType} packageId={pkgId} account={account} tokenBalance={tokenBalance} lang={lang} initialSharedVersion={curveState?.initial_shared_version ?? null} />
           {isCreator && (
-            <CreatorToolsPanel curveId={curveId} tokenType={tokenType} packageIdHint={pkgId} account={account} curveState={curveState} currentDesc={desc} currentTwitter={twitter} currentTelegram={telegram} currentWebsite={website} currentDex={dex} lang={lang} />
+            <CreatorToolsPanel curveId={curveId} tokenType={tokenType} packageIdHint={pkgId} account={account} curveState={curveState} currentDesc={desc} currentTwitter={twitter} currentTelegram={telegram} currentWebsite={website} currentDex={dex} lang={lang}
+              onMetadataUpdated={({ name: n, symbol: s, description: d, iconUrl: ic }) => {
+                setMetadata(prev => ({
+                  ...prev,
+                  ...(n  != null && { name: n }),
+                  ...(s  != null && { symbol: s }),
+                  ...(d  != null && { description: d }),
+                  ...(ic != null && { iconUrl: ic }),
+                }));
+                if (ic && !isPlaceholderIcon(ic)) setIconUrl(ic);
+              }}
+            />
           )}
         </div>
       </div>
