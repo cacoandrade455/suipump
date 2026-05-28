@@ -6,6 +6,7 @@ import { X, Plus, Trash2, Rocket, CheckCircle } from 'lucide-react';
 import wasmInit, * as bytecodeTemplate from '@mysten/move-bytecode-template';
 import { PACKAGE_ID, PACKAGE_ID_V5, PACKAGE_ID_V7, MIST_PER_SUI, ANTI_BOT_NONE, ANTI_BOT_15S, ANTI_BOT_30S, GRAD_TARGET_CETUS, GRAD_TARGET_DEEPBOOK, GRAD_TARGET_TURBOS, isV7OrLater } from './constants.js';
 import { t } from './i18n.js';
+import { saveBuybackConfig } from './useCreatorBuyback.js';
 
 // Vesting modes / durations — must match bonding_curve.move v7
 const VEST_MODE_CLIFF   = 0;
@@ -133,6 +134,8 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
     graduationDex: 'cetus',
     antiBotDelay: ANTI_BOT_NONE, // 0 / 15 / 30
   });
+  const [buybackEnabled, setBuybackEnabled] = useState(false);
+  const [buybackPct,     setBuybackPct]     = useState(50);
   const [payouts, setPayouts] = useState([{ address: account?.address ?? '', bps: 10000 }]);
   const [devBuy, setDevBuy] = useState('');
   // Optional dev-buy vesting lock (V7+ only)
@@ -140,7 +143,6 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
   const [lockMode, setLockMode] = useState(VEST_MODE_CLIFF);   // 0 cliff / 1 linear / 2 monthly
   const [lockDuration, setLockDuration] = useState('30d');     // 7d / 30d / 180d / 365d
   const [launching, setLaunching] = useState(false);
-  const [iconLoaded, setIconLoaded] = useState(null); // null | 'ok' | 'error'
   const [txStep, setTxStep] = useState(null);
   const [tx1Digest, setTx1Digest] = useState(null);
   const [tx2Digest, setTx2Digest] = useState(null);
@@ -182,7 +184,6 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
       const json = await res.json();
       if (!json.success) throw new Error(json.data?.error || 'Upload failed');
       setForm(f => ({ ...f, iconUrl: json.data.link, uploading: false }));
-      setIconLoaded('ok');
     } catch (err) {
       setForm(f => ({ ...f, uploadError: err.message, uploading: false }));
     }
@@ -388,6 +389,19 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
       } catch {}
 
       setTxStep('done');
+      // Save buyback config to localStorage if enabled
+      if (buybackEnabled && curveId && account?.address) {
+        saveBuybackConfig(account.address, curveId, {
+          enabled: true,
+          pct: buybackPct,
+          curveId,
+          tokenType: newTokenType,
+          pkgId: PACKAGE_ID,
+          name: tokenName,
+          symbol: tokenSymbol,
+          createdAt: Date.now(),
+        });
+      }
       if (onLaunched) onLaunched({ curveId, tokenType: newTokenType, name: tokenName, symbol: tokenSymbol });
     } catch (err) {
       setError(err.message || String(err));
@@ -484,26 +498,10 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
                 <div className="flex gap-2">
                   <input
                     value={form.iconUrl}
-                    onChange={e => { setForm({ ...form, iconUrl: e.target.value }); setIconLoaded(null); }}
+                    onChange={e => setForm({ ...form, iconUrl: e.target.value })}
                     placeholder="https://i.imgur.com/..."
                     className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-lime-400/50 transition-colors"
                   />
-                  {/* Live preview thumbnail — loads as soon as URL is set */}
-                  {form.iconUrl && !form.uploading && (
-                    <div className="shrink-0 w-10 h-10 rounded-xl overflow-hidden border border-white/10 bg-white/5 flex items-center justify-center">
-                      {iconLoaded !== 'error' && (
-                        <img
-                          src={form.iconUrl}
-                          alt="preview"
-                          className="w-full h-full object-cover"
-                          onLoad={() => setIconLoaded('ok')}
-                          onError={() => setIconLoaded('error')}
-                        />
-                      )}
-                      {iconLoaded === 'error' && <span className="text-lg">✗</span>}
-                      {iconLoaded === null && <span className="text-[8px] font-mono text-white/20 animate-pulse">…</span>}
-                    </div>
-                  )}
                   <label className="shrink-0 px-3 py-2.5 bg-white/5 border border-white/10 rounded-xl text-[10px] font-mono text-white/50 hover:text-white hover:border-lime-400/30 transition-colors cursor-pointer">
                     {form.uploading ? <span className="animate-pulse">…</span> : t(lang, 'uploadImage')}
                     <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
@@ -511,12 +509,6 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
                 </div>
                 {form.uploadError && (
                   <div className="mt-1 text-[10px] font-mono text-red-400">{form.uploadError}</div>
-                )}
-                {iconLoaded === 'error' && (
-                  <div className="mt-1 text-[10px] font-mono text-red-400">⚠ Image failed to load — check the URL</div>
-                )}
-                {iconLoaded === 'ok' && (
-                  <div className="mt-1 text-[10px] font-mono text-lime-400/60">✓ Image loaded</div>
                 )}
                 <div className="mt-1 text-[9px] font-mono text-white/20">{t(lang, 'orPasteUrl')}</div>
               </div>
@@ -646,6 +638,53 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
                   <Plus size={12} /> {t(lang, 'addPayout')}
                 </button>
               )}
+
+              {/* Auto-buyback */}
+              <div className="rounded-2xl border border-white/5 bg-white/[0.02] p-4 space-y-3 mt-1">
+                <label className="flex items-center justify-between cursor-pointer">
+                  <div>
+                    <div className="text-[11px] font-mono text-white/70 font-bold">Auto-buyback creator fees</div>
+                    <div className="text-[9px] font-mono text-white/30 mt-0.5">
+                      When your fees hit 5 SUI, reinvest a portion back into the token
+                    </div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={buybackEnabled}
+                    onChange={e => setBuybackEnabled(e.target.checked)}
+                    className="accent-lime-400 w-4 h-4 shrink-0 ml-3"
+                  />
+                </label>
+
+                {buybackEnabled && (
+                  <div className="space-y-2 pt-1">
+                    <div className="flex items-center justify-between">
+                      <div className="text-[9px] font-mono text-white/30 tracking-widest">REINVEST %</div>
+                      <div className="text-sm font-bold font-mono text-lime-400">{buybackPct}%</div>
+                    </div>
+                    <input
+                      type="range"
+                      min={10} max={90} step={5}
+                      value={buybackPct}
+                      onChange={e => setBuybackPct(parseInt(e.target.value))}
+                      className="w-full accent-lime-400"
+                    />
+                    <div className="grid grid-cols-2 gap-2 text-[9px] font-mono">
+                      <div className="rounded-lg bg-lime-400/5 border border-lime-400/15 px-2.5 py-2">
+                        <div className="text-white/30">Reinvested</div>
+                        <div className="text-lime-400 font-bold mt-0.5">{buybackPct}% → token</div>
+                      </div>
+                      <div className="rounded-lg bg-white/[0.03] border border-white/10 px-2.5 py-2">
+                        <div className="text-white/30">To your wallet</div>
+                        <div className="text-white/60 font-bold mt-0.5">{100 - buybackPct}% → SUI</div>
+                      </div>
+                    </div>
+                    <div className="text-[8px] font-mono text-white/20 leading-relaxed">
+                      One-click "Claim & Reinvest" button appears on your token page once fees exceed 5 SUI. Two wallet signatures required.
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 

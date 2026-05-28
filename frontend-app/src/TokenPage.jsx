@@ -617,6 +617,7 @@ function TradePanelContent({
   const client2 = useCurrentClient();
   const [claiming,       setClaiming]       = useState(false);
   const [claimMsg,       setClaimMsg]       = useState('');
+  const [buybackConfig,  setBuybackConfig]  = useState(() => loadBuybackConfig(account?.address, panelCurveId));
   const [showSlippage,   setShowSlippage]   = useState(false);
   const [customSlippage, setCustomSlippage] = useState('');
   const [showReturnCalc, setShowReturnCalc] = useState(false);
@@ -710,6 +711,102 @@ function TradePanelContent({
     } catch (err) { setClaimMsg(err.message || 'Claim failed'); setClaiming(false); }
   };
 
+  // ── Claim & Reinvest — two-step flow (claim via Slush, then buy) ──────────
+  const handleClaimAndBuyback = async () => {
+    if (!account || !panelCurveId || !panelTokenType || claiming || !buybackConfig?.enabled) return;
+    setClaiming(true); setClaimMsg('');
+    const feesWhole = Number(creatorFeesMist); // mist
+    const buybackMist = Math.floor(feesWhole * buybackConfig.pct / 100);
+
+    try {
+      // ── Step 1: claim fees (same logic as handleClaim) ────────────────
+      setClaimMsg('Step 1/2: Claiming fees…');
+      let capId = null; let capPkgId = pkgId;
+      const IURL_CB = import.meta.env.VITE_INDEXER_URL || '';
+      if (IURL_CB) {
+        try {
+          const capRes = await fetch(`${IURL_CB}/token/${panelCurveId}/creator-cap?owner=${account.address}`, { signal: AbortSignal.timeout(5000) });
+          if (capRes.ok) { const capData = await capRes.json(); if (capData.objectId) capId = capData.objectId; }
+        } catch {}
+      }
+      if (!capId) {
+        const GRAPHQL_URL_CB = 'https://graphql.testnet.sui.io/graphql';
+        for (const searchPkg of ALL_PACKAGE_IDS) {
+          try {
+            const query = `{ address(address: "${account.address}") { objects(filter: { type: "${searchPkg}::bonding_curve::CreatorCap" }) { nodes { address contents { json } } } } }`;
+            const r = await fetch(GRAPHQL_URL_CB, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query }), signal: AbortSignal.timeout(8000) });
+            const result = await r.json();
+            const nodes = result?.data?.address?.objects?.nodes ?? [];
+            const match = nodes.find(n => n.contents?.json?.curve_id === panelCurveId);
+            if (match) { capId = match.address; capPkgId = searchPkg; break; }
+          } catch {}
+        }
+      }
+      if (!capId) throw new Error('CreatorCap not found');
+
+      let isv = IURL_CB
+        ? await fetch(`${IURL_CB}/token/${panelCurveId}`, { signal: AbortSignal.timeout(3000) })
+            .then(r => r.ok ? r.json() : null).then(d => d?.initialSharedVersion ?? d?.initial_shared_version ?? null).catch(() => null)
+        : null;
+
+      const claimTx = new Transaction();
+      const claimRef = isv
+        ? claimTx.sharedObjectRef({ objectId: panelCurveId, initialSharedVersion: isv, mutable: true })
+        : claimTx.object(panelCurveId);
+      claimTx.moveCall({
+        target: `${capPkgId}::bonding_curve::claim_creator_fees`,
+        typeArguments: [panelTokenType],
+        arguments: [claimTx.object(capId), claimRef],
+      });
+      const claimResult = await dAppKit.signAndExecuteTransaction({ transaction: claimTx });
+      if (claimResult.FailedTransaction) throw new Error(claimResult.FailedTransaction.status.error ?? 'Claim failed');
+
+      // ── Step 2: buy back with buybackPct% ────────────────────────────
+      setClaimMsg(`Step 2/2: Buying back ${(buybackMist/1e9).toFixed(4)} SUI…`);
+      const buyMist = BigInt(buybackMist);
+
+      const buyTx = new Transaction();
+      const buyRef = isv
+        ? buyTx.sharedObjectRef({ objectId: panelCurveId, initialSharedVersion: isv, mutable: true })
+        : buyTx.object(panelCurveId);
+      const [payment] = buyTx.splitCoins(buyTx.gas, [buyTx.pure.u64(buyMist)]);
+      const buyArgs = isV9OrLater(panelPkgHint ?? capPkgId)
+        ? [buyRef, payment, buyTx.pure.u64(0), buyTx.pure.option('address', null), buyTx.object(SUI_CLOCK_ID), buyTx.pure.u64(0)]
+        : isV5OrLater(panelPkgHint ?? capPkgId)
+          ? [buyRef, payment, buyTx.pure.u64(0), buyTx.pure.option('address', null), buyTx.object(SUI_CLOCK_ID)]
+          : [buyRef, payment, buyTx.pure.u64(0)];
+      const [tokens, refund] = buyTx.moveCall({
+        target: `${capPkgId}::bonding_curve::buy`,
+        typeArguments: [panelTokenType],
+        arguments: buyArgs,
+      });
+      buyTx.transferObjects([tokens, refund], account.address);
+      const buyResult = await dAppKit.signAndExecuteTransaction({ transaction: buyTx });
+      if (buyResult.FailedTransaction) throw new Error(buyResult.FailedTransaction.status.error ?? 'Buyback failed');
+
+      const digest = buyResult.digest ?? buyResult.Transaction?.digest ?? null;
+      appendBuybackLog(account.address, panelCurveId, {
+        claimedSui: feesWhole / 1e9,
+        reinvestedSui: buybackMist / 1e9,
+        digest,
+        success: true,
+      });
+
+      setClaimMsg(`🔄 Claimed & reinvested ${(buybackMist/1e9).toFixed(4)} SUI!`);
+      setClaiming(false);
+      setTimeout(() => setClaimMsg(''), 5000);
+    } catch (err) {
+      appendBuybackLog(account.address, panelCurveId, {
+        claimedSui: feesWhole / 1e9,
+        reinvestedSui: 0,
+        success: false,
+        error: err.message,
+      });
+      setClaimMsg(err.message || 'Claim & reinvest failed');
+      setClaiming(false);
+    }
+  };
+
   // ── Return targets (memoized — only recalculate when inputs change) ────────
   const returnTargets = React.useMemo(() => {
     if (!showReturnCalc || side !== 'buy' || !amount || parseFloat(amount) <= 0) return null;
@@ -749,11 +846,80 @@ function TradePanelContent({
       {isCreator && (
         <div className="space-y-2 pb-2 border-b border-white/5">
           <div className="flex items-center justify-between">
-            <div className="text-[10px] font-mono text-white/35">{t(lang, 'creatorFees')}</div>
-            {Number(creatorFeesMist) > 0 && <div className="text-xs font-mono text-lime-400">{fmt(Number(creatorFeesMist) / 1e9, 4)} SUI</div>}
+            <div className="flex items-center gap-2">
+              <div className="text-[10px] font-mono text-white/35">{t(lang, 'creatorFees')}</div>
+              {buybackConfig?.enabled && (
+                <div className="flex items-center gap-1 text-[8px] font-mono text-lime-400/60 bg-lime-400/8 border border-lime-400/15 px-1.5 py-0.5 rounded-full">
+                  🔄 {buybackConfig.pct}% buyback
+                </div>
+              )}
+            </div>
+            {Number(creatorFeesMist) > 0 && (
+              <div className="text-xs font-mono text-lime-400">{fmt(Number(creatorFeesMist) / 1e9, 4)} SUI</div>
+            )}
           </div>
-          <button onClick={handleClaim} disabled={claiming || Number(creatorFeesMist) === 0} className={`w-full py-2 rounded-lg text-[10px] font-mono font-bold transition-colors ${claiming || Number(creatorFeesMist) === 0 ? 'bg-white/5 text-white/20 cursor-not-allowed' : 'bg-lime-400/10 border border-lime-400/30 text-lime-400 hover:bg-lime-400/20'}`}>{claiming ? 'CLAIMING…' : Number(creatorFeesMist) === 0 ? 'NO FEES YET' : t(lang, 'claimFees')}</button>
-          {claimMsg && <div className={`text-[10px] font-mono text-center ${claimMsg.includes('🎉') ? 'text-lime-400' : 'text-red-400'}`}>{claimMsg}</div>}
+
+          {/* Show Claim & Reinvest when buyback is configured + threshold met */}
+          {buybackConfig?.enabled && buybackReady(creatorFeesMist) ? (
+            <div className="space-y-1.5">
+              <div className="rounded-lg bg-lime-400/5 border border-lime-400/20 px-3 py-2">
+                <div className="flex items-center justify-between text-[9px] font-mono mb-1">
+                  <span className="text-white/40">Will reinvest</span>
+                  <span className="text-lime-400 font-bold">
+                    {(Number(creatorFeesMist) * buybackConfig.pct / 100 / 1e9).toFixed(4)} SUI ({buybackConfig.pct}%)
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-[9px] font-mono">
+                  <span className="text-white/40">To your wallet</span>
+                  <span className="text-white/50">
+                    {(Number(creatorFeesMist) * (100 - buybackConfig.pct) / 100 / 1e9).toFixed(4)} SUI
+                  </span>
+                </div>
+              </div>
+              <button
+                onClick={handleClaimAndBuyback}
+                disabled={claiming}
+                className={`w-full py-2 rounded-lg text-[10px] font-mono font-bold transition-colors ${
+                  claiming ? 'bg-white/5 text-white/20 cursor-not-allowed'
+                  : 'bg-lime-400 text-black hover:bg-lime-300'
+                }`}
+              >
+                {claiming ? claimMsg || 'WORKING…' : `🔄 Claim & Reinvest ${buybackConfig.pct}%`}
+              </button>
+              <button
+                onClick={handleClaim}
+                disabled={claiming}
+                className="w-full py-1.5 rounded-lg text-[9px] font-mono text-white/25 hover:text-white/50 transition-colors"
+              >
+                Claim without reinvesting
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={handleClaim}
+              disabled={claiming || Number(creatorFeesMist) === 0}
+              className={`w-full py-2 rounded-lg text-[10px] font-mono font-bold transition-colors ${
+                claiming || Number(creatorFeesMist) === 0
+                  ? 'bg-white/5 text-white/20 cursor-not-allowed'
+                  : 'bg-lime-400/10 border border-lime-400/30 text-lime-400 hover:bg-lime-400/20'
+              }`}
+            >
+              {claiming ? 'CLAIMING…' : Number(creatorFeesMist) === 0 ? 'NO FEES YET' : t(lang, 'claimFees')}
+            </button>
+          )}
+
+          {claimMsg && !claiming && (
+            <div className={`text-[10px] font-mono text-center ${
+              claimMsg.includes('🎉') || claimMsg.includes('🔄') ? 'text-lime-400' : 'text-red-400'
+            }`}>{claimMsg}</div>
+          )}
+
+          {/* Buyback not yet configured — show prompt */}
+          {!buybackConfig?.enabled && Number(creatorFeesMist) > 0 && (
+            <div className="text-[8px] font-mono text-white/20 text-center">
+              Enable auto-buyback at launch to reinvest fees into your token
+            </div>
+          )}
         </div>
       )}
 
