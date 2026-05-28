@@ -160,21 +160,16 @@ function calcReturnTargets(reserveMist, tokensRemaining, suiInMist, vSui, vTok, 
   const newTokensRemaining = tokensRemaining - tokensReceived;
   const DRAIN_MIST         = BigInt(Math.round(drainSui)) * BigInt(MIST_PER_SUI);
 
-  // AMM constant after the buy — used to derive future token state at any reserve.
-  // As the pool reserve grows (more buyers), tokens are depleted accordingly.
-  // Effective tokens = vTok_atomic - tokensSold = (vTok - CURVE_SUPPLY)*1e6 + tokensRemaining
-  const vSuiMist           = BigInt(vSui) * BigInt(MIST_PER_SUI);
-  const vTokAtomic         = BigInt(vTok) * 10n ** BigInt(TOKEN_DECIMALS);
-  const CURVE_SUPPLY_ATOMIC = BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS);
-  const effTokensAfterBuy  = vTokAtomic - CURVE_SUPPLY_ATOMIC + newTokensRemaining;
-  const k                  = (vSuiMist + newReserveMist) * effTokensAfterBuy;
+  // Buy-side invariant: T * (vSui + R) = constant (C_buy).
+  // buyQuote uses raw tokensRemaining (not effectiveTokens), so future token
+  // state is: futTokRemaining = C_buy / (vSui + R_future).
+  // This correctly models how other buyers deplete tokens as the reserve grows.
+  const vSuiMist = BigInt(vSui) * BigInt(MIST_PER_SUI);
+  const C_buy    = newTokensRemaining * (vSuiMist + newReserveMist);
 
-  // Derive real tokensRemaining from the invariant at any future reserve level.
-  // This correctly accounts for tokens bought by other traders as price rises.
   function futureTokensRemainingAt(futureSuiReserveMist) {
-    const futureEff = k / (vSuiMist + futureSuiReserveMist);
-    const result    = futureEff - (vTokAtomic - CURVE_SUPPLY_ATOMIC);
-    return result < 0n ? 0n : result;
+    const denom = vSuiMist + futureSuiReserveMist;
+    return denom > 0n ? C_buy / denom : 0n;
   }
 
   function sellProceedsAtReserve(futureSuiReserve) {
@@ -203,6 +198,7 @@ function calcReturnTargets(reserveMist, tokensRemaining, suiInMist, vSui, vTok, 
     const reserveNeeded = findReserveForMultiplier(mult);
     if (!reserveNeeded) return { mult, reachable: false };
     // Use future token state for accurate mcap at the target reserve
+    const CURVE_SUPPLY_ATOMIC = BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS);
     const futTokAtTarget = futureTokensRemainingAt(reserveNeeded);
     const soldAtTarget   = CURVE_SUPPLY_ATOMIC - futTokAtTarget;
     const priceAtTarget  = Number(priceMistPerToken(reserveNeeded, soldAtTarget, vSui, vTok)) / 1e9;
