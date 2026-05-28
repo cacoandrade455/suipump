@@ -168,6 +168,15 @@ app.get('/token/:curveId/ohlc', async (req, res) => {
 
 app.get('/token/:curveId/holders', async (req, res) => {
   try {
+    // Serve from materialized token_holders table — updated on every trade by the indexer.
+    // Falls back to live scan if the table is empty (e.g. before first recompute).
+    const cached = await pool.query(
+      `SELECT address, balance FROM token_holders WHERE curve_id = $1 AND balance > 0.0001 ORDER BY balance DESC`,
+      [req.params.curveId]
+    );
+    if (cached.rows.length > 0) return res.json(cached.rows);
+
+    // Fallback: live scan (first load or cache miss)
     const TOK = 1_000_000;
     const [buysRes, sellsRes] = await Promise.all([
       pool.query(`SELECT data->>'buyer' AS address, SUM((data->>'tokens_out')::float) AS tokens FROM events WHERE curve_id = $1 AND (event_type LIKE '%TokensPurchased' OR event_type LIKE '%TokensBought') GROUP BY data->>'buyer'`, [req.params.curveId]),
