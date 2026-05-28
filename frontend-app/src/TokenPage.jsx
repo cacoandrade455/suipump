@@ -1461,17 +1461,17 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   const tokensRemaining = freshTokensRemaining ?? (curveState ? BigInt(curveState.token_reserve) : 0n);
   const tokensSold      = BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS) - tokensRemaining;
   const progress        = Math.min(100, (mistToSui(reserveMist) / drainSui) * 100);
-  const priceMist       = curveState ? priceMistPerToken(reserveMist, tokensSold, vSui, vTok) : 0n;
-  const priceSui        = Number(priceMist) / 1e9;
-  const priceUsd        = priceSui * suiUsd;
-  // Pump.fun-style mcap using constant-product curve price × total supply.
-  // Formula: price = (vSui + realSui)² / (vSui * vTok)
-  //          mcap  = price * TOTAL_SUPPLY
-  // Gives ~$4.4K at launch → ~$66K at graduation = 15x ✓
-  const _realSui    = Number(reserveMist) / 1e9;
-  const _k          = vSui * vTok;
-  const _priceSui   = _k > 0 ? (vSui + _realSui) * (vSui + _realSui) / _k : 0;
-  const marketCapSui = _priceSui * TOTAL_SUPPLY_WHOLE;
+  // ── price + mcap — single constant-product formula for both ─────────────
+  // price = (vSui + realSui)² / (vSui × vTok)
+  // Using one formula for PRICE and MCAP ensures they're always consistent.
+  // priceMistPerToken() (marginal price, BigInt) and this spot price formula
+  // are mathematically equivalent but diverge slightly due to LP fee accumulation
+  // and float vs BigInt precision — unifying here removes that asymmetry.
+  const _realSui     = Number(reserveMist) / 1e9;
+  const _k           = vSui * vTok;
+  const priceSui     = _k > 0 ? (vSui + _realSui) * (vSui + _realSui) / _k : 0;
+  const priceUsd     = priceSui * suiUsd;
+  const marketCapSui = priceSui * TOTAL_SUPPLY_WHOLE;
   const graduated       = curveState?.graduated ?? false;
   const creatorFeesMist = curveState ? BigInt(curveState.creator_fees ?? 0) : 0n;
   const creatorAddr     = curveState?.creator ?? null;
