@@ -940,8 +940,124 @@ function ActiveStrategiesTab({ sniper, dca, copyTrade, rebalance, limitOrder }) 
   );
 }
 
+
+// ── Limit Order tab ───────────────────────────────────────────────────────────
+function LimitOrderTab({ limitOrder, hasKey, isReady, onClose }) {
+  const account = useCurrentAccount();
+  const { pendingOrders = [], cancelOrder, createOrder } = limitOrder ?? {};
+
+  const [mode,     setMode]     = useState('buy');
+  const [curveId,  setCurveId]  = useState('');
+  const [price,    setPrice]    = useState('');
+  const [suiAmt,   setSuiAmt]   = useState('');
+  const [tokenAmt, setTokenAmt] = useState('');
+  const [msg,      setMsg]      = useState('');
+
+  const showMsg = (m) => { setMsg(m); setTimeout(() => setMsg(''), 4000); };
+
+  const handleCreate = () => {
+    if (!account)           return showMsg('Connect wallet first');
+    if (!isReady)           return showMsg('Trading key required');
+    if (!curveId.trim())    return showMsg('Enter a token address');
+    if (!price.trim())      return showMsg('Enter target price (SUI per token)');
+    if (mode === 'buy'  && !suiAmt.trim())   return showMsg('Enter SUI amount');
+    if (mode === 'sell' && !tokenAmt.trim()) return showMsg('Enter token amount');
+
+    createOrder?.({
+      curveId:    curveId.trim(),
+      mode,
+      targetPrice: parseFloat(price),
+      suiAmount:   mode === 'buy'  ? parseFloat(suiAmt)   : 0,
+      tokenAmount: mode === 'sell' ? parseFloat(tokenAmt) : 0,
+    });
+    setCurveId(''); setPrice(''); setSuiAmt(''); setTokenAmt('');
+    showMsg('Limit order created ✓');
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="space-y-1">
+        <div className="text-[9px] font-mono text-white/30 tracking-widest">LIMIT ORDER</div>
+        <p className="text-[10px] font-mono text-white/40 leading-relaxed">
+          Auto-buy or sell when a token hits your target price. Requires trading key.
+        </p>
+      </div>
+
+      {!hasKey && (
+        <div className="rounded-xl border border-white/8 bg-white/[0.02] px-4 py-3 text-[10px] font-mono text-white/30 text-center">
+          Set up a trading key first
+        </div>
+      )}
+
+      {hasKey && (
+        <div className="space-y-3">
+          {/* Buy / Sell toggle */}
+          <div className="flex rounded-xl overflow-hidden border border-white/8">
+            {['buy','sell'].map(m => (
+              <button key={m} onClick={() => setMode(m)}
+                className={`flex-1 py-2 text-[10px] font-mono font-bold transition-colors ${
+                  mode === m ? 'bg-lime-400 text-black' : 'text-white/30 hover:text-white/60'
+                }`}>
+                {m.toUpperCase()}
+              </button>
+            ))}
+          </div>
+
+          <input value={curveId} onChange={e => setCurveId(e.target.value)}
+            placeholder="Token address (0x…)"
+            className="w-full bg-white/[0.04] border border-white/8 rounded-xl px-3 py-2.5 text-[10px] font-mono text-white placeholder-white/20 focus:outline-none focus:border-lime-400/40" />
+
+          <input value={price} onChange={e => setPrice(e.target.value)}
+            placeholder="Target price (SUI per token)"
+            type="number" step="any"
+            className="w-full bg-white/[0.04] border border-white/8 rounded-xl px-3 py-2.5 text-[10px] font-mono text-white placeholder-white/20 focus:outline-none focus:border-lime-400/40" />
+
+          {mode === 'buy' && (
+            <input value={suiAmt} onChange={e => setSuiAmt(e.target.value)}
+              placeholder="SUI to spend"
+              type="number" step="any"
+              className="w-full bg-white/[0.04] border border-white/8 rounded-xl px-3 py-2.5 text-[10px] font-mono text-white placeholder-white/20 focus:outline-none focus:border-lime-400/40" />
+          )}
+          {mode === 'sell' && (
+            <input value={tokenAmt} onChange={e => setTokenAmt(e.target.value)}
+              placeholder="Tokens to sell"
+              type="number" step="any"
+              className="w-full bg-white/[0.04] border border-white/8 rounded-xl px-3 py-2.5 text-[10px] font-mono text-white placeholder-white/20 focus:outline-none focus:border-lime-400/40" />
+          )}
+
+          <button onClick={handleCreate}
+            className="w-full py-2.5 rounded-xl bg-lime-400 text-black text-[11px] font-mono font-bold hover:bg-lime-300 transition-colors flex items-center justify-center gap-2">
+            <Play size={12} /> Create Limit Order
+          </button>
+
+          {msg && <div className={`text-[10px] font-mono text-center ${msg.includes('✓') ? 'text-lime-400' : 'text-red-400'}`}>{msg}</div>}
+        </div>
+      )}
+
+      {pendingOrders.length > 0 && (
+        <div className="space-y-2">
+          <div className="text-[9px] font-mono text-white/30 tracking-widest">PENDING ORDERS</div>
+          {pendingOrders.map(order => (
+            <div key={order.id} className="rounded-xl border border-white/8 bg-white/[0.02] px-3 py-2.5 flex items-center justify-between">
+              <div>
+                <div className={`text-[10px] font-mono font-bold ${order.mode === 'buy' ? 'text-lime-400' : 'text-red-400'}`}>
+                  {order.mode.toUpperCase()} @ {order.targetPrice} SUI
+                </div>
+                <div className="text-[9px] font-mono text-white/30">
+                  {order.curveId.slice(0,10)}… · {order.mode === 'buy' ? `${order.suiAmount} SUI` : `${order.tokenAmount} tokens`}
+                </div>
+              </div>
+              <button onClick={() => cancelOrder?.(order.id)} className="text-white/20 hover:text-red-400 ml-3"><Trash2 size={11} /></button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main modal ────────────────────────────────────────────────────────────────
-export default function StrategiesModal({ onClose, tradeKey, sniper, dca, copyTrade, rebalance }) {
+export default function StrategiesModal({ onClose, tradeKey, sniper, dca, copyTrade, rebalance, limitOrder }) {
   const [tab, setTab] = useState('key');
   const { keypair, isReady, hasKey } = tradeKey;
 
@@ -960,6 +1076,7 @@ export default function StrategiesModal({ onClose, tradeKey, sniper, dca, copyTr
     { id: 'dca',      label: '📅 DCA'      },
     { id: 'copy',     label: '👁️ Copy'     },
     { id: 'rebal',    label: '⚖️ Rebal'    },
+    { id: 'limit',    label: '🎯 Limit'    },
     { id: 'active',   label: '⚡ Active'   },
   ];
 
@@ -968,6 +1085,7 @@ export default function StrategiesModal({ onClose, tradeKey, sniper, dca, copyTr
     dca:    (dca?.activeOrders?.length ?? 0) > 0,
     copy:   copyTrade?.isActive,
     rebal:  rebalance?.isActive,
+    limit:  (limitOrder?.pendingOrders?.length ?? 0) > 0,
   };
 
   return (
@@ -1022,6 +1140,7 @@ export default function StrategiesModal({ onClose, tradeKey, sniper, dca, copyTr
           {tab === 'dca'    && <DCATab       dca={dca}                 hasKey={hasKey} isReady={isReady} onClose={onClose} />}
           {tab === 'copy'   && <CopyTradeTab copyTrade={copyTrade}     hasKey={hasKey} isReady={isReady} onClose={onClose} />}
           {tab === 'rebal'  && <RebalanceTab rebalance={rebalance}     hasKey={hasKey} isReady={isReady} onClose={onClose} />}
+          {tab === 'limit'  && <LimitOrderTab limitOrder={limitOrder} hasKey={hasKey} isReady={isReady} onClose={onClose} />}
           {tab === 'active' && <ActiveStrategiesTab sniper={sniper} dca={dca} copyTrade={copyTrade} rebalance={rebalance} limitOrder={limitOrder} />}
         </div>
       </div>
