@@ -29,7 +29,6 @@ import { useDCA } from './useDCA.js';
 import { useCopyTrade } from './useCopyTrade.js';
 import { useRebalance } from './useRebalance.js';
 import { useLimitOrder } from './useLimitOrder.js';
-import { useLimitOrder } from './useLimitOrder.js';
 
 const MIST_PER_SUI = 1e9;
 const TOTAL_SUPPLY_WHOLE = 1_000_000_000;
