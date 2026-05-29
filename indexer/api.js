@@ -105,7 +105,24 @@ app.get('/stats', async (req, res) => {
 });
 
 app.get('/tokens', async (req, res) => {
-  try { res.json(await getAllCurves()); }
+  try {
+    const { creator } = req.query;
+    if (creator) {
+      const result = await pool.query(
+        `SELECT c.curve_id AS "curveId", c.creator, c.name, c.symbol, c.description,
+                c.icon_url AS "iconUrl", c.token_type AS "tokenType", c.package_id AS "packageId",
+                c.created_at AS "createdAt", c.graduation_target AS "graduationTarget",
+                c.anti_bot_delay AS "antiBotDelay", c.initial_shared_version AS "initialSharedVersion",
+                row_to_json(s.*) AS stats
+         FROM curves c LEFT JOIN token_stats s ON s.curve_id = c.curve_id
+         WHERE lower(c.creator) = lower($1)
+         ORDER BY c.created_at DESC`,
+        [creator]
+      );
+      return res.json(result.rows);
+    }
+    res.json(await getAllCurves());
+  }
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -168,15 +185,6 @@ app.get('/token/:curveId/ohlc', async (req, res) => {
 
 app.get('/token/:curveId/holders', async (req, res) => {
   try {
-    // Serve from materialized token_holders table — updated on every trade by the indexer.
-    // Falls back to live scan if the table is empty (e.g. before first recompute).
-    const cached = await pool.query(
-      `SELECT address, balance FROM token_holders WHERE curve_id = $1 AND balance > 0.0001 ORDER BY balance DESC`,
-      [req.params.curveId]
-    );
-    if (cached.rows.length > 0) return res.json(cached.rows);
-
-    // Fallback: live scan (first load or cache miss)
     const TOK = 1_000_000;
     const [buysRes, sellsRes] = await Promise.all([
       pool.query(`SELECT data->>'buyer' AS address, SUM((data->>'tokens_out')::float) AS tokens FROM events WHERE curve_id = $1 AND (event_type LIKE '%TokensPurchased' OR event_type LIKE '%TokensBought') GROUP BY data->>'buyer'`, [req.params.curveId]),
