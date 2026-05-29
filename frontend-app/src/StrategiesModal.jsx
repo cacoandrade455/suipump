@@ -8,8 +8,6 @@ import { X, Key, Eye, EyeOff, Trash2, CheckCircle2, Loader2, AlertTriangle,
 import { INTERVAL_OPTIONS } from './useDCA.js';
 import { REBALANCE_INTERVALS } from './useRebalance.js';
 import { loadTPSL, clearTPSL } from './useTPSL.js';
-import { loadLimitOrders } from './useLimitOrder.js';
-import { loadAllBuybackConfigs, BUYBACK_THRESHOLD_SUI } from './useCreatorBuyback.js';
 
 const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
 
@@ -809,242 +807,10 @@ function RebalanceTab({ rebalance, hasKey, isReady, onClose }) {
   );
 }
 
-
-// ── Limit Order tab ───────────────────────────────────────────────────────────
-function LimitOrderTab({ limitOrder, hasKey, isReady, onClose }) {
-  const account = useCurrentAccount();
-  const { pendingOrders = [], completedOrders = [], createOrder, cancelOrder, clearCompleted } = limitOrder ?? {};
-
-  const [curveId,       setCurveId]       = React.useState('');
-  const [resolvedName,  setResolvedName]  = React.useState('');
-  const [resolvedSym,   setResolvedSym]   = React.useState('');
-  const [resolvedType,  setResolvedType]  = React.useState('');
-  const [resolvedPkg,   setResolvedPkg]   = React.useState('');
-  const [resolving,     setResolving]     = React.useState(false);
-  const [side,          setSide]          = React.useState('buy');
-  const [targetPrice,   setTargetPrice]   = React.useState('');
-  const [suiAmount,     setSuiAmount]     = React.useState('');
-  const [tokenAmount,   setTokenAmount]   = React.useState('');
-  const [slippage,      setSlippage]      = React.useState('2');
-  const [formMsg,       setFormMsg]       = React.useState('');
-  const [saved,         setSaved]         = React.useState(false);
-
-  const IURL = import.meta.env.VITE_INDEXER_URL || '';
-
-  const handleResolve = async () => {
-    const id = curveId.trim();
-    if (!id || !id.startsWith('0x')) { setFormMsg('Enter a valid curve ID (0x…)'); return; }
-    setResolving(true); setFormMsg('');
-    try {
-      const r = await fetch(`${IURL}/token/${id}`, { signal: AbortSignal.timeout(5000) });
-      if (!r.ok) throw new Error('Token not found');
-      const d = await r.json();
-      const tt = d.tokenType || d.token_type;
-      const pk = d.packageId || d.package_id;
-      if (!tt || !pk) throw new Error('Could not resolve token type');
-      setResolvedType(tt);
-      setResolvedPkg(pk);
-      setResolvedName(d.name || '');
-      setResolvedSym(d.symbol || '');
-      setFormMsg('');
-    } catch (err) { setFormMsg(err.message || 'Resolve failed'); }
-    finally { setResolving(false); }
-  };
-
-  const handleCreate = () => {
-    if (!resolvedType || !resolvedPkg) { setFormMsg('Paste a valid curve ID first'); return; }
-    const price = parseFloat(targetPrice);
-    if (!price || price <= 0) { setFormMsg('Enter a target price in SUI/token'); return; }
-    if (side === 'buy') {
-      const sui = parseFloat(suiAmount);
-      if (!sui || sui <= 0) { setFormMsg('Enter SUI amount to spend'); return; }
-    } else {
-      const tok = parseFloat(tokenAmount);
-      if (!tok || tok <= 0) { setFormMsg('Enter token amount to sell'); return; }
-    }
-    const id = createOrder({
-      curveId:        curveId.trim(),
-      tokenType:      resolvedType,
-      pkgId:          resolvedPkg,
-      name:           resolvedName,
-      symbol:         resolvedSym,
-      side,
-      targetPriceSui: price,
-      suiAmount:      side === 'buy'  ? parseFloat(suiAmount)   : null,
-      tokenAmount:    side === 'sell' ? parseFloat(tokenAmount) : null,
-      slippage:       parseFloat(slippage) || 2,
-    });
-    if (!id) { setFormMsg('Could not create order (limit reached?)'); return; }
-    setCurveId(''); setResolvedName(''); setResolvedType(''); setResolvedPkg('');
-    setTargetPrice(''); setSuiAmount(''); setTokenAmount('');
-    setSaved(true); setTimeout(() => { setSaved(false); onClose(); }, 900);
-  };
-
-  if (!account) return <div className="py-12 text-center text-[11px] font-mono text-white/30">Connect your wallet to use limit orders</div>;
-  if (!hasKey || !isReady) return (
-    <div className="py-12 text-center space-y-2">
-      <div className="text-[11px] font-mono text-white/25">Trading key required</div>
-      <div className="text-[9px] font-mono text-white/15">Set up your trading key in the Key tab first</div>
-    </div>
-  );
-
-  return (
-    <div className="space-y-4">
-
-      {/* Pending orders */}
-      {pendingOrders.length > 0 && (
-        <div className="space-y-2">
-          <div className="text-[9px] font-mono text-white/30 tracking-widest">PENDING ORDERS</div>
-          {pendingOrders.map(order => (
-            <div key={order.id} className="rounded-xl border border-lime-400/15 bg-lime-950/10 px-3 py-2.5 flex items-center justify-between">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2 mb-0.5">
-                  <span className="text-[10px] font-mono font-bold text-white truncate">
-                    {order.name || order.curveId.slice(0,8)+'…'}
-                    {order.symbol && <span className="text-lime-400/70 ml-1">${order.symbol}</span>}
-                  </span>
-                  <span className={`text-[8px] font-mono px-1.5 py-0.5 rounded-full ${
-                    order.side === 'buy' ? 'bg-lime-400/10 text-lime-400/80' : 'bg-red-400/10 text-red-400/80'
-                  }`}>{order.side.toUpperCase()}</span>
-                </div>
-                <div className="text-[8px] font-mono text-white/30">
-                  {order.side === 'buy'
-                    ? `${order.suiAmount} SUI when price ≤ ${order.targetPriceSui} SUI/tok`
-                    : `${order.tokenAmount} tokens when price ≥ ${order.targetPriceSui} SUI/tok`}
-                </div>
-              </div>
-              <button onClick={() => cancelOrder(order.id)} className="text-white/20 hover:text-red-400 ml-3 shrink-0">
-                <Trash2 size={11} />
-              </button>
-            </div>
-          ))}
-          <button onClick={onClose} className="w-full py-2.5 rounded-xl border border-white/10 text-white/40 text-[11px] font-mono font-bold hover:border-white/20 hover:text-white/60">
-            Close — orders keep running
-          </button>
-        </div>
-      )}
-
-      {/* Completed orders */}
-      {completedOrders.length > 0 && (
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <div className="text-[9px] font-mono text-white/30 tracking-widest">HISTORY</div>
-            <button onClick={clearCompleted} className="text-[9px] font-mono text-white/25 hover:text-white/50">clear</button>
-          </div>
-          {completedOrders.slice(0, 5).map(order => (
-            <div key={order.id} className={`rounded-xl border px-3 py-2.5 ${
-              order.status === 'filled'    ? 'border-lime-400/15 bg-lime-950/10'
-            : order.status === 'error'    ? 'border-red-500/15 bg-red-950/10'
-            : 'border-white/8 bg-white/[0.02]'}`}>
-              <div className="flex items-center justify-between">
-                <div className="text-[10px] font-mono text-white truncate">
-                  {order.name || order.curveId.slice(0,8)+'…'}
-                  {order.symbol && <span className="text-white/40 ml-1">${order.symbol}</span>}
-                </div>
-                <span className={`text-[9px] font-mono ml-2 shrink-0 ${
-                  order.status === 'filled'    ? 'text-lime-400'
-                : order.status === 'error'    ? 'text-red-400'
-                : 'text-white/30'}`}>
-                  {order.status}
-                </span>
-              </div>
-              {order.error && <div className="text-[8px] font-mono text-red-400/70 mt-0.5 truncate">{order.error}</div>}
-              {order.digest && (
-                <div className="text-[8px] font-mono text-white/20 mt-0.5 truncate">{order.digest.slice(0,20)}…</div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* New order form */}
-      <div className="space-y-3">
-        <div className="text-[9px] font-mono text-white/30 tracking-widest">NEW LIMIT ORDER</div>
-
-        {/* Curve ID resolver */}
-        <div className="flex gap-2">
-          <input value={curveId} onChange={e => { setCurveId(e.target.value); setResolvedType(''); setFormMsg(''); }}
-            placeholder="Curve ID (0x…)"
-            className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 font-mono" />
-          <button onClick={handleResolve} disabled={resolving || !curveId.trim()}
-            className={`px-3 py-2 rounded-xl text-[10px] font-mono font-bold shrink-0 transition-colors ${
-              resolving || !curveId.trim() ? 'bg-white/5 text-white/20 cursor-not-allowed' : 'bg-white/10 text-white/60 hover:text-white hover:bg-white/15'}`}>
-            {resolving ? <Loader2 size={12} className="animate-spin" /> : 'Resolve'}
-          </button>
-        </div>
-        {resolvedName && (
-          <div className="text-[10px] font-mono text-lime-400/70">
-            ✓ {resolvedName} <span className="text-lime-400/40">${resolvedSym}</span>
-          </div>
-        )}
-
-        {/* Buy / Sell toggle */}
-        <div className="flex rounded-xl overflow-hidden border border-white/10">
-          {[['buy', '↑ Buy'], ['sell', '↓ Sell']].map(([s, label]) => (
-            <button key={s} onClick={() => setSide(s)}
-              className={`flex-1 py-2.5 text-[10px] font-mono font-bold transition-colors ${
-                side === s
-                  ? s === 'buy' ? 'bg-lime-400 text-black' : 'bg-red-500/80 text-white'
-                  : 'bg-white/[0.03] text-white/30 hover:text-white/60'}`}>
-              {label}
-            </button>
-          ))}
-        </div>
-
-        {/* Target price */}
-        <div>
-          <label className="block text-[9px] font-mono text-white/30 tracking-widest mb-1.5">
-            {side === 'buy' ? 'BUY WHEN PRICE ≤ (SUI/TOKEN)' : 'SELL WHEN PRICE ≥ (SUI/TOKEN)'}
-          </label>
-          <input value={targetPrice} onChange={e => setTargetPrice(e.target.value)} type="number" min="0" step="any"
-            placeholder="e.g. 0.000005"
-            className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 font-mono" />
-        </div>
-
-        {/* Amount */}
-        {side === 'buy' ? (
-          <div>
-            <label className="block text-[9px] font-mono text-white/30 tracking-widest mb-1.5">SUI TO SPEND</label>
-            <input value={suiAmount} onChange={e => setSuiAmount(e.target.value)} type="number" min="0" step="any"
-              placeholder="e.g. 10"
-              className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 font-mono" />
-          </div>
-        ) : (
-          <div>
-            <label className="block text-[9px] font-mono text-white/30 tracking-widest mb-1.5">TOKENS TO SELL (WHOLE)</label>
-            <input value={tokenAmount} onChange={e => setTokenAmount(e.target.value)} type="number" min="0" step="any"
-              placeholder="e.g. 1000000"
-              className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 font-mono" />
-          </div>
-        )}
-
-        {/* Slippage */}
-        <div>
-          <label className="block text-[9px] font-mono text-white/30 tracking-widest mb-1.5">SLIPPAGE %</label>
-          <input value={slippage} onChange={e => setSlippage(e.target.value)} type="number" min="0.1" max="50" step="0.1"
-            className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 font-mono" />
-        </div>
-
-        {formMsg && <div className="text-[10px] font-mono text-red-400">{formMsg}</div>}
-
-        <SaveRunButton
-          onClick={handleCreate}
-          active={saved}
-          label={saved ? 'Order placed!' : 'Place Limit Order'}
-          disabled={!resolvedType || !targetPrice || (side === 'buy' ? !suiAmount : !tokenAmount)}
-        />
-        <div className="text-[8px] font-mono text-white/15 text-center">
-          Executes automatically when price is hit · 5s polling · requires trading key
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ── Active strategies tab ─────────────────────────────────────────────────────
 function ActiveStrategiesTab({ sniper, dca, copyTrade, rebalance, limitOrder }) {
   const account = useCurrentAccount();
-  const [tpslConfigs, setTpslConfigs] = useState([]);
+  const [tpslConfigs, setTpslConfigs]     = useState([]);
   const [buybackConfigs, setBuybackConfigs] = useState([]);
 
   useEffect(() => {
@@ -1061,14 +827,13 @@ function ActiveStrategiesTab({ sniper, dca, copyTrade, rebalance, limitOrder }) 
 
   const hasAnything = sniper?.isActive || (dca?.activeOrders?.length ?? 0) > 0
     || copyTrade?.isActive || rebalance?.isActive || tpslConfigs.length > 0
-    || (limitOrder?.pendingOrders?.length ?? 0) > 0
-    || buybackConfigs.length > 0;
+    || (limitOrder?.pendingOrders?.length ?? 0) > 0 || buybackConfigs.length > 0;
 
   if (!account) return <div className="py-12 text-center text-[11px] font-mono text-white/30">Connect your wallet</div>;
   if (!hasAnything) return (
     <div className="py-12 text-center space-y-2">
       <div className="text-[11px] font-mono text-white/20">No active strategies</div>
-      <div className="text-[9px] font-mono text-white/15">Enable sniper, DCA, copy trade, rebalance, limit orders, or auto-buyback to see them here</div>
+      <div className="text-[9px] font-mono text-white/15">Enable sniper, DCA, copy trade, or rebalance to see them here</div>
     </div>
   );
 
@@ -1127,28 +892,6 @@ function ActiveStrategiesTab({ sniper, dca, copyTrade, rebalance, limitOrder }) 
         </div>
       )}
 
-      {(limitOrder?.pendingOrders?.length ?? 0) > 0 && (
-        <div className="space-y-1.5">
-          <div className="text-[9px] font-mono text-white/30 tracking-widest">LIMIT ORDERS</div>
-          {limitOrder.pendingOrders.map(order => (
-            <div key={order.id} className="rounded-xl border border-lime-400/15 bg-lime-950/10 px-3 py-2.5 flex items-center justify-between">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2 mb-0.5">
-                  <span className="text-[10px] font-mono font-bold text-white truncate">
-                    {order.name || order.curveId.slice(0,8)+'…'}{order.symbol && <span className="text-lime-400/70 ml-1">${order.symbol}</span>}
-                  </span>
-                  <span className={`text-[8px] font-mono px-1.5 py-0.5 rounded-full ${order.side === 'buy' ? 'bg-lime-400/10 text-lime-400/80' : 'bg-red-400/10 text-red-400/80'}`}>{order.side.toUpperCase()}</span>
-                </div>
-                <div className="text-[8px] font-mono text-white/30">
-                  {order.side === 'buy' ? `${order.suiAmount} SUI ≤ ${order.targetPriceSui}` : `${order.tokenAmount} tok ≥ ${order.targetPriceSui}`}
-                </div>
-              </div>
-              <button onClick={() => limitOrder.cancelOrder(order.id)} className="text-white/20 hover:text-red-400 ml-3 shrink-0"><Trash2 size={11} /></button>
-            </div>
-          ))}
-        </div>
-      )}
-
       {buybackConfigs.length > 0 && (
         <div className="space-y-1.5">
           <div className="text-[9px] font-mono text-white/30 tracking-widest">AUTO-BUYBACK</div>
@@ -1198,14 +941,12 @@ function ActiveStrategiesTab({ sniper, dca, copyTrade, rebalance, limitOrder }) 
 }
 
 // ── Main modal ────────────────────────────────────────────────────────────────
-export default function StrategiesModal({ onClose, tradeKey, sniper, dca, copyTrade, rebalance, limitOrder }) {
+export default function StrategiesModal({ onClose, tradeKey, sniper, dca, copyTrade, rebalance }) {
   const [tab, setTab] = useState('key');
   const { keypair, isReady, hasKey } = tradeKey;
 
   const anyActive = sniper?.isActive || (dca?.activeOrders?.length ?? 0) > 0
-    || copyTrade?.isActive || rebalance?.isActive
-    || (limitOrder?.pendingOrders?.length ?? 0) > 0
-    || buybackConfigs.length > 0;
+    || copyTrade?.isActive || rebalance?.isActive;
 
   useEffect(() => {
     const handler = (e) => { if (e.key === 'Escape') onClose(); };
@@ -1219,7 +960,6 @@ export default function StrategiesModal({ onClose, tradeKey, sniper, dca, copyTr
     { id: 'dca',      label: '📅 DCA'      },
     { id: 'copy',     label: '👁️ Copy'     },
     { id: 'rebal',    label: '⚖️ Rebal'    },
-    { id: 'limit',    label: '🎯 Limit'    },
     { id: 'active',   label: '⚡ Active'   },
   ];
 
@@ -1228,7 +968,6 @@ export default function StrategiesModal({ onClose, tradeKey, sniper, dca, copyTr
     dca:    (dca?.activeOrders?.length ?? 0) > 0,
     copy:   copyTrade?.isActive,
     rebal:  rebalance?.isActive,
-    limit:  (limitOrder?.pendingOrders?.length ?? 0) > 0,
   };
 
   return (
@@ -1257,7 +996,6 @@ export default function StrategiesModal({ onClose, tradeKey, sniper, dca, copyTr
                 (dca?.activeOrders?.length ?? 0) > 0 && `${dca.activeOrders.length} DCA order${dca.activeOrders.length !== 1 ? 's' : ''}`,
                 copyTrade?.isActive && 'Copy trade active',
                 rebalance?.isActive && 'Rebalance active',
-                (limitOrder?.pendingOrders?.length ?? 0) > 0 && `${limitOrder.pendingOrders.length} limit order${limitOrder.pendingOrders.length !== 1 ? 's' : ''}`,
               ].filter(Boolean).join(' · ')}
             </span>
             <span className="text-[9px] font-mono text-lime-400/40">running in background</span>
@@ -1283,8 +1021,7 @@ export default function StrategiesModal({ onClose, tradeKey, sniper, dca, copyTr
           {tab === 'sniper' && <SniperTab    sniper={sniper}           hasKey={hasKey} isReady={isReady} onClose={onClose} />}
           {tab === 'dca'    && <DCATab       dca={dca}                 hasKey={hasKey} isReady={isReady} onClose={onClose} />}
           {tab === 'copy'   && <CopyTradeTab copyTrade={copyTrade}     hasKey={hasKey} isReady={isReady} onClose={onClose} />}
-          {tab === 'rebal'  && <RebalanceTab    rebalance={rebalance}   hasKey={hasKey} isReady={isReady} onClose={onClose} />}
-          {tab === 'limit'  && <LimitOrderTab   limitOrder={limitOrder} hasKey={hasKey} isReady={isReady} onClose={onClose} />}
+          {tab === 'rebal'  && <RebalanceTab rebalance={rebalance}     hasKey={hasKey} isReady={isReady} onClose={onClose} />}
           {tab === 'active' && <ActiveStrategiesTab sniper={sniper} dca={dca} copyTrade={copyTrade} rebalance={rebalance} limitOrder={limitOrder} />}
         </div>
       </div>
