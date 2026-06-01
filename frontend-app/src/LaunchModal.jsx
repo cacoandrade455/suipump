@@ -4,9 +4,8 @@ import { useCurrentAccount, useDAppKit, useCurrentClient } from '@mysten/dapp-ki
 import { Transaction } from '@mysten/sui/transactions';
 import { X, Plus, Trash2, Rocket, CheckCircle } from 'lucide-react';
 import wasmInit, * as bytecodeTemplate from '@mysten/move-bytecode-template';
-import { PACKAGE_ID, PACKAGE_ID_V5, PACKAGE_ID_V7, MIST_PER_SUI, ANTI_BOT_NONE, ANTI_BOT_15S, ANTI_BOT_30S, GRAD_TARGET_CETUS, GRAD_TARGET_DEEPBOOK, GRAD_TARGET_TURBOS, isV7OrLater } from './constants.js';
+import { PACKAGE_ID, PACKAGE_ID_V5, PACKAGE_ID_V7, MIST_PER_SUI, ANTI_BOT_NONE, ANTI_BOT_15S, ANTI_BOT_30S, GRAD_TARGET_CETUS, GRAD_TARGET_DEEPBOOK, GRAD_TARGET_TURBOS, isV7OrLater, isV9OrLater } from './constants.js';
 import { t } from './i18n.js';
-import { saveBuybackConfig } from './useCreatorBuyback.js';
 
 // Vesting modes / durations — must match bonding_curve.move v7
 const VEST_MODE_CLIFF   = 0;
@@ -134,8 +133,6 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
     graduationDex: 'cetus',
     antiBotDelay: ANTI_BOT_NONE, // 0 / 15 / 30
   });
-  const [buybackEnabled, setBuybackEnabled] = useState(false);
-  const [buybackPct,     setBuybackPct]     = useState(50);
   const [payouts, setPayouts] = useState([{ address: account?.address ?? '', bps: 10000 }]);
   const [devBuy, setDevBuy] = useState('');
   // Optional dev-buy vesting lock (V7+ only)
@@ -389,19 +386,6 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
       } catch {}
 
       setTxStep('done');
-      // Save buyback config to localStorage if enabled
-      if (buybackEnabled && curveId && account?.address) {
-        saveBuybackConfig(account.address, curveId, {
-          enabled: true,
-          pct: buybackPct,
-          curveId,
-          tokenType: newTokenType,
-          pkgId: PACKAGE_ID,
-          name: tokenName,
-          symbol: tokenSymbol,
-          createdAt: Date.now(),
-        });
-      }
       if (onLaunched) onLaunched({ curveId, tokenType: newTokenType, name: tokenName, symbol: tokenSymbol });
     } catch (err) {
       setError(err.message || String(err));
@@ -638,53 +622,6 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
                   <Plus size={12} /> {t(lang, 'addPayout')}
                 </button>
               )}
-
-              {/* Auto-buyback */}
-              <div className="rounded-2xl border border-white/5 bg-white/[0.02] p-4 space-y-3 mt-1">
-                <label className="flex items-center justify-between cursor-pointer">
-                  <div>
-                    <div className="text-[11px] font-mono text-white/70 font-bold">Auto-buyback creator fees</div>
-                    <div className="text-[9px] font-mono text-white/30 mt-0.5">
-                      When your fees hit 5 SUI, reinvest a portion back into the token
-                    </div>
-                  </div>
-                  <input
-                    type="checkbox"
-                    checked={buybackEnabled}
-                    onChange={e => setBuybackEnabled(e.target.checked)}
-                    className="accent-lime-400 w-4 h-4 shrink-0 ml-3"
-                  />
-                </label>
-
-                {buybackEnabled && (
-                  <div className="space-y-2 pt-1">
-                    <div className="flex items-center justify-between">
-                      <div className="text-[9px] font-mono text-white/30 tracking-widest">REINVEST %</div>
-                      <div className="text-sm font-bold font-mono text-lime-400">{buybackPct}%</div>
-                    </div>
-                    <input
-                      type="range"
-                      min={10} max={90} step={5}
-                      value={buybackPct}
-                      onChange={e => setBuybackPct(parseInt(e.target.value))}
-                      className="w-full accent-lime-400"
-                    />
-                    <div className="grid grid-cols-2 gap-2 text-[9px] font-mono">
-                      <div className="rounded-lg bg-lime-400/5 border border-lime-400/15 px-2.5 py-2">
-                        <div className="text-white/30">Reinvested</div>
-                        <div className="text-lime-400 font-bold mt-0.5">{buybackPct}% → token</div>
-                      </div>
-                      <div className="rounded-lg bg-white/[0.03] border border-white/10 px-2.5 py-2">
-                        <div className="text-white/30">To your wallet</div>
-                        <div className="text-white/60 font-bold mt-0.5">{100 - buybackPct}% → SUI</div>
-                      </div>
-                    </div>
-                    <div className="text-[8px] font-mono text-white/20 leading-relaxed">
-                      One-click "Claim & Reinvest" button appears on your token page once fees exceed 5 SUI. Two wallet signatures required.
-                    </div>
-                  </div>
-                )}
-              </div>
             </div>
           )}
 
