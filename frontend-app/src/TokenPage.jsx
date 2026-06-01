@@ -15,7 +15,6 @@ import Comments from './Comments.jsx';
 import AIAnalysis from './AIAnalysis.jsx';
 import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8, PACKAGE_ID_V9, ALL_PACKAGE_IDS, MIST_PER_SUI, DRAIN_SUI_APPROX, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_SUI_V6, VIRTUAL_SUI_V7, VIRTUAL_SUI_V8, VIRTUAL_SUI_V9, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, VIRTUAL_TOKENS_V6, VIRTUAL_TOKENS_V7, VIRTUAL_TOKENS_V8, VIRTUAL_TOKENS_V9, DRAIN_SUI_V4, DRAIN_SUI_V5, DRAIN_SUI_V6, DRAIN_SUI_V7, DRAIN_SUI_V8, DRAIN_SUI_V9, isNewCurve, isV5OrLater, isV7OrLater, isV8OrLater, isV9OrLater, supportsMetadataUpdate, curveShapeFor } from './constants.js';
 import { buyQuote, sellQuote } from './curve.js';
-import { loadBuybackConfig, appendBuybackLog, buybackReady, BUYBACK_THRESHOLD_SUI } from './useCreatorBuyback.js';
 import { t } from './i18n.js';
 
 // BCS helpers
@@ -68,16 +67,6 @@ function fmtUsd(suiAmt, suiUsd, decimals = 2) {
   if (usd >= 1_000) return `$${(usd / 1_000).toFixed(1)}k`;
   if (usd >= 1) return `$${usd.toFixed(2)}`;
   return `$${usd.toFixed(decimals + 2)}`;
-}
-
-// Adaptive price formatter — shows 4 significant figures for small prices.
-// Avoids the $0.000006 vs $0.000005987 rounding confusion.
-function fmtPrice(usd) {
-  if (usd == null || isNaN(usd) || usd === 0) return '$0';
-  if (usd >= 1_000) return `$${(usd / 1_000).toFixed(2)}k`;
-  if (usd >= 1)     return `$${usd.toFixed(4)}`;
-  if (usd >= 0.01)  return `$${usd.toFixed(6)}`;
-  return `$${usd.toPrecision(4)}`;
 }
 
 async function fetchSuiUsd() {
@@ -149,39 +138,27 @@ const SLIPPAGE_PRESETS = ['0.5', '1', '2', '5'];
 // reach for 2x / 5x / 10x returns after fees on both sides.
 // Uses binary search on future SUI reserve to find the sell price that yields
 // the target proceeds. Fully deterministic curve math — no RPC needed.
-function calcReturnTargets(reserveMist, tokensRemaining, suiInMist, vSui, vTok, suiUsd, drainSui = 9000) {
+function calcReturnTargets(reserveMist, tokensRemaining, suiInMist, vSui, vTok, suiUsd) {
   if (!reserveMist || !tokensRemaining || !suiInMist || suiInMist <= 0n) return null;
 
   const buyResult = buyQuote(reserveMist, tokensRemaining, suiInMist, vSui, vTok);
   if (!buyResult?.tokensOut || buyResult.tokensOut <= 0n) return null;
 
-  const tokensReceived     = buyResult.tokensOut;
-  const suiSpent           = suiInMist;
-  const newReserveMist     = reserveMist + buyResult.actualSwap + buyResult.fees.lp;
+  const tokensReceived  = buyResult.tokensOut;
+  const suiSpent        = suiInMist;
+  const newReserveMist  = reserveMist + buyResult.actualSwap + buyResult.fees.lp;
   const newTokensRemaining = tokensRemaining - tokensReceived;
-  const DRAIN_MIST         = BigInt(Math.round(drainSui)) * BigInt(MIST_PER_SUI);
-
-  // Buy-side invariant: T * (vSui + R) = constant (C_buy).
-  // buyQuote uses raw tokensRemaining (not effectiveTokens), so future token
-  // state is: futTokRemaining = C_buy / (vSui + R_future).
-  // This correctly models how other buyers deplete tokens as the reserve grows.
-  const vSuiMist = BigInt(vSui) * BigInt(MIST_PER_SUI);
-  const C_buy    = newTokensRemaining * (vSuiMist + newReserveMist);
-
-  function futureTokensRemainingAt(futureSuiReserveMist) {
-    const denom = vSuiMist + futureSuiReserveMist;
-    return denom > 0n ? C_buy / denom : 0n;
-  }
+  const DRAIN_MIST      = BigInt(9000) * BigInt(MIST_PER_SUI);
 
   function sellProceedsAtReserve(futureSuiReserve) {
     try {
-      const futTokRemaining = futureTokensRemainingAt(futureSuiReserve);
-      const result = sellQuote(futureSuiReserve, futTokRemaining, tokensReceived, vSui, vTok);
+      const result = sellQuote(futureSuiReserve, newTokensRemaining, tokensReceived, vSui, vTok);
       return result?.suiOut ?? 0n;
     } catch { return 0n; }
   }
 
   function findReserveForMultiplier(multiplier) {
+    // target: sell proceeds >= multiplier * suiSpent
     const targetProceeds = (suiSpent * BigInt(Math.round(multiplier * 100))) / 100n;
     if (sellProceedsAtReserve(DRAIN_MIST) < targetProceeds) return null; // not reachable before grad
     let lo = newReserveMist;
@@ -198,12 +175,9 @@ function calcReturnTargets(reserveMist, tokensRemaining, suiInMist, vSui, vTok, 
   return [2, 5, 10].map(mult => {
     const reserveNeeded = findReserveForMultiplier(mult);
     if (!reserveNeeded) return { mult, reachable: false };
-    // Use future token state for accurate mcap at the target reserve
-    const CURVE_SUPPLY_ATOMIC = BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS);
-    const futTokAtTarget = futureTokensRemainingAt(reserveNeeded);
-    const soldAtTarget   = CURVE_SUPPLY_ATOMIC - futTokAtTarget;
-    const priceAtTarget  = Number(priceMistPerToken(reserveNeeded, soldAtTarget, vSui, vTok)) / 1e9;
-    const mcapSui        = priceAtTarget * TOTAL_SUPPLY_WHOLE;
+    const soldAtTarget = BigInt(800_000_000) * 10n ** 6n - newTokensRemaining;
+    const priceAtTarget = Number(priceMistPerToken(reserveNeeded, soldAtTarget, vSui, vTok)) / 1e9;
+    const mcapSui = priceAtTarget * TOTAL_SUPPLY_WHOLE;
     return {
       mult,
       reachable:  true,
@@ -291,7 +265,7 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
       const [claimed] = tx.moveCall({ target: `${vestingPkg}::bonding_curve::claim_vested`, typeArguments: [tokenType], arguments: [lockRef, tx.object(SUI_CLOCK_ID)] });
       tx.transferObjects([claimed], account.address);
       const claimResult = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      if (claimResult.FailedTransaction) throw new Error(claimResult.FailedTransaction.status.error ?? 'Claim failed');
+      if (claimResult.$kind === 'FailedTransaction') throw new Error(claimResult.FailedTransaction.status.error ?? 'Claim failed');
       setMsg('Claimed ✓'); setBusy(false); setTimeout(() => { setMsg(''); loadLocks(); }, 1500);
     } catch (e) { setMsg(e.message || 'Claim failed'); setBusy(false); }
   };
@@ -326,7 +300,7 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
       const durationMs = VEST_DURATIONS_MS[lockDuration] ?? VEST_DURATIONS_MS['30d'];
       tx.moveCall({ target: `${vestingPkg}::bonding_curve::lock_tokens`, typeArguments: [tokenType], arguments: [curveRef, tokenCoin, tx.pure.u8(lockMode), tx.pure.u64(durationMs), tx.object(SUI_CLOCK_ID)] });
       const lockResult = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      if (lockResult.FailedTransaction) throw new Error(lockResult.FailedTransaction.status.error ?? 'Lock failed');
+      if (lockResult.$kind === 'FailedTransaction') throw new Error(lockResult.FailedTransaction.status.error ?? 'Lock failed');
       setMsg('Locked ✓'); setBusy(false); setLockAmount(''); setShowLockForm(false); setTimeout(() => { setMsg(''); loadLocks(); }, 1500);
     } catch (e) { setMsg(e.message || 'Lock failed'); setBusy(false); }
   };
@@ -414,7 +388,7 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
 
 // ── Creator Tools Panel ───────────────────────────────────────────────────────
 
-function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveState, currentDesc, currentTwitter, currentTelegram, currentWebsite, currentDex, lang, onMetadataUpdated = null }) {
+function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveState, currentDesc, currentTwitter, currentTelegram, currentWebsite, currentDex, lang }) {
   const client = useCurrentClient();
   const dAppKit = useDAppKit();
   const pkgId   = resolvePackageId(tokenType, packageIdHint);
@@ -474,9 +448,7 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
     if (!links.desc && !links.twitter && !links.telegram && !links.website) { showMsg('Fill in at least one field'); return; }
     localStorage.setItem(`suipump_links_${curveId}`, JSON.stringify({ updatedAt: Date.now(), desc: links.desc.trim() || null, twitter: links.twitter.trim() || null, telegram: links.telegram.trim() || null, website: links.website.trim() || null, dex: links.dex || 'cetus' }));
     showMsg('Links updated! ✅');
-    if (onMetadataUpdated) {
-      onMetadataUpdated({ description: links.desc.trim() || null });
-    }
+    setTimeout(() => window.location.reload(), 1200);
   };
 
   const handleUpdateMetadata = async () => {
@@ -508,17 +480,8 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
         arguments: [tx.object(capId), curveRef, metadataRef, tx.pure.option('string', meta.name.trim() || null), tx.pure.option('string', meta.symbol.trim() || null), tx.pure.option('string', meta.description.trim() || null), tx.pure.option('string', meta.iconUrl.trim() || null), tx.object(SUI_CLOCK_ID)],
       });
       const metaResult = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      if (metaResult.FailedTransaction) throw new Error(metaResult.FailedTransaction.status.error ?? 'Update failed');
-      showMsg('Metadata updated on-chain ✅'); setBusy(false);
-      // Update in-place — no full reload
-      if (onMetadataUpdated) {
-        onMetadataUpdated({
-          name:        meta.name.trim()        || null,
-          symbol:      meta.symbol.trim()      || null,
-          description: meta.description.trim() || null,
-          iconUrl:     meta.iconUrl.trim()     || null,
-        });
-      }
+      if (metaResult.$kind === 'FailedTransaction') throw new Error(metaResult.FailedTransaction.status.error ?? 'Update failed');
+      showMsg('Metadata updated on-chain ✅'); setBusy(false); setTimeout(() => window.location.reload(), 1400);
     } catch (e) { showMsg(e.message || 'Update failed'); setBusy(false); }
   };
 
@@ -612,13 +575,12 @@ function TradePanelContent({
   suiBalance, tokenBalance, isCreator, creatorFeesMist,
   curveId: panelCurveId, tokenType: panelTokenType, packageIdHint: panelPkgHint, curveState,
   // curve math for return calculator
-  reserveMist, tokensRemaining, vSui, vTok, drainSui,
+  reserveMist, tokensRemaining, vSui, vTok,
 }) {
   const dAppKit = useDAppKit();
   const client2 = useCurrentClient();
   const [claiming,       setClaiming]       = useState(false);
   const [claimMsg,       setClaimMsg]       = useState('');
-  const [buybackConfig,  setBuybackConfig]  = useState(() => loadBuybackConfig(account?.address, panelCurveId));
   const [showSlippage,   setShowSlippage]   = useState(false);
   const [customSlippage, setCustomSlippage] = useState('');
   const [showReturnCalc, setShowReturnCalc] = useState(false);
@@ -707,105 +669,9 @@ function TradePanelContent({
         arguments: [tx.object(capId), curveRef],
       });
       const feeResult = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      if (feeResult.FailedTransaction) throw new Error(feeResult.FailedTransaction.status.error ?? 'Claim failed');
+      if (feeResult.$kind === 'FailedTransaction') throw new Error(feeResult.FailedTransaction.status.error ?? 'Claim failed');
       setClaimMsg('Fees claimed! 🎉'); setClaiming(false); setTimeout(() => setClaimMsg(''), 3000);
     } catch (err) { setClaimMsg(err.message || 'Claim failed'); setClaiming(false); }
-  };
-
-  // ── Claim & Reinvest — two-step flow (claim via Slush, then buy) ──────────
-  const handleClaimAndBuyback = async () => {
-    if (!account || !panelCurveId || !panelTokenType || claiming || !buybackConfig?.enabled) return;
-    setClaiming(true); setClaimMsg('');
-    const feesWhole = Number(creatorFeesMist); // mist
-    const buybackMist = Math.floor(feesWhole * buybackConfig.pct / 100);
-
-    try {
-      // ── Step 1: claim fees (same logic as handleClaim) ────────────────
-      setClaimMsg('Step 1/2: Claiming fees…');
-      let capId = null; let capPkgId = pkgId;
-      const IURL_CB = import.meta.env.VITE_INDEXER_URL || '';
-      if (IURL_CB) {
-        try {
-          const capRes = await fetch(`${IURL_CB}/token/${panelCurveId}/creator-cap?owner=${account.address}`, { signal: AbortSignal.timeout(5000) });
-          if (capRes.ok) { const capData = await capRes.json(); if (capData.objectId) capId = capData.objectId; }
-        } catch {}
-      }
-      if (!capId) {
-        const GRAPHQL_URL_CB = 'https://graphql.testnet.sui.io/graphql';
-        for (const searchPkg of ALL_PACKAGE_IDS) {
-          try {
-            const query = `{ address(address: "${account.address}") { objects(filter: { type: "${searchPkg}::bonding_curve::CreatorCap" }) { nodes { address contents { json } } } } }`;
-            const r = await fetch(GRAPHQL_URL_CB, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query }), signal: AbortSignal.timeout(8000) });
-            const result = await r.json();
-            const nodes = result?.data?.address?.objects?.nodes ?? [];
-            const match = nodes.find(n => n.contents?.json?.curve_id === panelCurveId);
-            if (match) { capId = match.address; capPkgId = searchPkg; break; }
-          } catch {}
-        }
-      }
-      if (!capId) throw new Error('CreatorCap not found');
-
-      let isv = IURL_CB
-        ? await fetch(`${IURL_CB}/token/${panelCurveId}`, { signal: AbortSignal.timeout(3000) })
-            .then(r => r.ok ? r.json() : null).then(d => d?.initialSharedVersion ?? d?.initial_shared_version ?? null).catch(() => null)
-        : null;
-
-      const claimTx = new Transaction();
-      const claimRef = isv
-        ? claimTx.sharedObjectRef({ objectId: panelCurveId, initialSharedVersion: isv, mutable: true })
-        : claimTx.object(panelCurveId);
-      claimTx.moveCall({
-        target: `${capPkgId}::bonding_curve::claim_creator_fees`,
-        typeArguments: [panelTokenType],
-        arguments: [claimTx.object(capId), claimRef],
-      });
-      const claimResult = await dAppKit.signAndExecuteTransaction({ transaction: claimTx });
-      if (claimResult.FailedTransaction) throw new Error(claimResult.FailedTransaction.status.error ?? 'Claim failed');
-
-      // ── Step 2: buy back with buybackPct% ────────────────────────────
-      setClaimMsg(`Step 2/2: Buying back ${(buybackMist/1e9).toFixed(4)} SUI…`);
-      const buyMist = BigInt(buybackMist);
-
-      const buyTx = new Transaction();
-      const buyRef = isv
-        ? buyTx.sharedObjectRef({ objectId: panelCurveId, initialSharedVersion: isv, mutable: true })
-        : buyTx.object(panelCurveId);
-      const [payment] = buyTx.splitCoins(buyTx.gas, [buyTx.pure.u64(buyMist)]);
-      const buyArgs = isV9OrLater(panelPkgHint ?? capPkgId)
-        ? [buyRef, payment, buyTx.pure.u64(0), buyTx.pure.option('address', null), buyTx.object(SUI_CLOCK_ID), buyTx.pure.u64(0)]
-        : isV5OrLater(panelPkgHint ?? capPkgId)
-          ? [buyRef, payment, buyTx.pure.u64(0), buyTx.pure.option('address', null), buyTx.object(SUI_CLOCK_ID)]
-          : [buyRef, payment, buyTx.pure.u64(0)];
-      const [tokens, refund] = buyTx.moveCall({
-        target: `${capPkgId}::bonding_curve::buy`,
-        typeArguments: [panelTokenType],
-        arguments: buyArgs,
-      });
-      buyTx.transferObjects([tokens, refund], account.address);
-      const buyResult = await dAppKit.signAndExecuteTransaction({ transaction: buyTx });
-      if (buyResult.FailedTransaction) throw new Error(buyResult.FailedTransaction.status.error ?? 'Buyback failed');
-
-      const digest = buyResult.digest ?? buyResult.Transaction?.digest ?? null;
-      appendBuybackLog(account.address, panelCurveId, {
-        claimedSui: feesWhole / 1e9,
-        reinvestedSui: buybackMist / 1e9,
-        digest,
-        success: true,
-      });
-
-      setClaimMsg(`🔄 Claimed & reinvested ${(buybackMist/1e9).toFixed(4)} SUI!`);
-      setClaiming(false);
-      setTimeout(() => setClaimMsg(''), 5000);
-    } catch (err) {
-      appendBuybackLog(account.address, panelCurveId, {
-        claimedSui: feesWhole / 1e9,
-        reinvestedSui: 0,
-        success: false,
-        error: err.message,
-      });
-      setClaimMsg(err.message || 'Claim & reinvest failed');
-      setClaiming(false);
-    }
   };
 
   // ── Return targets (memoized — only recalculate when inputs change) ────────
@@ -814,9 +680,9 @@ function TradePanelContent({
     if (!reserveMist || !tokensRemaining || !vSui || !vTok) return null;
     try {
       const suiInMist = BigInt(Math.floor(parseFloat(amount) * Number(MIST_PER_SUI)));
-      return calcReturnTargets(reserveMist, tokensRemaining, suiInMist, vSui, vTok, suiUsd, drainSui);
+      return calcReturnTargets(reserveMist, tokensRemaining, suiInMist, vSui, vTok, suiUsd);
     } catch { return null; }
-  }, [showReturnCalc, side, amount, reserveMist, tokensRemaining, vSui, vTok, suiUsd, drainSui]);
+  }, [showReturnCalc, side, amount, reserveMist, tokensRemaining, vSui, vTok, suiUsd]);
 
   return (
     <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 space-y-4">
@@ -847,80 +713,11 @@ function TradePanelContent({
       {isCreator && (
         <div className="space-y-2 pb-2 border-b border-white/5">
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <div className="text-[10px] font-mono text-white/35">{t(lang, 'creatorFees')}</div>
-              {buybackConfig?.enabled && (
-                <div className="flex items-center gap-1 text-[8px] font-mono text-lime-400/60 bg-lime-400/8 border border-lime-400/15 px-1.5 py-0.5 rounded-full">
-                  🔄 {buybackConfig.pct}% buyback
-                </div>
-              )}
-            </div>
-            {Number(creatorFeesMist) > 0 && (
-              <div className="text-xs font-mono text-lime-400">{fmt(Number(creatorFeesMist) / 1e9, 4)} SUI</div>
-            )}
+            <div className="text-[10px] font-mono text-white/35">{t(lang, 'creatorFees')}</div>
+            {Number(creatorFeesMist) > 0 && <div className="text-xs font-mono text-lime-400">{fmt(Number(creatorFeesMist) / 1e9, 4)} SUI</div>}
           </div>
-
-          {/* Show Claim & Reinvest when buyback is configured + threshold met */}
-          {buybackConfig?.enabled && buybackReady(creatorFeesMist) ? (
-            <div className="space-y-1.5">
-              <div className="rounded-lg bg-lime-400/5 border border-lime-400/20 px-3 py-2">
-                <div className="flex items-center justify-between text-[9px] font-mono mb-1">
-                  <span className="text-white/40">Will reinvest</span>
-                  <span className="text-lime-400 font-bold">
-                    {(Number(creatorFeesMist) * buybackConfig.pct / 100 / 1e9).toFixed(4)} SUI ({buybackConfig.pct}%)
-                  </span>
-                </div>
-                <div className="flex items-center justify-between text-[9px] font-mono">
-                  <span className="text-white/40">To your wallet</span>
-                  <span className="text-white/50">
-                    {(Number(creatorFeesMist) * (100 - buybackConfig.pct) / 100 / 1e9).toFixed(4)} SUI
-                  </span>
-                </div>
-              </div>
-              <button
-                onClick={handleClaimAndBuyback}
-                disabled={claiming}
-                className={`w-full py-2 rounded-lg text-[10px] font-mono font-bold transition-colors ${
-                  claiming ? 'bg-white/5 text-white/20 cursor-not-allowed'
-                  : 'bg-lime-400 text-black hover:bg-lime-300'
-                }`}
-              >
-                {claiming ? claimMsg || 'WORKING…' : `🔄 Claim & Reinvest ${buybackConfig.pct}%`}
-              </button>
-              <button
-                onClick={handleClaim}
-                disabled={claiming}
-                className="w-full py-1.5 rounded-lg text-[9px] font-mono text-white/25 hover:text-white/50 transition-colors"
-              >
-                Claim without reinvesting
-              </button>
-            </div>
-          ) : (
-            <button
-              onClick={handleClaim}
-              disabled={claiming || Number(creatorFeesMist) === 0}
-              className={`w-full py-2 rounded-lg text-[10px] font-mono font-bold transition-colors ${
-                claiming || Number(creatorFeesMist) === 0
-                  ? 'bg-white/5 text-white/20 cursor-not-allowed'
-                  : 'bg-lime-400/10 border border-lime-400/30 text-lime-400 hover:bg-lime-400/20'
-              }`}
-            >
-              {claiming ? 'CLAIMING…' : Number(creatorFeesMist) === 0 ? 'NO FEES YET' : t(lang, 'claimFees')}
-            </button>
-          )}
-
-          {claimMsg && !claiming && (
-            <div className={`text-[10px] font-mono text-center ${
-              claimMsg.includes('🎉') || claimMsg.includes('🔄') ? 'text-lime-400' : 'text-red-400'
-            }`}>{claimMsg}</div>
-          )}
-
-          {/* Buyback not yet configured — show prompt */}
-          {!buybackConfig?.enabled && Number(creatorFeesMist) > 0 && (
-            <div className="text-[8px] font-mono text-white/20 text-center">
-              Enable auto-buyback at launch to reinvest fees into your token
-            </div>
-          )}
+          <button onClick={handleClaim} disabled={claiming || Number(creatorFeesMist) === 0} className={`w-full py-2 rounded-lg text-[10px] font-mono font-bold transition-colors ${claiming || Number(creatorFeesMist) === 0 ? 'bg-white/5 text-white/20 cursor-not-allowed' : 'bg-lime-400/10 border border-lime-400/30 text-lime-400 hover:bg-lime-400/20'}`}>{claiming ? 'CLAIMING…' : Number(creatorFeesMist) === 0 ? 'NO FEES YET' : t(lang, 'claimFees')}</button>
+          {claimMsg && <div className={`text-[10px] font-mono text-center ${claimMsg.includes('🎉') ? 'text-lime-400' : 'text-red-400'}`}>{claimMsg}</div>}
         </div>
       )}
 
@@ -928,7 +725,7 @@ function TradePanelContent({
       <div className="grid grid-cols-2 gap-2 pt-1 border-t border-white/5">
         <div>
           <div className="text-[10px] font-mono text-white/35 mb-0.5">{t(lang, 'price')}</div>
-          <div className="text-white/70 text-xs font-mono">{suiUsd > 0 ? fmtPrice(priceUsd) : `${fmt(priceSui, 6)} SUI`}</div>
+          <div className="text-white/70 text-xs font-mono">{suiUsd > 0 ? `$${priceUsd.toFixed(6)}` : `${fmt(priceSui, 6)} SUI`}</div>
         </div>
         <div>
           <div className="text-[10px] font-mono text-white/35 mb-0.5">{t(lang, 'inSui')}</div>
@@ -956,7 +753,7 @@ function TradePanelContent({
               {side === 'buy' ? t(lang, 'amount') : `AMOUNT ($${symbol})`}
             </div>
             <div className="flex gap-2">
-              <input type="number" inputMode="decimal" min="0" step="any" value={amount} onChange={e => setAmount(e.target.value)}
+              <input type="number" min="0" step="any" value={amount} onChange={e => setAmount(e.target.value)}
                 placeholder={side === 'buy' ? '0.00' : '0'}
                 className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-sm font-mono text-white placeholder-white/20 focus:outline-none focus:border-lime-400/50 focus:bg-lime-400/5 transition-colors" />
               <button onClick={() => {
@@ -1122,7 +919,6 @@ function TPSLPanel({
   reserveMist, tokensRemaining, vSui, vTok,
   slippage,
   keypair,        // Ed25519Keypair | null — if set, signs autonomously (no Slush popup)
-  initialSharedVersion = null, // passed from parent — avoids re-fetch on every trigger
 }) {
   const client = useCurrentClient();
   const dAppKit = useDAppKit();
@@ -1149,8 +945,19 @@ function TPSLPanel({
         ? keypair.getPublicKey().toSuiAddress()
         : account.address;
 
-      // Use ISV passed as prop — already loaded by parent, no extra fetch needed
-      const isv = initialSharedVersion ?? null;
+      // Fetch ISV from indexer at sell time — TPSLPanel doesn't have access
+      // to initialSharedVersionProp or curveState from the outer TokenPage scope
+      let isv = null;
+      try {
+        const IURL = import.meta.env.VITE_INDEXER_URL || '';
+        if (IURL) {
+          const isvRes = await fetch(`${IURL}/token/${curveId}`, { signal: AbortSignal.timeout(3000) });
+          if (isvRes.ok) {
+            const isvData = await isvRes.json();
+            isv = isvData.initialSharedVersion ?? isvData.initial_shared_version ?? null;
+          }
+        }
+      } catch { /* fallback to tx.object */ }
       const tx = new Transaction();
       const curveRef = isv
         ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: isv, mutable: true })
@@ -1198,7 +1005,7 @@ function TPSLPanel({
 
       // ── Slush fallback (no keypair) ──────────────────────────────────────
       const sellResult = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      if (sellResult.FailedTransaction) throw new Error(sellResult.FailedTransaction.status.error ?? 'Sell failed');
+      if (sellResult.$kind === 'FailedTransaction') throw new Error(sellResult.FailedTransaction.status.error ?? 'Sell failed');
       setTriggerMsg(m => m ? { ...m, status: 'done' } : m);
       setSelling(false);
     } catch (err) {
@@ -1482,20 +1289,9 @@ function TradesHoldersBlock({ curveId, tokenType, suiUsd, lang, creator, trades,
 }
 
 function CommentsBlock({ curveId, packageId, lang, initialSharedVersion = null, tokenType = null }) {
-  const [commentCount, setCommentCount] = React.useState(null);
-  React.useEffect(() => {
-    if (!curveId) return;
-    const IURL = import.meta.env.VITE_INDEXER_URL || '';
-    if (!IURL) return;
-    fetch(`${IURL}/token/${curveId}/comments`, { signal: AbortSignal.timeout(4000) })
-      .then(r => r.ok ? r.json() : null)
-      .then(d => { if (Array.isArray(d)) setCommentCount(d.length); })
-      .catch(() => {});
-  }, [curveId]);
-  const label = commentCount != null ? `${t(lang, 'comments')} (${commentCount})` : t(lang, 'comments');
   return (
     <div>
-      <div className="text-[10px] font-mono text-white/35 tracking-widest mb-2">{label}</div>
+      <div className="text-[10px] font-mono text-white/35 tracking-widest mb-2">{t(lang, 'comments')}</div>
       <Comments curveId={curveId} packageId={packageId} initialSharedVersion={initialSharedVersion} tokenType={tokenType} />
     </div>
   );
@@ -1517,6 +1313,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   const [curveState,      setCurveState]      = useState(null);
   const [metadata,        setMetadata]        = useState(null);
   const [iconUrl,         setIconUrl]         = useState(null);
+  const [curveCreatedData, setCurveCreatedData] = useState(null);
   const [suiBalance,      setSuiBalance]      = useState(0);
   const [tokenBalance,    setTokenBalance]    = useState(0);
   const [side,            setSide]            = useState('buy');
@@ -1527,7 +1324,6 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   const [copied,          setCopied]          = useState(false);
   const [shared,          setShared]          = useState(false);
   const [linkCopied,      setLinkCopied]      = useState(false);
-  // curveCreatedData removed — queryEvents was a no-op; indexer covers name/symbol
 
   // ── data loading ──────────────────────────────────────────────────────────
 
@@ -1537,67 +1333,104 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
     return () => clearInterval(timer);
   }, []);
 
-  // Single effect fires indexer + on-chain fees simultaneously via Promise.all.
-  // Previously 3 separate effects that also hit /token/:curveId twice. Now one
-  // round of network calls on mount, polling at 10s.
   useEffect(() => {
     if (!curveId) return;
     const IURL = import.meta.env.VITE_INDEXER_URL || '';
+    if (!IURL) return;
     let cancelled = false;
-
-    async function loadAll() {
-      const feesGql = `{ object(address: "${curveId}") { asMoveObject { contents { json } } } }`;
-
-      const [indexerData, feesResult] = await Promise.all([
-        IURL
-          ? fetch(`${IURL}/token/${curveId}`, { signal: AbortSignal.timeout(5000) })
-              .then(r => r.ok ? r.json() : null)
-              .catch(() => null)
-          : Promise.resolve(null),
-        fetch('https://graphql.testnet.sui.io/graphql', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: feesGql }),
-          signal: AbortSignal.timeout(8000),
-        }).then(r => r.json()).catch(() => null),
-      ]);
-
-      if (cancelled) return;
-
-      // ── indexer data → curveState + metadata (one fetch, two consumers) ──
-      if (indexerData) {
-        const d = indexerData;
-        const stats = d.stats ?? {};
-        setCurveState({
-          sui_reserve:            String(stats.reserve_sui != null ? Math.round(stats.reserve_sui * 1e9) : (d.suiReserve ?? d.sui_reserve ?? 0)),
-          token_reserve:          String(stats.token_reserve != null ? Math.round(stats.token_reserve * 1e6) : (d.tokenReserve ?? d.token_reserve ?? String(800_000_000 * 1e6))),
-          graduated:              d.graduated ?? false,
-          creator_fees:           '0', // overwritten below by on-chain fees
-          creator:                d.creator ?? null,
-          initial_shared_version: d.initialSharedVersion ?? d.initial_shared_version ?? null,
-          metadata_updated:       d.metadataUpdated ?? d.metadata_updated ?? false,
-          created_at_ms:          d.createdAt ?? d.created_at ?? null,
-          package_id:             d.packageId ?? d.package_id ?? null,
-        });
-        const icon = d.iconUrl || d.icon_url || null;
-        setMetadata({ name: d.name, symbol: d.symbol, description: d.description, iconUrl: icon });
-        if (icon && !isPlaceholderIcon(icon)) setIconUrl(icon);
-      }
-
-      // ── on-chain creator_fees (always fresh, never stale after claims) ──
-      const json = feesResult?.data?.object?.asMoveObject?.contents?.json;
-      if (json?.creator_fees != null) {
-        const feeMist = typeof json.creator_fees === 'object'
-          ? String(json.creator_fees?.value ?? 0)
-          : String(json.creator_fees ?? 0);
-        setCurveState(prev => prev ? { ...prev, creator_fees: feeMist } : prev);
-      }
+    async function load() {
+      try {
+        const res = await fetch(`${IURL}/token/${curveId}`, { signal: AbortSignal.timeout(5000) });
+        if (res.ok && !cancelled) {
+          const d = await res.json();
+          // Map indexer response to curve state field names expected by component
+          // Handle both camelCase (getAllCurves alias) and snake_case (raw SELECT c.*)
+          const stats = d.stats ?? {};
+          setCurveState({
+            sui_reserve:            String(stats.reserve_sui != null ? Math.round(stats.reserve_sui * 1e9) : (d.suiReserve ?? d.sui_reserve ?? 0)),
+            token_reserve:          String(stats.token_reserve != null ? Math.round(stats.token_reserve * 1e6) : (d.tokenReserve ?? d.token_reserve ?? String(800_000_000 * 1e6))),
+            graduated:              d.graduated ?? false,
+            creator_fees:           '0', // always overwritten by on-chain GraphQL fetch below
+            creator:                d.creator ?? null,
+            initial_shared_version: d.initialSharedVersion ?? d.initial_shared_version ?? null,
+            metadata_updated:       d.metadataUpdated ?? d.metadata_updated ?? false,
+            created_at_ms:          d.createdAt ?? d.created_at ?? null,
+            package_id:             d.packageId ?? d.package_id ?? null,
+          });
+        }
+      } catch {}
     }
-
-    loadAll();
-    const timer = setInterval(loadAll, 10_000);
+    load();
+    const timer = setInterval(load, 10_000);
     return () => { cancelled = true; clearInterval(timer); };
   }, [curveId]);
+
+  // ── Fetch real on-chain creator_fees — indexer estimate is stale after claims ──
+  useEffect(() => {
+    if (!curveId || !client) return;
+    let cancelled = false;
+    async function fetchOnChainFees() {
+      try {
+        // Direct fetch — client.graphql() silently fails for some queries
+        const gql = `{ object(address: "${curveId}") { asMoveObject { contents { json } } } }`;
+        const r = await fetch('https://graphql.testnet.sui.io/graphql', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: gql }),
+          signal: AbortSignal.timeout(8000),
+        });
+        const result = await r.json();
+        const json = result?.data?.object?.asMoveObject?.contents?.json;
+        if (json && json.creator_fees != null && !cancelled) {
+          const feeMist = typeof json.creator_fees === 'object'
+            ? String(json.creator_fees?.value ?? 0)
+            : String(json.creator_fees ?? 0);
+          setCurveState(prev => prev ? { ...prev, creator_fees: feeMist } : prev);
+        }
+      } catch {}
+    }
+    fetchOnChainFees();
+    // Refresh every 15s and after any tx (via curveId dependency)
+    const t = setInterval(fetchOnChainFees, 15_000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [curveId, client]);
+
+  useEffect(() => {
+    if (!tokenType) return;
+    let cancelled = false;
+    // Load metadata from indexer — avoids CORS on graphql.testnet.sui.io
+    const IURL_META = import.meta.env.VITE_INDEXER_URL || '';
+    if (IURL_META) {
+      fetch(`${IURL_META}/token/${curveId}`, { signal: AbortSignal.timeout(5000) })
+        .then(r => r.ok ? r.json() : null)
+        .then(d => {
+          if (!d || cancelled) return;
+          // /token/:curveId returns snake_case from raw SELECT c.* 
+          const icon = d.iconUrl || d.icon_url || null;
+          const m = { name: d.name, symbol: d.symbol, description: d.description, iconUrl: icon };
+          setMetadata(m);
+          if (icon && !isPlaceholderIcon(icon)) setIconUrl(icon);
+        }).catch(() => {});
+    }
+    (async () => {
+      try {
+        const packageIds = ALL_PACKAGE_IDS.filter(Boolean).filter((v, i, a) => a.indexOf(v) === i);
+        let found = null;
+        for (const pid of packageIds) {
+          if (found) break;
+          let cursor = null;
+          for (let page = 0; page < 10 && !found; page++) {
+            const res = { data: [], nextCursor: null, hasNextPage: false }; // queryEvents removed; CurveCreated data comes from indexer
+            found = null; // queryEvents removed; curve data comes from indexer
+            if (!res.hasNextPage) break;
+            cursor = res.nextCursor;
+          }
+        }
+        if (found?.parsedJson && !cancelled) setCurveCreatedData(found.parsedJson);
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [tokenType, client, curveId]);
 
   useEffect(() => {
     if (!account || !client) return;
@@ -1653,17 +1486,17 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   const tokensRemaining = freshTokensRemaining ?? (curveState ? BigInt(curveState.token_reserve) : 0n);
   const tokensSold      = BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS) - tokensRemaining;
   const progress        = Math.min(100, (mistToSui(reserveMist) / drainSui) * 100);
-  // ── price + mcap — single constant-product formula for both ─────────────
-  // price = (vSui + realSui)² / (vSui × vTok)
-  // Using one formula for PRICE and MCAP ensures they're always consistent.
-  // priceMistPerToken() (marginal price, BigInt) and this spot price formula
-  // are mathematically equivalent but diverge slightly due to LP fee accumulation
-  // and float vs BigInt precision — unifying here removes that asymmetry.
-  const _realSui     = Number(reserveMist) / 1e9;
-  const _k           = vSui * vTok;
-  const priceSui     = _k > 0 ? (vSui + _realSui) * (vSui + _realSui) / _k : 0;
-  const priceUsd     = priceSui * suiUsd;
-  const marketCapSui = priceSui * TOTAL_SUPPLY_WHOLE;
+  const priceMist       = curveState ? priceMistPerToken(reserveMist, tokensSold, vSui, vTok) : 0n;
+  const priceSui        = Number(priceMist) / 1e9;
+  const priceUsd        = priceSui * suiUsd;
+  // Pump.fun-style mcap using constant-product curve price × total supply.
+  // Formula: price = (vSui + realSui)² / (vSui * vTok)
+  //          mcap  = price * TOTAL_SUPPLY
+  // Gives ~$4.4K at launch → ~$66K at graduation = 15x ✓
+  const _realSui    = Number(reserveMist) / 1e9;
+  const _k          = vSui * vTok;
+  const _priceSui   = _k > 0 ? (vSui + _realSui) * (vSui + _realSui) / _k : 0;
+  const marketCapSui = _priceSui * TOTAL_SUPPLY_WHOLE;
   const graduated       = curveState?.graduated ?? false;
   const creatorFeesMist = curveState ? BigInt(curveState.creator_fees ?? 0) : 0n;
   const creatorAddr     = curveState?.creator ?? null;
@@ -1671,8 +1504,8 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   const _metaOverride  = (() => { try { return JSON.parse(localStorage.getItem(`suipump_meta_${curveId}`)  || '{}'); } catch { return {}; } })();
   const _linksOverride = (() => { try { return JSON.parse(localStorage.getItem(`suipump_links_${curveId}`) || '{}'); } catch { return {}; } })();
 
-  const name   = _metaOverride.name   || metadata?.name   || '';
-  const symbol = _metaOverride.symbol || metadata?.symbol || '';
+  const name   = _metaOverride.name   || curveCreatedData?.name   || metadata?.name   || '';
+  const symbol = _metaOverride.symbol || curveCreatedData?.symbol || metadata?.symbol || '';
   const _rawDesc = (_metaOverride.description || _linksOverride.desc || metadata?.description || '').trim();
   const rawDesc  = isPlaceholderDesc(_rawDesc) ? '' : _rawDesc;
   const _parsed  = parseDescription(rawDesc);
@@ -1682,13 +1515,6 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   const website  = _linksOverride.website  || _parsed.website;
   const dex      = _linksOverride.dex      || _parsed.dex;
   const _overrideIcon = _metaOverride.iconUrl || null;
-
-  const [displayProgress, setDisplayProgress] = React.useState(0);
-  React.useEffect(() => {
-    if (progress <= 0) return;
-    const t = setTimeout(() => setDisplayProgress(progress), 120);
-    return () => clearTimeout(t);
-  }, [progress]);
 
   const [isCreator, setIsCreator] = React.useState(false);
   // isCreator: true when wallet address matches the curve's creator field.
@@ -1816,35 +1642,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
       }
 
       const tradeResult = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      if (tradeResult.FailedTransaction) throw new Error(tradeResult.FailedTransaction.status.error ?? 'Transaction failed');
-
-      // Optimistic balance update — immediately reflect expected change before next poll
-      if (side === 'buy') {
-        setSuiBalance(prev => Math.max(0, prev - amtFloat));
-        const bq = buyQuote(reserveMist, tokensRemaining, BigInt(Math.floor(amtFloat * Number(MIST_PER_SUI))), vSui, vTok);
-        if (bq?.tokensOut) setTokenBalance(prev => prev + Number(bq.tokensOut) / 10 ** TOKEN_DECIMALS);
-      } else {
-        setTokenBalance(prev => Math.max(0, prev - amtFloat));
-        const sq = sellQuote(reserveMist, tokensRemaining, BigInt(Math.floor(amtFloat * 10 ** TOKEN_DECIMALS)), vSui, vTok);
-        if (sq?.suiOut) setSuiBalance(prev => prev + Number(sq.suiOut) / 1e9);
-      }
-
-      // Immediately refresh curve reserves so the progress bar moves without waiting for poll.
-      // Small delay gives the indexer a moment to process the event.
-      const IURL_REFRESH = import.meta.env.VITE_INDEXER_URL || '';
-      if (IURL_REFRESH) {
-        setTimeout(async () => {
-          try {
-            const r = await fetch(`${IURL_REFRESH}/token/${curveId}/stats`, { signal: AbortSignal.timeout(3000) });
-            if (r.ok) {
-              const d = await r.json();
-              if (d.reserve_sui   != null) setFreshReserveMist(BigInt(Math.round(d.reserve_sui * 1e9)));
-              if (d.token_reserve != null) setFreshTokensRemaining(BigInt(Math.round(d.token_reserve * 1e6)));
-            }
-          } catch {}
-        }, 1500);
-      }
-
+      if (tradeResult.$kind === 'FailedTransaction') throw new Error(tradeResult.FailedTransaction.status.error ?? 'Transaction failed');
       setTxStatus('success'); setTxMsg(side === 'buy' ? 'Buy successful! 🎉' : 'Sell successful!'); setAmount('');
       setTimeout(() => { setTxStatus(null); setTxMsg(''); }, 3000);
     } catch (err) {
@@ -1863,7 +1661,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
     priceSui, priceUsd, suiUsd, symbol, graduated,
     suiBalance, tokenBalance, isCreator, creatorFeesMist,
     curveId, tokenType, packageIdHint: pkgId, curveState,
-    reserveMist, tokensRemaining, vSui, vTok, drainSui,
+    reserveMist, tokensRemaining, vSui, vTok,
   };
 
   // ── render ────────────────────────────────────────────────────────────────
@@ -1910,7 +1708,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
                 </div>
               </div>
               <div className="text-right shrink-0">
-                <div className="text-white text-sm font-mono font-bold">{suiUsd > 0 ? fmtPrice(priceUsd) : `${fmt(priceSui, 6)} SUI`}</div>
+                <div className="text-white text-sm font-mono font-bold">{suiUsd > 0 ? `$${priceUsd.toFixed(6)}` : `${fmt(priceSui, 6)} SUI`}</div>
                 <div className="text-white/35 text-[10px] font-mono">{t(lang, 'price')}</div>
                 <div className="text-white/70 text-xs font-mono mt-1">{suiUsd > 0 ? fmtUsd(marketCapSui, suiUsd) : `${fmt(marketCapSui)} SUI`}</div>
                 <div className="text-white/35 text-[10px] font-mono">{t(lang, 'mcap')}</div>
@@ -1923,7 +1721,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
                 <span className="text-lime-400">{progress.toFixed(1)}%</span>
               </div>
               <div className="h-2 bg-white/5 rounded-full overflow-hidden">
-                <div className="h-full bg-gradient-to-r from-lime-600 to-lime-400 rounded-full transition-all duration-700" style={{ width: `${displayProgress}%` }} />
+                <div className="h-full bg-gradient-to-r from-lime-600 to-lime-400 rounded-full transition-all duration-500" style={{ width: `${progress}%` }} />
               </div>
               <div className="flex items-center justify-between text-[10px] font-mono text-white/25 mt-1">
                 <span>{fmt(mistToSui(reserveMist))} {t(lang, 'suiRaised')}</span>
@@ -1947,6 +1745,11 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
 
           <TradesHoldersBlock curveId={curveId} tokenType={tokenType} suiUsd={suiUsd} lang={lang} creator={creatorAddr} trades={feedTrades} connected={feedConnected} loading={feedLoading} symbol={symbol} />
           <CommentsBlock curveId={curveId} packageId={pkgId} lang={lang} initialSharedVersion={initialSharedVersionProp ?? curveState?.initial_shared_version ?? null} tokenType={tokenType} />
+          {isCreator && (
+            <div className="lg:hidden">
+              <CreatorToolsPanel curveId={curveId} tokenType={tokenType} packageIdHint={pkgId} account={account} curveState={curveState} currentDesc={desc} currentTwitter={twitter} currentTelegram={telegram} currentWebsite={website} currentDex={dex} lang={lang} />
+            </div>
+          )}
         </div>
 
         {/* Right column */}
@@ -1966,22 +1769,10 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
             vTok={vTok}
             slippage={slippage}
             keypair={tradeKeyReady ? tradeKeypair : null}
-            initialSharedVersion={initialSharedVersionProp ?? curveState?.initial_shared_version ?? null}
           />
           <VestingPanel curveId={curveId} tokenType={tokenType} packageId={pkgId} account={account} tokenBalance={tokenBalance} lang={lang} initialSharedVersion={curveState?.initial_shared_version ?? null} />
           {isCreator && (
-            <CreatorToolsPanel curveId={curveId} tokenType={tokenType} packageIdHint={pkgId} account={account} curveState={curveState} currentDesc={desc} currentTwitter={twitter} currentTelegram={telegram} currentWebsite={website} currentDex={dex} lang={lang}
-              onMetadataUpdated={({ name: n, symbol: s, description: d, iconUrl: ic }) => {
-                setMetadata(prev => ({
-                  ...prev,
-                  ...(n  != null && { name: n }),
-                  ...(s  != null && { symbol: s }),
-                  ...(d  != null && { description: d }),
-                  ...(ic != null && { iconUrl: ic }),
-                }));
-                if (ic && !isPlaceholderIcon(ic)) setIconUrl(ic);
-              }}
-            />
+            <CreatorToolsPanel curveId={curveId} tokenType={tokenType} packageIdHint={pkgId} account={account} curveState={curveState} currentDesc={desc} currentTwitter={twitter} currentTelegram={telegram} currentWebsite={website} currentDex={dex} lang={lang} />
           )}
         </div>
       </div>
