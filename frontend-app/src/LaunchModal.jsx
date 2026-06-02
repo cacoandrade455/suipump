@@ -82,7 +82,7 @@ function encodeDescription(desc, links) {
 
 // Placeholder constants — must exactly match coin-template/sources/template.move
 const PLACEHOLDER_NAME = 'Template Coin';
-const PLACEHOLDER_SYM  = 'TMPL';
+const PLACEHOLDER_SYM  = 'TMPLSYMBL';
 const PLACEHOLDER_DESC = 'Template description placeholder that is intentionally long to accommodate real token descriptions.';
 const PLACEHOLDER_ICON = 'https://suipump.test/icon-placeholder.png';
 
@@ -146,7 +146,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
   const [error, setError] = useState(null);
   const [newCurveId, setNewCurveId] = useState(null);
 
-  const symbolValid = /^[A-Z][A-Z0-9]{0,4}$/.test(form.symbol);
+  const symbolValid = /^[A-Z][A-Z0-9]{0,8}$/.test(form.symbol);
   const nameValid = form.name.trim().length >= 2 && form.name.trim().length <= 64;
   const payoutSum = payouts.reduce((s, p) => s + (parseInt(p.bps) || 0), 0);
   const payoutsValid = payouts.length >= 1 && payouts.length <= 10 && payoutSum === 10000
@@ -448,7 +448,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
                   <label className="block text-[9px] tracking-widest text-white/30 mb-1.5">{t(lang, 'symbol')} *</label>
                   <input
                     value={form.symbol}
-                    onChange={e => setForm({ ...form, symbol: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 5) })}
+                    onChange={e => setForm({ ...form, symbol: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 9) })}
                     placeholder="MOON"
                     className={`w-full bg-white/5 border rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none transition-colors ${
                       form.symbol && !symbolValid ? 'border-red-500/50 focus:border-red-400' : 'border-white/10 focus:border-lime-400/50'
