@@ -1523,7 +1523,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   React.useEffect(() => {
     if (!account?.address) { setIsCreator(false); return; }
     if (curveState?.creator) {
-      setIsCreator(curveState.creator === account.address);
+      setIsCreator(curveState.creator.toLowerCase() === account.address.toLowerCase());
     } else {
       setIsCreator(false);
     }
