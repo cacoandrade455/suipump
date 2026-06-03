@@ -213,12 +213,11 @@ app.get('/trades/recent', async (req, res) => {
 //   price_change_bonus = (last_reserve - first_reserve) / first_reserve, capped, ×weight
 app.get('/trending', async (req, res) => {
   try {
-    const limit       = Math.min(parseInt(req.query.limit || '10'), 50);
-    const oneHourAgo  = Date.now() - 60 * 60 * 1000;
-    const K           = 5;     // weight per unique buyer (in SUI-equivalent points)
-    const PRICE_W     = 50;    // weight on fractional price change
+    const limit   = Math.min(parseInt(req.query.limit || '10'), 50);
+    const K        = 5;     // weight per unique buyer (in SUI-equivalent points)
+    const PRICE_W  = 50;    // weight on fractional price change
 
-    const result = await pool.query(
+    const runQuery = async (sinceMs) => pool.query(
       `WITH window_events AS (
          SELECT
            e.curve_id,
@@ -247,7 +246,7 @@ app.get('/trending', async (req, res) => {
        )
        SELECT
          a.curve_id,
-         c.name, c.symbol, c.icon_url, c.package_id, c.graduated,
+         c.name, c.symbol, c.icon_url, c.package_id, c.graduated, c.graduation_target,
          a.buy_vol, a.sell_vol, a.total_vol, a.trade_count, a.unique_buyers,
          a.first_reserve, a.last_reserve,
          (
@@ -262,8 +261,15 @@ app.get('/trending', async (req, res) => {
        WHERE a.total_vol > 0 AND COALESCE(c.graduated, false) = false
        ORDER BY momentum_score DESC
        LIMIT $4`,
-      [oneHourAgo, K, PRICE_W, limit]
+      [sinceMs, K, PRICE_W, limit]
     );
+
+    // Primary: 1h rolling window. Fallback: if fewer than 5 results
+    // (quiet period / testnet), widen to 24h so the bar still populates.
+    let result = await runQuery(Date.now() - 60 * 60 * 1000);
+    if (result.rows.length < 5) {
+      result = await runQuery(Date.now() - 24 * 60 * 60 * 1000);
+    }
     res.json(result.rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
