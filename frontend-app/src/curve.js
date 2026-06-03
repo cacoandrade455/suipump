@@ -36,21 +36,35 @@ export function buyQuote(reserveMist, tokensRemaining, suiInMist, vSuiOverride, 
   const swap  = suiIn - fee;
 
   const vSuiSui = vSuiOverride ?? DEFAULT_VIRTUAL_SUI;
+  const vTokTok = vTokOverride ?? DEFAULT_VIRTUAL_TOKENS;
   const vSui    = BigInt(vSuiSui) * BigInt(MIST_PER_SUI);
-  const x       = BigInt(reserveMist) + vSui;
-  const y       = BigInt(tokensRemaining);
+  const vTok    = BigInt(vTokTok) * (10n ** BigInt(TOKEN_DECIMALS));
 
-  const out     = quoteOut(swap, x, y);
-  const clipped = out >= y;
+  // Mirror the contract's effective reserves exactly (bonding_curve.move):
+  //   effective_sui_reserve   = sui_reserve + VIRTUAL_SUI
+  //   effective_token_reserve = VIRTUAL_TOKEN - sold,  sold = CURVE_SUPPLY - token_reserve
+  // The previous version used y = tokensRemaining (raw balance), omitting the
+  // (VIRTUAL_TOKEN - CURVE_SUPPLY) offset — so quotes ran ~16-30% under the
+  // contract's actual output. sellQuote already used the effective reserve.
+  const curveSup   = BigInt(CURVE_SUPPLY) * (10n ** BigInt(TOKEN_DECIMALS));
+  const tokensSold = curveSup - BigInt(tokensRemaining);
+  const x          = BigInt(reserveMist) + vSui;
+  const yEff       = vTok - tokensSold;
+
+  const out        = quoteOut(swap, x, yEff);
+  // Can't receive more than the real tokens left in the curve balance.
+  const realRemain = BigInt(tokensRemaining);
+  const clipped    = out >= realRemain;
 
   return {
-    tokensOut:  clipped ? y : out,
+    tokensOut:  clipped ? realRemain : out,
     fee, fees,
     actualSwap: swap,
     refund:     0n,
     clipped,
-    priceImpact: y > 0n ? Number((out * 10000n) / y) / 100 : 0,
+    priceImpact: yEff > 0n ? Number((out * 10000n) / yEff) / 100 : 0,
   };
+}
 }
 
 export function sellQuote(reserveMist, tokensRemaining, tokensInAtomic, vSuiOverride, vTokOverride) {
