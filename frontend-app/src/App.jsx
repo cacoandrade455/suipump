@@ -912,6 +912,67 @@ function LiveTicker({ stats }) {
 }
 
 // ── Home page ─────────────────────────────────────────────────────────────────
+// ── Trending Bar — 1h momentum, top 10 ────────────────────────────────────────
+function TrendingBar({ lang = 'en' }) {
+  const navigate = useNavigate();
+  const [items, setItems]   = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+
+  React.useEffect(() => {
+    const IURL = import.meta.env.VITE_INDEXER_URL || '';
+    if (!IURL) { setLoading(false); return; }
+    let cancelled = false;
+    async function load() {
+      try {
+        const r = await fetch(`${IURL}/trending?limit=10`, { signal: AbortSignal.timeout(8000) });
+        if (!r.ok || cancelled) return;
+        const rows = await r.json();
+        if (!cancelled) { setItems(rows); setLoading(false); }
+      } catch { if (!cancelled) setLoading(false); }
+    }
+    load();
+    const timer = setInterval(load, 30_000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, []);
+
+  if (loading || items.length === 0) return null;
+
+  return (
+    <div className="mb-5">
+      <div className="flex items-center gap-1.5 mb-2">
+        <TrendingUp size={13} className="text-lime-400" />
+        <span className="text-[10px] font-mono text-white/40 tracking-widest">TRENDING NOW</span>
+        <span className="text-[8px] font-mono text-white/20">· last 1h</span>
+      </div>
+      <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-1">
+        {items.map((it, i) => {
+          const priceUp = (it.last_reserve ?? 0) >= (it.first_reserve ?? 0);
+          return (
+            <button key={it.curve_id} onClick={() => navigate(`/token/${it.curve_id}`)}
+              className="shrink-0 flex items-center gap-2 bg-white/[0.04] hover:bg-white/[0.07] border border-white/8 hover:border-lime-400/30 rounded-xl px-3 py-2 transition-colors">
+              <span className="text-[10px] font-mono font-bold text-lime-400/60 w-4">{i + 1}</span>
+              {it.icon_url
+                ? <img src={it.icon_url} alt="" className="w-6 h-6 rounded-full object-cover" onError={e => { e.target.style.display = 'none'; }} />
+                : <div className="w-6 h-6 rounded-full bg-white/10" />}
+              <div className="text-left">
+                <div className="text-[11px] font-mono font-bold text-white leading-tight">
+                  ${it.symbol || '?'}
+                </div>
+                <div className="text-[8px] font-mono text-white/30 leading-tight">
+                  {Number(it.total_vol).toFixed(1)} SUI · {it.unique_buyers} buyers
+                </div>
+              </div>
+              <span className={`text-[9px] font-mono font-bold ${priceUp ? 'text-lime-400' : 'text-red-400'}`}>
+                {priceUp ? '↑' : '↓'}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function HomePage({ onLaunch, lang = 'en' }) {
   const { isWatched, toggle: toggleWatch } = useWatchlist();
   const account = useCurrentAccount();
@@ -1077,6 +1138,8 @@ function HomePage({ onLaunch, lang = 'en' }) {
           />
         </div>
       </div>
+
+      <TrendingBar lang={lang} />
 
       <div className="flex flex-wrap gap-1.5 mb-4 overflow-x-auto scrollbar-hide">
         {SORT_OPTIONS.map(opt => (
