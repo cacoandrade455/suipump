@@ -12,11 +12,24 @@ function fmt(n, d = 2) {
   return Number(n).toLocaleString(undefined, { maximumFractionDigits: d });
 }
 
+// Deterministic risk tier — computed from hard thresholds so the badge never
+// changes unless the underlying metrics do. The model only writes the prose.
+//   High:   untested (thin activity) OR heavy top-holder concentration
+//   Medium: moderate concentration OR still-thin activity
+//   Low:    healthy distribution + real activity (or graduated)
+function computeRisk({ holderCount, topHolderPct, totalTrades }) {
+  if (totalTrades < 10 || holderCount < 5)               return 'High';
+  if (topHolderPct >= 50)                                return 'High';
+  if (topHolderPct >= 25 || totalTrades < 50 || holderCount < 20) return 'Medium';
+  return 'Low';
+}
+
 export default function AIAnalysis({ curveId, tokenType, name, symbol, progress, reserveSui, creatorFeesSui, graduated, tokensSoldWhole }) {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [done, setDone] = useState(false);
+  const [riskTier, setRiskTier] = useState(null);
 
   // Fetches trade + holder stats from the SAME source HolderList uses
   // (indexer first, RPC fallback) so the AI's numbers match the holder list.
@@ -73,11 +86,7 @@ export default function AIAnalysis({ curveId, tokenType, name, symbol, progress,
         } catch {}
       }
 
-      // Fallback: if indexer holders table hasn't populated yet (new token),
-      // derive holder count from unique buyer addresses in trade history.
-      const holderCount = holderRaws.length > 0
-        ? holderRaws.length
-        : candidates.size;
+      const holderCount = holderRaws.length;
 
       // Top-3 concentration as % of total 1B supply
       const TOTAL_SUPPLY_ATOMIC = 1_000_000_000 * TOKEN_SCALE;
@@ -114,15 +123,22 @@ export default function AIAnalysis({ curveId, tokenType, name, symbol, progress,
     setError(null);
     setResult(null);
     setDone(false);
+    setRiskTier(null);
 
     try {
       const { buys, sells, volumeSui, holderCount, topHolderPct } = await fetchTradeStats();
       const totalTrades  = buys + sells;
       const buySellRatio = sells > 0 ? ((buys / sells) * 100).toFixed(0) : '100';
 
+      // Risk tier is determined deterministically in code — the model must
+      // write prose consistent with it and must NOT invent its own rating.
+      const risk = computeRisk({ holderCount, topHolderPct, totalTrades });
+      setRiskTier(risk);
+
       const prompt = `You are a DeFi token analyst on SuiPump, a bonding curve token launchpad on the Sui blockchain.
 
-Analyze this token and write exactly 3 sentences covering: (1) holder concentration risk, (2) trading momentum, (3) one specific thing to watch. Then on a new line write ONLY the risk rating in this exact format: "Risk: Low" or "Risk: Medium" or "Risk: High". No fluff, no intro, be direct and specific.
+The risk level for this token has already been determined as: ${risk.toUpperCase()}.
+Write exactly 3 sentences covering: (1) holder concentration, (2) trading momentum, (3) one specific thing to watch. Your sentences MUST be consistent with a ${risk.toUpperCase()} risk rating. Do NOT output a risk rating line of any kind — only the 3 sentences. No fluff, no intro, be direct and specific.
 
 IMPORTANT framing rules:
 - If the token has zero or very few trades and holders, do NOT describe it as "fairly distributed" or "no concentration risk" — a token with no activity is not well-distributed, it is simply untested. Frame it as "too early to assess distribution" instead.
@@ -156,10 +172,10 @@ Token data:
     }
   };
 
-  const lines        = result ? result.split('\n').filter(Boolean) : [];
-  const riskLine     = lines.find(l => l.toLowerCase().startsWith('risk:'));
+  const lines         = result ? result.split('\n').filter(Boolean) : [];
   const analysisLines = lines.filter(l => !l.toLowerCase().startsWith('risk:'));
-  const riskText     = riskLine ? riskLine.replace(/^risk:\s*/i, '').trim() : null;
+  // Risk badge is the deterministic tier computed in code, never the model's text.
+  const riskText      = riskTier;
 
   return (
     <div className="border border-white/10 rounded-lg p-4 bg-black/40">
