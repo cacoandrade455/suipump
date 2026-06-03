@@ -61,7 +61,10 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = n
           const res = await fetch(`${INDEXER_URL}/token/${curveId}/holders`, { signal: AbortSignal.timeout(5000) });
           if (res.ok) {
             const rows = await res.json();
-            holderList = rows.map(r => ({ addr: r.address, raw: BigInt(r.balance ?? 0) }))
+            // Endpoint returns `balance` as a float in WHOLE tokens (e.g. 276396.9).
+            // BigInt() throws on non-integer floats, so round to atomic units first.
+            // Atomic units also match the TOTAL_SUPPLY scale used for the % bar below.
+            holderList = rows.map(r => ({ addr: r.address, raw: BigInt(Math.round(Number(r.balance ?? 0) * TOKEN_SCALE)) }))
               .filter(b => b.raw > 0n);
           }
         } catch {}
