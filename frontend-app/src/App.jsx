@@ -145,6 +145,7 @@ function ScrollToTop() {
 
 // ── Live stats hook ───────────────────────────────────────────────────────────
 const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
+const DEX_LABEL = { 0: 'Cetus', 1: 'DeepBook', 2: 'Turbos' };
 
 function applyLocalOverrides(token) {
   try {
@@ -311,7 +312,7 @@ function TokenCard({ token, stats, curveState: curveStateProp, isCrown, suiUsd =
           </div>
           {suiUntilGrad > 0 && !graduated && (
             <div className="text-[9px] font-mono text-white/20">
-              {fmt(suiUntilGrad)} SUI to grad
+              {fmt(suiUntilGrad)} SUI to {DEX_LABEL[token.graduationTarget ?? token.graduation_target] ?? 'grad'}
             </div>
           )}
         </div>
@@ -957,6 +958,11 @@ function TrendingBar({ lang = 'en' }) {
               <div className="text-left">
                 <div className="text-[11px] font-mono font-bold text-white leading-tight">
                   ${it.symbol || '?'}
+                  {it.graduation_target != null && (
+                    <span className="text-[7px] font-mono text-lime-400/40 ml-1 uppercase">
+                      {DEX_LABEL[it.graduation_target] ?? ''}
+                    </span>
+                  )}
                 </div>
                 <div className="text-[8px] font-mono text-white/30 leading-tight">
                   {Number(it.total_vol).toFixed(1)} SUI · {it.unique_buyers} buyers
