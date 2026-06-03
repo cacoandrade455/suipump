@@ -205,6 +205,69 @@ app.get('/trades/recent', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Trending feed — 1h rolling momentum score.
+// score = (volume_1h × buy_ratio) + (unique_buyers_1h × K) + price_change_bonus
+//   volume_1h        = sum of sui_in (buys) + sui_out (sells) over last hour, in SUI
+//   buy_ratio        = buy_volume / total_volume  (rewards buy pressure)
+//   unique_buyers_1h = distinct buyer addresses last hour (hardest signal to fake)
+//   price_change_bonus = (last_reserve - first_reserve) / first_reserve, capped, ×weight
+app.get('/trending', async (req, res) => {
+  try {
+    const limit       = Math.min(parseInt(req.query.limit || '10'), 50);
+    const oneHourAgo  = Date.now() - 60 * 60 * 1000;
+    const K           = 5;     // weight per unique buyer (in SUI-equivalent points)
+    const PRICE_W     = 50;    // weight on fractional price change
+
+    const result = await pool.query(
+      `WITH window_events AS (
+         SELECT
+           e.curve_id,
+           e.event_type,
+           e.timestamp_ms,
+           (e.data->>'sui_in')::float          / 1e9 AS sui_in,
+           (e.data->>'sui_out')::float         / 1e9 AS sui_out,
+           (e.data->>'new_sui_reserve')::float / 1e9 AS reserve,
+           e.data->>'buyer'                          AS buyer
+         FROM events e
+         WHERE (e.event_type LIKE '%TokensPurchased' OR e.event_type LIKE '%TokensBought' OR e.event_type LIKE '%TokensSold')
+           AND e.timestamp_ms > $1
+       ),
+       agg AS (
+         SELECT
+           curve_id,
+           COALESCE(SUM(sui_in),  0)                                  AS buy_vol,
+           COALESCE(SUM(sui_out), 0)                                  AS sell_vol,
+           COALESCE(SUM(sui_in), 0) + COALESCE(SUM(sui_out), 0)       AS total_vol,
+           COUNT(*)                                                   AS trade_count,
+           COUNT(DISTINCT buyer) FILTER (WHERE buyer IS NOT NULL)     AS unique_buyers,
+           (ARRAY_AGG(reserve ORDER BY timestamp_ms ASC)  FILTER (WHERE reserve IS NOT NULL))[1] AS first_reserve,
+           (ARRAY_AGG(reserve ORDER BY timestamp_ms DESC) FILTER (WHERE reserve IS NOT NULL))[1] AS last_reserve
+         FROM window_events
+         GROUP BY curve_id
+       )
+       SELECT
+         a.curve_id,
+         c.name, c.symbol, c.icon_url, c.package_id, c.graduated,
+         a.buy_vol, a.sell_vol, a.total_vol, a.trade_count, a.unique_buyers,
+         a.first_reserve, a.last_reserve,
+         (
+           a.total_vol * (CASE WHEN a.total_vol > 0 THEN a.buy_vol / a.total_vol ELSE 0 END)
+           + a.unique_buyers * $2
+           + (CASE WHEN a.first_reserve > 0
+                   THEN LEAST(GREATEST((a.last_reserve - a.first_reserve) / a.first_reserve, -1), 5) * $3
+                   ELSE 0 END)
+         ) AS momentum_score
+       FROM agg a
+       LEFT JOIN curves c ON c.curve_id = a.curve_id
+       WHERE a.total_vol > 0 AND COALESCE(c.graduated, false) = false
+       ORDER BY momentum_score DESC
+       LIMIT $4`,
+      [oneHourAgo, K, PRICE_W, limit]
+    );
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.get('/leaderboard/volume', async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit || '20'), 100);
