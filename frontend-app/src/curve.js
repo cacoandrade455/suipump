@@ -65,7 +65,6 @@ export function buyQuote(reserveMist, tokensRemaining, suiInMist, vSuiOverride, 
     priceImpact: yEff > 0n ? Number((out * 10000n) / yEff) / 100 : 0,
   };
 }
-}
 
 export function sellQuote(reserveMist, tokensRemaining, tokensInAtomic, vSuiOverride, vTokOverride) {
   const tokIn = BigInt(tokensInAtomic);
