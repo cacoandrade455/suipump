@@ -929,6 +929,7 @@ function TPSLPanel({
     { type: 'tp', pct: '100',  sellPct: '50' },
     { type: 'sl', pct: '-20',  sellPct: '100' },
   ]);
+  const [ocoLink, setOcoLink]       = useState(false);
   const [triggerMsg, setTriggerMsg] = useState(null);
   const [selling, setSelling]       = useState(false);
 
@@ -1044,16 +1045,26 @@ function TPSLPanel({
   const handleActivate = () => {
     const ep = parseFloat(entryPrice) || priceSui;
     if (!ep || ep <= 0) return;
+    // OCO group is shared across all levels when linked — first to fire cancels the rest.
+    const ocoGroup = ocoLink ? `oco_${Date.now()}` : null;
     const levels = pendingLevels
       .filter(l => l.pct !== '' && l.sellPct !== '')
-      .map(l => makeLevel(l.type, parseFloat(l.pct), parseFloat(l.sellPct)));
+      .map(l => {
+        const pctNum  = parseFloat(l.pct);
+        const sellNum = parseFloat(l.sellPct);
+        // For trail, the entered % is the drop-from-peak threshold (always positive).
+        if (l.type === 'trail') {
+          return makeLevel('trail', 0, sellNum, { trailPct: Math.abs(pctNum), ocoGroup });
+        }
+        return makeLevel(l.type, pctNum, sellNum, { ocoGroup });
+      });
     if (!levels.length) return;
     activate(ep, levels);
     setShowConfig(false);
   };
 
   const pctColor = (type) => type === 'tp' ? 'text-lime-400' : 'text-red-400';
-  const pctBorder = (type) => type === 'tp' ? 'border-lime-400/30' : 'border-red-400/30';
+  const pctBorder = (type) => type === 'tp' ? 'border-lime-400/30' : type === 'trail' ? 'border-amber-400/30' : 'border-red-400/30';
 
   if (!account) return null;
 
@@ -1093,35 +1104,43 @@ function TPSLPanel({
           <div className="text-[9px] font-mono text-white/25 mb-1">
             Entry: {config.entryPriceSui?.toFixed(8)} SUI · Now: {priceSui?.toFixed(8)} SUI
           </div>
+          {config.peakPrice != null && config.levels?.some(l => l.type === 'trail') && (
+            <div className="text-[9px] font-mono text-amber-400/40 -mt-1">Peak: {config.peakPrice.toFixed(8)} SUI</div>
+          )}
           {config.levels?.map(level => {
             const changePct = priceSui && config.entryPriceSui
               ? ((priceSui - config.entryPriceSui) / config.entryPriceSui) * 100
               : 0;
+            const peak     = config.peakPrice ?? config.entryPriceSui;
+            const dropPct  = peak && priceSui ? ((peak - priceSui) / peak) * 100 : 0;
+            const accent   = level.type === 'tp' ? 'text-lime-400' : level.type === 'trail' ? 'text-amber-400' : 'text-red-400';
+            const barCol   = level.type === 'tp' ? 'bg-lime-400/50' : level.type === 'trail' ? 'bg-amber-400/50' : 'bg-red-400/50';
+            const idle     = level.type === 'tp' ? 'border-lime-400/20 bg-lime-950/10' : level.type === 'trail' ? 'border-amber-400/20 bg-amber-950/10' : 'border-red-400/20 bg-red-950/10';
+            const inactive = level.triggered || level.cancelled;
             const progress = level.type === 'tp'
               ? Math.min(100, Math.max(0, (changePct / level.pct) * 100))
+              : level.type === 'trail'
+              ? Math.min(100, Math.max(0, (dropPct / (level.trailPct || 1)) * 100))
               : Math.min(100, Math.max(0, (Math.abs(Math.min(0, changePct)) / Math.abs(level.pct)) * 100));
 
             return (
               <div key={level.id} className={`rounded-lg border px-3 py-2 space-y-1.5 ${
-                level.triggered
-                  ? 'border-white/10 bg-white/[0.02] opacity-50'
-                  : level.type === 'tp' ? 'border-lime-400/20 bg-lime-950/10' : 'border-red-400/20 bg-red-950/10'
+                inactive ? 'border-white/10 bg-white/[0.02] opacity-50' : idle
               }`}>
                 <div className="flex items-center justify-between text-[10px] font-mono">
-                  <span className={level.type === 'tp' ? 'text-lime-400' : 'text-red-400'}>
-                    {level.type === 'tp' ? '▲ TP' : '▼ SL'} {level.pct > 0 ? '+' : ''}{level.pct}%
+                  <span className={accent}>
+                    {level.type === 'tp' ? `▲ TP +${level.pct}%`
+                      : level.type === 'trail' ? `⇲ TRAIL ↓${level.trailPct}%`
+                      : `▼ SL ${level.pct}%`}
+                    {level.ocoGroup && <span className="text-white/25 ml-1">· OCO</span>}
                   </span>
-                  <span className="text-white/40">
-                    Sell {level.sellPct}% of position
-                  </span>
-                  {level.triggered && <span className="text-white/25 text-[9px]">TRIGGERED</span>}
+                  <span className="text-white/40">Sell {level.sellPct}%</span>
+                  {level.cancelled && <span className="text-white/25 text-[9px]">CANCELLED</span>}
+                  {level.triggered && !level.cancelled && <span className="text-white/25 text-[9px]">TRIGGERED</span>}
                 </div>
-                {!level.triggered && (
+                {!inactive && (
                   <div className="h-1 bg-white/5 rounded-full overflow-hidden">
-                    <div
-                      className={`h-full rounded-full transition-all ${level.type === 'tp' ? 'bg-lime-400/50' : 'bg-red-400/50'}`}
-                      style={{ width: `${progress}%` }}
-                    />
+                    <div className={`h-full rounded-full transition-all ${barCol}`} style={{ width: `${progress}%` }} />
                   </div>
                 )}
               </div>
@@ -1138,9 +1157,9 @@ function TPSLPanel({
           'border-white/10 bg-white/[0.02]'
         }`}>
           <div className="flex items-center gap-1.5">
-            <Bell size={10} className={triggerMsg.level.type === 'tp' ? 'text-lime-400' : 'text-red-400'} />
+            <Bell size={10} className={triggerMsg.level.type === 'tp' ? 'text-lime-400' : triggerMsg.level.type === 'trail' ? 'text-amber-400' : 'text-red-400'} />
             <span className="text-white/70 font-bold">
-              {triggerMsg.level.type === 'tp' ? 'Take-profit' : 'Stop-loss'} triggered
+              {triggerMsg.level.type === 'tp' ? 'Take-profit' : triggerMsg.level.type === 'trail' ? 'Trailing stop' : 'Stop-loss'} triggered
             </span>
           </div>
           <div className="text-white/40">
@@ -1190,16 +1209,18 @@ function TPSLPanel({
             <div className="text-[9px] font-mono text-white/30 tracking-widest">LEVELS</div>
             {pendingLevels.map((level, idx) => (
               <div key={idx} className="flex items-center gap-2">
-                {/* TP / SL toggle */}
+                {/* TP / SL / TRAIL toggle (cycles) */}
                 <button
-                  onClick={() => updateLevel(idx, 'type', level.type === 'tp' ? 'sl' : 'tp')}
-                  className={`w-9 py-1.5 rounded-lg text-[9px] font-mono font-bold border transition-colors flex-shrink-0 ${
+                  onClick={() => updateLevel(idx, 'type', level.type === 'tp' ? 'sl' : level.type === 'sl' ? 'trail' : 'tp')}
+                  className={`w-12 py-1.5 rounded-lg text-[9px] font-mono font-bold border transition-colors flex-shrink-0 ${
                     level.type === 'tp'
                       ? 'border-lime-400/40 text-lime-400 bg-lime-400/5'
+                      : level.type === 'trail'
+                      ? 'border-amber-400/40 text-amber-400 bg-amber-400/5'
                       : 'border-red-400/40 text-red-400 bg-red-400/5'
                   }`}
                 >
-                  {level.type === 'tp' ? 'TP' : 'SL'}
+                  {level.type === 'tp' ? 'TP' : level.type === 'trail' ? 'TRAIL' : 'SL'}
                 </button>
                 {/* % trigger */}
                 <div className="flex-1 relative">
@@ -1207,10 +1228,10 @@ function TPSLPanel({
                     type="number" step="1"
                     value={level.pct}
                     onChange={e => updateLevel(idx, 'pct', e.target.value)}
-                    placeholder={level.type === 'tp' ? '+100' : '-20'}
+                    placeholder={level.type === 'tp' ? '+100' : level.type === 'trail' ? '15' : '-20'}
                     className={`w-full bg-white/5 border rounded-lg px-2 py-1.5 text-[11px] font-mono text-center focus:outline-none transition-colors ${pctBorder(level.type)} focus:border-lime-400/50`}
                   />
-                  <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[8px] font-mono text-white/20">%</span>
+                  <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[8px] font-mono text-white/20">{level.type === 'trail' ? '↓%' : '%'}</span>
                 </div>
                 {/* Sell % */}
                 <div className="flex-1 relative">
@@ -1238,9 +1259,26 @@ function TPSLPanel({
             )}
           </div>
 
+          {/* OCO toggle */}
+          {pendingLevels.length >= 2 && (
+            <button
+              onClick={() => setOcoLink(v => !v)}
+              className={`w-full flex items-center justify-between rounded-lg border px-3 py-2 transition-colors ${
+                ocoLink ? 'border-lime-400/40 bg-lime-400/5' : 'border-white/10 hover:border-white/20'
+              }`}
+            >
+              <span className="text-[10px] font-mono text-white/60">
+                OCO <span className="text-white/30">— one cancels other</span>
+              </span>
+              <span className={`w-8 h-4 rounded-full relative transition-colors ${ocoLink ? 'bg-lime-400' : 'bg-white/15'}`}>
+                <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-black transition-all ${ocoLink ? 'left-4' : 'left-0.5'}`} />
+              </span>
+            </button>
+          )}
+
           {/* Helper text */}
           <div className="text-[8px] font-mono text-white/15 leading-relaxed">
-            TP = sell when price rises by %. SL = sell when price falls by % (enter negative). Sell % = portion of your balance to sell. Tab must stay open.
+            TP = sell when price rises by %. SL = sell when price falls by % (enter negative). TRAIL = sell when price drops ↓% from its peak. OCO = the first level to fire cancels the rest. Sell % = portion of your balance to sell. Tab must stay open.
           </div>
 
           {/* Activate */}
