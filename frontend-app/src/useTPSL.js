@@ -34,13 +34,16 @@ export function clearTPSL(walletAddress, curveId) {
   } catch {}
 }
 
-export function makeLevel(type, pct, sellPct) {
+export function makeLevel(type, pct, sellPct, extra = {}) {
   return {
-    id:        `${type}_${pct}_${Date.now()}`,
-    type,      // 'tp' | 'sl'
-    pct,       // number — e.g. 50 means +50% for TP, -20 means -20% for SL
-    sellPct,   // number — % of position to sell when triggered (1–100)
+    id:        `${type}_${pct}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    type,           // 'tp' | 'sl' | 'trail'
+    pct,            // tp/sl: +50 means +50% for TP, -20 for SL. trail: unused (see trailPct)
+    trailPct:  extra.trailPct ?? null,  // trail: % drop from peak that triggers (positive)
+    sellPct,        // number — % of position to sell when triggered (1–100)
+    ocoGroup:  extra.ocoGroup ?? null,  // optional — levels sharing a group cancel each other
     triggered: false,
+    cancelled: false,  // set when an OCO sibling fired first
   };
 }
 
@@ -64,33 +67,76 @@ export function useTPSL({
   }, [config, walletAddress, curveId]);
 
   // ── Level checker ─────────────────────────────────────────────────────────
+  // Runs on every price tick. Tracks the running peak (for trailing stops),
+  // evaluates tp / sl / trail levels, and enforces OCO: when one level in a
+  // group fires, its siblings are cancelled. Same-tick gaps fire at most one
+  // level per OCO group.
   const checkLevels = useCallback((priceSui) => {
     if (!config?.enabled || !config.entryPriceSui || !priceSui) return;
-    const entry = config.entryPriceSui;
+    const entry    = config.entryPriceSui;
+    const prevPeak = config.peakPrice ?? entry;
+    const newPeak  = Math.max(prevPeak, priceSui);
 
-    config.levels?.forEach(level => {
-      if (level.triggered || triggeredRef.current.has(level.id)) return;
+    const fired       = [];
+    const firedGroups = new Set();
+
+    for (const level of (config.levels ?? [])) {
+      if (level.triggered || level.cancelled || triggeredRef.current.has(level.id)) continue;
+      // An OCO sibling already fired on this same tick — skip.
+      if (level.ocoGroup && firedGroups.has(level.ocoGroup)) continue;
 
       const changePct = ((priceSui - entry) / entry) * 100;
-      const hit = (level.type === 'tp' && changePct >= level.pct) ||
-                  (level.type === 'sl' && changePct <= level.pct);
+      let hit = false;
+      if (level.type === 'tp')         hit = changePct >= level.pct;
+      else if (level.type === 'sl')    hit = changePct <= level.pct;
+      else if (level.type === 'trail') {
+        const dropPct = newPeak > 0 ? ((newPeak - priceSui) / newPeak) * 100 : 0;
+        hit = dropPct >= (level.trailPct ?? Infinity);
+      }
 
       if (hit) {
-        triggeredRef.current.add(level.id);
+        fired.push(level);
+        if (level.ocoGroup) firedGroups.add(level.ocoGroup);
+      }
+    }
+
+    if (fired.length === 0) {
+      // Persist a new peak even when nothing fired, so trailing stops ratchet up.
+      if (newPeak > prevPeak) {
         setConfig(prev => {
           if (!prev) return prev;
-          const updated = {
-            ...prev,
-            levels: prev.levels.map(l =>
-              l.id === level.id ? { ...l, triggered: true } : l
-            ),
-          };
+          const updated = { ...prev, peakPrice: newPeak };
           saveTPSL(walletAddress, curveId, updated);
           return updated;
         });
-        onTrigger({ level, currentPriceSui: priceSui });
       }
+      return;
+    }
+
+    const firedIds = new Set(fired.map(l => l.id));
+    fired.forEach(l => triggeredRef.current.add(l.id));
+
+    setConfig(prev => {
+      if (!prev) return prev;
+      const updated = {
+        ...prev,
+        peakPrice: newPeak,
+        levels: prev.levels.map(l => {
+          if (firedIds.has(l.id)) return { ...l, triggered: true };
+          // Cancel non-fired siblings in any group that fired this pass.
+          if (l.ocoGroup && firedGroups.has(l.ocoGroup) && !l.triggered) {
+            triggeredRef.current.add(l.id);
+            return { ...l, cancelled: true };
+          }
+          return l;
+        }),
+      };
+      saveTPSL(walletAddress, curveId, updated);
+      return updated;
     });
+
+    // Only the levels that actually fired execute a sell (cancelled siblings don't).
+    fired.forEach(level => onTrigger({ level, currentPriceSui: priceSui }));
   }, [config, walletAddress, curveId, onTrigger]);
 
   // ── React to new SSE price point from shared feed ─────────────────────────
@@ -106,7 +152,7 @@ export function useTPSL({
   // ── Public API ────────────────────────────────────────────────────────────
 
   const activate = useCallback((entryPriceSui, levels) => {
-    const newConfig = { enabled: true, entryPriceSui, levels, createdAt: Date.now() };
+    const newConfig = { enabled: true, entryPriceSui, peakPrice: entryPriceSui, levels, createdAt: Date.now() };
     triggeredRef.current.clear();
     setConfig(newConfig);
     saveTPSL(walletAddress, curveId, newConfig);
