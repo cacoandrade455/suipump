@@ -372,6 +372,88 @@ app.post('/internal/store-metadata-isv', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── Agent DAG runs (in-memory; demo-scale) ────────────────────────────────────
+// The operator runs `nexus dag execute … --json | curl … /internal/agent-run`.
+// AgentPage.jsx polls /internal/agent-run/latest (and /:id) to render the real
+// on-chain Nexus DAGExecution. Stored in memory — fine for a demo, resets on
+// redeploy. No DB schema change required.
+const agentRuns = [];                 // newest-last
+const MAX_AGENT_RUNS = 50;
+
+// Normalize the `nexus dag execute --json` payload (shape varies by CLI version)
+// into { executionId, dagId, vertices, curveId, txDigest, status, finished, receivedAt }.
+function normalizeAgentRun(raw) {
+  const rec = {
+    executionId: null, dagId: null, vertices: {},
+    curveId: null, txDigest: null, status: null, checkpoint: null,
+    finished: false, receivedAt: Date.now(),
+  };
+  if (!raw || typeof raw !== 'object') return rec;
+
+  // `nexus dag execute --json` returns the submission receipt:
+  //   { digest, execution_id, tx_checkpoint }
+  // Per-vertex Ok/Err lives on the DAGExecution object / `nexus dag inspect`,
+  // not here — so we record the on-chain execution id + digest and mark it
+  // submitted. The UI reads vertex detail from chain (or shows it submitted).
+  rec.executionId = raw.execution_id ?? raw.executionId ?? raw.dag_execution_id
+                 ?? raw.dagExecutionId ?? raw.objectId ?? null;
+  rec.txDigest    = raw.digest ?? raw.tx_digest ?? raw.txDigest ?? null;
+  rec.checkpoint  = raw.tx_checkpoint ?? raw.checkpoint ?? null;
+  rec.dagId       = raw.dagId ?? raw.dag_id ?? raw.dag ?? null;
+  rec.status      = raw.status ?? (rec.executionId ? 'submitted' : null);
+
+  // If a richer payload ever includes vertices/results, parse them too.
+  const setVertex = (name, variant, ports) => {
+    if (!name) return;
+    const key = String(name).replace(/^Plain\(|\)$/g, '');
+    rec.vertices[key] = variant === 'Ok' ? 'Ok'
+                      : (variant === 'Err' || variant === '_err_eval') ? 'Err'
+                      : variant ?? 'pending';
+    const cid = ports?.curve_id ?? ports?.curveId;
+    if (cid && !rec.curveId) rec.curveId = cid;
+  };
+  if (raw.vertices && typeof raw.vertices === 'object' && !Array.isArray(raw.vertices)) {
+    for (const [name, v] of Object.entries(raw.vertices)) {
+      setVertex(name, v?.variant ?? v?.output_variant ?? v, v?.ports ?? v?.data ?? {});
+    }
+  } else if (Array.isArray(raw.results)) {
+    for (const v of raw.results) {
+      setVertex(v.vertex ?? v.name, v.variant ?? v.output_variant, v.ports ?? v.data ?? {});
+    }
+  }
+  if (!rec.curveId) rec.curveId = raw.curveId ?? raw.curve_id ?? null;
+
+  const states = Object.values(rec.vertices);
+  rec.finished = rec.status === 'submitted' || (states.length > 0 && states.every(s => s === 'Ok' || s === 'Err'));
+  return rec;
+}
+
+// POST /internal/agent-run — operator's CLI output lands here.
+app.post('/internal/agent-run', async (req, res) => {
+  try {
+    const rec = normalizeAgentRun(req.body);
+    agentRuns.push(rec);
+    if (agentRuns.length > MAX_AGENT_RUNS) agentRuns.shift();
+    res.json({ ok: true, executionId: rec.executionId });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /internal/agent-run/latest?since=<ms> — newest run (optionally newer than `since`).
+app.get('/internal/agent-run/latest', async (req, res) => {
+  const since = Number(req.query.since ?? 0);
+  for (let i = agentRuns.length - 1; i >= 0; i--) {
+    if (agentRuns[i].receivedAt >= since) return res.json(agentRuns[i]);
+  }
+  res.json(null);
+});
+
+// GET /internal/agent-run/:id — a specific DAGExecution by id (paste fallback).
+app.get('/internal/agent-run/:id', async (req, res) => {
+  const { id } = req.params;
+  const found = [...agentRuns].reverse().find(r => r.executionId === id);
+  res.json(found ?? null);
+});
+
 // ── /debug/isv/:id ────────────────────────────────────────────────────────────
 app.get('/debug/isv/:id', async (req, res) => {
   try {
