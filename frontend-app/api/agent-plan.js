@@ -63,7 +63,6 @@ Rules:
         model:           'llama-3.3-70b-versatile',
         max_tokens:      500,
         temperature:     0.4,
-        response_format: { type: 'json_object' },
         messages: [{ role: 'user', content: prompt }],
       }),
     });
