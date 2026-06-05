@@ -5,11 +5,11 @@
     "mode": "required",
     "allowed_leaders_path": "./allowed_leaders.json",
     "tools": {
-      "xyz.suipump.buy@1":    { "tool_kid": 0, "tool_signing_key": "__TOOL_SIGNING_KEY__" },
-      "xyz.suipump.sell@1":   { "tool_kid": 0, "tool_signing_key": "__TOOL_SIGNING_KEY__" },
-      "xyz.suipump.launch@1": { "tool_kid": 0, "tool_signing_key": "__TOOL_SIGNING_KEY__" },
-      "xyz.suipump.claim@1":  { "tool_kid": 0, "tool_signing_key": "__TOOL_SIGNING_KEY__" },
-      "xyz.suipump.alerts@1": { "tool_kid": 0, "tool_signing_key": "__TOOL_SIGNING_KEY__" }
+      "xyz.suipump.buy@1":    { "tool_kid": 2, "tool_signing_key": "__TOOL_SIGNING_KEY__" },
+      "xyz.suipump.sell@1":   { "tool_kid": 2, "tool_signing_key": "__TOOL_SIGNING_KEY__" },
+      "xyz.suipump.launch@1": { "tool_kid": 2, "tool_signing_key": "__TOOL_SIGNING_KEY__" },
+      "xyz.suipump.claim@1":  { "tool_kid": 2, "tool_signing_key": "__TOOL_SIGNING_KEY__" },
+      "xyz.suipump.alerts@1": { "tool_kid": 2, "tool_signing_key": "__TOOL_SIGNING_KEY__" }
     }
   }
 }
