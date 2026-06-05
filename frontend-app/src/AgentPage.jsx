@@ -87,30 +87,40 @@ export default function AgentPage({ onBack }) {
 
   // ── Map a fetched execution record onto node states ──────────────────────────
   const applyExecution = useCallback((rec) => {
-    // rec.vertices: { launch: 'Ok'|'Err'|'pending', buy: ..., alerts: ..., claim: ... }
+    // rec.vertices may be empty when only the submission receipt is available
+    // (nexus dag execute --json returns { digest, execution_id, tx_checkpoint }).
     const v = rec.vertices ?? {};
+    const hasVertexDetail = Object.keys(v).length > 0;
     const ns = {};
     for (const n of NODES) {
-      const s = v[n.id];
-      ns[n.id] = s === 'Ok' ? 'done' : s === 'Err' || s === '_err_eval' ? 'error'
-               : s === 'pending' || s === 'running' ? 'running' : 'idle';
+      if (hasVertexDetail) {
+        const s = v[n.id];
+        ns[n.id] = s === 'Ok' ? 'done' : (s === 'Err' || s === '_err_eval') ? 'error'
+                 : (s === 'pending' || s === 'running') ? 'running' : 'idle';
+      } else {
+        // Submission-only: the DAG executes launch+buy; show those done,
+        // monitor/claim as idle (they're lifecycle steps, not part of this run).
+        ns[n.id] = (n.id === 'launch' || n.id === 'buy') ? 'done' : 'idle';
+      }
     }
     setNodeState(ns);
     setResult({
       executionId: rec.executionId ?? rec.execution_id ?? null,
       dagId:       rec.dagId ?? rec.dag_id ?? DAG_ID,
       status:      rec.status ?? null,
+      checkpoint:  rec.checkpoint ?? rec.tx_checkpoint ?? null,
       curveId:     rec.curveId ?? rec.curve_id ?? (v.launch_curve_id ?? null),
-      txDigest:    rec.txDigest ?? rec.tx_digest ?? null,
+      txDigest:    rec.txDigest ?? rec.tx_digest ?? rec.digest ?? null,
       vertices:    v,
     });
-    const anyErr  = Object.values(ns).some(s => s === 'error');
-    const allDone = NODES.every(n => ns[n.id] === 'done' || (n.id === 'alerts') || (n.id === 'claim'));
-    if (rec.finished || rec.status === 'finished' || allDone || anyErr) {
+    const anyErr = Object.values(ns).some(s => s === 'error');
+    const settled = rec.finished || rec.status === 'finished' || rec.status === 'submitted'
+                 || (hasVertexDetail && NODES.every(n => ns[n.id] !== 'running'));
+    if (settled || anyErr) {
       setPhase(anyErr ? 'failed' : 'done');
       stopPolling();
     }
-  }, []);
+  }, [stopPolling]);
 
   const stopPolling = useCallback(() => {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
