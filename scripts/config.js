@@ -4,7 +4,7 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { fromB64, fromBase64 } from '@mysten/sui/utils';
+import { fromBase64 } from '@mysten/sui/utils';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 
@@ -36,7 +36,7 @@ export function loadKeypair() {
   const keystorePath = join(homedir(), '.sui', 'sui_config', 'sui.keystore');
   const keys = JSON.parse(readFileSync(keystorePath, 'utf-8'));
   if (keys.length === 0) throw new Error('No keys in keystore');
-  const raw = fromB64(keys[0]);
+  const raw = fromBase64(keys[0]);
   if (raw[0] !== 0x00) throw new Error(`Unexpected key scheme flag: ${raw[0]}`);
   return Ed25519Keypair.fromSecretKey(raw.slice(1));
 }
