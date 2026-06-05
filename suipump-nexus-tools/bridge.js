@@ -453,6 +453,12 @@ async function handleLaunch(body) {
     throw new Error(`Tx1 published but TreasuryCap/token type not found. objectTypes=${JSON.stringify(objectTypes1).slice(0, 800)}`);
   }
 
+  // Wait until Tx1's new objects (TreasuryCap, metadata, package) are indexed and
+  // resolvable, otherwise Tx2 referencing treasuryCapId fails with "Object not found".
+  try { await client.waitForTransaction({ digest: tx1Digest }); } catch {}
+  // Extra settle margin for the GraphQL indexer.
+  await new Promise(r => setTimeout(r, 2500));
+
   // ── Tx 2: create_and_return + optional dev-buy + share_curve ────────────────
   const tx2 = new Transaction();
   const [launchFeeCoin] = tx2.splitCoins(tx2.gas, [tx2.pure.u64(LAUNCH_FEE_MIST)]);
