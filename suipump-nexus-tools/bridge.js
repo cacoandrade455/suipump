@@ -67,6 +67,37 @@ async function ensureWasm() {
   _wasmReady = true;
 }
 
+// Retry transient node/GraphQL failures (simulate/build/index races on public testnet).
+function isTransient(err) {
+  const m = String(err?.message ?? err);
+  return m.includes('simulateTransaction did not return')
+      || m.includes('not found')
+      || m.includes('fetch failed')
+      || m.includes('timeout')
+      || m.includes('ECONN')
+      || m.includes('503')
+      || m.includes('502')
+      || m.includes('429');
+}
+
+async function withRetry(label, fn, { tries = 4, delayMs = 2500 } = {}) {
+  let lastErr;
+  for (let attempt = 1; attempt <= tries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (attempt < tries && isTransient(err)) {
+        console.log(`[bridge] ${label}: transient error (attempt ${attempt}/${tries}) — ${String(err?.message ?? err).slice(0, 120)}; retrying in ${delayMs}ms`);
+        await new Promise(r => setTimeout(r, delayMs));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr;
+}
+
 // ── Package IDs (all versions — read paths) ───────────────────────────────────
 const ALL_PACKAGE_IDS = [
   '0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8', // V4
@@ -418,10 +449,14 @@ async function handleLaunch(body) {
   });
   tx1.transferObjects([upgradeCap], address);
 
-  const exec1 = await client.signAndExecuteTransaction({
+  // NOTE: the observed transient errors ("simulateTransaction did not return…",
+  // "Object not found") occur at the build/simulate phase BEFORE submission, so
+  // retrying does not risk double-publishing. If a post-submission class of error
+  // appears later, add idempotency by checking for the published package first.
+  const exec1 = await withRetry('Tx1 publish', () => client.signAndExecuteTransaction({
     signer: keypair, transaction: tx1,
     include: { objectTypes: true },
-  });
+  }));
   // This client returns { $kind:'Transaction', Transaction:{ digest, status, objectTypes } }
   // or { $kind:'FailedTransaction', FailedTransaction:{ status } }.
   if (exec1?.$kind === 'FailedTransaction') {
@@ -505,10 +540,10 @@ async function handleLaunch(body) {
   });
   tx2.transferObjects([cap], address);
 
-  const exec2 = await client.signAndExecuteTransaction({
+  const exec2 = await withRetry('Tx2 create_and_return', () => client.signAndExecuteTransaction({
     signer: keypair, transaction: tx2,
     include: { objectTypes: true },
-  });
+  }));
   if (exec2?.$kind === 'FailedTransaction') {
     throw new Error(`Tx2 (create_and_return) failed: ${exec2.FailedTransaction?.status?.error ?? 'unknown'} — stranded TreasuryCap ${treasuryCapId}`);
   }
