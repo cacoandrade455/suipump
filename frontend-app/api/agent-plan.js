@@ -39,7 +39,7 @@ The user's goal: "${goal}"
 Return ONLY a JSON object, no prose, no markdown fences, with this exact shape:
 {
   "workflow": "launch_and_buy" | "full_lifecycle" | "buy_sell",
-  "launch": { "name": string, "symbol": string (<=6 chars, uppercase), "graduationTarget": 1 | 2, "devBuyMist": integer, "antiBotDelay": 0 },
+  "launch": { "name": string, "symbol": string (<=6 chars, uppercase), "graduationTarget": 0 | 1 | 2, "devBuyMist": integer, "antiBotDelay": 0 },
   "buy": { "suiAmount": number, "minTokensOut": 0 },
   "summary": string (one sentence describing what the agent will do)
 }
@@ -47,9 +47,9 @@ Return ONLY a JSON object, no prose, no markdown fences, with this exact shape:
 Rules:
 - If the user names a token, use it; otherwise invent a fitting name+symbol.
 - devBuyMist is in MIST (1 SUI = 1000000000 MIST). If the user says "dev-buy 1 SUI", devBuyMist = 1000000000 and buy.suiAmount = 1.
-- Default graduationTarget to 2 (Turbos) unless the user asks for DeepBook (1).
+- graduationTarget: 0 = Cetus, 1 = DeepBook, 2 = Turbos. Use exactly what the user asks for. Default to 2 (Turbos) ONLY if the user does not specify a DEX.
 - Default workflow to "full_lifecycle" unless the goal is clearly just launch+buy.
-- Keep suiAmount modest (0.1-2) for a testnet demo unless the user specifies.
+- Set buy.suiAmount to exactly the amount the user states. Do not cap or reduce it.
 - Output strictly valid JSON. No trailing commas. No commentary.`;
 
   try {
@@ -88,10 +88,10 @@ Rules:
     if (!plan.buy || typeof plan.buy !== 'object') plan.buy = {};
     plan.launch.name             = String(plan.launch.name ?? 'DemoToken').slice(0, 32);
     plan.launch.symbol           = String(plan.launch.symbol ?? 'DEMO').toUpperCase().slice(0, 6);
-    plan.launch.graduationTarget = (plan.launch.graduationTarget === 1) ? 1 : 2;
+    plan.launch.graduationTarget = [0, 1, 2].includes(plan.launch.graduationTarget) ? plan.launch.graduationTarget : 2;
     plan.launch.devBuyMist       = Math.max(0, Math.floor(Number(plan.launch.devBuyMist ?? 0)));
     plan.launch.antiBotDelay     = 0;
-    plan.buy.suiAmount           = Math.min(2, Math.max(0, Number(plan.buy.suiAmount ?? 0.5)));
+    plan.buy.suiAmount           = Math.max(0, Number(plan.buy.suiAmount ?? 0.5));
     plan.buy.minTokensOut        = 0;
     plan.summary                 = String(plan.summary ?? 'Launch and trade a token autonomously.');
 

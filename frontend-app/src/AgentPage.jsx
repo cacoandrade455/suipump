@@ -173,7 +173,7 @@ export default function AgentPage({ onBack }) {
             <div>workflow: <span className="text-white/80">{plan.workflow}</span></div>
             <div>token: <span className="text-white/80">{plan.launch.name} (${plan.launch.symbol})</span></div>
             <div>dev-buy: <span className="text-white/80">{plan.buy.suiAmount} SUI</span></div>
-            <div>graduates to: <span className="text-white/80">{plan.launch.graduationTarget === 1 ? 'DeepBook' : 'Turbos'}</span></div>
+            <div>graduates to: <span className="text-white/80">{({0:'Cetus',1:'DeepBook',2:'Turbos'})[plan.launch.graduationTarget] ?? 'Turbos'}</span></div>
           </div>
           {!running && !result && (
             <button
