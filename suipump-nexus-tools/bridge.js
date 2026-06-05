@@ -412,29 +412,39 @@ async function handleLaunch(body) {
 
   // ── Tx 1: publish patched coin module ───────────────────────────────────────
   const tx1 = new Transaction();
-  tx1.setSender(address);
   const [upgradeCap] = tx1.publish({
     modules: [Array.from(patched)],
     dependencies: ['0x1', '0x2'],
   });
   tx1.transferObjects([upgradeCap], address);
 
-  const built1 = await tx1.build({ client });
-  const { signature: sig1 } = await keypair.signTransaction(built1);
-  const exec1 = await client.executeTransaction({ transaction: built1, signatures: [sig1] });
+  const exec1 = await client.signAndExecuteTransaction({
+    signer: keypair, transaction: tx1,
+    include: { objectTypes: true },
+  });
   if (exec1?.errors?.length) {
     throw new Error(`Tx1 (publish) failed: ${exec1.errors[0]?.message ?? JSON.stringify(exec1.errors)}`);
   }
   const tx1Digest = exec1?.data?.executeTransaction?.digest;
-  if (!tx1Digest) throw new Error('Tx1 (publish) returned no digest');
+  if (!tx1Digest) {
+    throw new Error(`Tx1 (publish) returned no digest. raw=${JSON.stringify(exec1).slice(0, 800)}`);
+  }
 
-  // Wait + read object changes to find the published package + TreasuryCap + metadata.
-  const w1 = await client.waitForTransaction({ digest: tx1Digest, include: { objectTypes: true, objectChanges: true } });
-  const objectTypes1 = w1?.Transaction?.objectTypes ?? w1?.objectTypes ?? {};
+  // Read object changes to find the published package + TreasuryCap + metadata.
+  const objectTypes1 =
+    exec1?.data?.executeTransaction?.effects?.objectChanges
+    ?? exec1?.data?.executeTransaction?.objectTypes
+    ?? {};
 
   let newPackageId = null, treasuryCapId = null, newTokenType = null, metadataId = null;
-  for (const [objId, typeStr] of Object.entries(objectTypes1)) {
-    if (!typeStr) continue;
+
+  // objectTypes may be a map {id:type} or an array of change objects — handle both.
+  const entries = Array.isArray(objectTypes1)
+    ? objectTypes1.map(c => [c.objectId ?? c.id, c.objectType ?? c.type])
+    : Object.entries(objectTypes1);
+
+  for (const [objId, typeStr] of entries) {
+    if (!objId || !typeStr) continue;
     if (typeStr.includes('TreasuryCap')) {
       treasuryCapId = objId;
       newTokenType  = typeStr.match(/<(.+)>/)?.[1] ?? null;
@@ -442,15 +452,24 @@ async function handleLaunch(body) {
       metadataId = objId;
     }
   }
-  // Published package id derives from the new token type prefix.
   if (newTokenType) newPackageId = newTokenType.split('::')[0];
   if (!treasuryCapId || !newTokenType) {
-    throw new Error(`Tx1 published but TreasuryCap/token type not found. objectTypes=${JSON.stringify(objectTypes1).slice(0, 500)}`);
+    // Fall back to fetching the tx by digest to inspect object changes.
+    const w1 = await client.waitForTransaction({ digest: tx1Digest, include: { objectTypes: true } });
+    const ot = w1?.Transaction?.objectTypes ?? w1?.objectTypes ?? {};
+    for (const [objId, typeStr] of Object.entries(ot)) {
+      if (!typeStr) continue;
+      if (typeStr.includes('TreasuryCap')) { treasuryCapId = objId; newTokenType = typeStr.match(/<(.+)>/)?.[1] ?? null; }
+      else if (typeStr.includes('CoinMetadata')) { metadataId = objId; }
+    }
+    if (newTokenType) newPackageId = newTokenType.split('::')[0];
+  }
+  if (!treasuryCapId || !newTokenType) {
+    throw new Error(`Tx1 published but TreasuryCap/token type not found. raw=${JSON.stringify(exec1?.data?.executeTransaction ?? exec1).slice(0, 800)}`);
   }
 
   // ── Tx 2: create_and_return + optional dev-buy + share_curve ────────────────
   const tx2 = new Transaction();
-  tx2.setSender(address);
   const [launchFeeCoin] = tx2.splitCoins(tx2.gas, [tx2.pure.u64(LAUNCH_FEE_MIST)]);
 
   // Single payout: 100% to the agent wallet.
@@ -495,24 +514,39 @@ async function handleLaunch(body) {
   });
   tx2.transferObjects([cap], address);
 
-  const built2 = await tx2.build({ client });
-  const { signature: sig2 } = await keypair.signTransaction(built2);
-  const exec2 = await client.executeTransaction({ transaction: built2, signatures: [sig2] });
+  const exec2 = await client.signAndExecuteTransaction({
+    signer: keypair, transaction: tx2,
+    include: { objectTypes: true },
+  });
   if (exec2?.errors?.length) {
     throw new Error(`Tx2 (create_and_return) failed: ${exec2.errors[0]?.message ?? JSON.stringify(exec2.errors)} — stranded TreasuryCap ${treasuryCapId}`);
   }
   const tx2Digest = exec2?.data?.executeTransaction?.digest;
-  if (!tx2Digest) throw new Error('Tx2 returned no digest');
+  if (!tx2Digest) throw new Error(`Tx2 returned no digest. raw=${JSON.stringify(exec2).slice(0, 800)}`);
 
   // Find the shared Curve object id from Tx2.
-  const w2 = await client.waitForTransaction({ digest: tx2Digest, include: { objectTypes: true } });
-  const objectTypes2 = w2?.Transaction?.objectTypes ?? w2?.objectTypes ?? {};
+  const ot2 =
+    exec2?.data?.executeTransaction?.effects?.objectChanges
+    ?? exec2?.data?.executeTransaction?.objectTypes
+    ?? {};
+  const entries2 = Array.isArray(ot2)
+    ? ot2.map(c => [c.objectId ?? c.id, c.objectType ?? c.type])
+    : Object.entries(ot2);
+
   let curveId = null;
-  for (const [objId, typeStr] of Object.entries(objectTypes2)) {
+  for (const [objId, typeStr] of entries2) {
     if (typeStr?.includes('::bonding_curve::Curve<')) { curveId = objId; break; }
   }
   if (!curveId) {
-    throw new Error(`Tx2 succeeded but Curve object not found. objectTypes=${JSON.stringify(objectTypes2).slice(0, 500)}`);
+    // Fall back to fetching by digest.
+    const w2 = await client.waitForTransaction({ digest: tx2Digest, include: { objectTypes: true } });
+    const ot = w2?.Transaction?.objectTypes ?? w2?.objectTypes ?? {};
+    for (const [objId, typeStr] of Object.entries(ot)) {
+      if (typeStr?.includes('::bonding_curve::Curve<')) { curveId = objId; break; }
+    }
+  }
+  if (!curveId) {
+    throw new Error(`Tx2 succeeded but Curve object not found. raw=${JSON.stringify(exec2?.data?.executeTransaction ?? exec2).slice(0, 800)}`);
   }
 
   // Best-effort: tell the indexer about the metadata ISV so the token renders correctly.
