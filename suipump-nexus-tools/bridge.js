@@ -422,29 +422,25 @@ async function handleLaunch(body) {
     signer: keypair, transaction: tx1,
     include: { objectTypes: true },
   });
-  if (exec1?.errors?.length) {
-    throw new Error(`Tx1 (publish) failed: ${exec1.errors[0]?.message ?? JSON.stringify(exec1.errors)}`);
+  // This client returns { $kind:'Transaction', Transaction:{ digest, status, objectTypes } }
+  // or { $kind:'FailedTransaction', FailedTransaction:{ status } }.
+  if (exec1?.$kind === 'FailedTransaction') {
+    throw new Error(`Tx1 (publish) failed: ${exec1.FailedTransaction?.status?.error ?? 'unknown'}`);
   }
-  const tx1Digest = exec1?.data?.executeTransaction?.digest;
+  const tx1Digest = exec1?.Transaction?.digest;
   if (!tx1Digest) {
     throw new Error(`Tx1 (publish) returned no digest. raw=${JSON.stringify(exec1).slice(0, 800)}`);
   }
+  if (exec1?.Transaction?.status?.success === false) {
+    throw new Error(`Tx1 (publish) reverted: ${exec1.Transaction.status.error ?? 'unknown'}`);
+  }
 
-  // Read object changes to find the published package + TreasuryCap + metadata.
-  const objectTypes1 =
-    exec1?.data?.executeTransaction?.effects?.objectChanges
-    ?? exec1?.data?.executeTransaction?.objectTypes
-    ?? {};
+  // objectTypes is a map { objectId: typeString }.
+  const objectTypes1 = exec1?.Transaction?.objectTypes ?? {};
 
   let newPackageId = null, treasuryCapId = null, newTokenType = null, metadataId = null;
-
-  // objectTypes may be a map {id:type} or an array of change objects — handle both.
-  const entries = Array.isArray(objectTypes1)
-    ? objectTypes1.map(c => [c.objectId ?? c.id, c.objectType ?? c.type])
-    : Object.entries(objectTypes1);
-
-  for (const [objId, typeStr] of entries) {
-    if (!objId || !typeStr) continue;
+  for (const [objId, typeStr] of Object.entries(objectTypes1)) {
+    if (!typeStr) continue;
     if (typeStr.includes('TreasuryCap')) {
       treasuryCapId = objId;
       newTokenType  = typeStr.match(/<(.+)>/)?.[1] ?? null;
@@ -454,18 +450,7 @@ async function handleLaunch(body) {
   }
   if (newTokenType) newPackageId = newTokenType.split('::')[0];
   if (!treasuryCapId || !newTokenType) {
-    // Fall back to fetching the tx by digest to inspect object changes.
-    const w1 = await client.waitForTransaction({ digest: tx1Digest, include: { objectTypes: true } });
-    const ot = w1?.Transaction?.objectTypes ?? w1?.objectTypes ?? {};
-    for (const [objId, typeStr] of Object.entries(ot)) {
-      if (!typeStr) continue;
-      if (typeStr.includes('TreasuryCap')) { treasuryCapId = objId; newTokenType = typeStr.match(/<(.+)>/)?.[1] ?? null; }
-      else if (typeStr.includes('CoinMetadata')) { metadataId = objId; }
-    }
-    if (newTokenType) newPackageId = newTokenType.split('::')[0];
-  }
-  if (!treasuryCapId || !newTokenType) {
-    throw new Error(`Tx1 published but TreasuryCap/token type not found. raw=${JSON.stringify(exec1?.data?.executeTransaction ?? exec1).slice(0, 800)}`);
+    throw new Error(`Tx1 published but TreasuryCap/token type not found. objectTypes=${JSON.stringify(objectTypes1).slice(0, 800)}`);
   }
 
   // ── Tx 2: create_and_return + optional dev-buy + share_curve ────────────────
@@ -518,35 +503,23 @@ async function handleLaunch(body) {
     signer: keypair, transaction: tx2,
     include: { objectTypes: true },
   });
-  if (exec2?.errors?.length) {
-    throw new Error(`Tx2 (create_and_return) failed: ${exec2.errors[0]?.message ?? JSON.stringify(exec2.errors)} — stranded TreasuryCap ${treasuryCapId}`);
+  if (exec2?.$kind === 'FailedTransaction') {
+    throw new Error(`Tx2 (create_and_return) failed: ${exec2.FailedTransaction?.status?.error ?? 'unknown'} — stranded TreasuryCap ${treasuryCapId}`);
   }
-  const tx2Digest = exec2?.data?.executeTransaction?.digest;
+  const tx2Digest = exec2?.Transaction?.digest;
   if (!tx2Digest) throw new Error(`Tx2 returned no digest. raw=${JSON.stringify(exec2).slice(0, 800)}`);
+  if (exec2?.Transaction?.status?.success === false) {
+    throw new Error(`Tx2 reverted: ${exec2.Transaction.status.error ?? 'unknown'} — stranded TreasuryCap ${treasuryCapId}`);
+  }
 
-  // Find the shared Curve object id from Tx2.
-  const ot2 =
-    exec2?.data?.executeTransaction?.effects?.objectChanges
-    ?? exec2?.data?.executeTransaction?.objectTypes
-    ?? {};
-  const entries2 = Array.isArray(ot2)
-    ? ot2.map(c => [c.objectId ?? c.id, c.objectType ?? c.type])
-    : Object.entries(ot2);
-
+  // Find the shared Curve object id from Tx2 objectTypes map.
+  const objectTypes2 = exec2?.Transaction?.objectTypes ?? {};
   let curveId = null;
-  for (const [objId, typeStr] of entries2) {
+  for (const [objId, typeStr] of Object.entries(objectTypes2)) {
     if (typeStr?.includes('::bonding_curve::Curve<')) { curveId = objId; break; }
   }
   if (!curveId) {
-    // Fall back to fetching by digest.
-    const w2 = await client.waitForTransaction({ digest: tx2Digest, include: { objectTypes: true } });
-    const ot = w2?.Transaction?.objectTypes ?? w2?.objectTypes ?? {};
-    for (const [objId, typeStr] of Object.entries(ot)) {
-      if (typeStr?.includes('::bonding_curve::Curve<')) { curveId = objId; break; }
-    }
-  }
-  if (!curveId) {
-    throw new Error(`Tx2 succeeded but Curve object not found. raw=${JSON.stringify(exec2?.data?.executeTransaction ?? exec2).slice(0, 800)}`);
+    throw new Error(`Tx2 succeeded but Curve object not found. objectTypes=${JSON.stringify(objectTypes2).slice(0, 800)}`);
   }
 
   // Best-effort: tell the indexer about the metadata ISV so the token renders correctly.
