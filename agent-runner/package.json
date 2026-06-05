@@ -1,0 +1,10 @@
+{
+  "name": "suipump-agent-runner",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Dedicated service: triggers real Nexus DAG executions for the SuiPump agent UI.",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {}
+}
