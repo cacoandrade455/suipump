@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { Routes, Route, useNavigate, useParams, Link, useLocation } from 'react-router-dom';
 import { useCurrentAccount, useDAppKit, useCurrentClient } from '@mysten/dapp-kit-react';
 import { ConnectButton, ConnectModal } from '@mysten/dapp-kit-react/ui';
-import { Flame, Rocket, Plus, Gift, TrendingUp, Coins, Users, Trophy, Wallet, Search, Menu, X, Map, Copy, Crown, BarChart3, Github, MessageCircle, Bell, Star, Zap, Activity, ChevronRight, AlertTriangle } from 'lucide-react';
+import { Flame, Rocket, Plus, Gift, TrendingUp, Coins, Users, Trophy, Wallet, Search, Menu, X, Map, Copy, Crown, BarChart3, Github, MessageCircle, Bell, Star, Zap, Activity, ChevronRight, AlertTriangle, Bot } from 'lucide-react';
 
 import { useTokenList } from './useTokenList.js';
 import { useTokenStats } from './useTokenStats.js';
@@ -16,6 +16,7 @@ import LeaderboardPage from './LeaderboardPage.jsx';
 import PortfolioPage from './PortfolioPage.jsx';
 import RoadmapPage from './RoadmapPage.jsx';
 import StatsPage from './StatsPage.jsx';
+import AgentPage from './AgentPage.jsx';
 import { LANGUAGES, translations, t } from './i18n.js';
 import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8, ALL_PACKAGE_IDS, DRAIN_SUI_APPROX, DRAIN_SUI_V4, DRAIN_SUI_V5, DRAIN_SUI_V6, DRAIN_SUI_V7, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_SUI_V6, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, VIRTUAL_TOKENS_V6, TOKEN_DECIMALS, isNewCurve, isV7OrLater, curveShapeFor } from './constants.js';
 import { mistToSui, priceMistPerToken } from './curve.js';
@@ -843,6 +844,15 @@ function Header({ onLaunch, lang, setLang, onToggleFeed, showFeed, onStrategies 
               <Zap size={11} /> STRATEGIES
             </button>
           )}
+          {account && (
+            <Link
+              to="/agent"
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-violet-400/40 text-violet-400 text-[10px] font-mono font-bold hover:bg-violet-400/10 transition-all"
+              title="Autonomous Agent"
+            >
+              <Bot size={11} /> AGENT
+            </Link>
+          )}
           <WalletButton size="md" lang={lang} />
         </div>
 
@@ -1339,6 +1349,7 @@ export default function App() {
           <Route path="/portfolio" element={<PortfolioPage onBack={() => navigate('/')} lang={lang} tradeKeypair={tradeKey.isReady ? tradeKey.keypair : null} />} />
           <Route path="/portfolio/:walletAddress" element={<PortfolioPage onBack={() => navigate(-1)} lang={lang} tradeKeypair={tradeKey.isReady ? tradeKey.keypair : null} />} />
           <Route path="/roadmap" element={<RoadmapPage onBack={() => navigate('/')} lang={lang} />} />
+          <Route path="/agent" element={<AgentPage onBack={() => navigate('/')} />} />
           <Route path="*" element={<NotFoundPage onBack={() => navigate('/')} />} />
         </Routes>
       </main>

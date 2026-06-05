@@ -31,6 +31,17 @@ const execFileAsync = promisify(execFile);
 const PORT          = parseInt(process.env.PORT ?? '3030', 10);
 const INDEXER_URL   = process.env.SUIPUMP_INDEXER_URL ?? 'https://suipump-62s2.onrender.com';
 
+// ── Nexus DAG + CORS (Demo Day agent console) ─────────────────────────────────
+const NEXUS_DAG_ID    = process.env.NEXUS_DAG_ID ?? '0xfd88d4d2f60340c268e77409b24fb129696d230a50fb21667de313531eb24c3b';
+// Origins permitted to call this bridge from a browser. Lock to the site —
+// NEVER '*': a wildcard lets any page drive this bridge's signing wallet.
+const ALLOWED_ORIGINS = new Set([
+  'https://suipump.org',
+  'https://www.suipump.org',
+  'http://localhost:5173',
+  'http://localhost:3000',
+]);
+
 // ── Package IDs (all versions — read paths) ───────────────────────────────────
 const ALL_PACKAGE_IDS = [
   '0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8', // V4
@@ -78,6 +89,16 @@ function loadKeypair(privateKey) {
 
 function makeClient(rpcUrl) {
   return new SuiGraphQLClient({ url: rpcUrl ?? process.env.SUI_GRAPHQL_URL ?? 'https://graphql.testnet.sui.io/graphql' });
+}
+
+function applyCors(req, res) {
+  const origin = req.headers?.origin;
+  if (origin && ALLOWED_ORIGINS.has(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  }
 }
 
 async function resolveCurve(client, curveId) {
@@ -493,7 +514,54 @@ async function handleStatus(body) {
 }
 
 // ── HTTP server ───────────────────────────────────────────────────────────────
+// ── Handler: /run-dag ─────────────────────────────────────────────────────────
+// Executes the REAL Nexus DAG via the nexus CLI and returns the on-chain digest.
+// Body: { input, dagId? } — input is the DAG input-json keyed by entry node.
+// full_lifecycle entry node is "launch"; curveId flows via DAG edges, so only
+// entry inputs are supplied. Requires the `nexus` CLI installed + configured +
+// gas-funded on whatever host runs this bridge (laptop for the demo).
+async function handleRunDag(body) {
+  const { input, dagId } = body;
+  if (!input || typeof input !== 'object') throw new Error('input (DAG input-json object) required');
+
+  const id        = dagId ?? NEXUS_DAG_ID;
+  const inputJson = JSON.stringify(input);
+
+  console.log(`[bridge] /run-dag: ${id} input=${inputJson}`);
+
+  let stdout = '', stderr = '';
+  try {
+    const r = await execFileAsync(
+      'nexus',
+      ['dag', 'execute', '--dag-id', id, '--input-json', inputJson, '--inspect', '--json'],
+      { timeout: 300_000, maxBuffer: 10 * 1024 * 1024 }
+    );
+    stdout = r.stdout ?? '';
+    stderr = r.stderr ?? '';
+  } catch (e) {
+    throw new Error(`nexus dag execute failed: ${(e.stderr || e.stdout || e.message || '').toString().trim().slice(0, 800)}`);
+  }
+
+  // Parse the last JSON line (CLI may print progress before the result).
+  let parsed = null;
+  const lines = stdout.trim().split('\n').filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    try { parsed = JSON.parse(lines[i]); break; } catch {}
+  }
+
+  const txDigest =
+    parsed?.txDigest ?? parsed?.tx_digest ?? parsed?.digest ??
+    stdout.match(/[Dd]igest[:\s"]+([A-Za-z0-9]{40,})/)?.[1] ?? null;
+  const executionId =
+    parsed?.executionId ?? parsed?.execution_id ?? parsed?.dagExecutionId ??
+    stdout.match(/[Ee]xecution[^0-9a-fx]*(0x[a-f0-9]{60,})/)?.[1] ?? null;
+
+  return { dagId: id, txDigest, executionId, raw: lines.slice(-8).join('\n') };
+}
+
 const server = http.createServer(async (req, res) => {
+  applyCors(req, res);
+  if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
   if (req.method !== 'POST') {
     jsonResp(res, 405, { error: 'Method not allowed — use POST' });
     return;
@@ -515,6 +583,7 @@ const server = http.createServer(async (req, res) => {
       case '/claim':  result = await handleClaim(body);  break;
       case '/launch': result = await handleLaunch(body); break;
       case '/status': result = await handleStatus(body); break;
+      case '/run-dag': result = await handleRunDag(body); break;
       case '/health': result = { status: 'ok', ts: Date.now() }; break;
       default:
         jsonResp(res, 404, { error: `Unknown endpoint: ${req.url}` });
@@ -530,7 +599,7 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`[bridge] SuiPump bridge listening on port ${PORT}`);
   console.log(`[bridge] Indexer: ${INDEXER_URL}`);
-  console.log(`[bridge] Endpoints: /buy /sell /claim /launch /status /health`);
+  console.log(`[bridge] Endpoints: /buy /sell /claim /launch /status /run-dag /health`);
 });
 
-export { handleBuy, handleSell, handleClaim, handleLaunch };
+export { handleBuy, handleSell, handleClaim, handleLaunch, handleRunDag };

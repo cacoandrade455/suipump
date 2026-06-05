@@ -147,8 +147,8 @@ IMPORTANT framing rules:
 
 Token data:
 - Name: ${name} ($${symbol})
-- Status: ${graduated ? 'GRADUATED — now trading on Cetus DEX' : 'Active on bonding curve'}
-- Curve progress: ${fmt(progress, 1)}% filled (${fmt(reserveSui, 1)} SUI raised of ~35,000 SUI target)
+- Status: ${graduated ? 'GRADUATED — now trading on a DEX (Cetus / Turbos / DeepBook)' : 'Active on bonding curve'}
+- Curve progress: ${fmt(progress, 1)}% filled (${fmt(reserveSui, 1)} SUI raised; graduation threshold is oracle-based, recomputed each buy against SUI's USD price, ~12,305 SUI at $1)
 - Holders: ${holderCount}
 - Top holder concentration: ${fmt(topHolderPct, 1)}% of total 1B supply held by top 3 wallets
 - Total trades: ${totalTrades} (${buys} buys / ${sells} sells)
