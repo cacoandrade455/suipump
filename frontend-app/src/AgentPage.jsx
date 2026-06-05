@@ -86,6 +86,10 @@ export default function AgentPage({ onBack }) {
   }, [cliCommand]);
 
   // ── Map a fetched execution record onto node states ──────────────────────────
+  const stopPolling = useCallback(() => {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+  }, []);
+
   const applyExecution = useCallback((rec) => {
     // rec.vertices may be empty when only the submission receipt is available
     // (nexus dag execute --json returns { digest, execution_id, tx_checkpoint }).
@@ -122,9 +126,6 @@ export default function AgentPage({ onBack }) {
     }
   }, [stopPolling]);
 
-  const stopPolling = useCallback(() => {
-    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-  }, []);
 
   // ── Approve -> begin awaiting the real on-chain run ───────────────────────────
   const approve = useCallback(() => {
