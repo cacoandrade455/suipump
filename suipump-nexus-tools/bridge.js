@@ -6,7 +6,7 @@
 //   POST /buy    — buy tokens on a bonding curve
 //   POST /sell   — sell tokens on a bonding curve
 //   POST /claim  — claim creator fees
-//   POST /launch — launch a new token (delegates to scripts/launch.js logic)
+//   POST /launch — launch a new token (native two-tx flow: publish + create_and_return)
 //   POST /status — read curve state snapshot
 //
 // Environment:
@@ -16,31 +16,56 @@
 //   PORT                 — default: 3030
 
 import http from 'node:http';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { Transaction } from '@mysten/sui/transactions';
+import { bcs } from '@mysten/sui/bcs';
 import { fromBase64 } from '@mysten/sui/utils';
+import * as bytecodeTemplate from '@mysten/move-bytecode-template';
 
 const __dirname     = path.dirname(fileURLToPath(import.meta.url));
-const execFileAsync = promisify(execFile);
 const PORT          = parseInt(process.env.PORT ?? '3030', 10);
 const INDEXER_URL   = process.env.SUIPUMP_INDEXER_URL ?? 'https://suipump-62s2.onrender.com';
 
-// ── Nexus DAG + CORS (Demo Day agent console) ─────────────────────────────────
-const NEXUS_DAG_ID    = process.env.NEXUS_DAG_ID ?? '0xfd88d4d2f60340c268e77409b24fb129696d230a50fb21667de313531eb24c3b';
-// Origins permitted to call this bridge from a browser. Lock to the site —
-// NEVER '*': a wildcard lets any page drive this bridge's signing wallet.
-const ALLOWED_ORIGINS = new Set([
-  'https://suipump.org',
-  'https://www.suipump.org',
-  'http://localhost:5173',
-  'http://localhost:3000',
-]);
+// ── Active package for NEW launches (V9) ──────────────────────────────────────
+const ACTIVE_PACKAGE_ID = process.env.ACTIVE_PACKAGE_ID
+  ?? '0x719698e5138582d78ee95317271e8bce05769569a4f58c940a7f1b424d90ffe2'; // V9
+const LAUNCH_FEE_MIST   = 2_000_000_000n; // 2 SUI
+
+// Compiled coin template bytecode — force-included in repo for the bridge.
+// Override with TEMPLATE_MV_PATH if the build path differs on the host.
+const TEMPLATE_MV_PATH = process.env.TEMPLATE_MV_PATH
+  ?? path.resolve(__dirname, '../coin-template/build/coin_template/bytecode_modules/template.mv');
+
+// Placeholders baked into coin-template/sources/template.move — must match EXACTLY.
+const PLACEHOLDER_NAME = 'Template Coin';
+const PLACEHOLDER_SYM  = 'TMPL';
+const PLACEHOLDER_DESC = 'Template description placeholder that is intentionally long to accommodate real token descriptions.';
+const PLACEHOLDER_ICON = 'https://suipump.test/icon-placeholder.png';
+
+// BCS-encode a string as vector<u8> for update_constants — matches scripts/launch.js.
+// Single-byte ULEB128 length prefix (values are short; assert < 128 bytes).
+function bcsBytes(str) {
+  const buf = new TextEncoder().encode(str);
+  if (buf.length > 127) throw new Error(`Constant "${str.slice(0, 30)}…" too long for single-byte length (${buf.length} bytes)`);
+  return Uint8Array.from([buf.length, ...buf]);
+}
+
+let _wasmReady = false;
+async function ensureWasm() {
+  if (_wasmReady) return;
+  // @mysten/move-bytecode-template exposes a default init() that loads the WASM.
+  if (typeof bytecodeTemplate.default === 'function') {
+    await bytecodeTemplate.default();
+  } else if (typeof bytecodeTemplate.init === 'function') {
+    await bytecodeTemplate.init();
+  }
+  _wasmReady = true;
+}
 
 // ── Package IDs (all versions — read paths) ───────────────────────────────────
 const ALL_PACKAGE_IDS = [
@@ -89,16 +114,6 @@ function loadKeypair(privateKey) {
 
 function makeClient(rpcUrl) {
   return new SuiGraphQLClient({ url: rpcUrl ?? process.env.SUI_GRAPHQL_URL ?? 'https://graphql.testnet.sui.io/graphql' });
-}
-
-function applyCors(req, res) {
-  const origin = req.headers?.origin;
-  if (origin && ALLOWED_ORIGINS.has(origin)) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
-    res.setHeader('Vary', 'Origin');
-    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  }
 }
 
 async function resolveCurve(client, curveId) {
@@ -361,59 +376,164 @@ async function handleLaunch(body) {
   if (!name)   throw new Error('name required');
   if (!symbol) throw new Error('symbol required');
 
-  const pk = privateKey ?? process.env.SUI_PRIVATE_KEY;
-  if (!pk) throw new Error('No private key — set SUI_PRIVATE_KEY or pass privateKey in body');
+  const client   = makeClient(rpcUrl);
+  const keypair  = loadKeypair(privateKey);
+  const address  = keypair.toSuiAddress();
 
-  const scriptPath = path.resolve(__dirname, '../scripts/launch.js');
+  const pkgId        = ACTIVE_PACKAGE_ID;            // new launches always on the active (V9) package
+  const isV9         = V9_PLUS.has(pkgId);
+  const gradTarget   = Number(graduationTarget ?? 2); // 0=Cetus 1=DeepBook 2=Turbos
+  const antiBot      = Number(antiBotDelay ?? 0);
+  const tokenName    = String(name).trim();
+  const tokenSymbol  = String(symbol).trim().toUpperCase();
+  const moduleName   = tokenSymbol.toLowerCase();    // identifier: module is lowercased symbol, witness is TEMPLATE→symbol
+  // Description is BCS-patched into a fixed constant; keep within the placeholder's length budget.
+  const rawDesc      = String(description ?? `${tokenName} — launched via SuiPump agent`).trim();
+  const tokenDesc    = rawDesc.slice(0, PLACEHOLDER_DESC.length);
+  const tokenIcon    = String(iconUrl ?? PLACEHOLDER_ICON).slice(0, PLACEHOLDER_ICON.length);
+  const devBuyMist   = devBuySui && parseFloat(devBuySui) > 0
+    ? BigInt(Math.floor(parseFloat(devBuySui) * Number(MIST_PER_SUI)))
+    : 0n;
 
-  const dexMap = { 0: 'cetus', 1: 'deepbook', 2: 'turbos' };
-  const dex    = dexMap[graduationTarget ?? 2] ?? 'turbos';
+  console.log(`[bridge] /launch: ${tokenSymbol} (grad=${gradTarget}, antibot=${antiBot}, devBuy=${devBuyMist})`);
 
-  const cliArgs = [
-    '--name',    name,
-    '--symbol',  symbol.toUpperCase(),
-    '--dex',     dex,
-    '--antibot', String(antiBotDelay ?? 0),
-  ];
-  if (description) cliArgs.push('--desc', description);
-  if (iconUrl)     cliArgs.push('--icon', iconUrl);
-  if (devBuySui && parseFloat(devBuySui) > 0) cliArgs.push('--buy', String(devBuySui));
+  // ── Patch the coin template bytecode ────────────────────────────────────────
+  await ensureWasm();
+  const templateBytes = new Uint8Array(readFileSync(TEMPLATE_MV_PATH));
 
-  const env = {
-    ...process.env,
-    SUI_PRIVATE_KEY: pk,
-    SUI_GRAPHQL_URL: rpcUrl ?? process.env.SUI_GRAPHQL_URL ?? 'https://graphql.testnet.sui.io/graphql',
+  let patched = bytecodeTemplate.update_identifiers(templateBytes, {
+    'TEMPLATE':  tokenSymbol,
+    'template':  moduleName,
+  });
+  patched = bytecodeTemplate.update_constants(patched, bcsBytes(tokenSymbol), bcsBytes(PLACEHOLDER_SYM),  'Vector(U8)');
+  patched = bytecodeTemplate.update_constants(patched, bcsBytes(tokenName),   bcsBytes(PLACEHOLDER_NAME), 'Vector(U8)');
+  patched = bytecodeTemplate.update_constants(patched, bcsBytes(tokenDesc),   bcsBytes(PLACEHOLDER_DESC), 'Vector(U8)');
+  patched = bytecodeTemplate.update_constants(patched, bcsBytes(tokenIcon),   bcsBytes(PLACEHOLDER_ICON), 'Vector(U8)');
+
+  // ── Tx 1: publish patched coin module ───────────────────────────────────────
+  const tx1 = new Transaction();
+  tx1.setSender(address);
+  const [upgradeCap] = tx1.publish({
+    modules: [Array.from(patched)],
+    dependencies: ['0x1', '0x2'],
+  });
+  tx1.transferObjects([upgradeCap], address);
+
+  const built1 = await tx1.build({ client });
+  const { signature: sig1 } = await keypair.signTransaction(built1);
+  const exec1 = await client.executeTransaction({ transaction: built1, signatures: [sig1] });
+  if (exec1?.errors?.length) {
+    throw new Error(`Tx1 (publish) failed: ${exec1.errors[0]?.message ?? JSON.stringify(exec1.errors)}`);
+  }
+  const tx1Digest = exec1?.data?.executeTransaction?.digest;
+  if (!tx1Digest) throw new Error('Tx1 (publish) returned no digest');
+
+  // Wait + read object changes to find the published package + TreasuryCap + metadata.
+  const w1 = await client.waitForTransaction({ digest: tx1Digest, include: { objectTypes: true, objectChanges: true } });
+  const objectTypes1 = w1?.Transaction?.objectTypes ?? w1?.objectTypes ?? {};
+
+  let newPackageId = null, treasuryCapId = null, newTokenType = null, metadataId = null;
+  for (const [objId, typeStr] of Object.entries(objectTypes1)) {
+    if (!typeStr) continue;
+    if (typeStr.includes('TreasuryCap')) {
+      treasuryCapId = objId;
+      newTokenType  = typeStr.match(/<(.+)>/)?.[1] ?? null;
+    } else if (typeStr.includes('CoinMetadata')) {
+      metadataId = objId;
+    }
+  }
+  // Published package id derives from the new token type prefix.
+  if (newTokenType) newPackageId = newTokenType.split('::')[0];
+  if (!treasuryCapId || !newTokenType) {
+    throw new Error(`Tx1 published but TreasuryCap/token type not found. objectTypes=${JSON.stringify(objectTypes1).slice(0, 500)}`);
+  }
+
+  // ── Tx 2: create_and_return + optional dev-buy + share_curve ────────────────
+  const tx2 = new Transaction();
+  tx2.setSender(address);
+  const [launchFeeCoin] = tx2.splitCoins(tx2.gas, [tx2.pure.u64(LAUNCH_FEE_MIST)]);
+
+  // Single payout: 100% to the agent wallet.
+  const payoutAddrs = bcs.vector(bcs.Address).serialize([address]).toBytes();
+  const payoutBps   = bcs.vector(bcs.u64()).serialize([10000]).toBytes();
+
+  const [curve, cap] = tx2.moveCall({
+    target: `${pkgId}::bonding_curve::create_and_return`,
+    typeArguments: [newTokenType],
+    arguments: [
+      tx2.object(treasuryCapId),
+      launchFeeCoin,
+      tx2.pure.string(tokenName),
+      tx2.pure.string(tokenSymbol),
+      tx2.pure.string(tokenDesc),
+      tx2.pure(payoutAddrs),
+      tx2.pure(payoutBps),
+      tx2.pure.u8(gradTarget),
+      tx2.pure.u8(antiBot),
+      tx2.object(SUI_CLOCK_ID),
+    ],
+  });
+
+  if (devBuyMist > 0n) {
+    const [devPayment] = tx2.splitCoins(tx2.gas, [tx2.pure.u64(devBuyMist)]);
+    // V9 buy(curve, payment, min_out, referral, sui_price_scaled, clock)
+    const buyArgs = isV9
+      ? [curve, devPayment, tx2.pure.u64(0), tx2.pure.option('address', null), tx2.pure.u64(0), tx2.object(SUI_CLOCK_ID)]
+      : [curve, devPayment, tx2.pure.u64(0), tx2.pure.option('address', null), tx2.object(SUI_CLOCK_ID)];
+    const [tokens, refund] = tx2.moveCall({
+      target: `${pkgId}::bonding_curve::buy`,
+      typeArguments: [newTokenType],
+      arguments: buyArgs,
+    });
+    tx2.transferObjects([tokens, refund], address);
+  }
+
+  tx2.moveCall({
+    target: `${pkgId}::bonding_curve::share_curve`,
+    typeArguments: [newTokenType],
+    arguments: [curve],
+  });
+  tx2.transferObjects([cap], address);
+
+  const built2 = await tx2.build({ client });
+  const { signature: sig2 } = await keypair.signTransaction(built2);
+  const exec2 = await client.executeTransaction({ transaction: built2, signatures: [sig2] });
+  if (exec2?.errors?.length) {
+    throw new Error(`Tx2 (create_and_return) failed: ${exec2.errors[0]?.message ?? JSON.stringify(exec2.errors)} — stranded TreasuryCap ${treasuryCapId}`);
+  }
+  const tx2Digest = exec2?.data?.executeTransaction?.digest;
+  if (!tx2Digest) throw new Error('Tx2 returned no digest');
+
+  // Find the shared Curve object id from Tx2.
+  const w2 = await client.waitForTransaction({ digest: tx2Digest, include: { objectTypes: true } });
+  const objectTypes2 = w2?.Transaction?.objectTypes ?? w2?.objectTypes ?? {};
+  let curveId = null;
+  for (const [objId, typeStr] of Object.entries(objectTypes2)) {
+    if (typeStr?.includes('::bonding_curve::Curve<')) { curveId = objId; break; }
+  }
+  if (!curveId) {
+    throw new Error(`Tx2 succeeded but Curve object not found. objectTypes=${JSON.stringify(objectTypes2).slice(0, 500)}`);
+  }
+
+  // Best-effort: tell the indexer about the metadata ISV so the token renders correctly.
+  if (metadataId) {
+    try {
+      await fetch(`${INDEXER_URL}/internal/store-metadata-isv`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ curveId, metadataObjectId: metadataId, initialSharedVersion: null }),
+        signal: AbortSignal.timeout(5000),
+      });
+    } catch {}
+  }
+
+  return {
+    txDigest:  tx2Digest,
+    tx1Digest,
+    curveId,
+    tokenType: newTokenType,
+    packageId: newPackageId,
   };
-
-  console.log(`[bridge] /launch: ${symbol} via ${dex}`);
-
-  const { stdout, stderr } = await execFileAsync(
-    'node', [scriptPath, ...cliArgs],
-    { env, timeout: 180_000 }
-  );
-
-  if (stderr && !stdout) throw new Error(stderr.trim());
-
-  const lines  = stdout.trim().split('\n').filter(Boolean);
-
-  let result = null;
-  for (let i = lines.length - 1; i >= 0; i--) {
-    try { result = JSON.parse(lines[i]); break; } catch {}
-  }
-
-  if (!result) {
-    const digestMatch = stdout.match(/digest[:\s]+([A-Za-z0-9]{40,})/i);
-    const curveMatch  = stdout.match(/curve[:\s]+(0x[a-f0-9]{60,})/i);
-    const typeMatch   = stdout.match(/token type[:\s]+(0x[^\s]+)/i);
-    result = {
-      txDigest:  digestMatch?.[1] ?? 'see logs',
-      curveId:   curveMatch?.[1]  ?? 'see logs',
-      tokenType: typeMatch?.[1]   ?? 'see logs',
-      output:    lines.slice(-5).join('\n'),
-    };
-  }
-
-  return result;
 }
 
 // ── Handler: /status ─────────────────────────────────────────────────────────
@@ -514,54 +634,7 @@ async function handleStatus(body) {
 }
 
 // ── HTTP server ───────────────────────────────────────────────────────────────
-// ── Handler: /run-dag ─────────────────────────────────────────────────────────
-// Executes the REAL Nexus DAG via the nexus CLI and returns the on-chain digest.
-// Body: { input, dagId? } — input is the DAG input-json keyed by entry node.
-// full_lifecycle entry node is "launch"; curveId flows via DAG edges, so only
-// entry inputs are supplied. Requires the `nexus` CLI installed + configured +
-// gas-funded on whatever host runs this bridge (laptop for the demo).
-async function handleRunDag(body) {
-  const { input, dagId } = body;
-  if (!input || typeof input !== 'object') throw new Error('input (DAG input-json object) required');
-
-  const id        = dagId ?? NEXUS_DAG_ID;
-  const inputJson = JSON.stringify(input);
-
-  console.log(`[bridge] /run-dag: ${id} input=${inputJson}`);
-
-  let stdout = '', stderr = '';
-  try {
-    const r = await execFileAsync(
-      'nexus',
-      ['dag', 'execute', '--dag-id', id, '--input-json', inputJson, '--inspect', '--json'],
-      { timeout: 300_000, maxBuffer: 10 * 1024 * 1024 }
-    );
-    stdout = r.stdout ?? '';
-    stderr = r.stderr ?? '';
-  } catch (e) {
-    throw new Error(`nexus dag execute failed: ${(e.stderr || e.stdout || e.message || '').toString().trim().slice(0, 800)}`);
-  }
-
-  // Parse the last JSON line (CLI may print progress before the result).
-  let parsed = null;
-  const lines = stdout.trim().split('\n').filter(Boolean);
-  for (let i = lines.length - 1; i >= 0; i--) {
-    try { parsed = JSON.parse(lines[i]); break; } catch {}
-  }
-
-  const txDigest =
-    parsed?.txDigest ?? parsed?.tx_digest ?? parsed?.digest ??
-    stdout.match(/[Dd]igest[:\s"]+([A-Za-z0-9]{40,})/)?.[1] ?? null;
-  const executionId =
-    parsed?.executionId ?? parsed?.execution_id ?? parsed?.dagExecutionId ??
-    stdout.match(/[Ee]xecution[^0-9a-fx]*(0x[a-f0-9]{60,})/)?.[1] ?? null;
-
-  return { dagId: id, txDigest, executionId, raw: lines.slice(-8).join('\n') };
-}
-
 const server = http.createServer(async (req, res) => {
-  applyCors(req, res);
-  if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
   if (req.method !== 'POST') {
     jsonResp(res, 405, { error: 'Method not allowed — use POST' });
     return;
@@ -583,7 +656,6 @@ const server = http.createServer(async (req, res) => {
       case '/claim':  result = await handleClaim(body);  break;
       case '/launch': result = await handleLaunch(body); break;
       case '/status': result = await handleStatus(body); break;
-      case '/run-dag': result = await handleRunDag(body); break;
       case '/health': result = { status: 'ok', ts: Date.now() }; break;
       default:
         jsonResp(res, 404, { error: `Unknown endpoint: ${req.url}` });
@@ -599,7 +671,7 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`[bridge] SuiPump bridge listening on port ${PORT}`);
   console.log(`[bridge] Indexer: ${INDEXER_URL}`);
-  console.log(`[bridge] Endpoints: /buy /sell /claim /launch /status /run-dag /health`);
+  console.log(`[bridge] Endpoints: /buy /sell /claim /launch /status /health`);
 });
 
-export { handleBuy, handleSell, handleClaim, handleLaunch, handleRunDag };
+export { handleBuy, handleSell, handleClaim, handleLaunch };
