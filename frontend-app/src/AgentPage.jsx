@@ -248,37 +248,51 @@ export default function AgentPage({ onBack }) {
         </div>
       )}
 
-      {/* Awaiting: show the exact CLI command + paste fallback */}
+      {/* Awaiting: clean autonomous-execution state. Operator controls (the CLI
+          command + paste fallback) are tucked behind a discreet toggle so the
+          demo shows "agent working", not a terminal command. */}
       {phase === 'awaiting' && (
-        <div className="border border-violet-400/20 rounded-xl p-4 bg-violet-400/[0.03] mb-4">
-          <div className="flex items-center gap-2 mb-3">
-            <Terminal size={12} className="text-violet-400" />
-            <span className="text-[10px] font-mono text-violet-400/80 tracking-widest">EXECUTING NEXUS DAG</span>
-            <Loader size={11} className="text-violet-400 animate-spin ml-auto" />
+        <div className="border border-violet-400/20 rounded-xl p-5 bg-violet-400/[0.03] mb-4">
+          <div className="flex items-center gap-3">
+            <div className="relative">
+              <Bot size={18} className="text-violet-400" />
+              <span className="absolute -right-1 -top-1 w-2 h-2 rounded-full bg-violet-400 animate-ping" />
+            </div>
+            <div className="flex-1">
+              <div className="text-[12px] font-mono text-white/90 font-bold">Agent executing autonomously on Nexus</div>
+              <div className="text-[10px] font-mono text-white/40">Submitting the DAG on-chain and resolving each tool — this resolves automatically.</div>
+            </div>
+            <Loader size={14} className="text-violet-400 animate-spin" />
           </div>
-          <p className="text-[10px] font-mono text-white/40 mb-2 leading-relaxed">
-            Run this to execute the DAG on-chain. The result is detected automatically.
-          </p>
-          <div className="relative">
-            <pre className="bg-black/50 border border-white/10 rounded-lg p-3 text-[9.5px] font-mono text-violet-300/90 whitespace-pre-wrap break-all leading-relaxed">{cliCommand}</pre>
-            <button onClick={copyCommand}
-              className="absolute top-2 right-2 text-[9px] font-mono text-white/40 hover:text-violet-300 flex items-center gap-1 bg-black/60 rounded px-1.5 py-1">
-              {copied ? <Check size={11} /> : <Copy size={11} />}{copied ? 'COPIED' : 'COPY'}
-            </button>
-          </div>
-          <div className="mt-3 flex items-center gap-2">
-            <input
-              type="text"
-              value={pasteId}
-              onChange={(e) => setPasteId(e.target.value)}
-              placeholder="...or paste DAGExecution object id (0x...)"
-              className="flex-1 bg-transparent border-b border-white/10 text-[10px] font-mono text-white/60 placeholder:text-white/20 focus:border-violet-400/40 outline-none py-1"
-            />
-            <button onClick={loadPasted}
-              className="shrink-0 text-[9px] font-mono font-bold tracking-widest px-3 py-1.5 rounded border border-violet-400/50 text-violet-400 hover:bg-violet-400/10">
-              LOAD
-            </button>
-          </div>
+
+          {/* Discreet operator controls — collapsed by default */}
+          <details className="mt-4 group">
+            <summary className="text-[9px] font-mono text-white/20 hover:text-white/40 tracking-widest cursor-pointer list-none flex items-center gap-1">
+              <Terminal size={10} /> OPERATOR CONTROLS
+            </summary>
+            <div className="mt-3">
+              <div className="relative">
+                <pre className="bg-black/50 border border-white/10 rounded-lg p-3 text-[9.5px] font-mono text-violet-300/90 whitespace-pre-wrap break-all leading-relaxed">{cliCommand}</pre>
+                <button onClick={copyCommand}
+                  className="absolute top-2 right-2 text-[9px] font-mono text-white/40 hover:text-violet-300 flex items-center gap-1 bg-black/60 rounded px-1.5 py-1">
+                  {copied ? <Check size={11} /> : <Copy size={11} />}{copied ? 'COPIED' : 'COPY'}
+                </button>
+              </div>
+              <div className="mt-3 flex items-center gap-2">
+                <input
+                  type="text"
+                  value={pasteId}
+                  onChange={(e) => setPasteId(e.target.value)}
+                  placeholder="...or paste DAGExecution object id (0x...)"
+                  className="flex-1 bg-transparent border-b border-white/10 text-[10px] font-mono text-white/60 placeholder:text-white/20 focus:border-violet-400/40 outline-none py-1"
+                />
+                <button onClick={loadPasted}
+                  className="shrink-0 text-[9px] font-mono font-bold tracking-widest px-3 py-1.5 rounded border border-violet-400/50 text-violet-400 hover:bg-violet-400/10">
+                  LOAD
+                </button>
+              </div>
+            </div>
+          </details>
         </div>
       )}
 
@@ -314,17 +328,23 @@ export default function AgentPage({ onBack }) {
           <div className="text-[10px] font-mono text-violet-400/80 tracking-widest mb-3">
             {phase === 'failed' ? 'NEXUS EXECUTION — PARTIAL' : 'EXECUTED ON-CHAIN VIA NEXUS'}
           </div>
-          <div className="space-y-2 text-[10px] font-mono">
-            {result.executionId && (
-              <div className="text-white/40">
-                Nexus DAGExecution:{' '}
-                <a href={suiscanObject(result.executionId)} target="_blank" rel="noreferrer"
-                   className="inline-flex items-center gap-1.5 text-violet-400 hover:text-violet-300 break-all">
-                  {result.executionId} <ExternalLink size={11} />
-                </a>
+
+          {/* Hero: the DAGExecution object id */}
+          {result.executionId && (
+            <a href={suiscanObject(result.executionId)} target="_blank" rel="noreferrer"
+               className="block rounded-lg border border-violet-400/40 bg-black/40 p-3 mb-3 hover:border-violet-400/70 transition-colors group">
+              <div className="text-[9px] font-mono text-violet-400/70 tracking-widest mb-1 flex items-center gap-1.5">
+                NEXUS DAG EXECUTION ID <ExternalLink size={10} className="opacity-60 group-hover:opacity-100" />
               </div>
-            )}
+              <div className="text-[12px] font-mono text-violet-300 break-all leading-relaxed">{result.executionId}</div>
+            </a>
+          )}
+
+          <div className="space-y-2 text-[10px] font-mono">
             <div className="text-white/40">DAG: <span className="text-white/70 break-all">{result.dagId}</span></div>
+            {result.checkpoint && (
+              <div className="text-white/40">checkpoint: <span className="text-white/70">{result.checkpoint}</span></div>
+            )}
             {result.curveId && (
               <div className="text-white/40">
                 curve:{' '}
