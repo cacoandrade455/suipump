@@ -144,7 +144,14 @@ function loadKeypair(privateKey) {
 }
 
 function makeClient(rpcUrl) {
-  return new SuiGraphQLClient({ url: rpcUrl ?? process.env.SUI_GRAPHQL_URL ?? 'https://graphql.testnet.sui.io/graphql' });
+  const GQL_DEFAULT = process.env.SUI_GRAPHQL_URL ?? 'https://graphql.testnet.sui.io/graphql';
+  // The Nexus Rust tools pass rpcUrl as a JSON-RPC fullnode URL
+  // (e.g. https://fullnode.testnet.sui.io). A SuiGraphQLClient pointed at a
+  // JSON-RPC endpoint cannot simulate ("simulateTransaction did not return
+  // resolved transaction data"). Only honor rpcUrl if it's a GraphQL endpoint.
+  const looksGraphQL = typeof rpcUrl === 'string' && /graphql/i.test(rpcUrl);
+  const url = looksGraphQL ? rpcUrl : GQL_DEFAULT;
+  return new SuiGraphQLClient({ url });
 }
 
 async function resolveCurve(client, curveId) {
