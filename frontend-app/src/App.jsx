@@ -868,6 +868,11 @@ function Header({ onLaunch, lang, setLang, onToggleFeed, showFeed, onStrategies 
               <Zap size={14} />
             </button>
           )}
+          {account && (
+            <Link to="/agent" className="p-1.5 rounded-lg border border-violet-400/40 text-violet-400 hover:bg-violet-400/10 transition-colors" title="Autonomous Agent">
+              <Bot size={14} />
+            </Link>
+          )}
           <WalletButton size="sm" lang={lang} />
           <NotificationBell walletAddress={account?.address} />
           <button onClick={() => setMenuOpen(o => !o)} className="p-1.5 rounded-lg border border-white/10 text-white/50 hover:text-white transition-colors">
