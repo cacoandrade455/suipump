@@ -457,13 +457,15 @@ async function handleLaunch(body) {
   tx1.transferObjects([upgradeCap], address);
 
   // NOTE: the observed transient errors ("simulateTransaction did not return…",
-  // "Object not found") occur at the build/simulate phase BEFORE submission, so
-  // retrying does not risk double-publishing. If a post-submission class of error
-  // appears later, add idempotency by checking for the published package first.
-  const exec1 = await withRetry('Tx1 publish', () => client.signAndExecuteTransaction({
+  // CRITICAL: publish is NOT idempotent — every call mints a brand-new package
+  // (new CA). It must run EXACTLY ONCE. Retrying it on a transient *response*
+  // error (e.g. the tx succeeds on-chain but waitForTransaction/index read
+  // times out) re-publishes and mints duplicate tokens. This was the cause of
+  // one /launch call producing 5 tokens. Submit once; never retry a publish.
+  const exec1 = await client.signAndExecuteTransaction({
     signer: keypair, transaction: tx1,
     include: { objectTypes: true },
-  }));
+  });
   // This client returns { $kind:'Transaction', Transaction:{ digest, status, objectTypes } }
   // or { $kind:'FailedTransaction', FailedTransaction:{ status } }.
   if (exec1?.$kind === 'FailedTransaction') {
@@ -547,10 +549,13 @@ async function handleLaunch(body) {
   });
   tx2.transferObjects([cap], address);
 
-  const exec2 = await withRetry('Tx2 create_and_return', () => client.signAndExecuteTransaction({
+  // CRITICAL: create_and_return is NOT idempotent — it consumes the launch fee
+  // and runs the dev-buy. Retrying on a transient response error would create a
+  // second curve and double-charge. Submit once; never retry.
+  const exec2 = await client.signAndExecuteTransaction({
     signer: keypair, transaction: tx2,
     include: { objectTypes: true },
-  }));
+  });
   if (exec2?.$kind === 'FailedTransaction') {
     throw new Error(`Tx2 (create_and_return) failed: ${exec2.FailedTransaction?.status?.error ?? 'unknown'} — stranded TreasuryCap ${treasuryCapId}`);
   }
