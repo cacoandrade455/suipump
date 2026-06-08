@@ -1,36 +1,44 @@
 // AgentPage.jsx — Autonomous agent console (routed page, renders inside <main>).
 //
-// Flow (true autonomous execution):
-//   1. Natural-language goal -> Groq plans off-chain (/api/agent-plan).
-//   2. Operator clicks APPROVE.
-//   3. The browser calls the agent-runner service (/run-dag), which executes the
-//      REAL Nexus DAG via the `nexus` CLI server-side and returns the on-chain
-//      DAGExecution object id. No terminal, no human step.
-//   4. The UI animates the tool nodes and shows the real DAGExecution id linked
-//      to Suiscan.
+// Flow:
+//   1. Natural-language goal -> Groq plans off-chain (/api/agent-plan) into a
+//      per-workflow plan: launch_and_buy | buy | sell | claim | alerts.
+//   2. Operator approves. The browser resolves any runtime values it must supply
+//      (sell "ALL" -> real token balance; claim tokenType from the curve), then
+//      posts { workflow, ... } to the agent-runner (/run-dag).
+//   3. The runner maps workflow -> published Nexus DAG id, executes via the
+//      `nexus` CLI, returns the on-chain DAGExecution id + tx digest.
 //
-// The LLM plans OFF-CHAIN (the Nexus LLM tool would expose the API key on
-// testnet); the DAG does the on-chain work. Violet identity, distinct from the
-// lime trading UI.
+// The LLM plans OFF-CHAIN; the DAG does the on-chain work. Violet identity.
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { ArrowLeft, Sparkles, Play, Check, X, Loader, ExternalLink, Bot } from 'lucide-react';
+import { useCurrentAccount } from '@mysten/dapp-kit-react';
+import { SuiGraphQLClient } from '@mysten/sui/graphql';
 
-const RUNNER_URL = import.meta.env.VITE_AGENT_RUNNER_URL || 'https://suipump-agent-runner.onrender.com';
-const DAG_ID     = import.meta.env.VITE_NEXUS_DAG_ID || '0xfd88d4d2f60340c268e77409b24fb129696d230a50fb21667de313531eb24c3b';
+const RUNNER_URL  = import.meta.env.VITE_AGENT_RUNNER_URL || 'https://suipump-agent-runner.onrender.com';
+const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || 'https://suipump-62s2.onrender.com';
+const TOKEN_DECIMALS = 6;
 
 const suiscanObject = (id) => `https://suiscan.xyz/testnet/object/${id}`;
 const suiscanTx     = (d)  => `https://suiscan.xyz/testnet/tx/${d}`;
 
-const NODES = [
-  { id: 'launch', tool: 'xyz.suipump.launch@1', label: 'Launch',  desc: 'Create token on bonding curve' },
-  { id: 'buy',    tool: 'xyz.suipump.buy@1',    label: 'Dev-buy', desc: 'Agent makes the first buy' },
-  { id: 'alerts', tool: 'xyz.suipump.alerts@1', label: 'Monitor', desc: 'Watch graduation threshold' },
-  { id: 'claim',  tool: 'xyz.suipump.claim@1',  label: 'Claim',   desc: 'Claim creator fees' },
-];
-
 const GRAD = { 0: 'Cetus', 1: 'DeepBook', 2: 'Turbos' };
 
+// Tool node metadata per workflow — drives the execution animation.
+const WORKFLOW_NODES = {
+  launch_and_buy: [
+    { id: 'launch', tool: 'xyz.suipump.launch@1', label: 'Launch',  desc: 'Create token on bonding curve' },
+    { id: 'buy',    tool: 'xyz.suipump.buy@1',    label: 'Dev-buy', desc: 'Agent makes the first buy' },
+  ],
+  buy:    [{ id: 'buy',    tool: 'xyz.suipump.buy@1',    label: 'Buy',    desc: 'Buy tokens on the curve' }],
+  sell:   [{ id: 'sell',   tool: 'xyz.suipump.sell@1',   label: 'Sell',   desc: 'Sell tokens back to SUI' }],
+  claim:  [{ id: 'claim',  tool: 'xyz.suipump.claim@1',  label: 'Claim',  desc: 'Claim creator fees' }],
+  alerts: [{ id: 'alerts', tool: 'xyz.suipump.alerts@1', label: 'Monitor', desc: 'Watch graduation / price' }],
+};
+
 export default function AgentPage({ onBack }) {
+  const account = useCurrentAccount();
+
   const [goal, setGoal]         = useState('');
   const [planning, setPlanning] = useState(false);
   const [plan, setPlan]         = useState(null);
@@ -41,12 +49,10 @@ export default function AgentPage({ onBack }) {
   const [result, setResult]       = useState(null);
 
   const animTimers = useRef([]);
-
   const clearAnim = useCallback(() => {
     animTimers.current.forEach(clearTimeout);
     animTimers.current = [];
   }, []);
-
   useEffect(() => () => clearAnim(), [clearAnim]);
 
   const makePlan = useCallback(async () => {
@@ -69,27 +75,86 @@ export default function AgentPage({ onBack }) {
     }
   }, [goal, clearAnim]);
 
+  // ── Runtime resolvers (browser supplies what the planner can't) ───────────
+
+  // Resolve curve -> { tokenType, pkgId } from the indexer.
+  async function fetchCurveMeta(curveId) {
+    const r = await fetch(`${INDEXER_URL}/token/${curveId}`, { signal: AbortSignal.timeout(6000) });
+    if (!r.ok) throw new Error('Could not fetch curve from indexer');
+    const d = await r.json();
+    const tokenType = d.token_type ?? d.tokenType ?? null;
+    if (!tokenType) throw new Error('Curve has no token type yet (indexer not enriched)');
+    return { tokenType };
+  }
+
+  // Resolve "ALL" -> whole-token balance held by the connected wallet.
+  async function resolveSellAmount(curveId, tokenAmount) {
+    if (tokenAmount !== 'ALL' && Number(tokenAmount) > 0) {
+      return { tokenAmount: Number(tokenAmount) };
+    }
+    if (!account?.address) throw new Error('Connect your wallet to sell ALL (need the balance)');
+    const { tokenType } = await fetchCurveMeta(curveId);
+    const client = new SuiGraphQLClient({ url: '/api/rpc' });
+    const coinsRes = await client.listCoins({ owner: account.address, coinType: tokenType });
+    const coins = coinsRes?.objects ?? coinsRes?.data ?? [];
+    const atomic = coins.reduce((s, c) => s + BigInt(c.balance ?? c.coinBalance ?? 0), 0n);
+    const whole = Number(atomic) / 10 ** TOKEN_DECIMALS;
+    if (!(whole > 0)) throw new Error('No token balance to sell for this curve');
+    return { tokenAmount: whole };
+  }
+
+  // Build the { workflow, ... } payload the runner expects.
+  async function buildPayload(p) {
+    switch (p.workflow) {
+      case 'launch_and_buy':
+        return {
+          workflow: 'launch_and_buy',
+          launch: {
+            name: p.launch.name,
+            symbol: p.launch.symbol,
+            description: p.summary || `${p.launch.name} via SuiPump agent`,
+            graduationTarget: p.launch.graduationTarget,
+            devBuySui: p.launch.devBuySui,
+            antiBotDelay: p.launch.antiBotDelay ?? 0,
+          },
+          buy: { amountSui: p.buy?.amountSui ?? p.launch.devBuySui ?? 0 },
+        };
+      case 'buy':
+        if (!p.buy?.curveId) throw new Error('No curve id for buy — paste the token CA in your goal');
+        return { workflow: 'buy', buy: { curveId: p.buy.curveId, amountSui: p.buy.amountSui } };
+      case 'sell': {
+        if (!p.sell?.curveId) throw new Error('No curve id for sell — paste the token CA in your goal');
+        const { tokenAmount } = await resolveSellAmount(p.sell.curveId, p.sell.tokenAmount);
+        return { workflow: 'sell', sell: { curveId: p.sell.curveId, tokenAmount } };
+      }
+      case 'claim': {
+        if (!p.claim?.curveId) throw new Error('No curve id for claim — paste the token CA in your goal');
+        const { tokenType } = await fetchCurveMeta(p.claim.curveId);
+        return { workflow: 'claim', claim: { curveId: p.claim.curveId, tokenType } };
+      }
+      case 'alerts':
+        if (!p.alerts?.curveIds?.length) throw new Error('No curve ids for alerts');
+        return { workflow: 'alerts', alerts: { curveIds: p.alerts.curveIds } };
+      default:
+        throw new Error(`Unknown workflow: ${p.workflow}`);
+    }
+  }
+
   const approve = useCallback(async () => {
     if (!plan || phase === 'running') return;
     setError(null); setResult(null); setPhase('running');
     clearAnim();
 
-    setNodeState({ launch: 'running', buy: 'idle', alerts: 'idle', claim: 'idle' });
-    animTimers.current.push(setTimeout(() => {
-      setNodeState(s => ({ ...s, launch: 'done', buy: 'running' }));
-    }, 1500));
-
-    const payload = {
-      dagId: DAG_ID,
-      launch: {
-        name:        plan.launch.name,
-        symbol:      plan.launch.symbol,
-        description: plan.summary || `${plan.launch.name} via SuiPump agent`,
-      },
-      buy: { amount_sui: plan.buy.suiAmount },
-    };
+    const nodes = WORKFLOW_NODES[plan.workflow] ?? [];
+    setNodeState(Object.fromEntries(nodes.map((n, i) => [n.id, i === 0 ? 'running' : 'idle'])));
+    if (nodes.length > 1) {
+      animTimers.current.push(setTimeout(() => {
+        setNodeState(s => ({ ...s, [nodes[0].id]: 'done', [nodes[1].id]: 'running' }));
+      }, 1500));
+    }
 
     try {
+      const payload = await buildPayload(plan);
       const res  = await fetch(`${RUNNER_URL}/run-dag`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -99,12 +164,13 @@ export default function AgentPage({ onBack }) {
       clearAnim();
       if (!res.ok || data.ok === false) throw new Error(data.error || 'DAG execution failed');
 
-      setNodeState({ launch: 'done', buy: 'done', alerts: 'idle', claim: 'idle' });
+      setNodeState(Object.fromEntries(nodes.map(n => [n.id, 'done'])));
       setResult({
+        workflow:    data.workflow ?? plan.workflow,
         executionId: data.executionId ?? null,
         digest:      data.digest ?? null,
         checkpoint:  data.checkpoint ?? null,
-        dagId:       data.dagId ?? DAG_ID,
+        dagId:       data.dagId ?? null,
       });
       setPhase('done');
     } catch (err) {
@@ -118,7 +184,7 @@ export default function AgentPage({ onBack }) {
       setError(err.message);
       setPhase('failed');
     }
-  }, [plan, phase, clearAnim]);
+  }, [plan, phase, clearAnim, account]);
 
   const nodeColor = (s) =>
     s === 'done'    ? 'border-violet-400/60 bg-violet-400/10' :
@@ -127,6 +193,44 @@ export default function AgentPage({ onBack }) {
                       'border-white/10 bg-white/[0.02]';
 
   const showExecutionPanel = phase !== 'idle';
+  const nodes = plan ? (WORKFLOW_NODES[plan.workflow] ?? []) : [];
+
+  // Per-workflow plan summary rows (no launch fields bleed onto non-launch plans).
+  function planRows(p) {
+    switch (p.workflow) {
+      case 'launch_and_buy':
+        return [
+          ['workflow', p.workflow],
+          ['token', `${p.launch.name} ($${p.launch.symbol})`],
+          ['dev-buy', `${p.buy?.amountSui ?? p.launch.devBuySui ?? 0} SUI`],
+          ['graduates to', GRAD[p.launch.graduationTarget] ?? 'Turbos'],
+        ];
+      case 'buy':
+        return [
+          ['workflow', p.workflow],
+          ['curve', p.buy?.curveId ? `${p.buy.curveId.slice(0, 10)}…` : '(missing — paste CA)'],
+          ['amount', `${p.buy?.amountSui ?? 0} SUI`],
+        ];
+      case 'sell':
+        return [
+          ['workflow', p.workflow],
+          ['curve', p.sell?.curveId ? `${p.sell.curveId.slice(0, 10)}…` : '(missing — paste CA)'],
+          ['amount', p.sell?.tokenAmount === 'ALL' ? 'ALL tokens' : `${p.sell?.tokenAmount} tokens`],
+        ];
+      case 'claim':
+        return [
+          ['workflow', p.workflow],
+          ['curve', p.claim?.curveId ? `${p.claim.curveId.slice(0, 10)}…` : '(missing — paste CA)'],
+        ];
+      case 'alerts':
+        return [
+          ['workflow', p.workflow],
+          ['monitoring', `${p.alerts?.curveIds?.length ?? 0} curve(s)`],
+        ];
+      default:
+        return [['workflow', p.workflow]];
+    }
+  }
 
   return (
     <div>
@@ -140,7 +244,7 @@ export default function AgentPage({ onBack }) {
           <h1 className="text-xl font-bold tracking-tight text-white" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>AUTONOMOUS AGENT</h1>
         </div>
         <p className="text-white/40 text-[11px] font-mono leading-relaxed max-w-xl">
-          State a goal in plain language. The agent plans with an LLM, then executes the full token lifecycle on-chain through a Nexus DAG — launch, dev-buy, monitor, claim.
+          State a goal in plain language. The agent plans with an LLM, then executes it on-chain through a published Nexus DAG — launch, buy, sell, claim, or monitor.
         </p>
       </div>
 
@@ -152,7 +256,7 @@ export default function AgentPage({ onBack }) {
         <textarea
           value={goal}
           onChange={(e) => setGoal(e.target.value)}
-          placeholder="e.g. Launch a dog-themed token called MoonCat, dev-buy 1 SUI, and claim fees at graduation"
+          placeholder="e.g. Launch a dog token called MoonCat, dev-buy 1 SUI  ·  or  ·  Sell all tokens of 0xCURVE…"
           rows={2}
           className="w-full bg-black/40 border border-white/10 rounded-lg p-3 text-[12px] font-mono text-white/80 placeholder:text-white/20 focus:border-violet-400/40 outline-none resize-none"
         />
@@ -173,10 +277,9 @@ export default function AgentPage({ onBack }) {
           <div className="text-[10px] font-mono text-violet-400/70 tracking-widest mb-2">AGENT PLAN</div>
           <p className="text-[12px] font-mono text-white/80 mb-3 leading-relaxed">{plan.summary}</p>
           <div className="grid grid-cols-2 gap-2 text-[10px] font-mono text-white/45 mb-4">
-            <div>workflow: <span className="text-white/80">{plan.workflow}</span></div>
-            <div>token: <span className="text-white/80">{plan.launch.name} (${plan.launch.symbol})</span></div>
-            <div>dev-buy: <span className="text-white/80">{plan.buy.suiAmount} SUI</span></div>
-            <div>graduates to: <span className="text-white/80">{GRAD[plan.launch.graduationTarget] ?? 'Turbos'}</span></div>
+            {planRows(plan).map(([k, v]) => (
+              <div key={k}>{k}: <span className="text-white/80">{v}</span></div>
+            ))}
           </div>
           {(phase === 'idle' || phase === 'failed') && (
             <button
@@ -198,7 +301,7 @@ export default function AgentPage({ onBack }) {
             </div>
             <div className="flex-1">
               <div className="text-[12px] font-mono text-white/90 font-bold">Agent executing autonomously on Nexus</div>
-              <div className="text-[10px] font-mono text-white/40">Running the DAG on-chain — launch then dev-buy.</div>
+              <div className="text-[10px] font-mono text-white/40">Running the {plan?.workflow} DAG on-chain.</div>
             </div>
             <Loader size={14} className="text-violet-400 animate-spin" />
           </div>
@@ -209,7 +312,7 @@ export default function AgentPage({ onBack }) {
         <div className="border border-white/10 rounded-xl p-4 bg-white/[0.02] mb-4">
           <div className="text-[10px] font-mono text-white/35 tracking-widest mb-4">NEXUS DAG EXECUTION</div>
           <div className="space-y-2">
-            {NODES.map((n) => {
+            {nodes.map((n) => {
               const s = nodeState[n.id] ?? 'idle';
               return (
                 <div key={n.id} className={`flex items-center gap-3 border rounded-lg p-3 transition-colors ${nodeColor(s)}`}>
@@ -232,33 +335,25 @@ export default function AgentPage({ onBack }) {
 
       {result && (result.executionId || result.digest) && (
         <div className="border border-violet-400/30 rounded-xl p-4 bg-violet-400/[0.05]">
-          <div className="text-[10px] font-mono text-violet-400/80 tracking-widest mb-3">
-            {phase === 'failed' ? 'NEXUS EXECUTION — PARTIAL' : 'EXECUTED ON-CHAIN VIA NEXUS'}
-          </div>
-
-          {result.executionId && (
-            <a href={suiscanObject(result.executionId)} target="_blank" rel="noreferrer"
-               className="block rounded-lg border border-violet-400/40 bg-black/40 p-3 mb-3 hover:border-violet-400/70 transition-colors group">
-              <div className="text-[9px] font-mono text-violet-400/70 tracking-widest mb-1 flex items-center gap-1.5">
-                NEXUS DAG EXECUTION ID <ExternalLink size={10} className="opacity-60 group-hover:opacity-100" />
-              </div>
-              <div className="text-[12px] font-mono text-violet-300 break-all leading-relaxed">{result.executionId}</div>
-            </a>
-          )}
-
+          <div className="text-[10px] font-mono text-violet-400/80 tracking-widest mb-3">✓ EXECUTED ON-CHAIN VIA NEXUS</div>
           <div className="space-y-2 text-[10px] font-mono">
-            <div className="text-white/40">DAG: <span className="text-white/70 break-all">{result.dagId}</span></div>
+            {result.dagId && (
+              <div className="text-white/40">DAG: <span className="text-white/70 break-all">{result.dagId}</span></div>
+            )}
+            {result.executionId && (
+              <a href={suiscanObject(result.executionId)} target="_blank" rel="noreferrer"
+                 className="inline-flex items-center gap-1.5 text-violet-400 hover:text-violet-300 break-all">
+                execution: {result.executionId} <ExternalLink size={11} />
+              </a>
+            )}
             {result.checkpoint && (
               <div className="text-white/40">checkpoint: <span className="text-white/70">{result.checkpoint}</span></div>
             )}
             {result.digest && (
-              <div className="text-white/40">
-                tx:{' '}
-                <a href={suiscanTx(result.digest)} target="_blank" rel="noreferrer"
-                   className="inline-flex items-center gap-1.5 text-violet-400 hover:text-violet-300 break-all">
-                  {result.digest} <ExternalLink size={11} />
-                </a>
-              </div>
+              <a href={suiscanTx(result.digest)} target="_blank" rel="noreferrer"
+                 className="inline-flex items-center gap-1.5 text-violet-400 hover:text-violet-300 break-all">
+                tx: {result.digest} <ExternalLink size={11} />
+              </a>
             )}
           </div>
         </div>
