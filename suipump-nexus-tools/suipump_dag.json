@@ -1,7 +1,7 @@
 {
   "name": "suipump-agent",
   "version": "1",
-  "description": "SuiPump autonomous token lifecycle agent. Launches tokens, trades on bonding curves, monitors graduation alerts, and claims creator fees.",
+  "description": "SuiPump autonomous token lifecycle agent. Launches tokens, trades on bonding curves, monitors graduation alerts, and claims creator fees. Every tool is callable individually or composed into a multi-step workflow.",
   "nodes": [
     {
       "id": "launch",
@@ -38,7 +38,7 @@
         "tokenType":      { "type": "string", "description": "Coin type of received tokens" }
       },
       "edges": {
-        "curveId": { "from": "launch", "output": "curveId" }
+        "curveId": { "from": "launch", "output": "curveId", "optional": true }
       }
     },
     {
@@ -47,13 +47,16 @@
       "description": "Sell tokens back to SUI on a SuiPump bonding curve",
       "inputs": {
         "curveId":     { "type": "string", "description": "Shared curve object ID" },
-        "tokenAmount": { "type": "number", "description": "Tokens to sell (in whole tokens, e.g. 1000)" },
-        "minSuiOut":   { "type": "integer", "description": "Minimum SUI to receive", "default": 0 },
+        "tokenAmount": { "type": "number", "description": "Tokens to sell, in whole tokens (e.g. 1000.5)" },
+        "minSuiOut":   { "type": "integer", "description": "Minimum SUI to receive in MIST (slippage guard)", "default": 0 },
         "referral":    { "type": "string",  "description": "Referral address (optional)", "optional": true }
       },
       "outputs": {
         "txDigest":    { "type": "string", "description": "Transaction digest" },
         "suiReceived": { "type": "string", "description": "SUI received" }
+      },
+      "edges": {
+        "curveId": { "from": "buy", "output": "curveId", "optional": true }
       }
     },
     {
@@ -73,7 +76,7 @@
         "graduationPct": { "type": "number", "description": "% progress toward graduation threshold" }
       },
       "edges": {
-        "curveId": { "from": "launch", "output": "curveId" }
+        "curveId": { "from": "launch", "output": "curveId", "optional": true }
       }
     },
     {
@@ -88,29 +91,63 @@
         "suiClaimed": { "type": "string", "description": "SUI claimed" }
       },
       "edges": {
-        "curveId": { "from": "launch", "output": "curveId" }
+        "curveId": { "from": "launch", "output": "curveId", "optional": true }
       }
     }
   ],
   "workflows": {
+    "launch_only": {
+      "description": "Launch a token only (no dev-buy)",
+      "sequence": ["launch"],
+      "entry": "launch",
+      "notes": "Single tool. Provide launch inputs."
+    },
+    "buy_only": {
+      "description": "Buy an existing curve",
+      "sequence": ["buy"],
+      "entry": "buy",
+      "notes": "Single tool. curveId must be provided externally."
+    },
+    "sell_only": {
+      "description": "Sell tokens on an existing curve",
+      "sequence": ["sell"],
+      "entry": "sell",
+      "notes": "Single tool. curveId + tokenAmount provided externally."
+    },
+    "claim_only": {
+      "description": "Claim creator fees on an existing curve",
+      "sequence": ["claim"],
+      "entry": "claim",
+      "notes": "Single tool. curveId provided externally."
+    },
+    "alerts_only": {
+      "description": "Monitor an existing curve for graduation / price moves",
+      "sequence": ["alerts"],
+      "entry": "alerts",
+      "notes": "Single tool. curveId provided externally."
+    },
     "launch_and_buy": {
       "description": "Launch a token then immediately dev-buy",
       "sequence": ["launch", "buy"],
+      "entry": "launch",
       "notes": "buy.curveId is wired from launch.curveId automatically via edges"
     },
     "launch_monitor_claim": {
       "description": "Launch a token, monitor it, claim fees when threshold is hit",
       "sequence": ["launch", "alerts", "claim"],
+      "entry": "launch",
       "notes": "alerts watches for graduation; claim fires after fees accumulate"
     },
     "buy_sell": {
       "description": "Speculative trade — buy then sell on same curve",
       "sequence": ["buy", "sell"],
-      "notes": "curveId must be provided externally for both steps"
+      "entry": "buy",
+      "notes": "curveId provided externally to buy; sell.curveId wires from buy via edges"
     },
     "full_lifecycle": {
-      "description": "Full autonomous lifecycle: launch → monitor → claim",
+      "description": "Full autonomous lifecycle: launch, dev-buy, monitor, claim",
       "sequence": ["launch", "buy", "alerts", "claim"],
+      "entry": "launch",
       "notes": "Agent launches token, makes dev-buy, watches graduation, claims fees"
     }
   },
