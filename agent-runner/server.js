@@ -1,29 +1,43 @@
 // server.js — SuiPump agent runner.
-// One job: accept an approved plan from the SuiPump agent UI and execute the
-// real Nexus DAG via the `nexus` CLI, returning the on-chain DAGExecution id.
+// Accepts an approved plan from the agent UI, picks the matching published
+// Nexus DAG, and executes it via the `nexus` CLI, returning the on-chain
+// DAGExecution id + tx digest.
+//
+// NEW MODEL: one DAG per workflow. The UI/planner sends { workflow, ... } and
+// this runner maps workflow -> published DAG id and builds that DAG's input
+// JSON (keyed by vertex name, matching the published DAG's vertices).
 //
 // Endpoints:
-//   GET  /health   -> { ok, ts }
-//   POST /run-dag  -> { ok, executionId, digest, checkpoint }
+//   GET  /health   -> { ok, ts, dags }
+//   POST /run-dag  -> { ok, workflow, dagId, executionId, digest, checkpoint }
 //
-// Body for /run-dag:
-//   {
-//     dagId?: string,                    // overrides NEXUS_DAG_ID
-//     launch: { name, symbol, description },
-//     buy:    { amount_sui },
-//     entryGroup?: string                // default: the DAG's default group
-//   }
+// Body for /run-dag (per workflow):
+//   { workflow: "launch_and_buy", launch:{name,symbol,graduationTarget,devBuySui,antiBotDelay}, buy:{amountSui} }
+//   { workflow: "buy",   buy:{curveId, amountSui} }
+//   { workflow: "sell",  sell:{curveId, tokenAmount} }     // tokenAmount number (UI resolves "ALL")
+//   { workflow: "claim", claim:{curveId, tokenType} }
+//   { workflow: "alerts", alerts:{curveIds:[...]} }
+//   Optional: { dagId } to override the mapping.
 //
-// Security: only the fields above are interpolated into the input JSON; the
-// command is invoked via execFile (no shell), so there is no shell injection
-// surface. CORS is locked to the SuiPump origins.
+// Security: only whitelisted fields are interpolated; command is invoked via
+// execFile (no shell) — no shell-injection surface and no cmd quoting issues.
 
 import http from 'node:http';
 import { execFile } from 'node:child_process';
 
-const PORT       = parseInt(process.env.PORT ?? '3040', 10);
-const DAG_ID     = process.env.NEXUS_DAG_ID ?? '';
-const RUN_TIMEOUT_MS = parseInt(process.env.RUN_TIMEOUT_MS ?? '120000', 10);
+const PORT           = parseInt(process.env.PORT ?? '3040', 10);
+const RUN_TIMEOUT_MS = parseInt(process.env.RUN_TIMEOUT_MS ?? '180000', 10);
+
+// Published DAG ids (testnet). Override any via env if re-published.
+const DAG_IDS = {
+  launch_and_buy: process.env.DAG_LAUNCH_BUY ?? '0xb385a6452c50125b5d91f9285c72d4d09c6ca025edc505200107a0a3c60841ab',
+  buy:            process.env.DAG_BUY        ?? '0xf59d689bc1697ddc03e8ca3363ed93eb71c8c3ada1011b6a23eb83c0bef22831',
+  sell:           process.env.DAG_SELL       ?? '0x73db18930ab13894e46279fbf8ef2700dd8772aac566021abf5214df9fa43d68',
+  claim:          process.env.DAG_CLAIM      ?? '0xc6c0936d01740a967e1cbeb146026bd519ec6681400eadc7405441d4d3f38eb0',
+  alerts:         process.env.DAG_ALERTS     ?? '0x9c189902c9f53cc13b6a66459fd8bbe56b4da51c872c73f8eec5a3b0a7859dbc',
+};
+
+const GRAD_MAP = { 0: 'cetus', 1: 'deepbook', 2: 'turbos' };
 
 const ALLOWED_ORIGINS = new Set([
   'https://suipump.org',
@@ -34,11 +48,7 @@ const ALLOWED_ORIGINS = new Set([
 
 function cors(req, res) {
   const origin = req.headers.origin;
-  if (origin && ALLOWED_ORIGINS.has(origin)) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
-  } else {
-    res.setHeader('Access-Control-Allow-Origin', 'https://suipump.org');
-  }
+  res.setHeader('Access-Control-Allow-Origin', origin && ALLOWED_ORIGINS.has(origin) ? origin : 'https://suipump.org');
   res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 }
@@ -57,42 +67,82 @@ function readBody(req) {
   });
 }
 
-// Build the Nexus input JSON from the approved plan. Only whitelisted string/
-// number fields are passed through — never raw user shell input.
-function buildInput(body) {
-  const name        = String(body?.launch?.name ?? '').slice(0, 64);
-  const symbol      = String(body?.launch?.symbol ?? '').toUpperCase().slice(0, 6);
-  const description = String(body?.launch?.description ?? `${name} via SuiPump agent`).slice(0, 200);
-  const amountSui   = Number(body?.buy?.amount_sui ?? 0);
+const num = (v, dflt = 0) => { const n = Number(v); return Number.isFinite(n) ? n : dflt; };
+const str = (v, max = 200) => String(v ?? '').slice(0, max);
 
-  if (!name)   throw new Error('launch.name required');
-  if (!symbol) throw new Error('launch.symbol required');
-  if (!(amountSui >= 0)) throw new Error('buy.amount_sui must be a non-negative number');
-
-  return {
-    launch: { name, symbol, description },
-    buy:    { amount_sui: amountSui },
-  };
+// Build the Nexus DAG input JSON for a workflow.
+// Inputs are keyed by VERTEX NAME, each an object of entry-port -> value,
+// matching the published DAG vertices (e.g. dag_sell has vertex "sell" with
+// entry_ports curve_id/token_amount/min_sui_out/referral).
+function buildInput(workflow, body) {
+  switch (workflow) {
+    case 'launch_and_buy': {
+      const L = body.launch ?? {};
+      const B = body.buy ?? {};
+      const name   = str(L.name, 64);
+      const symbol = str(L.symbol, 6).toUpperCase();
+      if (!name)   throw new Error('launch.name required');
+      if (!symbol) throw new Error('launch.symbol required');
+      const grad = GRAD_MAP[L.graduationTarget] ?? 'turbos';
+      // launch vertex entry_ports: name, symbol, description, icon_url,
+      // dev_buy_sui, graduation_target, anti_bot_delay
+      // buy vertex: amount_sui (+ slippage_bps, referrer optional); curve_id comes via edge
+      return {
+        launch: {
+          name,
+          symbol,
+          description: str(L.description || `${name} via SuiPump agent`, 200),
+          graduation_target: grad,
+          dev_buy_sui: num(L.devBuySui, 0),
+          anti_bot_delay: num(L.antiBotDelay, 0),
+        },
+        buy: {
+          amount_sui: num(B.amountSui, num(L.devBuySui, 0)),
+        },
+      };
+    }
+    case 'buy': {
+      const B = body.buy ?? {};
+      if (!B.curveId) throw new Error('buy.curveId required');
+      return { buy: { curve_id: str(B.curveId, 66), amount_sui: num(B.amountSui, 0.1) } };
+    }
+    case 'sell': {
+      const S = body.sell ?? {};
+      if (!S.curveId) throw new Error('sell.curveId required');
+      const amt = num(S.tokenAmount, 0);
+      if (!(amt > 0)) throw new Error('sell.tokenAmount must be > 0 (UI resolves "ALL" to a number)');
+      return { sell: { curve_id: str(S.curveId, 66), token_amount: amt } };
+    }
+    case 'claim': {
+      const C = body.claim ?? {};
+      if (!C.curveId)   throw new Error('claim.curveId required');
+      if (!C.tokenType) throw new Error('claim.tokenType required');
+      return { claim: { curve_id: str(C.curveId, 66), token_type: str(C.tokenType, 200) } };
+    }
+    case 'alerts': {
+      const A = body.alerts ?? {};
+      const ids = Array.isArray(A.curveIds) ? A.curveIds.map(x => str(x, 66)).filter(Boolean) : [];
+      if (!ids.length) throw new Error('alerts.curveIds must be a non-empty array');
+      return { alerts: { curve_ids: ids } };
+    }
+    default:
+      throw new Error(`Unknown workflow: ${workflow}`);
+  }
 }
 
-// Run `nexus dag execute -d <dag> -i <input> --json` via execFile (no shell).
+// Run `nexus dag execute -d <dag> --input-json <json> --json` via execFile.
+// execFile passes args directly (no shell), so JSON quoting is never an issue.
 function runDag(dagId, inputObj) {
   return new Promise((resolve, reject) => {
-    const args = ['dag', 'execute', '-d', dagId, '-i', JSON.stringify(inputObj), '--json'];
+    const inputJson = JSON.stringify(inputObj);
+    const args = ['dag', 'execute', '-d', dagId, '--input-json', inputJson, '--json'];
+    console.log(`[runner] nexus ${args.join(' ')}`);
     execFile('nexus', args, { timeout: RUN_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
-      if (err) {
-        return reject(new Error(`nexus dag execute failed: ${stderr?.trim() || err.message}`));
-      }
-      // --json prints only the receipt: { digest, execution_id, tx_checkpoint }
-      let parsed = null;
+      if (err) return reject(new Error(`nexus dag execute failed: ${stderr?.trim() || err.message}`));
       const text = (stdout ?? '').trim();
-      try {
-        parsed = JSON.parse(text);
-      } catch {
-        // Some CLI builds may print a banner line before JSON — grab the last { ... } block.
-        const m = text.match(/\{[\s\S]*\}\s*$/);
-        if (m) { try { parsed = JSON.parse(m[0]); } catch {} }
-      }
+      let parsed = null;
+      try { parsed = JSON.parse(text); }
+      catch { const m = text.match(/\{[\s\S]*\}\s*$/); if (m) { try { parsed = JSON.parse(m[0]); } catch {} } }
       if (!parsed) return reject(new Error(`Could not parse nexus --json output: ${text.slice(0, 300)}`));
       resolve(parsed);
     });
@@ -101,11 +151,10 @@ function runDag(dagId, inputObj) {
 
 const server = http.createServer(async (req, res) => {
   cors(req, res);
-
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
   if (req.method === 'GET' && req.url === '/health') {
-    return json(res, 200, { ok: true, ts: Date.now(), dagConfigured: Boolean(DAG_ID) });
+    return json(res, 200, { ok: true, ts: Date.now(), dags: DAG_IDS });
   }
 
   if (req.method === 'POST' && req.url === '/run-dag') {
@@ -113,28 +162,30 @@ const server = http.createServer(async (req, res) => {
     try { body = await readBody(req); }
     catch (e) { return json(res, 400, { ok: false, error: e.message }); }
 
-    const dagId = String(body?.dagId ?? DAG_ID);
-    if (!dagId) return json(res, 400, { ok: false, error: 'No dagId (set NEXUS_DAG_ID or pass dagId)' });
+    const workflow = String(body?.workflow ?? '');
+    const dagId    = String(body?.dagId ?? DAG_IDS[workflow] ?? '');
+    if (!dagId) return json(res, 400, { ok: false, error: `No DAG id for workflow "${workflow}"` });
 
     let input;
-    try { input = buildInput(body); }
+    try { input = buildInput(workflow, body); }
     catch (e) { return json(res, 400, { ok: false, error: e.message }); }
 
     try {
-      console.log(`[runner] executing DAG ${dagId} for ${input.launch.symbol}`);
+      console.log(`[runner] executing ${workflow} via DAG ${dagId}`);
       const receipt = await runDag(dagId, input);
-      const executionId = receipt.execution_id ?? receipt.executionId ?? null;
+      const executionId = receipt.execution_id ?? receipt.executionId ?? receipt.dag_execution_id ?? null;
       console.log(`[runner] execution_id=${executionId} digest=${receipt.digest}`);
       return json(res, 200, {
         ok: true,
-        executionId,
-        digest:     receipt.digest ?? null,
-        checkpoint: receipt.tx_checkpoint ?? receipt.checkpoint ?? null,
+        workflow,
         dagId,
+        executionId,
+        digest:     receipt.digest ?? receipt.tx_digest ?? null,
+        checkpoint: receipt.tx_checkpoint ?? receipt.checkpoint ?? null,
       });
     } catch (e) {
       console.error('[runner] /run-dag error:', e.message);
-      return json(res, 500, { ok: false, error: e.message });
+      return json(res, 500, { ok: false, workflow, dagId, error: e.message });
     }
   }
 
@@ -142,6 +193,6 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`[runner] SuiPump agent-runner listening on ${PORT}`);
-  console.log(`[runner] DAG: ${DAG_ID || '(none — pass dagId in body)'}`);
+  console.log(`[runner] SuiPump agent-runner on ${PORT}`);
+  console.log(`[runner] workflows: ${Object.keys(DAG_IDS).join(', ')}`);
 });
