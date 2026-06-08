@@ -154,18 +154,34 @@ function makeClient(rpcUrl) {
   return new SuiGraphQLClient({ url });
 }
 
-async function resolveCurve(client, curveId) {
-  // v2: objectId (not id), result at obj.object.* (not obj.data.*)
-  const obj = await client.getObject({ objectId: curveId });
-  if (!obj?.object) throw new Error(`Curve ${curveId} not found`);
-  const curveType     = obj.object.type ?? '';
-  const pkgId         = curveType.split('::')[0];
-  const tokenType     = curveType.match(/Curve<(.+)>$/)?.[1];
-  if (!tokenType) throw new Error(`Could not parse token type from curve ${curveId}`);
-  if (!pkgId)     throw new Error(`Could not parse package ID from curve ${curveId}`);
-  const sharedVersion = obj.object.owner?.Shared?.initialSharedVersion;
-  if (!sharedVersion) throw new Error(`Curve ${curveId} is not a shared object`);
-  return { pkgId, tokenType, sharedVersion };
+async function resolveCurve(client, curveId, { tries = 6, delayMs = 2000 } = {}) {
+  // A read-only resolution — safe to retry. When buy runs immediately after a
+  // launch (DAG launch->buy edge), the brand-new curve may not be resolvable
+  // via GraphQL yet, so getObject returns nothing and buy would error. Retrying
+  // the READ (never a transaction) lets the just-created curve settle.
+  let lastErr;
+  for (let attempt = 1; attempt <= tries; attempt++) {
+    try {
+      // v2: objectId (not id), result at obj.object.* (not obj.data.*)
+      const obj = await client.getObject({ objectId: curveId });
+      if (!obj?.object) throw new Error(`Curve ${curveId} not found`);
+      const curveType     = obj.object.type ?? '';
+      const pkgId         = curveType.split('::')[0];
+      const tokenType     = curveType.match(/Curve<(.+)>$/)?.[1];
+      if (!tokenType) throw new Error(`Could not parse token type from curve ${curveId}`);
+      if (!pkgId)     throw new Error(`Could not parse package ID from curve ${curveId}`);
+      const sharedVersion = obj.object.owner?.Shared?.initialSharedVersion;
+      if (!sharedVersion) throw new Error(`Curve ${curveId} is not a shared object`);
+      return { pkgId, tokenType, sharedVersion };
+    } catch (err) {
+      lastErr = err;
+      if (attempt < tries) {
+        console.log(`[bridge] resolveCurve ${curveId}: not ready (attempt ${attempt}/${tries}) — ${String(err?.message ?? err)}`);
+        await new Promise(r => setTimeout(r, delayMs));
+      }
+    }
+  }
+  throw lastErr ?? new Error(`Curve ${curveId} could not be resolved`);
 }
 
 function jsonResp(res, status, body) {
