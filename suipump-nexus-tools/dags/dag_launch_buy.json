@@ -1,0 +1,35 @@
+{
+  "entry_groups": [
+    { "name": "launch_and_buy", "vertices": ["launch"] }
+  ],
+  "vertices": [
+    {
+      "kind": { "variant": "on_chain", "tool_fqn": "xyz.suipump.launch@1" },
+      "name": "launch",
+      "entry_ports": [
+        { "name": "name" },
+        { "name": "symbol" },
+        { "name": "description" },
+        { "name": "icon_url" },
+        { "name": "dev_buy_sui" },
+        { "name": "graduation_target" },
+        { "name": "anti_bot_delay" }
+      ]
+    },
+    {
+      "kind": { "variant": "on_chain", "tool_fqn": "xyz.suipump.buy@1" },
+      "name": "buy",
+      "entry_ports": [
+        { "name": "amount_sui" },
+        { "name": "slippage_bps" },
+        { "name": "referrer" }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": { "vertex": "launch", "output_variant": "ok", "output_port": "curve_id" },
+      "to":   { "vertex": "buy", "input_port": "curve_id" }
+    }
+  ]
+}

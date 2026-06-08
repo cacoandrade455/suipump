@@ -1,0 +1,16 @@
+{
+  "entry_groups": [ { "name": "sell_only", "vertices": ["sell"] } ],
+  "vertices": [
+    {
+      "kind": { "variant": "on_chain", "tool_fqn": "xyz.suipump.sell@1" },
+      "name": "sell",
+      "entry_ports": [
+        { "name": "curve_id" },
+        { "name": "token_amount" },
+        { "name": "min_sui_out" },
+        { "name": "referral" }
+      ]
+    }
+  ],
+  "edges": []
+}

@@ -1,0 +1,16 @@
+{
+  "entry_groups": [ { "name": "alerts_only", "vertices": ["alerts"] } ],
+  "vertices": [
+    {
+      "kind": { "variant": "on_chain", "tool_fqn": "xyz.suipump.alerts@1" },
+      "name": "alerts",
+      "entry_ports": [
+        { "name": "curve_ids" },
+        { "name": "graduation_warning_sui" },
+        { "name": "claim_threshold_sui" },
+        { "name": "price_change_pct" }
+      ]
+    }
+  ],
+  "edges": []
+}
