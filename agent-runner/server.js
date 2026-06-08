@@ -37,6 +37,16 @@ const DAG_IDS = {
   alerts:         process.env.DAG_ALERTS     ?? '0x9c189902c9f53cc13b6a66459fd8bbe56b4da51c872c73f8eec5a3b0a7859dbc',
 };
 
+// Entry-group name inside each published DAG. nexus dag execute defaults to
+// "_default_group" which does NOT exist in our DAGs, so we must pass -e.
+const ENTRY_GROUPS = {
+  launch_and_buy: 'launch_and_buy',
+  buy:            'buy_only',
+  sell:           'sell_only',
+  claim:          'claim_only',
+  alerts:         'alerts_only',
+};
+
 const GRAD_MAP = { 0: 'cetus', 1: 'deepbook', 2: 'turbos' };
 
 const ALLOWED_ORIGINS = new Set([
@@ -130,12 +140,12 @@ function buildInput(workflow, body) {
   }
 }
 
-// Run `nexus dag execute -d <dag> --input-json <json> --json` via execFile.
+// Run `nexus dag execute -d <dag> -e <group> --input-json <json> --json` via execFile.
 // execFile passes args directly (no shell), so JSON quoting is never an issue.
-function runDag(dagId, inputObj) {
+function runDag(dagId, entryGroup, inputObj) {
   return new Promise((resolve, reject) => {
     const inputJson = JSON.stringify(inputObj);
-    const args = ['dag', 'execute', '-d', dagId, '--input-json', inputJson, '--json'];
+    const args = ['dag', 'execute', '-d', dagId, '-e', entryGroup, '--input-json', inputJson, '--json'];
     console.log(`[runner] nexus ${args.join(' ')}`);
     execFile('nexus', args, { timeout: RUN_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) return reject(new Error(`nexus dag execute failed: ${stderr?.trim() || err.message}`));
@@ -164,15 +174,17 @@ const server = http.createServer(async (req, res) => {
 
     const workflow = String(body?.workflow ?? '');
     const dagId    = String(body?.dagId ?? DAG_IDS[workflow] ?? '');
+    const entryGroup = ENTRY_GROUPS[workflow];
     if (!dagId) return json(res, 400, { ok: false, error: `No DAG id for workflow "${workflow}"` });
+    if (!entryGroup) return json(res, 400, { ok: false, error: `No entry group for workflow "${workflow}"` });
 
     let input;
     try { input = buildInput(workflow, body); }
     catch (e) { return json(res, 400, { ok: false, error: e.message }); }
 
     try {
-      console.log(`[runner] executing ${workflow} via DAG ${dagId}`);
-      const receipt = await runDag(dagId, input);
+      console.log(`[runner] executing ${workflow} via DAG ${dagId} (group ${entryGroup})`);
+      const receipt = await runDag(dagId, entryGroup, input);
       const executionId = receipt.execution_id ?? receipt.executionId ?? receipt.dag_execution_id ?? null;
       console.log(`[runner] execution_id=${executionId} digest=${receipt.digest}`);
       return json(res, 200, {
