@@ -145,16 +145,39 @@ function buildInput(workflow, body) {
       };
     }
     case 'buy': {
+      // buy DAG (buy_only) declares 4 entry ports: curve_id, amount_sui,
+      // slippage_bps, referrer. Entry-group matching is strict — EVERY declared
+      // port must be present or begin_execution_of_entry_group_ aborts. So we
+      // supply all four. referrer is Option<String> -> null = none.
       const B = body.buy ?? {};
       if (!B.curveId) throw new Error('buy.curveId required');
-      return { buy: { curve_id: str(B.curveId, 66), amount_sui: num(B.amountSui, 0.1) } };
+      return {
+        buy: {
+          curve_id:     str(B.curveId, 66),
+          amount_sui:   num(B.amountSui, 0.1) || 0.1,
+          slippage_bps: num(B.slippageBps, 500),
+          referrer:     B.referrer ? str(B.referrer, 66) : null,
+        },
+      };
     }
     case 'sell': {
+      // sell DAG (sell_only) declares 4 entry ports: curve_id, token_amount,
+      // min_sui_out, referral. Strict entry-group matching means ALL must be
+      // present or begin_execution_of_entry_group_ aborts. We supply all four.
+      // min_sui_out=0 accepts any output (no slippage floor); referral is
+      // Option<String> -> null = none.
       const S = body.sell ?? {};
       if (!S.curveId) throw new Error('sell.curveId required');
       const amt = num(S.tokenAmount, 0);
       if (!(amt > 0)) throw new Error('sell.tokenAmount must be > 0 (UI resolves "ALL" to a number)');
-      return { sell: { curve_id: str(S.curveId, 66), token_amount: amt } };
+      return {
+        sell: {
+          curve_id:    str(S.curveId, 66),
+          token_amount: amt,
+          min_sui_out: num(S.minSuiOut, 0),
+          referral:    S.referral ? str(S.referral, 66) : null,
+        },
+      };
     }
     case 'claim': {
       const C = body.claim ?? {};
