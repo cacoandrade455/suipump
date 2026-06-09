@@ -2,8 +2,7 @@
 // Turns a natural-language goal into a structured SuiPump agent plan.
 //
 // NEW MODEL (one DAG per workflow): the planner picks ONE published DAG by
-// `workflow`, and emits ONLY that workflow's fields. No more launch-shaped
-// output forced onto every plan (that caused "dev-buy: 3 SUI" on a sell).
+// `workflow`, and emits ONLY that workflow's fields.
 //
 // Workflows map 1:1 to published Nexus DAG ids (resolved in the runner/UI):
 //   launch_and_buy : launch -> dev-buy            (needs launch fields + buy.amount_sui)
@@ -13,6 +12,36 @@
 //   alerts         : monitor curves                (needs curve_ids[])
 //
 // The LLM plans OFF-CHAIN here; the DAG does on-chain execution.
+//
+// 2026-06-09: added deterministic extractors so launch plans don't depend on
+// the LLM being consistent:
+//   - extractSuiAmount(): pulls "buy N sui" / "N sui" from the goal as a fallback
+//     for devBuySui/amountSui (LLM was returning 0 for "buy 2 sui").
+//   - extractDescription(): pulls text after "description:" so the user's real
+//     description is used instead of the whole goal sentence (summary).
+
+// Pull an explicit SUI amount from phrases like "buy 2 sui", "dev buy 1.5 sui",
+// "2 sui". Returns a number or null. Ignores amounts that are clearly a curve's
+// SUI target etc. by only matching small leading "buy"/"dev-buy" contexts first.
+function extractSuiAmount(goal) {
+  const g = String(goal).toLowerCase();
+  // Prefer an amount tied to a buy verb: "buy 2 sui", "dev-buy 1.5 sui", "buy 2sui"
+  const buyCtx = g.match(/(?:dev[\s-]?buy|buy|ape|snipe)\s+(\d+(?:\.\d+)?)\s*sui/);
+  if (buyCtx) return Number(buyCtx[1]);
+  // Fallback: any "<number> sui" in the goal.
+  const anySui = g.match(/(\d+(?:\.\d+)?)\s*sui/);
+  if (anySui) return Number(anySui[1]);
+  return null;
+}
+
+// Pull the user's intended description from "description: <text>" (case-insensitive).
+// Returns the trimmed text after the marker, or null if not present.
+function extractDescription(goal) {
+  const m = String(goal).match(/description\s*[:\-]\s*(.+)$/i);
+  if (!m) return null;
+  // Stop at a sentence-ending period if there's trailing unrelated text; keep it simple:
+  return m[1].trim().replace(/\s+/g, ' ').slice(0, 200);
+}
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -35,10 +64,14 @@ export default async function handler(req, res) {
   const caMatch = String(goal).match(/0x[a-fA-F0-9]{60,66}/);
   const pastedCurveId = caMatch ? caMatch[0] : null;
 
+  // Deterministic extractors (used as fallback / override of the LLM).
+  const explicitSui  = extractSuiAmount(goal);   // number | null
+  const explicitDesc = extractDescription(goal); // string | null
+
   const prompt = `You are the planning layer of an autonomous agent on SuiPump, a bonding-curve token launchpad on Sui. The agent executes ONE workflow per run, each a published Nexus DAG. Pick the single workflow that matches the user's goal and emit ONLY that workflow's fields.
 
 Workflows:
-- "launch_and_buy": launch a NEW token then dev-buy it. Use when the user wants to create/launch a token. Fields: launch{name,symbol,graduationTarget,devBuySui,antiBotDelay}, buy{amountSui}.
+- "launch_and_buy": launch a NEW token then dev-buy it. Use when the user wants to create/launch a token. Fields: launch{name,symbol,description,graduationTarget,devBuySui,antiBotDelay}, buy{amountSui}.
 - "buy": buy an EXISTING token by curve id. Use when the user wants to buy a token that already exists (a curve id / CA is given). Fields: buy{curveId, amountSui}.
 - "sell": sell tokens of an EXISTING token by curve id. Use when the user wants to sell/dump. Fields: sell{curveId, tokenAmount}. tokenAmount can be the string "ALL" to sell the whole balance.
 - "claim": claim creator fees on an existing curve. Fields: claim{curveId}.
@@ -50,7 +83,7 @@ ${pastedCurveId ? `Detected curve id in goal: ${pastedCurveId} (use it as curveI
 Return ONLY a JSON object, no prose, no markdown fences:
 {
   "workflow": "launch_and_buy" | "buy" | "sell" | "claim" | "alerts",
-  "launch": { "name": string, "symbol": string (<=6 upper), "graduationTarget": 0|1|2, "devBuySui": number, "antiBotDelay": 0 },
+  "launch": { "name": string, "symbol": string (<=6 upper), "description": string, "graduationTarget": 0|1|2, "devBuySui": number, "antiBotDelay": 0 },
   "buy":    { "curveId": string|null, "amountSui": number },
   "sell":   { "curveId": string|null, "tokenAmount": number|"ALL" },
   "claim":  { "curveId": string|null },
@@ -60,6 +93,9 @@ Return ONLY a JSON object, no prose, no markdown fences:
 
 Rules:
 - Choose exactly ONE workflow. Only the object for that workflow needs real values; others may be null/empty.
+- For launch_and_buy: devBuySui is the amount of SUI to buy. If the user says "buy 2 sui", set devBuySui=2 AND buy.amountSui=2. Read the number carefully.
+- For launch_and_buy: description is the token's description. If the user writes "description: X" use exactly X. Do NOT use the whole goal sentence as the description. If no description is given, use a short clean phrase, not the goal.
+- name is the token name only (e.g. "Finally"), NOT the whole sentence. symbol is the ticker without "$".
 - graduationTarget: 0=Cetus, 1=DeepBook, 2=Turbos. Use what the user asks; default 2 only if launching and unspecified.
 - For sell, if the user says "all"/"everything", set tokenAmount to "ALL".
 - Never put launch fields (devBuySui, graduationTarget) on a sell/buy/claim/alerts plan.
@@ -72,7 +108,7 @@ Rules:
       body: JSON.stringify({
         model:       'llama-3.3-70b-versatile',
         max_tokens:  500,
-        temperature: 0.3,
+        temperature: 0.2,
         messages: [{ role: 'user', content: prompt }],
       }),
     });
@@ -98,19 +134,34 @@ Rules:
     if (wf === 'launch_and_buy') {
       const L = plan.launch ?? {};
       const B = plan.buy ?? {};
+      // Deterministic override: if the user typed an explicit "N sui", trust it
+      // over the LLM (which has been returning 0). Else use LLM value.
+      const devBuy = explicitSui != null
+        ? explicitSui
+        : Math.max(0, Number(L.devBuySui ?? 0));
+      // Description: prefer the user's explicit "description: X"; else the LLM's
+      // description field; else a clean fallback (NEVER the whole goal/summary).
+      const desc = explicitDesc
+        ?? (L.description ? String(L.description) : null)
+        ?? `${String(L.name ?? 'DemoToken')} on SuiPump`;
       out.launch = {
         name:             String(L.name ?? 'DemoToken').slice(0, 32),
         symbol:           String(L.symbol ?? 'DEMO').toUpperCase().slice(0, 6),
+        description:      String(desc).slice(0, 200),
         graduationTarget: [0, 1, 2].includes(L.graduationTarget) ? L.graduationTarget : 2,
-        devBuySui:        Math.max(0, Number(L.devBuySui ?? 0)),
+        devBuySui:        devBuy,
         antiBotDelay:     0,
       };
-      out.buy = { amountSui: Math.max(0, Number(B.amountSui ?? L.devBuySui ?? 0)) };
+      // buy amount mirrors the dev-buy unless the LLM gave a distinct one.
+      const buyAmt = explicitSui != null
+        ? explicitSui
+        : Math.max(0, Number(B.amountSui ?? L.devBuySui ?? 0));
+      out.buy = { amountSui: buyAmt };
     } else if (wf === 'buy') {
       const B = plan.buy ?? {};
       out.buy = {
         curveId:   B.curveId ?? pastedCurveId ?? null,
-        amountSui: Math.max(0, Number(B.amountSui ?? 0.1)),
+        amountSui: explicitSui != null ? explicitSui : Math.max(0, Number(B.amountSui ?? 0.1)),
       };
     } else if (wf === 'sell') {
       const S = plan.sell ?? {};
