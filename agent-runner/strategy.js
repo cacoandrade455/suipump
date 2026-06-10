@@ -5,24 +5,30 @@
 // holds NO secrets: it watches prices and decides; server.js still signs.
 //
 // Pipeline:
-//   indexer SSE /stream  ->  price (constant-product, matches api.js exactly)
-//     ->  evaluate active orders (stop-loss + generic take-profit ladder)
-//       ->  resolve sell amount from the invoker wallet's ON-CHAIN balance
-//         ->  POST localhost /run-dag { workflow:"sell", ... }  (server.js signs)
+//   indexer SSE /stream  ->  WAKE-UP only ("a trade happened on curve X")
+//     ->  read curve's CURRENT reserve on-chain  ->  authoritative price
+//       ->  evaluate orders (stop-loss + generic take-profit ladder)
+//         ->  resolve sell amount from the invoker wallet's on-chain balance
+//           ->  POST localhost /run-dag { workflow:"sell", ... }
+//
+// Why price comes from on-chain, not the SSE event:
+//   The indexer re-emits historical events on backfill/reconnect, so an event's
+//   own `new_sui_reserve` can be stale/out-of-order. Pricing off it makes the
+//   price bounce and could false-trigger a stop-loss. So the event is only a
+//   signal to re-check; the price is always read live from the curve object.
 //
 // Design notes:
-//   - ALL sells are serialized through one global queue. The invoker wallet has
-//     one gas coin; concurrent nexus executions would equivocate. One at a time.
-//   - Take-profit "ladder" is fully generic: any number of rungs, any multiple
-//     or absolute price, any sell-percent. A single TP is just a one-rung ladder.
-//   - sellPct is percent of the REMAINING balance at fire time (read fresh from
-//     chain), which is why 50/50/100 cleanly exits.
+//   - ALL sells serialized through one global queue (one invoker wallet = one
+//     gas coin; concurrent nexus executions would equivocate).
+//   - Ladder is generic: any number of rungs, any multiple or absolute price,
+//     any sell-percent. sellPct is percent of the REMAINING balance.
+//   - Balance read once per evaluation pass, then decremented locally between
+//     rungs (GraphQL lags our own just-fired sells, so mid-pass re-reads would
+//     over-sell the next rung).
 //   - No npm dependencies: node builtins + global fetch only (Node 18+).
 //
 // v1 order source: STRATEGY_ORDERS env (JSON array) or ./orders.json.
-//   The Postgres order-store with live CRUD is the next file.
 
-import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -36,9 +42,9 @@ const INDEXER_URL     = process.env.INDEXER_URL     ?? 'https://suipump-62s2.onr
 const SUI_GRAPHQL_URL = process.env.SUI_GRAPHQL_URL ?? 'https://graphql.testnet.sui.io/graphql';
 // Wallet the runner signs with (funds the gas vault). We READ its balance only.
 const INVOKER_ADDRESS = process.env.INVOKER_ADDRESS ?? '0x877af0fae3fa4f8ea936943b59bcd66104f67cf1895302e97761a28b3c3a5906';
-const RECONNECT_MS    = parseInt(process.env.STRATEGY_RECONNECT_MS ?? '3000', 10);
+const RECONNECT_MS      = parseInt(process.env.STRATEGY_RECONNECT_MS ?? '3000', 10);
 const ERROR_COOLDOWN_MS = parseInt(process.env.STRATEGY_ERROR_COOLDOWN_MS ?? '60000', 10);
-const DUST_WHOLE      = Number(process.env.STRATEGY_DUST_WHOLE ?? '0.000001'); // skip dust sells
+const DUST_WHOLE        = Number(process.env.STRATEGY_DUST_WHOLE ?? '0.000001');
 
 const MIST_PER_SUI   = 1_000_000_000;
 const TOKEN_DECIMALS = 6;
@@ -48,14 +54,13 @@ const VTOK           = 1_073_000_000; // virtual token reserve — same all vers
 const log = (...a) => console.log(`[brain]`, ...a);
 const err = (...a) => console.error(`[brain]`, ...a);
 
-// Never let the brain take the process down. server.js (foreground) is unaffected
-// regardless, but we keep this loop alive too.
+// Never let the brain take the process down.
 process.on('unhandledRejection', (e) => err('unhandledRejection:', e?.message ?? e));
 process.on('uncaughtException',  (e) => err('uncaughtException:',  e?.message ?? e));
 
-// ── Per-package virtual SUI — ported verbatim from indexer/api.js getVirtuals ──
+// ── Per-package virtual SUI — ported from indexer/api.js getVirtuals ──────────
 // NOTE: frontend constants.js disagrees on V5/V6/V7 (9000/9000/3500). We use the
-// indexer's values because the engine consumes indexer-derived reserves.
+// indexer's values because they price what the indexer/token-page show.
 function getVSui(packageId) {
   if (!packageId) return 3500;
   if (packageId.startsWith('0x2154')) return 30000; // V4
@@ -67,20 +72,17 @@ function getVSui(packageId) {
 }
 
 // Spot price in SUI per whole token — constant-product, matches api.js + TokenPage.
-function priceFromReserve(vSui, newSuiReserveMist) {
-  const realSui = Number(newSuiReserveMist ?? 0) / MIST_PER_SUI;
+function priceFromReserve(vSui, reserveMist) {
+  const realSui = Number(reserveMist ?? 0) / MIST_PER_SUI;
   const k = vSui * VTOK;
   return k > 0 ? ((vSui + realSui) * (vSui + realSui)) / k : 0;
 }
 
-const pkgFromEventType = (t) => (t || '').split('::')[0] || null;
-
 // ── Order state ───────────────────────────────────────────────────────────────
-// Order shape (v1):
 // {
 //   id, curveId, tokenType?, entryPriceSui?, minSuiOut?,
-//   takeProfit: [ { multiple|priceSui, sellPct } ... ],   // generic ladder
-//   stopLoss:   { multiple|priceSui } | null               // sells 100% remaining
+//   takeProfit: [ { multiple|priceSui, sellPct } ... ],
+//   stopLoss:   { multiple|priceSui } | null
 // }
 let ORDERS = [];
 
@@ -93,7 +95,6 @@ function normalizeOrder(o, i) {
     sellPct:  Number(r.sellPct ?? 100),
     _fired:   false,
   })) : [];
-  // ascending by effective threshold (multiple preferred, else absolute price)
   tp.sort((a, b) => (a.multiple ?? a.priceSui ?? Infinity) - (b.multiple ?? b.priceSui ?? Infinity));
   let sl = null;
   if (o.stopLoss && (o.stopLoss.multiple != null || o.stopLoss.priceSui != null)) {
@@ -107,6 +108,7 @@ function normalizeOrder(o, i) {
     id,
     curveId: o.curveId,
     tokenType: o.tokenType ?? null,
+    packageId: null,
     entryPriceSui: o.entryPriceSui != null ? Number(o.entryPriceSui) : null,
     minSuiOut: Number(o.minSuiOut ?? 0),
     takeProfit: tp,
@@ -141,8 +143,7 @@ function pump() {
   const job = queue.shift();
   if (!job) return;
   running = true;
-  Promise.resolve()
-    .then(job)
+  Promise.resolve().then(job)
     .catch((e) => err('job error:', e?.message ?? e))
     .finally(() => { running = false; pump(); });
 }
@@ -152,37 +153,53 @@ function schedule(order) {
   if (firing.has(order.id)) return;
   if (Date.now() < order._cooldownUntil) return;
   firing.add(order.id);
-  queue.push(async () => {
-    try { await processOrder(order); }
-    finally { firing.delete(order.id); }
-  });
+  queue.push(async () => { try { await processOrder(order); } finally { firing.delete(order.id); } });
   pump();
 }
 
 // ── On-chain reads (GraphQL, read-only, no key) ───────────────────────────────
-async function resolveTokenType(curveId) {
-  const r = await fetch(`${INDEXER_URL}/token/${curveId}`, { signal: AbortSignal.timeout(6000) });
-  if (!r.ok) throw new Error(`indexer /token ${r.status}`);
-  const d = await r.json();
-  const t = d.token_type ?? d.tokenType ?? null;
-  if (!t) throw new Error('curve has no token_type yet (indexer not enriched)');
-  return t;
-}
-
-async function getBalanceWhole(tokenType) {
-  const query = `query($addr: SuiAddress!, $coinType: String!) {
-    address(address: $addr) { balance(coinType: $coinType) { totalBalance } }
-  }`;
+async function gql(query, variables) {
   const r = await fetch(SUI_GRAPHQL_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, variables: { addr: INVOKER_ADDRESS, coinType: tokenType } }),
+    body: JSON.stringify({ query, variables }),
     signal: AbortSignal.timeout(8000),
   });
-  if (!r.ok) throw new Error(`graphql balance ${r.status}`);
+  if (!r.ok) throw new Error(`graphql ${r.status}`);
   const d = await r.json();
   if (d.errors?.length) throw new Error(`graphql: ${d.errors[0].message}`);
-  const atomic = d?.data?.address?.balance?.totalBalance ?? '0';
+  return d.data;
+}
+
+// Read the curve's CURRENT state: package, tokenType, live reserve, graduated.
+// Type repr looks like: 0xPKG::bonding_curve::Curve<0xTPKG::module::TYPE>
+async function getCurveState(curveId) {
+  const data = await gql(
+    `query($id: SuiAddress!) {
+       object(address: $id) { asMoveObject { contents { type { repr } json } } }
+     }`,
+    { id: curveId },
+  );
+  const mo = data?.object?.asMoveObject?.contents;
+  if (!mo) throw new Error('curve object not found');
+  const repr = mo.type?.repr ?? '';
+  const json = mo.json ?? {};
+  const packageId = repr.split('::')[0] || null;
+  const tm = repr.match(/Curve<(.+)>/);
+  const tokenType = tm ? tm[1] : null;
+  const reserveMist = Number(json.sui_reserve ?? json.suiReserve ?? 0);
+  const graduated = json.graduated === true || json.graduated === 'true';
+  return { packageId, tokenType, reserveMist, graduated };
+}
+
+async function getBalanceWhole(tokenType) {
+  const data = await gql(
+    `query($addr: SuiAddress!, $coinType: String!) {
+       address(address: $addr) { balance(coinType: $coinType) { totalBalance } }
+     }`,
+    { addr: INVOKER_ADDRESS, coinType: tokenType },
+  );
+  const atomic = data?.address?.balance?.totalBalance ?? '0';
   return Number(BigInt(atomic)) / 10 ** TOKEN_DECIMALS;
 }
 
@@ -190,11 +207,7 @@ async function getBalanceWhole(tokenType) {
 async function fireSell(curveId, tokenWhole, minSuiOut) {
   const body = {
     workflow: 'sell',
-    sell: {
-      curveId,
-      tokenAmount: Number(tokenWhole.toFixed(6)), // runner/bridge expect WHOLE tokens
-      minSuiOut: minSuiOut ?? 0,
-    },
+    sell: { curveId, tokenAmount: Number(tokenWhole.toFixed(6)), minSuiOut: minSuiOut ?? 0 },
   };
   const r = await fetch(`${RUNNER_URL}/run-dag`, {
     method: 'POST',
@@ -204,44 +217,66 @@ async function fireSell(curveId, tokenWhole, minSuiOut) {
   });
   const d = await r.json().catch(() => ({}));
   if (!r.ok || !d.ok) throw new Error(d.error ?? `runner ${r.status}`);
-  return d; // { ok, executionId, digest, ... }
+  return d;
 }
 
 // ── Order evaluation ──────────────────────────────────────────────────────────
-function slPrice(order)  { const s = order.stopLoss; return s ? (s.priceSui ?? order.entryPriceSui * s.multiple) : null; }
-function rungPrice(order, r) { return r.priceSui ?? order.entryPriceSui * r.multiple; }
+const slPriceOf   = (order)    => { const s = order.stopLoss; return s ? (s.priceSui ?? order.entryPriceSui * s.multiple) : null; };
+const rungPriceOf = (order, r) => r.priceSui ?? order.entryPriceSui * r.multiple;
 
-// Pick the next action at the current price, or null. Stop-loss wins.
 function nextAction(order) {
   const price = order.lastPrice;
   if (price == null || order.entryPriceSui == null) return null;
-  const sl = slPrice(order);
+  const sl = slPriceOf(order);
   if (sl != null && price <= sl) return { kind: 'SL', sellPct: 100, rung: null };
   for (const r of order.takeProfit) {
     if (r._fired) continue;
-    if (price >= rungPrice(order, r)) return { kind: 'TP', sellPct: r.sellPct, rung: r };
+    if (price >= rungPriceOf(order, r)) return { kind: 'TP', sellPct: r.sellPct, rung: r };
   }
   return null;
 }
 
 async function processOrder(order) {
   if (order.done) return;
-  if (!order.tokenType) {
-    try { order.tokenType = await resolveTokenType(order.curveId); }
-    catch (e) { err(`${order.id}: tokenType resolve failed: ${e.message}`); order._cooldownUntil = Date.now() + ERROR_COOLDOWN_MS; return; }
-  }
 
-  // Drain every crossed trigger in one pass (handles a big jump across rungs).
+  // Authoritative price + metadata from CURRENT on-chain curve state.
+  let st;
+  try { st = await getCurveState(order.curveId); }
+  catch (e) { err(`${order.id}: curve read failed: ${e.message}`); order._cooldownUntil = Date.now() + ERROR_COOLDOWN_MS; return; }
+
+  if (st.graduated) { log(`${order.id}: curve graduated — closing order`); order.done = true; return; }
+  if (!order.tokenType) order.tokenType = st.tokenType;
+  if (!order.packageId) order.packageId = st.packageId;
+  if (!order.tokenType) { err(`${order.id}: curve has no tokenType yet`); order._cooldownUntil = Date.now() + ERROR_COOLDOWN_MS; return; }
+
+  const price = priceFromReserve(getVSui(st.packageId), st.reserveMist);
+  if (!(price > 0)) { err(`${order.id}: non-positive price (reserve ${st.reserveMist})`); return; }
+
+  if (order.entryPriceSui == null) {
+    order.entryPriceSui = price;
+    log(`${order.id}: entry not provided — seeding from current price ${price.toExponential(4)} SUI`);
+  }
+  order.lastPrice = price;
+
+  const mult  = order.entryPriceSui > 0 ? price / order.entryPriceSui : 1;
+  const nr    = order.takeProfit.find(r => !r._fired);
+  const nrTxt = nr
+    ? `${nr.multiple != null ? nr.multiple + 'x' : nr.priceSui + ' SUI'} -> ${nr.sellPct}%`
+    : (order.stopLoss ? 'stop-loss only' : 'none');
+  log(`${order.id}: tick ${price.toExponential(3)} SUI (${mult.toFixed(3)}x) | reserve ${(st.reserveMist / MIST_PER_SUI).toFixed(2)} SUI | next ${nrTxt}`);
+
+  if (!nextAction(order)) return; // nothing crossed; cheap exit before balance read
+
+  // Balance ONCE per pass, decrement locally between rungs (GraphQL lags sells).
+  let balWhole;
+  try { balWhole = await getBalanceWhole(order.tokenType); }
+  catch (e) { err(`${order.id}: balance read failed: ${e.message}`); order._cooldownUntil = Date.now() + ERROR_COOLDOWN_MS; return; }
+
   while (!order.done) {
     const action = nextAction(order);
     if (!action) break;
 
-    let balWhole;
-    try { balWhole = await getBalanceWhole(order.tokenType); }
-    catch (e) { err(`${order.id}: balance read failed: ${e.message}`); order._cooldownUntil = Date.now() + ERROR_COOLDOWN_MS; return; }
-
     if (!(balWhole > DUST_WHOLE)) {
-      // Nothing to sell — mark this trigger consumed so we don't spin on it.
       log(`${order.id}: ${action.kind} crossed but balance is dust (${balWhole}); marking consumed`);
       if (action.kind === 'SL') order.done = true;
       else { action.rung._fired = true; if (order.takeProfit.every(r => r._fired)) order.done = true; }
@@ -249,21 +284,19 @@ async function processOrder(order) {
     }
 
     const sellWhole = action.sellPct >= 100 ? balWhole : balWhole * (action.sellPct / 100);
-    if (!(sellWhole > DUST_WHOLE)) {
-      if (action.rung) action.rung._fired = true;
-      continue;
-    }
+    if (!(sellWhole > DUST_WHOLE)) { if (action.rung) action.rung._fired = true; continue; }
 
-    const mult = (order.lastPrice / order.entryPriceSui).toFixed(3);
-    log(`${order.id}: ${action.kind} fire — price ${order.lastPrice.toExponential(4)} SUI (${mult}x), selling ${action.sellPct}% = ${sellWhole.toFixed(6)} tokens`);
+    log(`${order.id}: ${action.kind} fire — (${mult.toFixed(3)}x) selling ${action.sellPct}% of ${balWhole.toFixed(6)} = ${sellWhole.toFixed(6)} tokens`);
     try {
       const receipt = await fireSell(order.curveId, sellWhole, order.minSuiOut);
       log(`${order.id}: SOLD — digest ${receipt.digest} execId ${receipt.executionId}`);
     } catch (e) {
       err(`${order.id}: sell failed: ${e.message}`);
       order._cooldownUntil = Date.now() + ERROR_COOLDOWN_MS;
-      return; // leave trigger unfired; retry after cooldown on next trade
+      return; // leave trigger unfired; retry after cooldown on next wake-up
     }
+
+    balWhole -= sellWhole; // authoritative within this pass
 
     if (action.kind === 'SL') { order.done = true; break; }
     action.rung._fired = true;
@@ -273,28 +306,16 @@ async function processOrder(order) {
   if (order.done) log(`${order.id}: COMPLETE`);
 }
 
-// ── Price tick from SSE ───────────────────────────────────────────────────────
-function onPrice(curveId, price) {
-  for (const order of ORDERS) {
-    if (order.done || order.curveId !== curveId) continue;
-    if (order.entryPriceSui == null) {
-      order.entryPriceSui = price;
-      log(`${order.id}: entry price not provided — seeding from first observation ${price.toExponential(4)} SUI`);
-    }
-    order.lastPrice = price;
-    schedule(order);
-  }
-}
-
+// ── SSE wake-up ───────────────────────────────────────────────────────────────
+// We do NOT price from the event — the indexer replays history on backfill, so
+// an event's reserve can be stale. The event only tells us "re-check curve X".
 function handleEvent(ev) {
   if (!ev || ev.type === 'connected') return;
   const isTrade = ev.type === 'TokensPurchased' || ev.type === 'TokensBought' || ev.type === 'TokensSold';
   if (!isTrade || !ev.curveId) return;
-  const reserveMist = Number(ev.data?.new_sui_reserve ?? 0);
-  if (!(reserveMist > 0)) return; // can't price without a reserve
-  const vSui  = getVSui(pkgFromEventType(ev.eventType));
-  const price = priceFromReserve(vSui, reserveMist);
-  if (price > 0) onPrice(ev.curveId, price);
+  for (const order of ORDERS) {
+    if (!order.done && order.curveId === ev.curveId) schedule(order);
+  }
 }
 
 // ── SSE reader over fetch (no eventsource dependency) ─────────────────────────
@@ -347,6 +368,7 @@ function main() {
   log(`indexer  : ${INDEXER_URL}`);
   log(`graphql  : ${SUI_GRAPHQL_URL}`);
   log(`invoker  : ${INVOKER_ADDRESS}`);
+  log(`price    : read live from curve object (SSE = wake-up only)`);
   ORDERS = loadOrders();
   log(`orders   : ${ORDERS.length}`);
   ORDERS.forEach(o => log('  •', summarizeOrder(o)));
