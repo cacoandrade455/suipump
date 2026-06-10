@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # start.sh — Render START command for the agent-runner service.
-# Configures the Nexus CLI headless from env vars, then launches server.js.
+# Configures the Nexus CLI headless from env vars, launches the strategy brain
+# (background), then launches server.js (foreground, owns the Render port).
 #
 # Required env vars (Render dashboard):
 #   SUI_PRIVATE_KEY   base64WithFlag Sui private key of the Nexus invoker wallet
@@ -10,6 +11,8 @@ set -euo pipefail
 # Optional:
 #   SUI_RPC_URL       default https://fullnode.testnet.sui.io
 #   PORT              provided by Render
+#   STRATEGY_ENABLED  set to "0" to skip launching strategy.js (default on)
+#   STRATEGY_ORDERS   JSON array of strategy orders (TP/SL ladders)
 
 cd "$(dirname "$0")"
 
@@ -39,6 +42,16 @@ nexus conf set --sui.pk "$SUI_PRIVATE_KEY" >/dev/null 2>&1 || {
   echo "FATAL: nexus conf set --sui.pk failed (check SUI_PRIVATE_KEY format)" >&2
   exit 1
 }
+
+# Strategy brain — separate process, no secrets, talks to server.js over
+# localhost. If it crashes it CANNOT take down /run-dag (server.js is exec'd
+# below and owns the port). Set STRATEGY_ENABLED=0 to disable.
+if [ "${STRATEGY_ENABLED:-1}" != "0" ]; then
+  echo "[start] launching strategy brain (background)…"
+  node strategy.js &
+else
+  echo "[start] strategy brain disabled (STRATEGY_ENABLED=0)"
+fi
 
 echo "[start] nexus configured. Launching agent-runner server…"
 exec node server.js
