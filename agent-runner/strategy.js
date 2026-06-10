@@ -170,13 +170,13 @@ async function resolveTokenType(curveId) {
 }
 
 async function getBalanceWhole(tokenType) {
-  const query = `query($addr: SuiAddress!, $type: String!) {
-    address(address: $addr) { balance(type: $type) { totalBalance } }
+  const query = `query($addr: SuiAddress!, $coinType: String!) {
+    address(address: $addr) { balance(coinType: $coinType) { totalBalance } }
   }`;
   const r = await fetch(SUI_GRAPHQL_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, variables: { addr: INVOKER_ADDRESS, type: tokenType } }),
+    body: JSON.stringify({ query, variables: { addr: INVOKER_ADDRESS, coinType: tokenType } }),
     signal: AbortSignal.timeout(8000),
   });
   if (!r.ok) throw new Error(`graphql balance ${r.status}`);
