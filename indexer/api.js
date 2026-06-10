@@ -6,11 +6,16 @@ import {
   getGlobalStats, getTokenStats, getTradeHistory,
   getAllCurves, pool,
 } from './db.js';
+import { mountOrders } from './orders.js';
 
 const PORT = parseInt(process.env.PORT || '3001');
 const app  = express();
 app.use(cors());
 app.use(express.json());
+
+// Strategy order store — self-contained module, owns its own strategy_orders
+// table; does not touch db.js. Adds GET/POST/PATCH/DELETE /orders.
+mountOrders(app);
 
 // ── Virtual reserves per package — must match frontend constants.js ─────────
 const MIST = 1_000_000_000;
