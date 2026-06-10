@@ -2,7 +2,7 @@
 //
 // Runs as a SECOND process inside the agent-runner service (started by start.sh
 // alongside server.js). server.js stays byte-for-byte unchanged. This process
-// holds NO secrets: it watches prices and decides; server.js still signs.
+// holds NO wallet secret: it watches prices and decides; server.js signs.
 //
 // Pipeline:
 //   indexer SSE /stream  ->  WAKE-UP only ("a trade happened on curve X")
@@ -11,37 +11,26 @@
 //         ->  resolve sell amount from the invoker wallet's on-chain balance
 //           ->  POST localhost /run-dag { workflow:"sell", ... }
 //
+// ORDER SOURCE (durable): the indexer's /orders store. The brain loads active
+// orders on boot, refreshes them periodically (picks up new / cancelled ones),
+// and PATCHes fired-rung / done state back so a restart resumes mid-ladder.
+// Writes carry x-strategy-key when STRATEGY_API_KEY is set.
+//
 // Why price comes from on-chain, not the SSE event:
 //   The indexer re-emits historical events on backfill/reconnect, so an event's
-//   own `new_sui_reserve` can be stale/out-of-order. Pricing off it makes the
-//   price bounce and could false-trigger a stop-loss. So the event is only a
-//   signal to re-check; the price is always read live from the curve object.
+//   own reserve can be stale. The event is only a signal to re-check; the price
+//   is always read live from the curve object.
 //
-// Design notes:
-//   - ALL sells serialized through one global queue (one invoker wallet = one
-//     gas coin; concurrent nexus executions would equivocate).
-//   - Ladder is generic: any number of rungs, any multiple or absolute price,
-//     any sell-percent. sellPct is percent of the REMAINING balance.
-//   - Balance read once per evaluation pass, then decremented locally between
-//     rungs (GraphQL lags our own just-fired sells, so mid-pass re-reads would
-//     over-sell the next rung).
-//   - No npm dependencies: node builtins + global fetch only (Node 18+).
-//
-// v1 order source: STRATEGY_ORDERS env (JSON array) or ./orders.json.
-
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// No npm dependencies: node builtins + global fetch only (Node 18+).
 
 // ── Config (all env-overridable) ──────────────────────────────────────────────
-const PORT            = parseInt(process.env.PORT ?? '3040', 10);
-const RUNNER_URL      = process.env.RUNNER_URL      ?? `http://127.0.0.1:${PORT}`;
-const INDEXER_URL     = process.env.INDEXER_URL     ?? 'https://suipump-62s2.onrender.com';
-const SUI_GRAPHQL_URL = process.env.SUI_GRAPHQL_URL ?? 'https://graphql.testnet.sui.io/graphql';
-// Wallet the runner signs with (funds the gas vault). We READ its balance only.
-const INVOKER_ADDRESS = process.env.INVOKER_ADDRESS ?? '0x877af0fae3fa4f8ea936943b59bcd66104f67cf1895302e97761a28b3c3a5906';
+const PORT              = parseInt(process.env.PORT ?? '3040', 10);
+const RUNNER_URL        = process.env.RUNNER_URL      ?? `http://127.0.0.1:${PORT}`;
+const INDEXER_URL       = process.env.INDEXER_URL     ?? 'https://suipump-62s2.onrender.com';
+const SUI_GRAPHQL_URL   = process.env.SUI_GRAPHQL_URL ?? 'https://graphql.testnet.sui.io/graphql';
+const INVOKER_ADDRESS   = process.env.INVOKER_ADDRESS ?? '0x877af0fae3fa4f8ea936943b59bcd66104f67cf1895302e97761a28b3c3a5906';
+const STRATEGY_API_KEY  = process.env.STRATEGY_API_KEY ?? '';
+const ORDERS_REFRESH_MS = parseInt(process.env.STRATEGY_ORDERS_REFRESH_MS ?? '15000', 10);
 const RECONNECT_MS      = parseInt(process.env.STRATEGY_RECONNECT_MS ?? '3000', 10);
 const ERROR_COOLDOWN_MS = parseInt(process.env.STRATEGY_ERROR_COOLDOWN_MS ?? '60000', 10);
 const DUST_WHOLE        = Number(process.env.STRATEGY_DUST_WHOLE ?? '0.000001');
@@ -54,13 +43,10 @@ const VTOK           = 1_073_000_000; // virtual token reserve — same all vers
 const log = (...a) => console.log(`[brain]`, ...a);
 const err = (...a) => console.error(`[brain]`, ...a);
 
-// Never let the brain take the process down.
 process.on('unhandledRejection', (e) => err('unhandledRejection:', e?.message ?? e));
 process.on('uncaughtException',  (e) => err('uncaughtException:',  e?.message ?? e));
 
 // ── Per-package virtual SUI — ported from indexer/api.js getVirtuals ──────────
-// NOTE: frontend constants.js disagrees on V5/V6/V7 (9000/9000/3500). We use the
-// indexer's values because they price what the indexer/token-page show.
 function getVSui(packageId) {
   if (!packageId) return 3500;
   if (packageId.startsWith('0x2154')) return 30000; // V4
@@ -78,39 +64,32 @@ function priceFromReserve(vSui, reserveMist) {
   return k > 0 ? ((vSui + realSui) * (vSui + realSui)) / k : 0;
 }
 
-// ── Order state ───────────────────────────────────────────────────────────────
-// {
-//   id, curveId, tokenType?, entryPriceSui?, minSuiOut?,
-//   takeProfit: [ { multiple|priceSui, sellPct } ... ],
-//   stopLoss:   { multiple|priceSui } | null
-// }
-let ORDERS = [];
+// ── Order state (keyed by id) ─────────────────────────────────────────────────
+const ORDERS = new Map();
 
-function normalizeOrder(o, i) {
-  const id = o.id ?? `ord-${i + 1}`;
-  if (!o.curveId) throw new Error(`order ${id}: curveId required`);
-  const tp = Array.isArray(o.takeProfit) ? o.takeProfit.map(r => ({
+function normalizeRemote(R) {
+  if (!R.curveId) throw new Error('missing curveId');
+  const tp = (Array.isArray(R.takeProfit) ? R.takeProfit : []).map(r => ({
     multiple: r.multiple != null ? Number(r.multiple) : null,
     priceSui: r.priceSui != null ? Number(r.priceSui) : null,
     sellPct:  Number(r.sellPct ?? 100),
-    _fired:   false,
-  })) : [];
-  tp.sort((a, b) => (a.multiple ?? a.priceSui ?? Infinity) - (b.multiple ?? b.priceSui ?? Infinity));
+    _fired:   r.fired === true,
+  })).sort((a, b) => (a.multiple ?? a.priceSui ?? Infinity) - (b.multiple ?? b.priceSui ?? Infinity));
   let sl = null;
-  if (o.stopLoss && (o.stopLoss.multiple != null || o.stopLoss.priceSui != null)) {
+  if (R.stopLoss && (R.stopLoss.multiple != null || R.stopLoss.priceSui != null)) {
     sl = {
-      multiple: o.stopLoss.multiple != null ? Number(o.stopLoss.multiple) : null,
-      priceSui: o.stopLoss.priceSui != null ? Number(o.stopLoss.priceSui) : null,
+      multiple: R.stopLoss.multiple != null ? Number(R.stopLoss.multiple) : null,
+      priceSui: R.stopLoss.priceSui != null ? Number(R.stopLoss.priceSui) : null,
     };
   }
-  if (!tp.length && !sl) throw new Error(`order ${id}: needs at least a takeProfit rung or a stopLoss`);
+  if (!tp.length && !sl) throw new Error('no takeProfit rung or stopLoss');
   return {
-    id,
-    curveId: o.curveId,
-    tokenType: o.tokenType ?? null,
+    id: R.id,
+    curveId: R.curveId,
+    tokenType: R.tokenType ?? null,
     packageId: null,
-    entryPriceSui: o.entryPriceSui != null ? Number(o.entryPriceSui) : null,
-    minSuiOut: Number(o.minSuiOut ?? 0),
+    entryPriceSui: R.entryPriceSui != null ? Number(R.entryPriceSui) : null,
+    minSuiOut: Number(R.minSuiOut ?? 0),
     takeProfit: tp,
     stopLoss: sl,
     lastPrice: null,
@@ -119,24 +98,54 @@ function normalizeOrder(o, i) {
   };
 }
 
-function loadOrders() {
-  let raw = process.env.STRATEGY_ORDERS;
-  if (!raw) {
-    try { raw = fs.readFileSync(path.join(__dirname, 'orders.json'), 'utf8'); } catch {}
+// ── Indexer order-store client ────────────────────────────────────────────────
+async function fetchActiveOrders() {
+  const r = await fetch(`${INDEXER_URL}/orders?status=active`, { signal: AbortSignal.timeout(8000) });
+  if (!r.ok) throw new Error(`orders ${r.status}`);
+  return await r.json();
+}
+
+async function persistOrder(order) {
+  const body = {
+    entryPriceSui: order.entryPriceSui,
+    takeProfit: order.takeProfit.map(r => ({ multiple: r.multiple, priceSui: r.priceSui, sellPct: r.sellPct, fired: r._fired })),
+    status: order.done ? 'done' : 'active',
+  };
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (STRATEGY_API_KEY) headers['x-strategy-key'] = STRATEGY_API_KEY;
+    const r = await fetch(`${INDEXER_URL}/orders/${order.id}`, {
+      method: 'PATCH', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(8000),
+    });
+    if (!r.ok) { const d = await r.json().catch(() => ({})); err(`${order.id}: persist ${r.status} ${d.error ?? ''}`); }
+  } catch (e) { err(`${order.id}: persist error ${e.message}`); }
+}
+
+async function syncOrders() {
+  let remote;
+  try { remote = await fetchActiveOrders(); }
+  catch (e) { err('order sync failed:', e.message); return; }
+
+  const seen = new Set();
+  for (const R of remote) {
+    seen.add(R.id);
+    if (ORDERS.has(R.id)) continue; // keep live in-memory progress for tracked orders
+    try {
+      const o = normalizeRemote(R);
+      ORDERS.set(o.id, o);
+      log(`loaded order ${summarizeOrder(o)}`);
+      schedule(o); // evaluate immediately (catches already-crossed targets)
+    } catch (e) { err(`order ${R.id} skipped: ${e.message}`); }
   }
-  if (!raw) { log('no orders configured (set STRATEGY_ORDERS env or orders.json)'); return []; }
-  let arr;
-  try { arr = JSON.parse(raw); } catch (e) { err('orders parse failed:', e.message); return []; }
-  if (!Array.isArray(arr)) { err('orders must be a JSON array'); return []; }
-  const out = [];
-  arr.forEach((o, i) => { try { out.push(normalizeOrder(o, i)); } catch (e) { err(e.message); } });
-  return out;
+  for (const id of [...ORDERS.keys()]) {
+    if (!seen.has(id)) { ORDERS.delete(id); firing.delete(id); log(`order ${id} removed (cancelled or completed)`); }
+  }
 }
 
 // ── Serialized execution queue (one nexus sell at a time, globally) ───────────
 const queue = [];
 let running = false;
-const firing = new Set(); // order ids queued-or-running (dedupe)
+const firing = new Set();
 
 function pump() {
   if (running) return;
@@ -171,13 +180,11 @@ async function gql(query, variables) {
   return d.data;
 }
 
-// Read the curve's CURRENT state: package, tokenType, live reserve, graduated.
-// Type repr looks like: 0xPKG::bonding_curve::Curve<0xTPKG::module::TYPE>
+// Current curve state: package, tokenType, live reserve, graduated.
+// Type repr: 0xPKG::bonding_curve::Curve<0xTPKG::module::TYPE>
 async function getCurveState(curveId) {
   const data = await gql(
-    `query($id: SuiAddress!) {
-       object(address: $id) { asMoveObject { contents { type { repr } json } } }
-     }`,
+    `query($id: SuiAddress!) { object(address: $id) { asMoveObject { contents { type { repr } json } } } }`,
     { id: curveId },
   );
   const mo = data?.object?.asMoveObject?.contents;
@@ -194,9 +201,7 @@ async function getCurveState(curveId) {
 
 async function getBalanceWhole(tokenType) {
   const data = await gql(
-    `query($addr: SuiAddress!, $coinType: String!) {
-       address(address: $addr) { balance(coinType: $coinType) { totalBalance } }
-     }`,
+    `query($addr: SuiAddress!, $coinType: String!) { address(address: $addr) { balance(coinType: $coinType) { totalBalance } } }`,
     { addr: INVOKER_ADDRESS, coinType: tokenType },
   );
   const atomic = data?.address?.balance?.totalBalance ?? '0';
@@ -205,15 +210,10 @@ async function getBalanceWhole(tokenType) {
 
 // ── Fire a sell via the proven runner path (server.js signs) ──────────────────
 async function fireSell(curveId, tokenWhole, minSuiOut) {
-  const body = {
-    workflow: 'sell',
-    sell: { curveId, tokenAmount: Number(tokenWhole.toFixed(6)), minSuiOut: minSuiOut ?? 0 },
-  };
+  const body = { workflow: 'sell', sell: { curveId, tokenAmount: Number(tokenWhole.toFixed(6)), minSuiOut: minSuiOut ?? 0 } };
   const r = await fetch(`${RUNNER_URL}/run-dag`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(190000),
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body), signal: AbortSignal.timeout(190000),
   });
   const d = await r.json().catch(() => ({}));
   if (!r.ok || !d.ok) throw new Error(d.error ?? `runner ${r.status}`);
@@ -239,12 +239,11 @@ function nextAction(order) {
 async function processOrder(order) {
   if (order.done) return;
 
-  // Authoritative price + metadata from CURRENT on-chain curve state.
   let st;
   try { st = await getCurveState(order.curveId); }
   catch (e) { err(`${order.id}: curve read failed: ${e.message}`); order._cooldownUntil = Date.now() + ERROR_COOLDOWN_MS; return; }
 
-  if (st.graduated) { log(`${order.id}: curve graduated — closing order`); order.done = true; return; }
+  if (st.graduated) { log(`${order.id}: curve graduated — closing order`); order.done = true; await persistOrder(order); return; }
   if (!order.tokenType) order.tokenType = st.tokenType;
   if (!order.packageId) order.packageId = st.packageId;
   if (!order.tokenType) { err(`${order.id}: curve has no tokenType yet`); order._cooldownUntil = Date.now() + ERROR_COOLDOWN_MS; return; }
@@ -255,19 +254,17 @@ async function processOrder(order) {
   if (order.entryPriceSui == null) {
     order.entryPriceSui = price;
     log(`${order.id}: entry not provided — seeding from current price ${price.toExponential(4)} SUI`);
+    await persistOrder(order);
   }
   order.lastPrice = price;
 
   const mult  = order.entryPriceSui > 0 ? price / order.entryPriceSui : 1;
   const nr    = order.takeProfit.find(r => !r._fired);
-  const nrTxt = nr
-    ? `${nr.multiple != null ? nr.multiple + 'x' : nr.priceSui + ' SUI'} -> ${nr.sellPct}%`
-    : (order.stopLoss ? 'stop-loss only' : 'none');
+  const nrTxt = nr ? `${nr.multiple != null ? nr.multiple + 'x' : nr.priceSui + ' SUI'} -> ${nr.sellPct}%` : (order.stopLoss ? 'stop-loss only' : 'none');
   log(`${order.id}: tick ${price.toExponential(3)} SUI (${mult.toFixed(3)}x) | reserve ${(st.reserveMist / MIST_PER_SUI).toFixed(2)} SUI | next ${nrTxt}`);
 
-  if (!nextAction(order)) return; // nothing crossed; cheap exit before balance read
+  if (!nextAction(order)) return;
 
-  // Balance ONCE per pass, decrement locally between rungs (GraphQL lags sells).
   let balWhole;
   try { balWhole = await getBalanceWhole(order.tokenType); }
   catch (e) { err(`${order.id}: balance read failed: ${e.message}`); order._cooldownUntil = Date.now() + ERROR_COOLDOWN_MS; return; }
@@ -280,11 +277,12 @@ async function processOrder(order) {
       log(`${order.id}: ${action.kind} crossed but balance is dust (${balWhole}); marking consumed`);
       if (action.kind === 'SL') order.done = true;
       else { action.rung._fired = true; if (order.takeProfit.every(r => r._fired)) order.done = true; }
+      await persistOrder(order);
       continue;
     }
 
     const sellWhole = action.sellPct >= 100 ? balWhole : balWhole * (action.sellPct / 100);
-    if (!(sellWhole > DUST_WHOLE)) { if (action.rung) action.rung._fired = true; continue; }
+    if (!(sellWhole > DUST_WHOLE)) { if (action.rung) action.rung._fired = true; await persistOrder(order); continue; }
 
     log(`${order.id}: ${action.kind} fire — (${mult.toFixed(3)}x) selling ${action.sellPct}% of ${balWhole.toFixed(6)} = ${sellWhole.toFixed(6)} tokens`);
     try {
@@ -293,34 +291,31 @@ async function processOrder(order) {
     } catch (e) {
       err(`${order.id}: sell failed: ${e.message}`);
       order._cooldownUntil = Date.now() + ERROR_COOLDOWN_MS;
-      return; // leave trigger unfired; retry after cooldown on next wake-up
+      return; // leave trigger unfired; retry after cooldown
     }
 
-    balWhole -= sellWhole; // authoritative within this pass
-
-    if (action.kind === 'SL') { order.done = true; break; }
-    action.rung._fired = true;
-    if (order.takeProfit.every(r => r._fired)) order.done = true;
+    balWhole -= sellWhole;
+    if (action.kind === 'SL') order.done = true;
+    else { action.rung._fired = true; if (order.takeProfit.every(r => r._fired)) order.done = true; }
+    await persistOrder(order); // persist immediately so a restart resumes correctly
+    if (order.done) break;
   }
 
   if (order.done) log(`${order.id}: COMPLETE`);
 }
 
-// ── SSE wake-up ───────────────────────────────────────────────────────────────
-// We do NOT price from the event — the indexer replays history on backfill, so
-// an event's reserve can be stale. The event only tells us "re-check curve X".
+// ── SSE wake-up (never prices from the event) ─────────────────────────────────
 function handleEvent(ev) {
   if (!ev || ev.type === 'connected') return;
   const isTrade = ev.type === 'TokensPurchased' || ev.type === 'TokensBought' || ev.type === 'TokensSold';
   if (!isTrade || !ev.curveId) return;
-  for (const order of ORDERS) {
+  for (const order of ORDERS.values()) {
     if (!order.done && order.curveId === ev.curveId) schedule(order);
   }
 }
 
-// ── SSE reader over fetch (no eventsource dependency) ─────────────────────────
 async function streamSSE() {
-  const url = `${INDEXER_URL}/stream`; // firehose, all curves
+  const url = `${INDEXER_URL}/stream`;
   while (true) {
     try {
       log(`connecting SSE -> ${url}`);
@@ -360,7 +355,7 @@ function summarizeOrder(o) {
   return `${o.id} curve ${o.curveId.slice(0, 10)}… entry ${o.entryPriceSui ?? 'observe'} | TP [${tp}] | SL ${sl}`;
 }
 
-function main() {
+async function main() {
   console.log('━'.repeat(52));
   console.log('  SUIPUMP STRATEGY BRAIN (TP/SL + generic ladder)');
   console.log('━'.repeat(52));
@@ -368,10 +363,13 @@ function main() {
   log(`indexer  : ${INDEXER_URL}`);
   log(`graphql  : ${SUI_GRAPHQL_URL}`);
   log(`invoker  : ${INVOKER_ADDRESS}`);
+  log(`orders   : indexer /orders store (refresh ${ORDERS_REFRESH_MS}ms)${STRATEGY_API_KEY ? ' [keyed]' : ''}`);
   log(`price    : read live from curve object (SSE = wake-up only)`);
-  ORDERS = loadOrders();
-  log(`orders   : ${ORDERS.length}`);
-  ORDERS.forEach(o => log('  •', summarizeOrder(o)));
+
+  await syncOrders();
+  log(`tracking : ${ORDERS.size} active order(s)`);
+  setInterval(() => { syncOrders().catch(e => err('sync error:', e?.message ?? e)); }, ORDERS_REFRESH_MS);
+
   streamSSE();
 }
 
