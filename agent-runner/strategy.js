@@ -209,15 +209,38 @@ async function getBalanceWhole(tokenType) {
 }
 
 // ── Fire a sell via the proven runner path (server.js signs) ──────────────────
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+// Sui rejects a tx that referenced an object version another tx just bumped
+// ("unavailable for consumption" / "needs to be rebuilt"). Happens when the
+// price-moving trade and our sell touch the same curve/coins back to back.
+// A fresh /run-dag rebuilds against current versions, so retry this class.
+const STALE_OBJECT_RE = /unavailable for consumption|needs to be rebuilt|rejected as invalid by more than|not available for consumption|equivocat/i;
+
 async function fireSell(curveId, tokenWhole, minSuiOut) {
   const body = { workflow: 'sell', sell: { curveId, tokenAmount: Number(tokenWhole.toFixed(6)), minSuiOut: minSuiOut ?? 0 } };
-  const r = await fetch(`${RUNNER_URL}/run-dag`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body), signal: AbortSignal.timeout(190000),
-  });
-  const d = await r.json().catch(() => ({}));
-  if (!r.ok || !d.ok) throw new Error(d.error ?? `runner ${r.status}`);
-  return d;
+  let lastErr;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const r = await fetch(`${RUNNER_URL}/run-dag`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body), signal: AbortSignal.timeout(190000),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || !d.ok) throw new Error(d.error ?? `runner ${r.status}`);
+      return d;
+    } catch (e) {
+      lastErr = e;
+      if (attempt < 3 && STALE_OBJECT_RE.test(e.message ?? '')) {
+        const wait = 2000 * attempt;
+        err(`sell attempt ${attempt} hit a stale object version; rebuilding in ${wait}ms`);
+        await sleep(wait);
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw lastErr;
 }
 
 // ── Order evaluation ──────────────────────────────────────────────────────────
