@@ -167,32 +167,47 @@ function _preloadMascot(src) {
 _preloadMascot('/mascot_pump.png');
 _preloadMascot('/mascot_dump.png');
 
-// Deliver a canvas as a PNG. Native share sheet on mobile (and any browser that
-// supports file sharing), download on desktop, open-in-tab as the last resort.
+// True only on real mobile devices. Desktop Windows Edge/Chrome also support
+// file sharing, so a plain canShare check wrongly routes desktop into the OS
+// share dialog — we do not want that. Desktop must just download.
+function _isMobileDevice() {
+  if (typeof navigator === 'undefined') return false;
+  if (navigator.userAgentData && typeof navigator.userAgentData.mobile === 'boolean') return navigator.userAgentData.mobile;
+  const ua = navigator.userAgent || '';
+  if (/iphone|ipad|ipod|android|mobile/i.test(ua)) return true;
+  // iPadOS 13+ reports as desktop Safari but is a touch device
+  if (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1) return true;
+  return false;
+}
+
+// Deliver a canvas as a PNG. Native share sheet on mobile only; desktop
+// downloads the file directly (no OS share dialog).
 async function sharePngFromCanvas(canvas, filename, shareText) {
   const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
   if (!blob) return 'error';
-  const file = new File([blob], filename, { type: 'image/png' });
 
-  // Mobile / file-share capable: open the native share sheet.
-  if (typeof navigator !== 'undefined' && navigator.canShare && navigator.canShare({ files: [file] })) {
-    try {
-      await navigator.share({ files: [file], text: shareText });
-      return 'shared';
-    } catch (err) {
-      if (err && err.name === 'AbortError') return 'cancelled'; // user dismissed the sheet
-      // otherwise fall through to the download / open fallback
+  const isMobile = _isMobileDevice();
+
+  // Mobile only: open the native share sheet.
+  if (isMobile && typeof navigator !== 'undefined' && navigator.canShare) {
+    const file = new File([blob], filename, { type: 'image/png' });
+    if (navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], text: shareText });
+        return 'shared';
+      } catch (err) {
+        if (err && err.name === 'AbortError') return 'cancelled'; // user dismissed the sheet
+        // otherwise fall through to the download / open fallback
+      }
     }
   }
 
-  // Fallback. Desktop: download. Mobile without file-share: open in a new tab so
+  // Desktop: download directly. Mobile without file-share: open in a new tab so
   // the user can long-press to save.
   const url = URL.createObjectURL(blob);
   try {
     const a = document.createElement('a');
-    const supportsDownload = 'download' in a;
-    const isMobile = typeof navigator !== 'undefined' && /iphone|ipad|ipod|android/i.test(navigator.userAgent || '');
-    if (supportsDownload && !isMobile) {
+    if ('download' in a && !isMobile) {
       a.href = url;
       a.download = filename;
       document.body.appendChild(a);
