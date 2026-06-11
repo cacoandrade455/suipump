@@ -23,8 +23,10 @@ function ensureSchema() {
     schemaReady = pool.query(`
       CREATE TABLE IF NOT EXISTS strategy_orders (
         id           TEXT PRIMARY KEY,
-        curve_id     TEXT NOT NULL,
+        curve_id     TEXT,
         token_type   TEXT,
+        type         TEXT NOT NULL DEFAULT 'tpsl',
+        params       JSONB NOT NULL DEFAULT '{}'::jsonb,
         entry_price  DOUBLE PRECISION,
         min_sui_out  BIGINT NOT NULL DEFAULT 0,
         take_profit  JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -33,8 +35,12 @@ function ensureSchema() {
         created_at   BIGINT,
         updated_at   BIGINT
       );
+      ALTER TABLE strategy_orders ADD COLUMN IF NOT EXISTS type   TEXT  NOT NULL DEFAULT 'tpsl';
+      ALTER TABLE strategy_orders ADD COLUMN IF NOT EXISTS params JSONB NOT NULL DEFAULT '{}'::jsonb;
+      ALTER TABLE strategy_orders ALTER COLUMN curve_id DROP NOT NULL;
       CREATE INDEX IF NOT EXISTS idx_strategy_orders_status ON strategy_orders (status);
       CREATE INDEX IF NOT EXISTS idx_strategy_orders_curve  ON strategy_orders (curve_id);
+      CREATE INDEX IF NOT EXISTS idx_strategy_orders_type   ON strategy_orders (type);
     `).then(() => console.log('  ✓ strategy_orders table ready'))
       .catch(e => { console.error('  strategy_orders schema error:', e.message); schemaReady = null; });
   }
@@ -46,8 +52,10 @@ function ensureSchema() {
 function rowToOrder(r) {
   return {
     id:            r.id,
-    curveId:       r.curve_id,
+    curveId:       r.curve_id ?? null,
     tokenType:     r.token_type ?? null,
+    type:          r.type ?? 'tpsl',
+    params:        (r.params && typeof r.params === 'object' && !Array.isArray(r.params)) ? r.params : {},
     entryPriceSui: r.entry_price ?? null,
     minSuiOut:     Number(r.min_sui_out ?? 0),
     takeProfit:    Array.isArray(r.take_profit) ? r.take_profit : [],
@@ -78,6 +86,61 @@ function sanitizeStop(sl) {
   if (sl.priceSui != null) o.priceSui = Number(sl.priceSui);
   if (!Number.isFinite(o.multiple) && !Number.isFinite(o.priceSui)) return null;
   return o;
+}
+
+const ORDER_TYPES = ['tpsl', 'sniper', 'dca', 'copytrade'];
+
+// Validate + clean per-type params for the non-tpsl strategies. Returns a clean
+// params object, or null if required fields are missing/invalid. These shapes
+// are the contract the strategy brain's handlers (A2/A3/A4) will consume.
+function sanitizeParams(type, raw) {
+  const p = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
+  const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
+  const slippage = num(p.slippageBps);
+
+  if (type === 'sniper') {
+    // Buy the moment a NEW launch matches. Match on any of creator / symbol /
+    // nameIncludes (at least one required). suiPerBuy > 0 required.
+    const match = {};
+    if (isHex(p.creator)) match.creator = p.creator;
+    if (typeof p.symbol === 'string' && p.symbol.trim()) match.symbol = p.symbol.trim().toUpperCase().slice(0, 12);
+    if (typeof p.nameIncludes === 'string' && p.nameIncludes.trim()) match.nameIncludes = p.nameIncludes.trim().slice(0, 64);
+    const suiPerBuy = num(p.suiPerBuy);
+    if (!Object.keys(match).length) return null;
+    if (!(suiPerBuy > 0)) return null;
+    const out = { match, suiPerBuy };
+    if (slippage != null) out.slippageBps = slippage;
+    return out;
+  }
+
+  if (type === 'dca') {
+    // Buy a fixed SUI amount on curveId every intervalMs, up to `buys` times.
+    const intervalMs = num(p.intervalMs);
+    const suiPerBuy  = num(p.suiPerBuy);
+    const buys       = num(p.buys);
+    if (!(intervalMs >= 1000)) return null;      // 1s floor
+    if (!(suiPerBuy > 0)) return null;
+    if (!(buys > 0)) return null;
+    const out = { intervalMs: Math.trunc(intervalMs), suiPerBuy, buys: Math.trunc(buys), done: 0 };
+    if (slippage != null) out.slippageBps = slippage;
+    return out;
+  }
+
+  if (type === 'copytrade') {
+    // Mirror trades by targetWallet. `ratio` scales their size, or a fixed
+    // `suiPerTrade`; one of the two is required.
+    if (!isHex(p.targetWallet)) return null;
+    const ratio       = num(p.ratio);
+    const suiPerTrade = num(p.suiPerTrade);
+    if (!(ratio > 0) && !(suiPerTrade > 0)) return null;
+    const out = { targetWallet: p.targetWallet };
+    if (ratio > 0)       out.ratio = ratio;
+    if (suiPerTrade > 0) out.suiPerTrade = suiPerTrade;
+    if (slippage != null) out.slippageBps = slippage;
+    return out;
+  }
+
+  return null;
 }
 
 function writeGuard(req, res) {
@@ -117,23 +180,37 @@ export function mountOrders(app) {
     try {
       await ensureSchema();
       const b = req.body ?? {};
-      if (!isHex(b.curveId)) return res.status(400).json({ error: 'curveId (0x...) required' });
-      const tp = sanitizeRungs(b.takeProfit);
-      const sl = sanitizeStop(b.stopLoss);
-      if (!tp.length && !sl) return res.status(400).json({ error: 'need a takeProfit rung or a stopLoss' });
+      const type = ORDER_TYPES.includes(b.type) ? b.type : 'tpsl';
+
       const id = (typeof b.id === 'string' && b.id.trim())
         ? b.id.trim()
         : `ord_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       const now       = Date.now();
-      const entry     = (b.entryPriceSui != null && Number.isFinite(Number(b.entryPriceSui))) ? Number(b.entryPriceSui) : null;
       const tokenType = typeof b.tokenType === 'string' ? b.tokenType : null;
       const minSuiOut = Number.isFinite(Number(b.minSuiOut)) ? Math.trunc(Number(b.minSuiOut)) : 0;
+
+      let curveId = isHex(b.curveId) ? b.curveId : null;
+      let tp = [], sl = null, entry = null, params = {};
+
+      if (type === 'tpsl') {
+        if (!curveId) return res.status(400).json({ error: 'curveId (0x...) required' });
+        tp = sanitizeRungs(b.takeProfit);
+        sl = sanitizeStop(b.stopLoss);
+        if (!tp.length && !sl) return res.status(400).json({ error: 'need a takeProfit rung or a stopLoss' });
+        entry = (b.entryPriceSui != null && Number.isFinite(Number(b.entryPriceSui))) ? Number(b.entryPriceSui) : null;
+      } else {
+        params = sanitizeParams(type, b.params);
+        if (!params) return res.status(400).json({ error: `invalid params for type "${type}"` });
+        // dca trades a specific curve; sniper/copytrade discover their target at runtime.
+        if (type === 'dca' && !curveId) return res.status(400).json({ error: 'dca requires curveId (0x...)' });
+      }
+
       await pool.query(
         `INSERT INTO strategy_orders
-           (id, curve_id, token_type, entry_price, min_sui_out, take_profit, stop_loss, status, created_at, updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,'active',$8,$8)
+           (id, curve_id, token_type, type, params, entry_price, min_sui_out, take_profit, stop_loss, status, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8::jsonb,$9::jsonb,'active',$10,$10)
          ON CONFLICT (id) DO NOTHING`,
-        [id, b.curveId, tokenType, entry, minSuiOut, JSON.stringify(tp), sl ? JSON.stringify(sl) : null, now]
+        [id, curveId, tokenType, type, JSON.stringify(params), entry, minSuiOut, JSON.stringify(tp), sl ? JSON.stringify(sl) : null, now]
       );
       const r = await pool.query('SELECT * FROM strategy_orders WHERE id = $1', [id]);
       res.status(201).json(rowToOrder(r.rows[0]));
@@ -153,6 +230,7 @@ export function mountOrders(app) {
       if (b.takeProfit    !== undefined) { sets.push(`take_profit = $${i++}::jsonb`); vals.push(JSON.stringify(sanitizeRungs(b.takeProfit))); }
       if (b.stopLoss      !== undefined) { sets.push(`stop_loss = $${i++}::jsonb`); const s = sanitizeStop(b.stopLoss); vals.push(s ? JSON.stringify(s) : null); }
       if (b.minSuiOut     !== undefined) { sets.push(`min_sui_out = $${i++}`); vals.push(Math.trunc(Number(b.minSuiOut)) || 0); }
+      if (b.params        !== undefined) { sets.push(`params = $${i++}::jsonb`); const pj = (b.params && typeof b.params === 'object' && !Array.isArray(b.params)) ? b.params : {}; vals.push(JSON.stringify(pj)); }
       if (b.status !== undefined && ['active', 'done', 'cancelled'].includes(b.status)) { sets.push(`status = $${i++}`); vals.push(b.status); }
       if (!sets.length) return res.status(400).json({ error: 'no updatable fields' });
       sets.push(`updated_at = $${i++}`); vals.push(Date.now());
