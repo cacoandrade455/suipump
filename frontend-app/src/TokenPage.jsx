@@ -35,6 +35,103 @@ const SUI_CLOCK_ID       = '0x6';
 // Quick-buy preset amounts (whole SUI, no fractions — SUI is cheap)
 const QUICK_BUY_AMOUNTS = ['1', '10', '50', '100', '500'];
 
+// ── CreatorCap resolution ───────────────────────────────────────────────────
+// Normalize a Sui address/ID to canonical 0x + 64-hex lowercase form so that
+// strict matching can't fail on prefix/padding/case differences. Sui GraphQL
+// can return a struct's `ID` field in a shape that does not byte-match the URL
+// param, which previously made the cap lookup miss a cap sitting in the wallet.
+function _normAddr(a) {
+  if (a == null) return '';
+  let s = String(a).trim().toLowerCase();
+  if (s.startsWith('0x')) s = s.slice(2);
+  s = s.replace(/^0+/, '');
+  if (s === '') s = '0';
+  return '0x' + s.padStart(64, '0');
+}
+
+const _SUI_GQL_URL = 'https://graphql.testnet.sui.io/graphql';
+
+async function _gql(query, ms = 8000) {
+  const r = await fetch(_SUI_GQL_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query }),
+    signal: AbortSignal.timeout(ms),
+  });
+  return r.json();
+}
+
+// Resolve the CreatorCap object for `curveId` owned by `ownerAddr`.
+// Returns { capId, capPkgId }. Throws an actionable error if none is found.
+// Strategy: (1) indexer fast path, (2) type-filtered + paginated per known
+// package, (3) package-agnostic bounded scan (catches caps minted by a package
+// id not present in constants). All comparisons are normalized.
+async function resolveCreatorCap(ownerAddr, curveId, indexerUrl) {
+  const want = _normAddr(curveId);
+
+  // 1. Indexer endpoint — trust only when it returns an objectId.
+  if (indexerUrl) {
+    try {
+      const res = await fetch(`${indexerUrl}/token/${curveId}/creator-cap?owner=${ownerAddr}`, { signal: AbortSignal.timeout(5000) });
+      if (res.ok) {
+        const d = await res.json();
+        if (d && d.objectId) return { capId: d.objectId, capPkgId: d.packageId ?? d.package_id ?? null };
+      }
+    } catch {}
+  }
+
+  let scanned = 0;
+
+  // 2. Type-filtered, paginated query per known package (cheap — caps only).
+  for (const pid of ALL_PACKAGE_IDS) {
+    if (!pid) continue;
+    let cursor = null;
+    for (let page = 0; page < 5; page++) {
+      const after = cursor ? `, after: "${cursor}"` : '';
+      const q = `{ address(address: "${ownerAddr}") { objects(first: 50${after}, filter: { type: "${pid}::bonding_curve::CreatorCap" }) { pageInfo { hasNextPage endCursor } nodes { address contents { json } } } } }`;
+      let result;
+      try { result = await _gql(q); } catch { break; }
+      const conn = result?.data?.address?.objects;
+      const nodes = conn?.nodes ?? [];
+      for (const n of nodes) {
+        scanned++;
+        if (_normAddr(n.contents?.json?.curve_id) === want) return { capId: n.address, capPkgId: pid };
+      }
+      if (!conn?.pageInfo?.hasNextPage) break;
+      cursor = conn.pageInfo.endCursor;
+    }
+  }
+
+  // 3. Package-agnostic fallback — bounded scan over owned objects, matched by
+  //    type repr. Covers caps minted by a package id missing from constants.
+  {
+    let cursor = null;
+    for (let page = 0; page < 8; page++) {
+      const after = cursor ? `, after: "${cursor}"` : '';
+      const q = `{ address(address: "${ownerAddr}") { objects(first: 50${after}) { pageInfo { hasNextPage endCursor } nodes { address contents { type { repr } json } } } } }`;
+      let result;
+      try { result = await _gql(q); } catch { break; }
+      const conn = result?.data?.address?.objects;
+      const nodes = conn?.nodes ?? [];
+      for (const n of nodes) {
+        const repr = n.contents?.type?.repr || '';
+        if (!repr.includes('::bonding_curve::CreatorCap')) continue;
+        scanned++;
+        if (_normAddr(n.contents?.json?.curve_id) === want) {
+          return { capId: n.address, capPkgId: repr.split('::')[0] };
+        }
+      }
+      if (!conn?.pageInfo?.hasNextPage) break;
+      cursor = conn.pageInfo.endCursor;
+    }
+  }
+
+  if (scanned > 0) {
+    throw new Error('This token\u2019s CreatorCap is not in the connected wallet. Connect the wallet that launched it, or claim via the agent.');
+  }
+  throw new Error('No CreatorCap in the connected wallet. This token was launched by a different wallet \u2014 claim from that wallet or via the agent.');
+}
+
 function mistToSui(mist) {
   if (mist == null) return 0;
   return Number(mist) / 1e9;
@@ -410,32 +507,8 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
   const showMsg = (m) => { setMsg(m); setTimeout(() => setMsg(''), 4000); };
 
   const getCapId = async () => {
-    // 1. Try indexer /creator-cap endpoint
-    const IURL_CAP = import.meta.env.VITE_INDEXER_URL || '';
-    if (IURL_CAP) {
-      try {
-        const res = await fetch(`${IURL_CAP}/token/${curveId}/creator-cap?owner=${account.address}`, { signal: AbortSignal.timeout(5000) });
-        if (res.ok) { const d = await res.json(); if (d.objectId) return d.objectId; }
-      } catch {}
-    }
-    // 2. Direct Sui GQL fetch (bypasses dapp-kit-react client wrapper)
-    const GRAPHQL_URL = 'https://graphql.testnet.sui.io/graphql';
-    for (const pid of ALL_PACKAGE_IDS) {
-      try {
-        const query = `{ address(address: "${account.address}") { objects(filter: { type: "${pid}::bonding_curve::CreatorCap" }) { nodes { address contents { json } } } } }`;
-        const r = await fetch(GRAPHQL_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query }),
-          signal: AbortSignal.timeout(8000),
-        });
-        const result = await r.json();
-        const nodes = result?.data?.address?.objects?.nodes ?? [];
-        const cap = nodes.find(n => n.contents?.json?.curve_id === curveId);
-        if (cap) return cap.address;
-      } catch {}
-    }
-    throw new Error('CreatorCap not found in wallet');
+    const { capId } = await resolveCreatorCap(account.address, curveId, import.meta.env.VITE_INDEXER_URL || '');
+    return capId;
   };
 
   const getCurveRef = async (tx) => {
@@ -619,36 +692,14 @@ function TradePanelContent({
     if (!account || !panelCurveId || !panelTokenType || claiming) return;
     setClaiming(true); setClaimMsg('');
     try {
-      // Try indexer first for cap lookup
+      // Resolve the CreatorCap (normalized, paginated, package-agnostic).
       let capId = null;
       let capPkgId = pkgId;
-      const IURL_CLAIM = import.meta.env.VITE_INDEXER_URL || '';
-      if (IURL_CLAIM) {
-        try {
-          const capRes = await fetch(`${IURL_CLAIM}/token/${panelCurveId}/creator-cap?owner=${account.address}`, { signal: AbortSignal.timeout(5000) });
-          if (capRes.ok) { const capData = await capRes.json(); if (capData.objectId) capId = capData.objectId; }
-        } catch {}
+      {
+        const r = await resolveCreatorCap(account.address, panelCurveId, import.meta.env.VITE_INDEXER_URL || '');
+        capId = r.capId;
+        if (r.capPkgId) capPkgId = r.capPkgId;
       }
-      // Fallback: Direct Sui GQL fetch (bypasses dapp-kit-react client wrapper)
-      if (!capId) {
-        const GRAPHQL_URL_P = 'https://graphql.testnet.sui.io/graphql';
-        for (const searchPkg of ALL_PACKAGE_IDS) {
-          try {
-            const query = `{ address(address: "${account.address}") { objects(filter: { type: "${searchPkg}::bonding_curve::CreatorCap" }) { nodes { address contents { json } } } } }`;
-            const r = await fetch(GRAPHQL_URL_P, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ query }),
-              signal: AbortSignal.timeout(8000),
-            });
-            const result = await r.json();
-            const nodes = result?.data?.address?.objects?.nodes ?? [];
-            const match = nodes.find(n => n.contents?.json?.curve_id === panelCurveId);
-            if (match) { capId = match.address; capPkgId = searchPkg; break; }
-          } catch {}
-        }
-      }
-      if (!capId) throw new Error('CreatorCap not found in wallet');
 
       // Get ISV from indexer — avoids getObject CORS issue
       const _IURL = import.meta.env.VITE_INDEXER_URL || '';
@@ -1384,17 +1435,17 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
           // Map indexer response to curve state field names expected by component
           // Handle both camelCase (getAllCurves alias) and snake_case (raw SELECT c.*)
           const stats = d.stats ?? {};
-          setCurveState({
+          setCurveState(prev => ({
             sui_reserve:            String(stats.reserve_sui != null ? Math.round(stats.reserve_sui * 1e9) : (d.suiReserve ?? d.sui_reserve ?? 0)),
             token_reserve:          String(stats.token_reserve != null ? Math.round(stats.token_reserve * 1e6) : (d.tokenReserve ?? d.token_reserve ?? String(800_000_000 * 1e6))),
             graduated:              d.graduated ?? false,
-            creator_fees:           '0', // always overwritten by on-chain GraphQL fetch below
+            creator_fees:           prev?.creator_fees ?? '0', // preserved — on-chain fetch owns this field; do NOT reset to 0 each poll
             creator:                d.creator ?? null,
             initial_shared_version: d.initialSharedVersion ?? d.initial_shared_version ?? null,
             metadata_updated:       d.metadataUpdated ?? d.metadata_updated ?? false,
             created_at_ms:          d.createdAt ?? d.created_at ?? null,
             package_id:             d.packageId ?? d.package_id ?? null,
-          });
+          }));
         }
       } catch {}
     }
