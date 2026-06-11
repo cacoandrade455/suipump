@@ -222,7 +222,12 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const STALE_OBJECT_RE = /unavailable for consumption|needs to be rebuilt|rejected as invalid by more than|not available for consumption|equivocat/i;
 
 async function fireSell(curveId, tokenWhole, minSuiOut) {
-  const body = { workflow: 'sell', sell: { curveId, tokenAmount: Number(tokenWhole.toFixed(6)), minSuiOut: minSuiOut ?? 0 } };
+  // tokenAmount MUST be a whole integer. The Nexus sell tool (xyz.suipump.sell@1)
+  // parses this input as a u64; a fractional value like 17844905.728001 fails that
+  // parse on the Leader, so the sell walk errors and never builds the on-chain sell
+  // tx — the request tx still returns a digest, which is the "dry sell" we saw.
+  // The buy tool takes whole SUI the same way, so whole tokens is the right unit.
+  const body = { workflow: 'sell', sell: { curveId, tokenAmount: Math.floor(tokenWhole), minSuiOut: minSuiOut ?? 0 } };
   let lastErr;
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
@@ -326,8 +331,11 @@ async function processOrder(order) {
     // even when the sell vertex aborts on-chain. Confirm by re-reading the on-chain
     // balance and requiring it actually dropped by ~sellWhole. If it didn't move,
     // the trigger stays unfired and the order retries on the next wake.
+    // Poll up to ~25s: the Leader executes the sell walk asynchronously with a
+    // ~15s deadline, so the on-chain balance can take longer than a few seconds to
+    // actually drop. Too short a window would false-negative a slow-but-real sell.
     let balAfter = balBefore, moved = 0, confirmed = false;
-    for (let i = 1; i <= 4; i++) {
+    for (let i = 1; i <= 10; i++) {
       await sleep(2500);
       try { balAfter = await getBalanceWhole(order.tokenType); }
       catch (e) { err(`${order.id}: post-sell balance read failed (try ${i}): ${e.message}`); continue; }
