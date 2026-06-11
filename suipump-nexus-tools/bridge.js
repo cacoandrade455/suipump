@@ -318,12 +318,18 @@ async function handleSell(body) {
   const isV5Plus  = V5_PLUS.has(pkgId);
   const isV7Plus  = V7_PLUS.has(pkgId);
 
-  const coins    = await client.getCoins({ owner: address, coinType: tokenType });
-  if (!coins.data.length) throw new Error(`No ${tokenType} balance in agent wallet`);
+  // getCoins() shape differs across @mysten/sui versions. The graphql-core build
+  // (1.45.x) reads the owner from `address` and returns { objects: [{ id, ... }] };
+  // older builds keyed on `owner` and returned { data: [{ coinObjectId, ... }] }.
+  // Pass both owner keys and read both result shapes so a dependency bump can never
+  // silently break the sell coin lookup again (buys are unaffected: they never call getCoins).
+  const coinsRes = await client.getCoins({ owner: address, address, coinType: tokenType });
+  const coinList = coinsRes.objects ?? coinsRes.data ?? [];
+  if (!coinList.length) throw new Error(`No ${tokenType} balance in agent wallet`);
 
   const tx       = new Transaction();
   const curveRef = tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: sharedVersion, mutable: true });
-  const coinObjs = coins.data.map(c => tx.object(c.coinObjectId));
+  const coinObjs = coinList.map(c => tx.object(c.id ?? c.coinObjectId ?? c.objectId));
 
   let tokenCoin;
   if (coinObjs.length === 1) {
