@@ -152,37 +152,98 @@ function drawPnlCard({ canvas, name, symbol, pnlSui, pnlPct, spent, entryPrice, 
   // Mascot drawn after image load in PnlShareButton
 }
 
-function PnlShareButton({ tk, unrealizedPnl, currentPrice }) {
-  const handleShare = () => {
-    const canvas = document.createElement('canvas');
-    const totalPnl = (tk.realizedPnl || 0) + (unrealizedPnl || 0);
-    const isUp = totalPnl >= 0;
+// Preload mascots at module load so the share handler can render synchronously.
+// iOS requires navigator.share() to fire inside the user gesture, so we must not
+// wait on an image load between the tap and the share call.
+const _MASCOTS = {};
+function _preloadMascot(src) {
+  if (typeof window === 'undefined') return null;
+  if (_MASCOTS[src]) return _MASCOTS[src];
+  const im = new Image();
+  im.src = src;
+  _MASCOTS[src] = im;
+  return im;
+}
+_preloadMascot('/mascot_pump.png');
+_preloadMascot('/mascot_dump.png');
 
-    const doRender = (mascotImg) => {
+// Deliver a canvas as a PNG. Native share sheet on mobile (and any browser that
+// supports file sharing), download on desktop, open-in-tab as the last resort.
+async function sharePngFromCanvas(canvas, filename, shareText) {
+  const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+  if (!blob) return 'error';
+  const file = new File([blob], filename, { type: 'image/png' });
+
+  // Mobile / file-share capable: open the native share sheet.
+  if (typeof navigator !== 'undefined' && navigator.canShare && navigator.canShare({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file], text: shareText });
+      return 'shared';
+    } catch (err) {
+      if (err && err.name === 'AbortError') return 'cancelled'; // user dismissed the sheet
+      // otherwise fall through to the download / open fallback
+    }
+  }
+
+  // Fallback. Desktop: download. Mobile without file-share: open in a new tab so
+  // the user can long-press to save.
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement('a');
+    const supportsDownload = 'download' in a;
+    const isMobile = typeof navigator !== 'undefined' && /iphone|ipad|ipod|android/i.test(navigator.userAgent || '');
+    if (supportsDownload && !isMobile) {
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } else {
+      window.open(url, '_blank');
+    }
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(url), 15000);
+  }
+  return 'downloaded';
+}
+
+function PnlShareButton({ tk, unrealizedPnl, currentPrice }) {
+  const [busy, setBusy] = useState(false);
+
+  const handleShare = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const canvas = document.createElement('canvas');
+      const totalPnl = (tk.realizedPnl || 0) + (unrealizedPnl || 0);
+      const isUp = totalPnl >= 0;
+      const pct = tk.suiSpent > 0 ? (totalPnl / tk.suiSpent) * 100 : 0;
+
       drawPnlCard({
         canvas, name: tk.name, symbol: tk.symbol,
         pnlSui: totalPnl,
-        pnlPct: tk.suiSpent > 0 ? (totalPnl / tk.suiSpent) * 100 : 0,
+        pnlPct: pct,
         spent: tk.suiSpent, entryPrice: tk.avgEntryPrice,
         currentPrice: currentPrice || 0, isClosed: tk.isClosed,
       });
-      drawMascotOnCanvas(canvas.getContext('2d'), mascotImg, canvas.width - 290, 10, 280);
-      const link = document.createElement('a');
-      link.download = `suipump-${tk.symbol || 'pnl'}.png`;
-      link.href = canvas.toDataURL('image/png');
-      link.click();
-    };
 
-    const img = new Image();
-    img.onload = () => doRender(img);
-    img.onerror = () => doRender(null);
-    img.src = isUp ? '/mascot_pump.png' : '/mascot_dump.png';
+      // Draw the preloaded mascot if it has finished loading; otherwise render
+      // without it rather than blocking (keeps the iOS user gesture alive).
+      const mascot = _MASCOTS[isUp ? '/mascot_pump.png' : '/mascot_dump.png'];
+      if (mascot && mascot.complete && mascot.naturalWidth > 0) {
+        drawMascotOnCanvas(canvas.getContext('2d'), mascot, canvas.width - 290, 10, 280);
+      }
+
+      const shareText = `My $${tk.symbol || ''} PnL on SuiPump: ${totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(2)} SUI (${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%) · suipump.org`;
+      await sharePngFromCanvas(canvas, `suipump-${tk.symbol || 'pnl'}.png`, shareText);
+    } catch {}
+    setBusy(false);
   };
 
   return (
-    <button onClick={e => { e.stopPropagation(); handleShare(); }}
-      className="flex items-center gap-1 px-2 py-1 rounded-lg bg-lime-400/10 border border-lime-400/20 text-lime-400 text-[9px] font-mono font-bold hover:bg-lime-400/20 transition-colors">
-      SHARE PNL
+    <button onClick={e => { e.stopPropagation(); handleShare(); }} disabled={busy}
+      className="flex items-center gap-1 px-2 py-1 rounded-lg bg-lime-400/10 border border-lime-400/20 text-lime-400 text-[9px] font-mono font-bold hover:bg-lime-400/20 transition-colors disabled:opacity-50">
+      {busy ? 'SHARING…' : 'SHARE PNL'}
     </button>
   );
 }
