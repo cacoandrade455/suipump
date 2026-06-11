@@ -131,10 +131,13 @@ async function syncOrders() {
     seen.add(R.id);
     if (ORDERS.has(R.id)) continue; // keep live in-memory progress for tracked orders
     try {
-      const o = normalizeRemote(R);
+      const type = HANDLERS[R.type] ? R.type : 'tpsl';
+      const h = HANDLERS[type];
+      const o = h.normalize(R);
+      o.type = type;
       ORDERS.set(o.id, o);
-      log(`loaded order ${summarizeOrder(o)}`);
-      schedule(o); // evaluate immediately (catches already-crossed targets)
+      log(`loaded ${h.label} order ${h.summarize(o)}`);
+      if (type === 'tpsl') schedule(o); // evaluate immediately (catches already-crossed targets)
     } catch (e) { err(`order ${R.id} skipped: ${e.message}`); }
   }
   for (const id of [...ORDERS.keys()]) {
@@ -157,12 +160,13 @@ function pump() {
     .finally(() => { running = false; pump(); });
 }
 
-function schedule(order) {
+function schedule(order, trigger) {
   if (order.done) return;
   if (firing.has(order.id)) return;
-  if (Date.now() < order._cooldownUntil) return;
+  if (Date.now() < (order._cooldownUntil ?? 0)) return;
+  const h = HANDLERS[order.type] ?? HANDLERS.tpsl;
   firing.add(order.id);
-  queue.push(async () => { try { await processOrder(order); } finally { firing.delete(order.id); } });
+  queue.push(async () => { try { await h.process(order, trigger); } finally { firing.delete(order.id); } });
   pump();
 }
 
@@ -330,10 +334,26 @@ async function processOrder(order) {
 // ── SSE wake-up (never prices from the event) ─────────────────────────────────
 function handleEvent(ev) {
   if (!ev || ev.type === 'connected') return;
-  const isTrade = ev.type === 'TokensPurchased' || ev.type === 'TokensBought' || ev.type === 'TokensSold';
-  if (!isTrade || !ev.curveId) return;
-  for (const order of ORDERS.values()) {
-    if (!order.done && order.curveId === ev.curveId) schedule(order);
+  const isTrade  = ev.type === 'TokensPurchased' || ev.type === 'TokensBought' || ev.type === 'TokensSold';
+  const isLaunch = ev.type === 'CurveCreated';
+
+  if (isTrade && ev.curveId) {
+    for (const order of ORDERS.values()) {
+      if (!order.done && HANDLERS[order.type]?.wakesOn === 'trade' && order.curveId === ev.curveId) {
+        schedule(order, { kind: 'trade', ev });
+      }
+    }
+    return;
+  }
+
+  // New launches wake snipers. copytrade (wakesOn 'walletTrade') is routed in A4
+  // once the trade event carries the trader address; until then it stays inert.
+  if (isLaunch && ev.curveId) {
+    for (const order of ORDERS.values()) {
+      if (!order.done && HANDLERS[order.type]?.wakesOn === 'launch') {
+        schedule(order, { kind: 'launch', ev });
+      }
+    }
   }
 }
 
@@ -378,9 +398,64 @@ function summarizeOrder(o) {
   return `${o.id} curve ${o.curveId.slice(0, 10)}… entry ${o.entryPriceSui ?? 'observe'} | TP [${tp}] | SL ${sl}`;
 }
 
+// ── Strategy handler registry (dispatch by order.type) ────────────────────────
+// tpsl is the proven take-profit/stop-loss ladder, wired verbatim to the
+// existing normalizeRemote / processOrder / summarizeOrder. sniper, dca, and
+// copytrade are SCAFFOLDS for A2/A3/A4: the store accepts them and the brain
+// loads + routes their triggers, but their process() is inert until each is
+// built. A handler is { label, wakesOn, normalize, process, summarize }.
+function scaffoldNormalize(R) {
+  return {
+    id: R.id,
+    curveId: R.curveId ?? null,
+    tokenType: R.tokenType ?? null,
+    params: (R.params && typeof R.params === 'object') ? R.params : {},
+    done: false,
+    _cooldownUntil: 0,
+    _warned: false,
+  };
+}
+
+function makeScaffold(type, milestone, wakesOn) {
+  return {
+    label: type,
+    wakesOn,
+    normalize: scaffoldNormalize,
+    summarize: (o) => `${o.id} ${type} ${JSON.stringify(o.params)}${o.curveId ? ' curve ' + o.curveId.slice(0, 10) + '…' : ''} — pending ${milestone}`,
+    process: async (order) => {
+      if (!order._warned) {
+        log(`${order.id}: ${type} not yet implemented (${milestone}); order is inert until then`);
+        order._warned = true;
+      }
+    },
+  };
+}
+
+const HANDLERS = {
+  tpsl: {
+    label: 'TP/SL',
+    wakesOn: 'trade',                 // a trade on order.curveId
+    normalize: normalizeRemote,       // existing, unchanged
+    process: processOrder,            // existing, unchanged
+    summarize: summarizeOrder,        // existing, unchanged
+  },
+  sniper:    makeScaffold('sniper',    'A2', 'launch'),       // a CurveCreated event
+  dca:       makeScaffold('dca',       'A3', 'timer'),        // the DCA tick
+  copytrade: makeScaffold('copytrade', 'A4', 'walletTrade'),  // a trade by target wallet
+};
+
+// DCA tick — wakes timer-driven orders. A3 will honor each order's interval; for
+// now this only routes them to their (inert) handler.
+const DCA_TICK_MS = parseInt(process.env.STRATEGY_DCA_TICK_MS ?? '30000', 10);
+function dcaTick() {
+  for (const order of ORDERS.values()) {
+    if (!order.done && HANDLERS[order.type]?.wakesOn === 'timer') schedule(order, { kind: 'timer' });
+  }
+}
+
 async function main() {
   console.log('━'.repeat(52));
-  console.log('  SUIPUMP STRATEGY BRAIN (TP/SL + generic ladder)');
+  console.log('  SUIPUMP STRATEGY BRAIN (multi-strategy dispatcher)');
   console.log('━'.repeat(52));
   log(`runner   : ${RUNNER_URL}`);
   log(`indexer  : ${INDEXER_URL}`);
@@ -388,10 +463,12 @@ async function main() {
   log(`invoker  : ${INVOKER_ADDRESS}`);
   log(`orders   : indexer /orders store (refresh ${ORDERS_REFRESH_MS}ms)${STRATEGY_API_KEY ? ' [keyed]' : ''}`);
   log(`price    : read live from curve object (SSE = wake-up only)`);
+  log(`strategies: ${Object.keys(HANDLERS).map(k => k === 'tpsl' ? `${k}(live)` : `${k}(scaffold)`).join(', ')}`);
 
   await syncOrders();
   log(`tracking : ${ORDERS.size} active order(s)`);
   setInterval(() => { syncOrders().catch(e => err('sync error:', e?.message ?? e)); }, ORDERS_REFRESH_MS);
+  setInterval(dcaTick, DCA_TICK_MS);
 
   streamSSE();
 }
