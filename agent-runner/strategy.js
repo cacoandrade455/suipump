@@ -312,16 +312,37 @@ async function processOrder(order) {
     if (!(sellWhole > DUST_WHOLE)) { if (action.rung) action.rung._fired = true; await persistOrder(order); continue; }
 
     log(`${order.id}: ${action.kind} fire — (${mult.toFixed(3)}x) selling ${action.sellPct}% of ${balWhole.toFixed(6)} = ${sellWhole.toFixed(6)} tokens`);
+    const balBefore = balWhole;
+    let receipt;
     try {
-      const receipt = await fireSell(order.curveId, sellWhole, order.minSuiOut);
-      log(`${order.id}: SOLD — digest ${receipt.digest} execId ${receipt.executionId}`);
+      receipt = await fireSell(order.curveId, sellWhole, order.minSuiOut);
     } catch (e) {
       err(`${order.id}: sell failed: ${e.message}`);
       order._cooldownUntil = Date.now() + ERROR_COOLDOWN_MS;
       return; // leave trigger unfired; retry after cooldown
     }
 
-    balWhole -= sellWhole;
+    // A returned digest is NOT proof the sell executed: the runner hands one back
+    // even when the sell vertex aborts on-chain. Confirm by re-reading the on-chain
+    // balance and requiring it actually dropped by ~sellWhole. If it didn't move,
+    // the trigger stays unfired and the order retries on the next wake.
+    let balAfter = balBefore, moved = 0, confirmed = false;
+    for (let i = 1; i <= 4; i++) {
+      await sleep(2500);
+      try { balAfter = await getBalanceWhole(order.tokenType); }
+      catch (e) { err(`${order.id}: post-sell balance read failed (try ${i}): ${e.message}`); continue; }
+      moved = balBefore - balAfter;
+      if (moved >= sellWhole * 0.9) { confirmed = true; break; }
+    }
+    if (!confirmed) {
+      err(`${order.id}: SELL NOT CONFIRMED — runner returned digest ${receipt.digest} but on-chain balance moved ${moved.toFixed(6)} of ${sellWhole.toFixed(6)} expected (${balBefore.toFixed(6)} -> ${balAfter.toFixed(6)}); order stays active, will retry`);
+      order._cooldownUntil = Date.now() + ERROR_COOLDOWN_MS;
+      return; // do NOT mark fired/done — the sell did not move tokens
+    }
+
+    log(`${order.id}: SOLD ${moved.toFixed(6)} tokens CONFIRMED on-chain — balance ${balBefore.toFixed(6)} -> ${balAfter.toFixed(6)} | digest ${receipt.digest} execId ${receipt.executionId}`);
+
+    balWhole = balAfter; // trust the verified on-chain balance, not an assumption
     if (action.kind === 'SL') order.done = true;
     else { action.rung._fired = true; if (order.takeProfit.every(r => r._fired)) order.done = true; }
     await persistOrder(order); // persist immediately so a restart resumes correctly
