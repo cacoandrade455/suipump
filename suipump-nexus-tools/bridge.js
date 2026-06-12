@@ -394,6 +394,13 @@ async function executeBuy(body) {
     throw new Error(`buy() failed: ${result.errors[0]?.message ?? JSON.stringify(result.errors)}`);
   }
 
+  // DIAGNOSTIC: dump the execute result shape once so we can see exactly where the
+  // deployed SDK puts the digest (the guessed paths all returned null). Remove after.
+  try {
+    console.log('[bridge] BUY result keys:', Object.keys(result ?? {}));
+    console.log('[bridge] BUY result shape:', JSON.stringify(result, (k, v) => typeof v === 'bigint' ? v.toString() : v).slice(0, 1500));
+  } catch (e) { console.log('[bridge] BUY result dump failed:', e.message); }
+
   const balChanges = balanceChangesOf(result);
   const tokenChange = balChanges.find(b =>
     bcAddr(b) === address && bcType(b) !== '0x2::sui::SUI'
