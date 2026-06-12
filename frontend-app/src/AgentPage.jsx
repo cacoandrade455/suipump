@@ -16,6 +16,7 @@ import { useCurrentAccount } from '@mysten/dapp-kit-react';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 
 const RUNNER_URL  = import.meta.env.VITE_AGENT_RUNNER_URL || 'https://suipump-agent-runner.onrender.com';
+const BRIDGE_URL  = import.meta.env.VITE_SUIPUMP_BRIDGE_URL || 'https://suipump-bridge.onrender.com';
 const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || 'https://suipump-62s2.onrender.com';
 const TOKEN_DECIMALS = 6;
 
@@ -140,6 +141,44 @@ export default function AgentPage({ onBack }) {
     }
   }
 
+  // Settle the swap through the bridge — the path that actually moves tokens
+  // (the Nexus DAG request emits the on-chain execution digest but does not
+  // settle, so we settle here, the same bridge every working SuiPump trade uses).
+  // Maps the runner payload's fields to the bridge's body. The bridge signs with
+  // its own SUI_PRIVATE_KEY, so no key is sent. Returns the settlement txDigest,
+  // or null for workflows the bridge doesn't settle (claim/alerts go DAG-only).
+  async function settleViaBridge(payload) {
+    const wf = payload.workflow;
+    let url, body;
+    if (wf === 'buy') {
+      url = `${BRIDGE_URL}/buy`;
+      body = { curveId: payload.buy.curveId, suiAmount: payload.buy.amountSui };
+    } else if (wf === 'sell') {
+      url = `${BRIDGE_URL}/sell`;
+      body = { curveId: payload.sell.curveId, tokenAmount: payload.sell.tokenAmount, minSuiOut: 0 };
+    } else if (wf === 'launch_and_buy') {
+      // Launch settles through the bridge /launch; the buy leg rides with it.
+      url = `${BRIDGE_URL}/launch`;
+      body = {
+        name: payload.launch.name,
+        symbol: payload.launch.symbol,
+        description: payload.launch.description,
+        graduationTarget: payload.launch.graduationTarget,
+        antiBotDelay: payload.launch.antiBotDelay,
+        devBuySui: payload.buy?.amountSui ?? payload.launch.devBuySui ?? 0,
+      };
+    } else {
+      return null; // claim / alerts: no bridge settlement
+    }
+    const r = await fetch(url, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || d.ok === false) throw new Error(d.error || `bridge ${wf} failed (${r.status})`);
+    return d.txDigest ?? null;
+  }
+
   const approve = useCallback(async () => {
     if (!plan || phase === 'running') return;
     setError(null); setResult(null); setPhase('running');
@@ -164,6 +203,29 @@ export default function AgentPage({ onBack }) {
       clearAnim();
       if (!res.ok || data.ok === false) throw new Error(data.error || 'DAG execution failed');
 
+      // The DAG request emitted the on-chain Nexus execution digest above. Now
+      // settle the swap through the bridge so the tokens actually move. The DAG
+      // digest is the agentic-decision proof; the settle digest is the trade.
+      let settleDigest = null;
+      try {
+        settleDigest = await settleViaBridge(payload);
+      } catch (e) {
+        // Settlement failed — surface it, but keep the Nexus digest we already got.
+        clearAnim();
+        setNodeState(Object.fromEntries(nodes.map(n => [n.id, 'error'])));
+        setResult({
+          workflow:    data.workflow ?? plan.workflow,
+          executionId: data.executionId ?? null,
+          digest:      data.digest ?? null,
+          checkpoint:  data.checkpoint ?? null,
+          dagId:       data.dagId ?? null,
+          settleDigest: null,
+        });
+        setError(`Nexus emitted, but settlement failed: ${e.message}`);
+        setPhase('failed');
+        return;
+      }
+
       setNodeState(Object.fromEntries(nodes.map(n => [n.id, 'done'])));
       setResult({
         workflow:    data.workflow ?? plan.workflow,
@@ -171,6 +233,7 @@ export default function AgentPage({ onBack }) {
         digest:      data.digest ?? null,
         checkpoint:  data.checkpoint ?? null,
         dagId:       data.dagId ?? null,
+        settleDigest,
       });
       setPhase('done');
     } catch (err) {
@@ -352,7 +415,13 @@ export default function AgentPage({ onBack }) {
             {result.digest && (
               <a href={suiscanTx(result.digest)} target="_blank" rel="noreferrer"
                  className="inline-flex items-center gap-1.5 text-violet-400 hover:text-violet-300 break-all">
-                tx: {result.digest} <ExternalLink size={11} />
+                nexus request: {result.digest} <ExternalLink size={11} />
+              </a>
+            )}
+            {result.settleDigest && (
+              <a href={suiscanTx(result.settleDigest)} target="_blank" rel="noreferrer"
+                 className="inline-flex items-center gap-1.5 text-emerald-400 hover:text-emerald-300 break-all">
+                settled: {result.settleDigest} <ExternalLink size={11} />
               </a>
             )}
           </div>
