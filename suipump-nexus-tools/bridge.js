@@ -201,6 +201,36 @@ async function parseBody(req) {
   });
 }
 
+// ── Buy idempotency (kills the Leader retry-after-timeout double-fire) ─────────
+// The Nexus Leader uses at-least-once delivery: if the buy tool responds slowly or
+// the response fails verification, the Leader re-invokes the buy tool, which POSTs
+// a SECOND identical /buy to this bridge -> a second real on-chain tx (two distinct
+// digests). buy.rs forwards no Nexus executionId, so we dedupe on the request
+// identity { address, curveId, amountMist, referral } within a short TTL window.
+//
+//   - In-flight: a duplicate that arrives while the first buy is still running
+//     awaits the SAME promise and returns the SAME digest (no second tx).
+//   - Recently-completed: a duplicate within BUY_IDEMPOTENCY_TTL_MS returns the
+//     cached result (no second tx).
+//   - After the TTL expires the key is dropped, so a genuinely new buy of the same
+//     amount/curve later is NOT blocked (legitimate repeat buys still work).
+//
+// The double-fires are seconds apart (retry signature), so a short TTL is correct.
+const BUY_IDEMPOTENCY_TTL_MS = Number(process.env.BUY_IDEMPOTENCY_TTL_MS ?? 90_000);
+const _buyInflight  = new Map(); // key -> Promise<result>
+const _buyCompleted = new Map(); // key -> { result, ts }
+
+function buyIdemKey({ address, curveId, amountMist, referral }) {
+  return `buy:${address}:${curveId}:${String(amountMist)}:${referral ?? ''}`;
+}
+
+function _sweepBuyCache() {
+  const now = Date.now();
+  for (const [k, v] of _buyCompleted) {
+    if (now - v.ts > BUY_IDEMPOTENCY_TTL_MS) _buyCompleted.delete(k);
+  }
+}
+
 // ── Handler: /buy ─────────────────────────────────────────────────────────────
 // Body: { curveId, amountMist?, suiAmount?, minTokensOut?, referral?, privateKey?, rpcUrl? }
 //
@@ -208,7 +238,54 @@ async function parseBody(req) {
 //   amountMist  — u64 MIST integer sent by the Rust tool (buy.rs)
 //   suiAmount   — float SUI sent by direct curl / manual calls
 // At least one must be present.
+//
+// handleBuy is the idempotency gate; executeBuy holds the unchanged buy logic.
 async function handleBuy(body) {
+  const { curveId, amountMist, suiAmount, referral, privateKey, rpcUrl } = body;
+  if (!curveId) throw new Error('curveId required');
+
+  // Resolve spend amount to MIST for the key (mirrors executeBuy's resolution).
+  let keyMist;
+  if (amountMist != null)      keyMist = BigInt(amountMist);
+  else if (suiAmount != null)  keyMist = BigInt(Math.floor(parseFloat(suiAmount) * Number(MIST_PER_SUI)));
+  else throw new Error('amountMist (u64 MIST) or suiAmount (float SUI) required');
+
+  // Address is needed for the key; derive it the same way executeBuy does.
+  const address = loadKeypair(privateKey).toSuiAddress();
+  const key     = buyIdemKey({ address, curveId, amountMist: keyMist, referral });
+
+  _sweepBuyCache();
+
+  // Recently-completed duplicate -> return cached result, do NOT fire again.
+  const done = _buyCompleted.get(key);
+  if (done && Date.now() - done.ts <= BUY_IDEMPOTENCY_TTL_MS) {
+    console.log(`[bridge] /buy idempotent HIT (completed) key=${key} -> returning cached digest ${done.result?.txDigest}`);
+    return { ...done.result, idempotent: 'cached' };
+  }
+
+  // In-flight duplicate -> await the SAME promise, do NOT fire again.
+  const inflight = _buyInflight.get(key);
+  if (inflight) {
+    console.log(`[bridge] /buy idempotent HIT (in-flight) key=${key} -> awaiting original`);
+    const result = await inflight;
+    return { ...result, idempotent: 'inflight' };
+  }
+
+  // First-seen -> execute, record in-flight, cache on completion.
+  const promise = executeBuy(body)
+    .then(result => {
+      _buyCompleted.set(key, { result, ts: Date.now() });
+      return result;
+    })
+    .finally(() => {
+      _buyInflight.delete(key);
+    });
+
+  _buyInflight.set(key, promise);
+  return promise;
+}
+
+async function executeBuy(body) {
   const { curveId, amountMist, suiAmount, minTokensOut, referral, privateKey, rpcUrl } = body;
   if (!curveId) throw new Error('curveId required');
 
