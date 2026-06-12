@@ -170,12 +170,16 @@ export function useTokenPageFeed(curveId, packageId) {
 
           if (!cancelled) setTrades(prev => [trade, ...prev].slice(0, MAX_TRADES));
 
-          // OHLC point for chart + TP/SL — use curve price formula, not trade ratio
-          // price = (virtualSui + new_sui_reserve) / 1_000_000_000
+          // OHLC point for chart + TP/SL — MUST use the SAME constant-product price
+          // formula as the indexer's /ohlc backfill, or live points land on a different
+          // scale than the historical candles (a sell could even render as an UP move).
+          // indexer priceFromReserve: (vSui + realSui)^2 / (vSui * vTok)
           const newReserveMist = Number(d.new_sui_reserve ?? 0);
           if (newReserveMist > 0) {
-            const { virtualSui: vSuiFeed } = curveShapeFor(packageId);
-            const curvePriceSui = (vSuiFeed + newReserveMist / 1e9) / 1_000_000_000;
+            const { virtualSui: vSuiFeed, virtualTokens: vTokFeed } = curveShapeFor(packageId);
+            const realSui = newReserveMist / 1e9;
+            const k = vSuiFeed * vTokFeed;
+            const curvePriceSui = k > 0 ? ((vSuiFeed + realSui) * (vSuiFeed + realSui)) / k : 0;
             const pt = { time: Math.floor(event.ts / 1000), price: curvePriceSui, kind: trade.kind };
             if (!cancelled) {
               setOhlc(prev => [...prev, pt]);
