@@ -24,8 +24,11 @@
 // claim (claim_only) declares exactly curve_id + token_type — already matched.
 //
 // Endpoints:
-//   GET  /health   -> { ok, ts, dags }
-//   POST /run-dag  -> { ok, workflow, dagId, executionId, digest, checkpoint }
+//   GET  /health        -> { ok, ts, dags }
+//   POST /run-dag        -> { ok, workflow, dagId, executionId, digest, checkpoint }
+//   POST /schedule-task  -> { ok, workflow, dagId, generator, taskId, detail }
+//        (creates an on-chain Nexus scheduler Task + occurrence beside /run-dag;
+//         emits real task id + RequestScheduledExecution, leader-independent.)
 //
 // Body for /run-dag (per workflow):
 //   { workflow: "launch_and_buy", launch:{name,symbol,description,graduationTarget,devBuySui,antiBotDelay}, buy:{amountSui} }
@@ -247,6 +250,104 @@ function runDag(dagId, entryGroup, inputObj) {
   });
 }
 
+// ── Scheduler path (additive; sits beside runDag) ────────────────────────────
+// Creates an on-chain Nexus scheduler Task bound to a published DAG + entry
+// group, then (for queue tasks) the create call also schedules the initial
+// occurrence inline via the --schedule-* flags. The Task is a persistent,
+// inspectable on-chain object; every occurrence emits a real
+// RequestScheduledExecution event naming the network's leaders. Emission is
+// fully invoker-driven (your wallet signs the create tx) and does NOT depend
+// on a leader being online — exactly the "real Nexus tx id, leader-optional"
+// property we want. Settlement (the actual buy/sell) happens when a leader
+// consumes the occurrence; that part is the Talus leader network's job.
+//
+// generator:
+//   'queue'    -> one-shot task. --schedule-start-offset-ms / -deadline-offset-ms
+//                 schedule the first occurrence immediately (TP/SL, sniper,
+//                 copy-trade: fire once when the condition hits).
+//   'periodic' -> recurring task. The create call prepares the task; the caller
+//                 must follow with `nexus scheduler periodic set` to define the
+//                 cadence (DCA). We expose that via schedulePeriodic() below.
+//
+// Returns the parsed --json output, from which we lift the created task id.
+function runNexusJson(args, label) {
+  return new Promise((resolve, reject) => {
+    console.log(`[runner] nexus ${args.join(' ')}`);
+    execFile('nexus', args, { timeout: RUN_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) return reject(new Error(`${label} failed: ${stderr?.trim() || err.message}`));
+      const text = (stdout ?? '').trim();
+      let parsed = null;
+      try { parsed = JSON.parse(text); }
+      catch { const m = text.match(/\{[\s\S]*\}\s*$/); if (m) { try { parsed = JSON.parse(m[0]); } catch {} } }
+      // Some scheduler subcommands print human lines, not JSON. Fall back to the
+      // raw text so the caller can still surface the task id / confirmation.
+      resolve(parsed ?? { raw: text });
+    });
+  });
+}
+
+function pickTaskId(parsed) {
+  if (!parsed || typeof parsed !== 'object') return null;
+  // Try common shapes from --json, then a raw-text scan for 0x… task id.
+  const direct = parsed.task_id ?? parsed.taskId ?? parsed.task ?? parsed.object_id ?? parsed.objectId ?? null;
+  if (direct) return String(direct);
+  if (parsed.task_ref && parsed.task_ref.object_id) return String(parsed.task_ref.object_id);
+  const hay = parsed.raw ?? JSON.stringify(parsed);
+  const m = String(hay).match(/0x[0-9a-fA-F]{64}/);
+  return m ? m[0] : null;
+}
+
+// Create a queue (one-shot) scheduler task for a workflow, with an immediate
+// occurrence. startOffsetMs/deadlineOffsetMs default to fire-soon / 10-min
+// window so a leader has time to consume before the occurrence is pruned.
+function scheduleQueueTask(dagId, entryGroup, inputObj, opts = {}) {
+  const inputJson = JSON.stringify(inputObj);
+  const startOffsetMs    = String(num(opts.startOffsetMs, 3000));
+  const deadlineOffsetMs = String(num(opts.deadlineOffsetMs, 600000));
+  const args = [
+    'scheduler', 'task', 'create',
+    '--dag-id', dagId,
+    '--entry-group', entryGroup,
+    '--input-json', inputJson,
+    '--generator', 'queue',
+    '--schedule-start-offset-ms', startOffsetMs,
+    '--schedule-deadline-offset-ms', deadlineOffsetMs,
+    '--json',
+  ];
+  return runNexusJson(args, 'nexus scheduler task create');
+}
+
+// Create a periodic scheduler task for a workflow (e.g. DCA), then configure the
+// recurring schedule. firstStartMs is absolute ms-since-epoch; periodMs is the
+// spacing. Two CLI calls: create (prepares the task) + periodic set (cadence).
+async function schedulePeriodicTask(dagId, entryGroup, inputObj, opts = {}) {
+  const inputJson = JSON.stringify(inputObj);
+  const created = await runNexusJson([
+    'scheduler', 'task', 'create',
+    '--dag-id', dagId,
+    '--entry-group', entryGroup,
+    '--input-json', inputJson,
+    '--generator', 'periodic',
+    '--json',
+  ], 'nexus scheduler task create (periodic)');
+  const taskId = pickTaskId(created);
+  if (!taskId) return { created, taskId: null, periodic: null };
+
+  const firstStartMs = String(num(opts.firstStartMs, Date.now() + 5000));
+  const periodMs     = String(num(opts.periodMs, 3600000)); // default hourly
+  const setArgs = [
+    'scheduler', 'periodic', 'set',
+    '--task-id', taskId,
+    '--first-start-ms', firstStartMs,
+    '--period-ms', periodMs,
+  ];
+  if (opts.deadlineOffsetMs != null) { setArgs.push('--deadline-offset-ms', String(num(opts.deadlineOffsetMs, 600000))); }
+  if (opts.maxIterations   != null) { setArgs.push('--max-iterations',   String(num(opts.maxIterations, 0))); }
+  setArgs.push('--json');
+  const periodic = await runNexusJson(setArgs, 'nexus scheduler periodic set');
+  return { created, taskId, periodic };
+}
+
 const server = http.createServer(async (req, res) => {
   cors(req, res);
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
@@ -289,11 +390,61 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  // POST /schedule-task — create an on-chain Nexus scheduler Task for a workflow.
+  // Same body shape as /run-dag ({ workflow, buy|sell|claim|... }) plus optional
+  // scheduling controls. Emits a real, persistent, inspectable Task object and a
+  // RequestScheduledExecution event (real task id + execution request) regardless
+  // of whether a leader is online to settle it.
+  //
+  // Body:
+  //   { workflow:"sell", sell:{curveId, tokenAmount, minSuiOut?}, schedule?:{
+  //       generator?: "queue"|"periodic",       // default "queue"
+  //       startOffsetMs?, deadlineOffsetMs?,     // queue timing
+  //       firstStartMs?, periodMs?, maxIterations? // periodic cadence
+  //   }}
+  // Returns: { ok, workflow, dagId, generator, taskId, detail }
+  if (req.method === 'POST' && req.url === '/schedule-task') {
+    let body;
+    try { body = await readBody(req); }
+    catch (e) { return json(res, 400, { ok: false, error: e.message }); }
+
+    const workflow   = String(body?.workflow ?? '');
+    const dagId      = String(body?.dagId ?? DAG_IDS[workflow] ?? '');
+    const entryGroup = ENTRY_GROUPS[workflow];
+    if (!dagId)      return json(res, 400, { ok: false, error: `No DAG id for workflow "${workflow}"` });
+    if (!entryGroup) return json(res, 400, { ok: false, error: `No entry group for workflow "${workflow}"` });
+
+    let input;
+    try { input = buildInput(workflow, body); }
+    catch (e) { return json(res, 400, { ok: false, error: e.message }); }
+
+    const sched     = body?.schedule ?? {};
+    const generator = sched.generator === 'periodic' ? 'periodic' : 'queue';
+
+    try {
+      console.log(`[runner] scheduling ${workflow} via DAG ${dagId} (group ${entryGroup}, generator ${generator})`);
+      let detail, taskId;
+      if (generator === 'periodic') {
+        detail = await schedulePeriodicTask(dagId, entryGroup, input, sched);
+        taskId = detail.taskId ?? pickTaskId(detail.created);
+      } else {
+        detail = await scheduleQueueTask(dagId, entryGroup, input, sched);
+        taskId = pickTaskId(detail);
+      }
+      console.log(`[runner] scheduled ${workflow} task_id=${taskId} generator=${generator}`);
+      return json(res, 200, { ok: true, workflow, dagId, generator, taskId, detail });
+    } catch (e) {
+      console.error('[runner] /schedule-task error:', e.message);
+      return json(res, 500, { ok: false, workflow, dagId, error: e.message });
+    }
+  }
+
   json(res, 404, { ok: false, error: `Unknown endpoint: ${req.method} ${req.url}` });
 });
 
 server.listen(PORT, () => {
   console.log(`[runner] SuiPump agent-runner on ${PORT}`);
   console.log(`[runner] workflows: ${Object.keys(DAG_IDS).join(', ')}`);
+  console.log(`[runner] endpoints: POST /run-dag, POST /schedule-task (scheduler tasks)`);
   console.log(`[runner] launch_and_buy -> ${DAG_IDS.launch_and_buy} (group ${ENTRY_GROUPS.launch_and_buy}, legacy=${LAUNCH_BUY_LEGACY})`);
 });
