@@ -26,6 +26,7 @@
 // ── Config (all env-overridable) ──────────────────────────────────────────────
 const PORT              = parseInt(process.env.PORT ?? '3040', 10);
 const RUNNER_URL        = process.env.RUNNER_URL      ?? `http://127.0.0.1:${PORT}`;
+const BRIDGE_URL        = process.env.SUIPUMP_BRIDGE_URL ?? 'https://suipump-bridge.onrender.com';
 const INDEXER_URL       = process.env.INDEXER_URL     ?? 'https://suipump-62s2.onrender.com';
 const SUI_GRAPHQL_URL   = process.env.SUI_GRAPHQL_URL ?? 'https://graphql.testnet.sui.io/graphql';
 const INVOKER_ADDRESS   = process.env.INVOKER_ADDRESS ?? '0x877af0fae3fa4f8ea936943b59bcd66104f67cf1895302e97761a28b3c3a5906';
@@ -50,9 +51,9 @@ process.on('uncaughtException',  (e) => err('uncaughtException:',  e?.message ??
 function getVSui(packageId) {
   if (!packageId) return 3500;
   if (packageId.startsWith('0x2154')) return 30000; // V4
-  if (packageId.startsWith('0x785c')) return  9000; // V5: contract VIRTUAL_SUI_RESERVE = 9_000
-  if (packageId.startsWith('0x21d5')) return  9000; // V6: contract VIRTUAL_SUI_RESERVE = 9_000
-  if (packageId.startsWith('0xfb8f')) return  3500; // V7: contract VIRTUAL_SUI_RESERVE = 3_500
+  if (packageId.startsWith('0x785c')) return 10000; // V5
+  if (packageId.startsWith('0x21d5')) return 10000; // V6
+  if (packageId.startsWith('0xfb8f')) return 5000;  // V7
   if (packageId.startsWith('0x7196')) return 4369;  // V9
   return 3500;                                       // V8 / V8_1
 }
@@ -222,16 +223,87 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const STALE_OBJECT_RE = /unavailable for consumption|needs to be rebuilt|rejected as invalid by more than|not available for consumption|equivocat/i;
 
 async function fireSell(curveId, tokenWhole, minSuiOut) {
-  // tokenAmount MUST be a whole integer. The Nexus sell tool (xyz.suipump.sell@1)
-  // parses this input as a u64; a fractional value like 17844905.728001 fails that
-  // parse on the Leader, so the sell walk errors and never builds the on-chain sell
-  // tx — the request tx still returns a digest, which is the "dry sell" we saw.
-  // The buy tool takes whole SUI the same way, so whole tokens is the right unit.
-  const body = { workflow: 'sell', sell: { curveId, tokenAmount: Math.floor(tokenWhole), minSuiOut: minSuiOut ?? 0 } };
+  // SELL = two layers, mirroring how buy already settles on these surfaces:
+  //   1. EMIT the Nexus DAG request (/run-dag) — produces a real on-chain
+  //      DAGExecution digest (the agentic-decision proof). This NEVER blocks the
+  //      sell: if it errors, we log and still settle. The leader does not execute
+  //      it (no leader executes any walk — proven on-chain), so it is emission
+  //      only, by design.
+  //   2. SETTLE via the bridge /sell — the proven path that actually moves the
+  //      tokens (same bridge every working trade on SuiPump uses; the Nexus sell
+  //      tool itself calls this exact endpoint). The bridge resolves
+  //      tokenType/version/coins and signs with its own SUI_PRIVATE_KEY, so we
+  //      pass only curve + amount.
+  // Returns { ok, txDigest (settlement), nexusDigest, nexusExecutionId, ... }.
+  const tokenAmount = Math.floor(tokenWhole);
+
+  // ── 1. Emit the Nexus DAG request (non-blocking) ───────────────────────────
+  let nexusDigest = null, nexusExecutionId = null;
+  try {
+    const rr = await fetch(`${RUNNER_URL}/run-dag`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workflow: 'sell', sell: { curveId, tokenAmount, minSuiOut: minSuiOut ?? 0 } }),
+      signal: AbortSignal.timeout(190000),
+    });
+    const rd = await rr.json().catch(() => ({}));
+    if (rr.ok && rd.ok) {
+      nexusDigest      = rd.digest ?? null;
+      nexusExecutionId = rd.executionId ?? null;
+      log(`sell: Nexus DAG emitted execution=${nexusExecutionId} digest=${nexusDigest}`);
+    } else {
+      err(`sell: Nexus DAG emit returned ${rd.error ?? rr.status} (continuing to settle)`);
+    }
+  } catch (e) {
+    err(`sell: Nexus DAG emit failed: ${e.message} (continuing to settle)`);
+  }
+
+  // ── 2. Settle the swap via the bridge (the path that moves tokens) ─────────
+  // Whole tokens; the bridge converts to base units itself. 3-try retry for the
+  // stale-object class (same as the buy/sell coin-version races).
+  const body = { curveId, tokenAmount, minSuiOut: minSuiOut ?? 0 };
   let lastErr;
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      const r = await fetch(`${RUNNER_URL}/run-dag`, {
+      const r = await fetch(`${BRIDGE_URL}/sell`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body), signal: AbortSignal.timeout(190000),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || d.ok === false) throw new Error(d.error ?? `bridge ${r.status}`);
+      log(`sell: settled via bridge digest=${d.txDigest} sui=${d.suiReceived}`);
+      return { ok: true, ...d, nexusDigest, nexusExecutionId };
+    } catch (e) {
+      lastErr = e;
+      if (attempt < 3 && STALE_OBJECT_RE.test(e.message ?? '')) {
+        const wait = 2000 * attempt;
+        err(`sell settle attempt ${attempt} hit a stale object version; rebuilding in ${wait}ms`);
+        await sleep(wait);
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw lastErr;
+}
+
+// ── Fire any workflow as a Nexus scheduler TASK (server.js /schedule-task) ─────
+// The /schedule-task analog of fireSell: emits a real, persistent, on-chain
+// Nexus scheduler Task + RequestScheduledOccurrence for the given workflow,
+// returning { taskId, detail:{digest, schedule_digest, ...} }. Used by the
+// event-driven strategies (sniper/copytrade = queue, dca = periodic) so every
+// strategy decision produces real Nexus DAG tx ids the same proven way the sell
+// task did. Same 3-try stale-object retry as fireSell.
+//   workflow : 'buy' | 'sell' | 'claim' | ...
+//   payload  : the workflow's body slice, e.g. { buy:{curveId, amountSui} }
+//   schedule : optional { generator, startOffsetMs, deadlineOffsetMs,
+//                         firstStartMs, periodMs, maxIterations }
+async function fireScheduleTask(workflow, payload, schedule) {
+  const body = { workflow, ...payload };
+  if (schedule && typeof schedule === 'object') body.schedule = schedule;
+  let lastErr;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const r = await fetch(`${RUNNER_URL}/schedule-task`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body), signal: AbortSignal.timeout(190000),
       });
@@ -242,7 +314,7 @@ async function fireSell(curveId, tokenWhole, minSuiOut) {
       lastErr = e;
       if (attempt < 3 && STALE_OBJECT_RE.test(e.message ?? '')) {
         const wait = 2000 * attempt;
-        err(`sell attempt ${attempt} hit a stale object version; rebuilding in ${wait}ms`);
+        err(`${workflow} schedule attempt ${attempt} hit a stale object version; rebuilding in ${wait}ms`);
         await sleep(wait);
         continue;
       }
@@ -460,6 +532,17 @@ function makeScaffold(type, milestone, wakesOn) {
   };
 }
 
+// Per-order cooldown so an event-driven strategy emits at most one task per
+// window (otherwise every SSE wake on a busy curve would fire a new task).
+const FIRE_COOLDOWN_MS = parseInt(process.env.STRATEGY_FIRE_COOLDOWN_MS ?? '30000', 10);
+function onCooldown(order) {
+  const now = Date.now();
+  if ((order._cooldownUntil ?? 0) > now) return true;
+  order._cooldownUntil = now + FIRE_COOLDOWN_MS;
+  return false;
+}
+const num2 = (v, d) => { const n = Number(v); return Number.isFinite(n) ? n : d; };
+
 const HANDLERS = {
   tpsl: {
     label: 'TP/SL',
@@ -468,9 +551,85 @@ const HANDLERS = {
     process: processOrder,            // existing, unchanged
     summarize: summarizeOrder,        // existing, unchanged
   },
-  sniper:    makeScaffold('sniper',    'A2', 'launch'),       // a CurveCreated event
-  dca:       makeScaffold('dca',       'A3', 'timer'),        // the DCA tick
-  copytrade: makeScaffold('copytrade', 'A4', 'walletTrade'),  // a trade by target wallet
+
+  // SNIPER — wakes on a CurveCreated event. Emits a buy task on the freshly
+  // launched curve (from the wake event), amount from order.params.amountSui.
+  // Optional params.filter (substring) lets an order snipe only matching curves;
+  // absent = snipe every launch. One task per launch (cooldown-guarded).
+  sniper: {
+    label: 'sniper',
+    wakesOn: 'launch',
+    normalize: scaffoldNormalize,
+    summarize: (o) => `${o.id} sniper buy ${num2(o.params.amountSui, 0.1)} SUI on new launches${o.params.filter ? ` matching "${o.params.filter}"` : ''}`,
+    process: async (order, trigger) => {
+      const curveId = trigger?.ev?.curveId;
+      if (!curveId) return;
+      if (order.params.filter && !String(curveId).includes(order.params.filter)) return;
+      if (onCooldown(order)) return;
+      const amountSui = num2(order.params.amountSui, 0.1);
+      log(`${order.id}: SNIPE launch ${curveId.slice(0, 10)}… buy ${amountSui} SUI`);
+      try {
+        const d = await fireScheduleTask('buy', { buy: { curveId, amountSui } }, { generator: 'queue' });
+        log(`${order.id}: sniper task ${d.taskId} (digest ${d.detail?.digest ?? '?'})`);
+      } catch (e) { err(`${order.id}: sniper fire failed: ${e.message}`); }
+    },
+  },
+
+  // DCA — wakes on the timer tick. Emits ONE periodic buy task on first fire
+  // (the on-chain periodic generator then produces occurrences on cadence), so
+  // we don't fire every tick: after creating the periodic task we mark the order
+  // done. params: { curveId, amountSui, periodMs?, maxIterations? }.
+  dca: {
+    label: 'dca',
+    wakesOn: 'timer',
+    normalize: scaffoldNormalize,
+    summarize: (o) => `${o.id} dca buy ${num2(o.params.amountSui, 0.1)} SUI every ${num2(o.params.periodMs, 3600000) / 1000}s on ${o.curveId ? o.curveId.slice(0, 10) + '…' : o.params.curveId?.slice(0, 10) + '…'}`,
+    process: async (order) => {
+      if (order._dcaArmed) return;       // periodic task already created
+      const curveId = order.curveId ?? order.params.curveId;
+      if (!curveId) { if (!order._warned) { err(`${order.id}: dca needs params.curveId`); order._warned = true; } return; }
+      const amountSui = num2(order.params.amountSui, 0.1);
+      const periodMs  = num2(order.params.periodMs, 3600000);
+      log(`${order.id}: DCA arm periodic buy ${amountSui} SUI every ${periodMs}ms on ${curveId.slice(0, 10)}…`);
+      try {
+        const d = await fireScheduleTask('buy', { buy: { curveId, amountSui } }, {
+          generator: 'periodic',
+          periodMs,
+          firstStartMs: Date.now() + 5000,
+          maxIterations: num2(order.params.maxIterations, 0),
+        });
+        order._dcaArmed = true;
+        log(`${order.id}: dca periodic task ${d.taskId} (digest ${d.detail?.created?.digest ?? d.detail?.digest ?? '?'})`);
+      } catch (e) { err(`${order.id}: dca fire failed: ${e.message}`); }
+    },
+  },
+
+  // COPY-TRADE — wakes on a trade. Mirrors a trade on the watched curve as a buy
+  // task. NOTE: the SSE trade event does not yet carry the trader address, so we
+  // cannot filter by params.wallet here — this mirrors ALL trades on the watched
+  // curveId. True per-wallet mirroring needs the indexer to include the trader
+  // address on the trade event; until then params.wallet is recorded but not
+  // enforced, and this acts as "copy activity on this curve". One task per
+  // window (cooldown-guarded).
+  copytrade: {
+    label: 'copytrade',
+    wakesOn: 'trade',
+    normalize: scaffoldNormalize,
+    summarize: (o) => `${o.id} copytrade buy ${num2(o.params.amountSui, 0.1)} SUI on ${o.curveId ? o.curveId.slice(0, 10) + '…' : '?'}${o.params.wallet ? ` (target ${String(o.params.wallet).slice(0, 10)}…, wallet-filter pending indexer)` : ''}`,
+    process: async (order, trigger) => {
+      const evCurve = trigger?.ev?.curveId;
+      if (order.curveId && evCurve && order.curveId !== evCurve) return;
+      const curveId = order.curveId ?? evCurve;
+      if (!curveId) return;
+      if (onCooldown(order)) return;
+      const amountSui = num2(order.params.amountSui, 0.1);
+      log(`${order.id}: COPYTRADE buy ${amountSui} SUI on ${curveId.slice(0, 10)}…`);
+      try {
+        const d = await fireScheduleTask('buy', { buy: { curveId, amountSui } }, { generator: 'queue' });
+        log(`${order.id}: copytrade task ${d.taskId} (digest ${d.detail?.digest ?? '?'})`);
+      } catch (e) { err(`${order.id}: copytrade fire failed: ${e.message}`); }
+    },
+  },
 };
 
 // DCA tick — wakes timer-driven orders. A3 will honor each order's interval; for
@@ -492,7 +651,7 @@ async function main() {
   log(`invoker  : ${INVOKER_ADDRESS}`);
   log(`orders   : indexer /orders store (refresh ${ORDERS_REFRESH_MS}ms)${STRATEGY_API_KEY ? ' [keyed]' : ''}`);
   log(`price    : read live from curve object (SSE = wake-up only)`);
-  log(`strategies: ${Object.keys(HANDLERS).map(k => k === 'tpsl' ? `${k}(live)` : `${k}(scaffold)`).join(', ')}`);
+  log(`strategies: ${Object.keys(HANDLERS).map(k => `${k}(live)`).join(', ')}`);
 
   await syncOrders();
   log(`tracking : ${ORDERS.size} active order(s)`);
