@@ -422,9 +422,15 @@ async function executeBuy(body) {
 // ── Handler: /sell ────────────────────────────────────────────────────────────
 // Body: { curveId, tokenAmount, minSuiOut?, referral?, privateKey?, rpcUrl? }
 async function handleSell(body) {
-  const { curveId, tokenAmount, minSuiOut, referral, privateKey, rpcUrl } = body;
-  if (!curveId)     throw new Error('curveId required');
-  if (!tokenAmount) throw new Error('tokenAmount required (in whole tokens, e.g. 1000)');
+  const { curveId, tokenAmount, minSuiOut, referral, privateKey, rpcUrl, sellAll } = body;
+  if (!curveId) throw new Error('curveId required');
+
+  // Sell-all is requested via sellAll:true OR tokenAmount:"all"/"max" (case-insensitive).
+  const wantAll = sellAll === true
+    || (typeof tokenAmount === 'string' && /^(all|max)$/i.test(tokenAmount.trim()));
+  if (!wantAll && !tokenAmount) {
+    throw new Error('tokenAmount required (whole tokens, e.g. 1000) or sellAll:true / tokenAmount:"all"');
+  }
 
   const client   = makeClient(rpcUrl);
   const keypair  = loadKeypair(privateKey);
@@ -432,7 +438,6 @@ async function handleSell(body) {
 
   const { pkgId, tokenType, sharedVersion } = await resolveCurve(client, curveId);
 
-  const tokAtomic = BigInt(Math.floor(parseFloat(tokenAmount) * 1e6));
   const minOut    = BigInt(minSuiOut ?? 0);
   const isV5Plus  = V5_PLUS.has(pkgId);
   const isV7Plus  = V7_PLUS.has(pkgId);
@@ -447,16 +452,32 @@ async function handleSell(body) {
   const coinList = coinsRes?.objects ?? coinsRes?.data ?? [];
   if (!coinList.length) throw new Error(`No ${tokenType} balance in agent wallet`);
 
+  // Total atomic balance across all coins (CoinResponse.balance is a string of atomic units).
+  const totalAtomic = coinList.reduce((s, c) => s + BigInt(c.balance ?? c.coinBalance ?? 0), 0n);
+
+  // Partial sell amount (whole tokens -> atomic). For sell-all we ignore this and
+  // sell the entire merged coin, so the on-chain balance and the sold amount can
+  // never drift (no dust left, no rounding mismatch).
+  const tokAtomic = wantAll ? totalAtomic : BigInt(Math.floor(parseFloat(tokenAmount) * 1e6));
+  if (tokAtomic <= 0n) throw new Error(`No ${tokenType} balance to sell`);
+  if (!wantAll && tokAtomic > totalAtomic) {
+    throw new Error(`Insufficient balance: requested ${tokenAmount} but wallet holds ${(Number(totalAtomic) / 1e6).toFixed(6)} whole tokens`);
+  }
+
   const tx       = new Transaction();
   tx.setSender(address);
   const curveRef = tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: sharedVersion, mutable: true });
   const coinObjs = coinList.map(c => tx.object(c.objectId ?? c.id ?? c.coinObjectId));
 
+  // Merge all coins into the first so we have a single coin to work with.
+  if (coinObjs.length > 1) tx.mergeCoins(coinObjs[0], coinObjs.slice(1));
+
+  // Sell-all: pass the entire merged coin by value (sell consumes its full balance).
+  // Partial: split off the exact amount and sell that.
   let tokenCoin;
-  if (coinObjs.length === 1) {
-    [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(tokAtomic)]);
+  if (wantAll) {
+    tokenCoin = coinObjs[0];
   } else {
-    tx.mergeCoins(coinObjs[0], coinObjs.slice(1));
     [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(tokAtomic)]);
   }
 
@@ -495,7 +516,7 @@ async function handleSell(body) {
 
   return {
     txDigest:    txDigestOf(result),
-    tokensSold:  tokenAmount,
+    tokensSold:  (Number(tokAtomic) / 1e6).toFixed(6),
     suiReceived: suiChange ? (Number(BigInt(suiChange.amount)) / 1e9).toFixed(6) : 'unknown',
   };
 }
