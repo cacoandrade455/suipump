@@ -50,9 +50,9 @@ process.on('uncaughtException',  (e) => err('uncaughtException:',  e?.message ??
 function getVSui(packageId) {
   if (!packageId) return 3500;
   if (packageId.startsWith('0x2154')) return 30000; // V4
-  if (packageId.startsWith('0x785c')) return 10000; // V5
-  if (packageId.startsWith('0x21d5')) return 10000; // V6
-  if (packageId.startsWith('0xfb8f')) return 5000;  // V7
+  if (packageId.startsWith('0x785c')) return  9000; // V5: contract VIRTUAL_SUI_RESERVE = 9_000
+  if (packageId.startsWith('0x21d5')) return  9000; // V6: contract VIRTUAL_SUI_RESERVE = 9_000
+  if (packageId.startsWith('0xfb8f')) return  3500; // V7: contract VIRTUAL_SUI_RESERVE = 3_500
   if (packageId.startsWith('0x7196')) return 4369;  // V9
   return 3500;                                       // V8 / V8_1
 }
