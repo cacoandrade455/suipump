@@ -134,6 +134,32 @@ const V9_PLUS = new Set([
 const SUI_CLOCK_ID = '0x6';
 const MIST_PER_SUI = 1_000_000_000n;
 
+// ── Result readback (shape-tolerant) ──────────────────────────────────────────
+// signAndExecuteTransaction's result shape varies across @mysten/sui builds. The
+// deployed SDK returns { transaction: { digest, balanceChanges } } (digest at
+// .transaction.digest), while the bridge previously read .data.executeTransaction.digest,
+// which is undefined here — that is why every buy/sell reported txDigest undefined and
+// tokensReceived/suiReceived "unknown", and why the idempotent cache logged "digest
+// undefined". Read every known path and use whichever is present.
+function txDigestOf(result) {
+  return result?.transaction?.digest
+      ?? result?.digest
+      ?? result?.data?.executeTransaction?.digest
+      ?? result?.effects?.transactionDigest
+      ?? null;
+}
+function balanceChangesOf(result) {
+  return result?.transaction?.balanceChanges
+      ?? result?.balanceChanges
+      ?? result?.data?.executeTransaction?.effects?.balanceChanges
+      ?? result?.effects?.balanceChanges
+      ?? [];
+}
+// BalanceChange may be flat { address, coinType, amount } (core shape) or nested
+// { address:{address}, coinType:{repr} } (graphql shape). Normalize both.
+const bcAddr = b => (typeof b.address === 'string' ? b.address : b.address?.address) ?? null;
+const bcType = b => (typeof b.coinType === 'string' ? b.coinType : b.coinType?.repr) ?? null;
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function loadKeypair(privateKey) {
   const raw = privateKey ?? process.env.SUI_PRIVATE_KEY;
@@ -219,6 +245,12 @@ async function parseBody(req) {
 const BUY_IDEMPOTENCY_TTL_MS = Number(process.env.BUY_IDEMPOTENCY_TTL_MS ?? 90_000);
 const _buyInflight  = new Map(); // key -> Promise<result>
 const _buyCompleted = new Map(); // key -> { result, ts }
+
+// Per-process identity — lets us tell if Render is running >1 bridge instance
+// (in-memory dedupe only works within a single process; if /health returns
+// different bootIds across calls, the dedupe MUST move to a shared store).
+const BRIDGE_BOOT_ID = Math.random().toString(36).slice(2, 10);
+const BRIDGE_BOOT_TS = Date.now();
 
 function buyIdemKey({ address, curveId, amountMist, referral }) {
   return `buy:${address}:${curveId}:${String(amountMist)}:${referral ?? ''}`;
@@ -362,18 +394,17 @@ async function executeBuy(body) {
     throw new Error(`buy() failed: ${result.errors[0]?.message ?? JSON.stringify(result.errors)}`);
   }
 
-  const balChanges = result.data?.executeTransaction?.effects?.balanceChanges ?? [];
-  const normalAddr = b => b.address?.address ?? b.address;
-  const normalType = b => b.coinType?.repr    ?? b.coinType;
+  const balChanges = balanceChangesOf(result);
   const tokenChange = balChanges.find(b =>
-    normalAddr(b) === address && normalType(b) !== '0x2::sui::SUI'
+    bcAddr(b) === address && bcType(b) !== '0x2::sui::SUI'
   );
 
   return {
-    txDigest:       result.data?.executeTransaction?.digest,
+    txDigest:       txDigestOf(result),
     suiSpent:       (Number(suiMist) / Number(MIST_PER_SUI)).toFixed(9),
     tokensReceived: tokenChange ? (Number(BigInt(tokenChange.amount)) / 1e6).toFixed(6) : 'unknown',
     tokenType,
+    bootId:         BRIDGE_BOOT_ID,
   };
 }
 
@@ -446,15 +477,13 @@ async function handleSell(body) {
     throw new Error(`sell() failed: ${result.errors[0]?.message ?? JSON.stringify(result.errors)}`);
   }
 
-  const balChangesSell = result.data?.executeTransaction?.effects?.balanceChanges ?? [];
-  const normAddrS = b => b.address?.address ?? b.address;
-  const normTypeS = b => b.coinType?.repr    ?? b.coinType;
+  const balChangesSell = balanceChangesOf(result);
   const suiChange = balChangesSell.find(b =>
-    normAddrS(b) === address && normTypeS(b) === '0x2::sui::SUI'
+    bcAddr(b) === address && bcType(b) === '0x2::sui::SUI'
   );
 
   return {
-    txDigest:    result.data?.executeTransaction?.digest,
+    txDigest:    txDigestOf(result),
     tokensSold:  tokenAmount,
     suiReceived: suiChange ? (Number(BigInt(suiChange.amount)) / 1e9).toFixed(6) : 'unknown',
   };
@@ -503,15 +532,13 @@ async function handleClaim(body) {
     throw new Error(`claim_creator_fees() failed: ${result.errors[0]?.message ?? JSON.stringify(result.errors)}`);
   }
 
-  const balChangesClaim = result.data?.executeTransaction?.effects?.balanceChanges ?? [];
-  const normAddrC = b => b.address?.address ?? b.address;
-  const normTypeC = b => b.coinType?.repr    ?? b.coinType;
+  const balChangesClaim = balanceChangesOf(result);
   const suiChangeClaim = balChangesClaim.find(b =>
-    normAddrC(b) === address && normTypeC(b) === '0x2::sui::SUI'
+    bcAddr(b) === address && bcType(b) === '0x2::sui::SUI'
   );
 
   return {
-    txDigest:   result.data?.executeTransaction?.digest,
+    txDigest:   txDigestOf(result),
     suiClaimed: suiChangeClaim ? (Number(BigInt(suiChangeClaim.amount)) / 1e9).toFixed(6) : 'unknown',
   };
 }
@@ -825,7 +852,7 @@ const server = http.createServer(async (req, res) => {
       case '/claim':  result = await handleClaim(body);  break;
       case '/launch': result = await handleLaunch(body); break;
       case '/status': result = await handleStatus(body); break;
-      case '/health': result = { status: 'ok', ts: Date.now() }; break;
+      case '/health': result = { status: 'ok', ts: Date.now(), bootId: BRIDGE_BOOT_ID, uptimeMs: Date.now() - BRIDGE_BOOT_TS, buyCacheSize: _buyCompleted.size, buyInflight: _buyInflight.size }; break;
       default:
         jsonResp(res, 404, { error: `Unknown endpoint: ${req.url}` });
         return;
