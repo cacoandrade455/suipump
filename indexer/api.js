@@ -26,11 +26,11 @@ function getVirtuals(packageId) {
   const vTok = 1_073_000_000; // all versions
   if (!packageId) return { vSui: 3500, vTok };
   if (packageId.startsWith('0x2154')) return { vSui: 30000, vTok }; // V4
-  if (packageId.startsWith('0x785c')) return { vSui: 10000, vTok }; // V5
-  if (packageId.startsWith('0x21d5')) return { vSui: 10000, vTok }; // V6
-  if (packageId.startsWith('0xfb8f')) return { vSui:  5000, vTok }; // V7
-  if (packageId.startsWith('0x7196')) return { vSui:  4369, vTok }; // V9
-  return { vSui: 3500, vTok };                                        // V8, V8_1
+  if (packageId.startsWith('0x785c')) return { vSui:  9000, vTok }; // V5: contract VIRTUAL_SUI_RESERVE = 9_000
+  if (packageId.startsWith('0x21d5')) return { vSui:  9000, vTok }; // V6: contract VIRTUAL_SUI_RESERVE = 9_000
+  if (packageId.startsWith('0xfb8f')) return { vSui:  3500, vTok }; // V7: contract VIRTUAL_SUI_RESERVE = 3_500 (lowered from 9k)
+  if (packageId.startsWith('0x7196')) return { vSui:  4369, vTok }; // V9: contract VIRTUAL_SUI_RESERVE = 4_369
+  return { vSui: 3500, vTok };                                        // V8, V8_1: contract VIRTUAL_SUI_RESERVE = 3_500
 }
 
 // Spot price in SUI per whole token — constant-product formula.
