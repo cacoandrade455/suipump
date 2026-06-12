@@ -134,31 +134,42 @@ const V9_PLUS = new Set([
 const SUI_CLOCK_ID = '0x6';
 const MIST_PER_SUI = 1_000_000_000n;
 
-// ── Result readback (shape-tolerant) ──────────────────────────────────────────
-// signAndExecuteTransaction's result shape varies across @mysten/sui builds. The
-// deployed SDK returns { transaction: { digest, balanceChanges } } (digest at
-// .transaction.digest), while the bridge previously read .data.executeTransaction.digest,
-// which is undefined here — that is why every buy/sell reported txDigest undefined and
-// tokensReceived/suiReceived "unknown", and why the idempotent cache logged "digest
-// undefined". Read every known path and use whichever is present.
+// ── Result readback (deployed SDK shape) ──────────────────────────────────────
+// signAndExecuteTransaction returns a discriminated union:
+//   { $kind: 'Transaction',       Transaction:       { digest, status, balanceChanges, ... } }  // success
+//   { $kind: 'FailedTransaction', FailedTransaction: { status: { error } } }                    // failure
+// (Confirmed by logging the live result.) Earlier code read .data.executeTransaction.*,
+// which is undefined here — that is why txDigest came back null and amounts "unknown".
+function txOk(result) {
+  return result?.$kind === 'Transaction' || result?.Transaction?.status?.success === true;
+}
+function txErrorOf(result) {
+  return result?.FailedTransaction?.status?.error
+      ?? result?.Transaction?.status?.error
+      ?? (result?.errors?.length ? result.errors[0]?.message ?? JSON.stringify(result.errors) : null)
+      ?? null;
+}
 function txDigestOf(result) {
-  return result?.transaction?.digest
+  return result?.Transaction?.digest
+      ?? result?.FailedTransaction?.digest
+      ?? result?.transaction?.digest
       ?? result?.digest
       ?? result?.data?.executeTransaction?.digest
-      ?? result?.effects?.transactionDigest
       ?? null;
 }
 function balanceChangesOf(result) {
-  return result?.transaction?.balanceChanges
+  return result?.Transaction?.balanceChanges
+      ?? result?.transaction?.balanceChanges
       ?? result?.balanceChanges
       ?? result?.data?.executeTransaction?.effects?.balanceChanges
-      ?? result?.effects?.balanceChanges
       ?? [];
 }
-// BalanceChange may be flat { address, coinType, amount } (core shape) or nested
-// { address:{address}, coinType:{repr} } (graphql shape). Normalize both.
+// BalanceChange is flat { address, coinType, amount } here; tolerate nested too.
 const bcAddr = b => (typeof b.address === 'string' ? b.address : b.address?.address) ?? null;
 const bcType = b => (typeof b.coinType === 'string' ? b.coinType : b.coinType?.repr) ?? null;
+// SUI's coinType may be the short '0x2::sui::SUI' or the zero-padded
+// '0x0000...0002::sui::SUI'. Match either so token vs SUI changes aren't confused.
+const isSui = t => typeof t === 'string' && /^0x0*2::sui::SUI$/.test(t);
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function loadKeypair(privateKey) {
@@ -390,20 +401,13 @@ async function executeBuy(body) {
     include: { balanceChanges: true },
   });
 
-  if (result.errors?.length) {
-    throw new Error(`buy() failed: ${result.errors[0]?.message ?? JSON.stringify(result.errors)}`);
+  if (!txOk(result)) {
+    throw new Error(`buy() failed: ${txErrorOf(result) ?? 'transaction failed'}`);
   }
-
-  // DIAGNOSTIC: dump the execute result shape once so we can see exactly where the
-  // deployed SDK puts the digest (the guessed paths all returned null). Remove after.
-  try {
-    console.log('[bridge] BUY result keys:', Object.keys(result ?? {}));
-    console.log('[bridge] BUY result shape:', JSON.stringify(result, (k, v) => typeof v === 'bigint' ? v.toString() : v).slice(0, 1500));
-  } catch (e) { console.log('[bridge] BUY result dump failed:', e.message); }
 
   const balChanges = balanceChangesOf(result);
   const tokenChange = balChanges.find(b =>
-    bcAddr(b) === address && bcType(b) !== '0x2::sui::SUI'
+    bcAddr(b) === address && !isSui(bcType(b))
   );
 
   return {
@@ -480,13 +484,13 @@ async function handleSell(body) {
     throw new Error(`sell simulate/execute failed: ${typeof detail === 'string' ? detail : JSON.stringify(detail)}`);
   }
 
-  if (result.errors?.length) {
-    throw new Error(`sell() failed: ${result.errors[0]?.message ?? JSON.stringify(result.errors)}`);
+  if (!txOk(result)) {
+    throw new Error(`sell() failed: ${txErrorOf(result) ?? 'transaction failed'}`);
   }
 
   const balChangesSell = balanceChangesOf(result);
   const suiChange = balChangesSell.find(b =>
-    bcAddr(b) === address && bcType(b) === '0x2::sui::SUI'
+    bcAddr(b) === address && isSui(bcType(b))
   );
 
   return {
@@ -535,13 +539,13 @@ async function handleClaim(body) {
     include: { balanceChanges: true },
   });
 
-  if (result.errors?.length) {
-    throw new Error(`claim_creator_fees() failed: ${result.errors[0]?.message ?? JSON.stringify(result.errors)}`);
+  if (!txOk(result)) {
+    throw new Error(`claim_creator_fees() failed: ${txErrorOf(result) ?? 'transaction failed'}`);
   }
 
   const balChangesClaim = balanceChangesOf(result);
   const suiChangeClaim = balChangesClaim.find(b =>
-    bcAddr(b) === address && bcType(b) === '0x2::sui::SUI'
+    bcAddr(b) === address && isSui(bcType(b))
   );
 
   return {
