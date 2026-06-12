@@ -352,10 +352,18 @@ async function handleSell(body) {
   });
   tx.transferObjects([suiOut], address);
 
-  const result = await client.signAndExecuteTransaction({
-    signer: keypair, transaction: tx,
-    include: { balanceChanges: true },
-  });
+  let result;
+  try {
+    result = await client.signAndExecuteTransaction({
+      signer: keypair, transaction: tx,
+      include: { balanceChanges: true },
+    });
+  } catch (e) {
+    // The SDK wraps simulation failures as a generic "Failed to simulate transaction".
+    // Surface the underlying Move/validation reason so the real cause is visible.
+    const detail = e?.cause?.message ?? e?.cause ?? e?.message ?? String(e);
+    throw new Error(`sell simulate/execute failed: ${typeof detail === 'string' ? detail : JSON.stringify(detail)}`);
+  }
 
   if (result.errors?.length) {
     throw new Error(`sell() failed: ${result.errors[0]?.message ?? JSON.stringify(result.errors)}`);
