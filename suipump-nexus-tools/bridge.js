@@ -318,19 +318,20 @@ async function handleSell(body) {
   const isV5Plus  = V5_PLUS.has(pkgId);
   const isV7Plus  = V7_PLUS.has(pkgId);
 
-  // SuiGraphQLClient exposes coin/object reads on `.core`, NOT on the client itself.
-  // `client.getCoins(...)` is not a function -> sell threw before the Move call, so the
-  // Nexus request digest returned while zero tokens moved (the dry sell). Buys are
-  // unaffected: they build payment from the gas coin and never call getCoins.
-  // core.getCoins returns { objects: [{ id, balance, ... }] }; we still read both shapes
-  // (.objects ?? .data) and both id keys below so a dependency bump can't silently break this.
-  const coinsRes = await client.core.getCoins({ address, coinType: tokenType });
-  const coinList = coinsRes.objects ?? coinsRes.data ?? [];
+  // Source token coins via client.listCoins(...).objects — the exact call your own
+  // working frontend uses on this deployed SDK (TokenPage.jsx, useCopyTrade.js,
+  // useRebalance.js: "SuiGraphQLClient 2.x: listCoins, result.objects, c.objectId").
+  // The bridge was calling client.getCoins(...), which does not exist on this client
+  // ("is not a function") -> sell threw before the Move call -> dry sell. Buys are
+  // unaffected: they split payment from tx.gas and never query coins.
+  const coinsRes = await client.listCoins({ owner: address, coinType: tokenType });
+  const coinList = coinsRes?.objects ?? coinsRes?.data ?? [];
   if (!coinList.length) throw new Error(`No ${tokenType} balance in agent wallet`);
 
   const tx       = new Transaction();
+  tx.setSender(address);
   const curveRef = tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: sharedVersion, mutable: true });
-  const coinObjs = coinList.map(c => tx.object(c.id ?? c.coinObjectId ?? c.objectId));
+  const coinObjs = coinList.map(c => tx.object(c.objectId ?? c.id ?? c.coinObjectId));
 
   let tokenCoin;
   if (coinObjs.length === 1) {
@@ -386,30 +387,16 @@ async function handleClaim(body) {
 
   const { pkgId, tokenType, sharedVersion } = await resolveCurve(client, curveId);
 
-  // Search all package versions for CreatorCap — curve may be on any version.
-  // Same fix class as the dry sell: owned-object reads live on client.core, and the
-  // core client takes { address, type } and returns { objects: [{ id, type, ... }] }
-  // (NOT { owner, filter:{StructType}, options } / { data:[{ data.content.fields }] }).
-  // core content is BCS bytes (no decoded `fields`), so resolve each candidate cap's
-  // curve_id from its parsed-JSON object read (same getObject the bridge uses elsewhere).
+  // Search all package versions for CreatorCap — curve may be on any version
   let cap = null;
-  outer:
   for (const pkg of ALL_PACKAGE_IDS) {
-    const capsRes = await client.core.getOwnedObjects({
-      address,
-      type: `${pkg}::bonding_curve::CreatorCap`,
+    const caps = await client.getOwnedObjects({
+      owner: address,
+      filter: { StructType: `${pkg}::bonding_curve::CreatorCap` },
+      options: { showContent: true },
     });
-    const capList = capsRes?.objects ?? capsRes?.data ?? [];
-    for (const c of capList) {
-      const capId = c.id ?? c.objectId ?? c.data?.objectId;
-      if (!capId) continue;
-      try {
-        const obj    = await client.getObject({ objectId: capId });
-        const fields = obj?.object?.contents?.json ?? obj?.object?.content?.fields ?? null;
-        const capCurve = fields?.curve_id ?? fields?.curveId ?? null;
-        if (capCurve === curveId) { cap = { objectId: capId }; break outer; }
-      } catch { /* skip unreadable cap, keep scanning */ }
-    }
+    cap = caps.data.find(o => o.data?.content?.fields?.curve_id === curveId);
+    if (cap) break;
   }
   if (!cap) throw new Error(`No CreatorCap found in agent wallet for curve ${curveId}`);
 
@@ -419,7 +406,7 @@ async function handleClaim(body) {
   tx.moveCall({
     target: `${pkgId}::bonding_curve::claim_creator_fees`,
     typeArguments: [tokenType],
-    arguments: [tx.object(cap.objectId), curveRef],
+    arguments: [tx.object(cap.data.objectId), curveRef],
   });
 
   const result = await client.signAndExecuteTransaction({
