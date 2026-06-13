@@ -11,12 +11,14 @@ use {
 pub struct SellInput {
     /// Shared curve object ID, e.g. 0x031a...
     pub curve_id: String,
-    /// Tokens to sell, in WHOLE tokens (e.g. 1000.5). The bridge converts to base units.
+    /// Tokens to sell, in WHOLE tokens (e.g. 1000.5). Pre-converted to base units here.
     pub token_amount: f64,
     /// Minimum SUI to receive, in MIST (slippage guard). 0 = no guard.
     pub min_sui_out: Option<u64>,
     /// Optional referral address.
     pub referral: Option<String>,
+    /// Token decimals (default 6, matching V9 SuiPump curves).
+    pub token_decimals: Option<u8>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -51,21 +53,27 @@ async fn execute_sell(input: SellInput) -> AnyResult<SellOutput> {
     let rpc = std::env::var("SUI_RPC_URL")
         .unwrap_or_else(|_| "https://fullnode.testnet.sui.io".to_string());
 
+    // Mirror buy.rs: pre-multiply to base units and send as u64.
+    // Buy sends amount_sui * 1e9 (MIST). Sell sends token_amount * 10^decimals
+    // (default 6 = V9 SuiPump base units). u64 marshalling matches buy exactly,
+    // avoiding any f64 vs integer type ambiguity in the bridge's JSON parsing
+    // that caused sell-through-DAG to silently no-op while buy succeeded.
+    let decimals = input.token_decimals.unwrap_or(6) as u32;
+    let scale = 10u64.pow(decimals) as f64;
+    let token_amount_base: u64 = (input.token_amount * scale) as u64;
+
     // Field names match bridge.js handleSell exactly:
     //   { curveId, tokenAmount, minSuiOut, referral, rpcUrl, privateKey }
-    // The bridge:
-    //   - resolves tokenType/pkgId/ISV from the curve itself (no token_type needed here)
-    //   - converts tokenAmount (whole tokens) -> base units (x1e6) ITSELF
-    // So we send WHOLE tokens and do NOT pre-multiply.
+    // The bridge resolves tokenType/pkgId/ISV from the curve itself.
     let resp = reqwest::Client::new()
         .post(format!("{}/sell", bridge))
         .json(&serde_json::json!({
-            "curveId":    input.curve_id,
-            "tokenAmount": input.token_amount,
-            "minSuiOut":  input.min_sui_out.unwrap_or(0),
-            "referral":   input.referral,
-            "rpcUrl":     rpc,
-            "privateKey": private_key,
+            "curveId":     input.curve_id,
+            "tokenAmount": token_amount_base,
+            "minSuiOut":   input.min_sui_out.unwrap_or(0),
+            "referral":    input.referral,
+            "rpcUrl":      rpc,
+            "privateKey":  private_key,
         }))
         .send().await?;
 
