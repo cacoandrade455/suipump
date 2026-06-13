@@ -222,7 +222,16 @@ async function resolveCurve(client, curveId, { tries = 6, delayMs = 2000 } = {})
 }
 
 function jsonResp(res, status, body) {
-  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.writeHead(status, {
+    'Content-Type': 'application/json',
+    // CORS — the agent UI (suipump.org) calls these endpoints from the browser.
+    // Without these headers the browser blocks the response and fetch() throws
+    // "Failed to fetch" even when the bridge settled the trade server-side.
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Max-Age': '86400',
+  });
   res.end(JSON.stringify(body));
 }
 
@@ -863,6 +872,20 @@ async function handleStatus(body) {
 
 // ── HTTP server ───────────────────────────────────────────────────────────────
 const server = http.createServer(async (req, res) => {
+  // CORS preflight — browsers send OPTIONS before a cross-origin POST. Answer it
+  // with 204 + the allow headers, otherwise the real POST never fires and the
+  // UI shows "Failed to fetch".
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Max-Age': '86400',
+    });
+    res.end();
+    return;
+  }
+
   if (req.method !== 'POST') {
     jsonResp(res, 405, { error: 'Method not allowed — use POST' });
     return;
