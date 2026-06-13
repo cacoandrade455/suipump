@@ -222,7 +222,7 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 // A fresh /run-dag rebuilds against current versions, so retry this class.
 const STALE_OBJECT_RE = /unavailable for consumption|needs to be rebuilt|rejected as invalid by more than|not available for consumption|equivocat/i;
 
-async function fireSell(curveId, tokenWhole, minSuiOut) {
+async function fireSell(curveId, tokenWhole, minSuiOut, sellAll = false) {
   // SELL = two layers, mirroring how buy already settles on these surfaces:
   //   1. EMIT the Nexus DAG request (/run-dag) — produces a real on-chain
   //      DAGExecution digest (the agentic-decision proof). This NEVER blocks the
@@ -235,7 +235,15 @@ async function fireSell(curveId, tokenWhole, minSuiOut) {
   //      tokenType/version/coins and signs with its own SUI_PRIVATE_KEY, so we
   //      pass only curve + amount.
   // Returns { ok, txDigest (settlement), nexusDigest, nexusExecutionId, ... }.
-  const tokenAmount = Math.floor(tokenWhole);
+  //
+  // WHOLE-BALANCE SELLS use tokenAmount:"all" — the bridge's proven path that
+  // merges ALL of the wallet's coin objects for this type and sells the lot.
+  // A floored exact integer (e.g. 1214301) fails to simulate when the balance is
+  // spread across multiple coin objects (bought in several buys): the PTB can't
+  // cleanly split that exact amount. "all" sidesteps coin-selection entirely and
+  // is what every working manual/agent sell this project has used. Partial sells
+  // (sellPct < 100) still pass a specific integer amount.
+  const tokenAmount = sellAll ? 'all' : Math.floor(tokenWhole);
 
   // ── 1. Emit the Nexus DAG request (non-blocking) ───────────────────────────
   let nexusDigest = null, nexusExecutionId = null;
@@ -385,14 +393,15 @@ async function processOrder(order) {
       continue;
     }
 
-    const sellWhole = action.sellPct >= 100 ? balWhole : balWhole * (action.sellPct / 100);
+    const isWholeSell = action.sellPct >= 100;
+    const sellWhole = isWholeSell ? balWhole : balWhole * (action.sellPct / 100);
     if (!(sellWhole > DUST_WHOLE)) { if (action.rung) action.rung._fired = true; await persistOrder(order); continue; }
 
-    log(`${order.id}: ${action.kind} fire — (${mult.toFixed(3)}x) selling ${action.sellPct}% of ${balWhole.toFixed(6)} = ${sellWhole.toFixed(6)} tokens`);
+    log(`${order.id}: ${action.kind} fire — (${mult.toFixed(3)}x) selling ${action.sellPct}% of ${balWhole.toFixed(6)} = ${isWholeSell ? 'ALL' : sellWhole.toFixed(6)} tokens`);
     const balBefore = balWhole;
     let receipt;
     try {
-      receipt = await fireSell(order.curveId, sellWhole, order.minSuiOut);
+      receipt = await fireSell(order.curveId, sellWhole, order.minSuiOut, isWholeSell);
     } catch (e) {
       err(`${order.id}: sell failed: ${e.message}`);
       order._cooldownUntil = Date.now() + ERROR_COOLDOWN_MS;
