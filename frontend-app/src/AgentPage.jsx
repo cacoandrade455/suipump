@@ -35,7 +35,60 @@ const WORKFLOW_NODES = {
   sell:   [{ id: 'sell',   tool: 'xyz.suipump.sell@1',   label: 'Sell',   desc: 'Sell tokens back to SUI' }],
   claim:  [{ id: 'claim',  tool: 'xyz.suipump.claim@1',  label: 'Claim',  desc: 'Claim creator fees' }],
   alerts: [{ id: 'alerts', tool: 'xyz.suipump.alerts@1', label: 'Monitor', desc: 'Watch graduation / price' }],
+  tpsl:   [{ id: 'arm',    tool: 'strategy.tpsl@1',      label: 'Arm strategy', desc: 'Standing TP/SL order the agent watches' }],
 };
+
+// Client-side strategy intent parser. The LLM planner only emits one-shot
+// workflows (buy/sell/claim/alerts/launch); a take-profit / stop-loss is a
+// STANDING order, so we recognize it here and build a `tpsl` plan that creates
+// an order in the strategy store. Returns a plan object or null (not a strategy).
+//
+// Recognized shapes (case-insensitive):
+//   "take profit ... at +20%"          -> TP rung at 1.20x, sell 100%
+//   "take profit ... at +20% sell 50%" -> TP rung at 1.20x, sell 50%
+//   "dump all ... at +20%"             -> TP rung at 1.20x, sell 100%
+//   "sell 50% ... at +30%"             -> TP rung at 1.30x, sell 50%
+//   "stop loss ... at -15%"            -> SL at 0.85x
+// A curve 0x... must be present. TP and SL can appear together.
+function parseStrategyGoal(text) {
+  const g = String(text || '');
+  const curveMatch = g.match(/0x[0-9a-fA-F]{4,}/);
+  if (!curveMatch) return null;
+  const curveId = curveMatch[0];
+
+  const lower = g.toLowerCase();
+  const hasStrategyWord = /\b(take\s*profit|tp|stop\s*loss|sl|dump\s+all)\b/.test(lower);
+  if (!hasStrategyWord) return null;
+
+  // Take-profit: a "+N%" near a take-profit / dump / sell intent.
+  const tp = [];
+  const tpPct = lower.match(/(?:take\s*profit|tp|dump\s+all|profit)[^+\-]*\+?\s*(\d+(?:\.\d+)?)\s*%/);
+  if (tpPct) {
+    const pct = Number(tpPct[1]);
+    // sell size: "sell 50%" / "dump all" / "100%"; default 100.
+    let sellPct = 100;
+    const sellMatch = lower.match(/sell\s+(\d+(?:\.\d+)?)\s*%/);
+    if (sellMatch) sellPct = Number(sellMatch[1]);
+    else if (/dump\s+all|sell\s+all/.test(lower)) sellPct = 100;
+    if (pct > 0) tp.push({ multiple: 1 + pct / 100, sellPct });
+  }
+
+  // Stop-loss: a "-N%" near a stop-loss intent.
+  let stopLoss = null;
+  const slPct = lower.match(/(?:stop\s*loss|sl)[^+\-]*-\s*(\d+(?:\.\d+)?)\s*%/);
+  if (slPct) {
+    const pct = Number(slPct[1]);
+    if (pct > 0 && pct < 100) stopLoss = { multiple: 1 - pct / 100 };
+  }
+
+  if (!tp.length && !stopLoss) return null;
+
+  const tpDesc = tp.length ? `take-profit ${tp.map(r => `+${Math.round((r.multiple - 1) * 100)}% (sell ${r.sellPct}%)`).join(', ')}` : '';
+  const slDesc = stopLoss ? `stop-loss -${Math.round((1 - stopLoss.multiple) * 100)}%` : '';
+  const summary = `Arm a standing strategy on ${curveId.slice(0, 10)}…: ${[tpDesc, slDesc].filter(Boolean).join(' · ')}. The agent watches the price and sells automatically when a trigger is hit.`;
+
+  return { workflow: 'tpsl', summary, tpsl: { curveId, takeProfit: tp, stopLoss } };
+}
 
 export default function AgentPage({ onBack }) {
   const account = useCurrentAccount();
@@ -61,6 +114,12 @@ export default function AgentPage({ onBack }) {
     setPlanning(true); setError(null); setPlan(null); setResult(null);
     setNodeState({}); setPhase('idle'); clearAnim();
     try {
+      // Strategy goals (take-profit / stop-loss) are standing orders, not one-shot
+      // workflows. Recognize them client-side so the LLM can't collapse them into
+      // a plain immediate sell. If it's not a strategy, fall through to the planner.
+      const strat = parseStrategyGoal(goal.trim());
+      if (strat) { setPlan(strat); setPlanning(false); return; }
+
       const res = await fetch('/api/agent-plan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -136,6 +195,19 @@ export default function AgentPage({ onBack }) {
       case 'alerts':
         if (!p.alerts?.curveIds?.length) throw new Error('No curve ids for alerts');
         return { workflow: 'alerts', alerts: { curveIds: p.alerts.curveIds } };
+      case 'tpsl': {
+        if (!p.tpsl?.curveId) throw new Error('No curve id for the strategy — paste the token CA in your goal');
+        const { tokenType } = await fetchCurveMeta(p.tpsl.curveId);
+        return {
+          workflow: 'tpsl',
+          tpsl: {
+            curveId: p.tpsl.curveId,
+            tokenType,
+            takeProfit: p.tpsl.takeProfit ?? [],
+            stopLoss: p.tpsl.stopLoss ?? null,
+          },
+        };
+      }
       default:
         throw new Error(`Unknown workflow: ${p.workflow}`);
     }
@@ -194,6 +266,38 @@ export default function AgentPage({ onBack }) {
 
     try {
       const payload = await buildPayload(plan);
+
+      // STRATEGY (tpsl): not a one-shot trade — create a STANDING order in the
+      // strategy store. The strategy engine polls these and fires the sell
+      // through the bridge automatically when a trigger is hit. Nothing settles
+      // now; settlement happens later when the price crosses a rung.
+      if (payload.workflow === 'tpsl') {
+        try {
+          const r = await fetch(`${INDEXER_URL}/orders`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              curveId: payload.tpsl.curveId,
+              tokenType: payload.tpsl.tokenType,
+              type: 'tpsl',
+              takeProfit: payload.tpsl.takeProfit,
+              stopLoss: payload.tpsl.stopLoss,
+            }),
+          });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(d.error || `order create failed (${r.status})`);
+          clearAnim();
+          setNodeState({ arm: 'done' });
+          setResult({ workflow: 'tpsl', orderId: d.id ?? null, order: d });
+          setPhase('done');
+        } catch (e) {
+          clearAnim();
+          setNodeState({ arm: 'error' });
+          setError(`Could not arm strategy: ${e.message}`);
+          setPhase('failed');
+        }
+        return;
+      }
 
       // STEP 1 — Emit the Nexus DAG request (agentic-decision proof). This is
       // BEST-EFFORT: the on-chain walk request is the orchestration paper trail,
@@ -304,6 +408,17 @@ export default function AgentPage({ onBack }) {
           ['workflow', p.workflow],
           ['monitoring', `${p.alerts?.curveIds?.length ?? 0} curve(s)`],
         ];
+      case 'tpsl': {
+        const rows = [
+          ['workflow', 'tp/sl strategy'],
+          ['curve', p.tpsl?.curveId ? `${p.tpsl.curveId.slice(0, 10)}…` : '(missing — paste CA)'],
+        ];
+        (p.tpsl?.takeProfit ?? []).forEach((r, i) =>
+          rows.push([`take-profit ${i + 1}`, `+${Math.round((r.multiple - 1) * 100)}% · sell ${r.sellPct}%`]));
+        if (p.tpsl?.stopLoss)
+          rows.push(['stop-loss', `-${Math.round((1 - p.tpsl.stopLoss.multiple) * 100)}%`]);
+        return rows;
+      }
       default:
         return [['workflow', p.workflow]];
     }
@@ -406,6 +521,20 @@ export default function AgentPage({ onBack }) {
                 </div>
               );
             })}
+          </div>
+        </div>
+      )}
+
+      {result && result.workflow === 'tpsl' && (
+        <div className="border border-emerald-400/30 rounded-xl p-4 bg-emerald-400/[0.05]">
+          <div className="text-[10px] font-mono text-emerald-400/80 tracking-widest mb-3">✓ STRATEGY ARMED — AGENT IS WATCHING</div>
+          <div className="space-y-2 text-[10px] font-mono">
+            {result.orderId && (
+              <div className="text-white/40">order id: <span className="text-white/70 break-all">{result.orderId}</span></div>
+            )}
+            <div className="text-white/50 leading-relaxed">
+              The agent now watches this curve's price and sells automatically through Nexus when a trigger is hit. No further action needed.
+            </div>
           </div>
         </div>
       )}
