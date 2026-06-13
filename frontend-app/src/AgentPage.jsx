@@ -273,7 +273,10 @@ export default function AgentPage({ onBack }) {
       // now; settlement happens later when the price crosses a rung.
       if (payload.workflow === 'tpsl') {
         try {
-          const r = await fetch(`${INDEXER_URL}/orders`, {
+          // Create via the same-origin Vercel proxy (/api/create-order), which
+          // injects the STRATEGY_API_KEY server-side. The key never ships to the
+          // browser, so the indexer's write guard is satisfied without exposing it.
+          const r = await fetch(`/api/create-order`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
