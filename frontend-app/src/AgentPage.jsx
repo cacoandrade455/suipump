@@ -36,6 +36,10 @@ const WORKFLOW_NODES = {
   claim:  [{ id: 'claim',  tool: 'xyz.suipump.claim@1',  label: 'Claim',  desc: 'Claim creator fees' }],
   alerts: [{ id: 'alerts', tool: 'xyz.suipump.alerts@1', label: 'Monitor', desc: 'Watch graduation / price' }],
   tpsl:   [{ id: 'arm',    tool: 'strategy.tpsl@1',      label: 'Arm strategy', desc: 'Standing TP/SL order the agent watches' }],
+  buy_then_tpsl: [
+    { id: 'buy', tool: 'xyz.suipump.buy@1', label: 'Buy',          desc: 'Buy the position now' },
+    { id: 'arm', tool: 'strategy.tpsl@1',   label: 'Arm strategy', desc: 'Then watch price and auto-sell at the target' },
+  ],
 };
 
 // Client-side strategy intent parser. The LLM planner only emits one-shot
@@ -82,6 +86,27 @@ function parseStrategyGoal(text) {
   }
 
   if (!tp.length && !stopLoss) return null;
+
+  // Compound: a leading "buy N sui" in the SAME goal means buy first, then arm
+  // the take-profit/stop-loss on the bought position. e.g.
+  //   "buy 500 sui of 0x… , take profit at +20% sell all"
+  // The buy settles immediately via the bridge; the TP/SL is then armed at the
+  // post-buy fill price so "+20%" is measured from what we actually paid.
+  const buyMatch = lower.match(/buy\s+(\d+(?:\.\d+)?)\s*sui/);
+  if (buyMatch) {
+    const amountSui = Number(buyMatch[1]);
+    if (amountSui > 0) {
+      const tpDescC = tp.length ? `take-profit ${tp.map(r => `+${Math.round((r.multiple - 1) * 100)}% (sell ${r.sellPct}%)`).join(', ')}` : '';
+      const slDescC = stopLoss ? `stop-loss -${Math.round((1 - stopLoss.multiple) * 100)}%` : '';
+      const summaryC = `Buy ${amountSui} SUI of ${curveId.slice(0, 10)}…, then arm ${[tpDescC, slDescC].filter(Boolean).join(' · ')}. The agent buys now and sells automatically when a trigger is hit.`;
+      return {
+        workflow: 'buy_then_tpsl',
+        summary: summaryC,
+        buy: { curveId, amountSui },
+        tpsl: { curveId, takeProfit: tp, stopLoss },
+      };
+    }
+  }
 
   const tpDesc = tp.length ? `take-profit ${tp.map(r => `+${Math.round((r.multiple - 1) * 100)}% (sell ${r.sellPct}%)`).join(', ')}` : '';
   const slDesc = stopLoss ? `stop-loss -${Math.round((1 - stopLoss.multiple) * 100)}%` : '';
@@ -208,6 +233,20 @@ export default function AgentPage({ onBack }) {
           },
         };
       }
+      case 'buy_then_tpsl': {
+        if (!p.buy?.curveId) throw new Error('No curve id — paste the token CA in your goal');
+        const { tokenType } = await fetchCurveMeta(p.buy.curveId);
+        return {
+          workflow: 'buy_then_tpsl',
+          buy: { curveId: p.buy.curveId, amountSui: p.buy.amountSui },
+          tpsl: {
+            curveId: p.buy.curveId,
+            tokenType,
+            takeProfit: p.tpsl.takeProfit ?? [],
+            stopLoss: p.tpsl.stopLoss ?? null,
+          },
+        };
+      }
       default:
         throw new Error(`Unknown workflow: ${p.workflow}`);
     }
@@ -266,6 +305,63 @@ export default function AgentPage({ onBack }) {
 
     try {
       const payload = await buildPayload(plan);
+
+      // COMPOUND (buy_then_tpsl): buy first (settles immediately via the bridge),
+      // then arm a standing TP/SL on the bought position, seeded at the post-buy
+      // fill price so "+X%" is measured from what we actually paid. Two real
+      // actions from one instruction.
+      if (payload.workflow === 'buy_then_tpsl') {
+        // 1) BUY — settle through the bridge (the path that moves tokens).
+        let buyDigest = null;
+        try {
+          buyDigest = await settleViaBridge({ workflow: 'buy', buy: payload.buy });
+        } catch (e) {
+          clearAnim();
+          setNodeState({ buy: 'error' });
+          setError(`Buy failed: ${e.message}`);
+          setPhase('failed');
+          return;
+        }
+
+        // 2) Read the post-buy price from the curve so the TP/SL entry is the
+        //    real fill basis (not a stale pre-buy quote). Best-effort: if the
+        //    read fails, omit entryPriceSui and let the brain seed on load.
+        let entryPriceSui = null;
+        try {
+          const sr = await fetch(`${INDEXER_URL}/token/${payload.buy.curveId}/stats`, { signal: AbortSignal.timeout(6000) });
+          if (sr.ok) { const sd = await sr.json(); entryPriceSui = Number(sd.last_price) || null; }
+        } catch { /* seed on brain load */ }
+
+        // 3) ARM the standing TP/SL via the secure create-order proxy.
+        try {
+          const r = await fetch(`/api/create-order`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              curveId: payload.tpsl.curveId,
+              tokenType: payload.tpsl.tokenType,
+              type: 'tpsl',
+              entryPriceSui,
+              takeProfit: payload.tpsl.takeProfit,
+              stopLoss: payload.tpsl.stopLoss,
+            }),
+          });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(d.error || `order create failed (${r.status})`);
+          clearAnim();
+          setNodeState({ buy: 'done', arm: 'done' });
+          setResult({ workflow: 'buy_then_tpsl', buyDigest, orderId: d.id ?? null, order: d, entryPriceSui });
+          setPhase('done');
+        } catch (e) {
+          // Buy already settled; only the arm failed. Surface it but keep the buy.
+          clearAnim();
+          setNodeState({ buy: 'done', arm: 'error' });
+          setResult({ workflow: 'buy_then_tpsl', buyDigest, orderId: null });
+          setError(`Bought OK, but could not arm strategy: ${e.message}`);
+          setPhase('failed');
+        }
+        return;
+      }
 
       // STRATEGY (tpsl): not a one-shot trade — create a STANDING order in the
       // strategy store. The strategy engine polls these and fires the sell
@@ -422,6 +518,18 @@ export default function AgentPage({ onBack }) {
           rows.push(['stop-loss', `-${Math.round((1 - p.tpsl.stopLoss.multiple) * 100)}%`]);
         return rows;
       }
+      case 'buy_then_tpsl': {
+        const rows = [
+          ['workflow', 'buy + tp/sl'],
+          ['buy', `${p.buy?.amountSui ?? 0} SUI`],
+          ['curve', p.buy?.curveId ? `${p.buy.curveId.slice(0, 10)}…` : '(missing — paste CA)'],
+        ];
+        (p.tpsl?.takeProfit ?? []).forEach((r, i) =>
+          rows.push([`take-profit ${i + 1}`, `+${Math.round((r.multiple - 1) * 100)}% · sell ${r.sellPct}%`]));
+        if (p.tpsl?.stopLoss)
+          rows.push(['stop-loss', `-${Math.round((1 - p.tpsl.stopLoss.multiple) * 100)}%`]);
+        return rows;
+      }
       default:
         return [['workflow', p.workflow]];
     }
@@ -528,10 +636,18 @@ export default function AgentPage({ onBack }) {
         </div>
       )}
 
-      {result && result.workflow === 'tpsl' && (
+      {result && (result.workflow === 'tpsl' || result.workflow === 'buy_then_tpsl') && (
         <div className="border border-emerald-400/30 rounded-xl p-4 bg-emerald-400/[0.05]">
-          <div className="text-[10px] font-mono text-emerald-400/80 tracking-widest mb-3">✓ STRATEGY ARMED — AGENT IS WATCHING</div>
+          <div className="text-[10px] font-mono text-emerald-400/80 tracking-widest mb-3">
+            {result.workflow === 'buy_then_tpsl' ? '✓ BOUGHT & STRATEGY ARMED — AGENT IS WATCHING' : '✓ STRATEGY ARMED — AGENT IS WATCHING'}
+          </div>
           <div className="space-y-2 text-[10px] font-mono">
+            {result.buyDigest && (
+              <div className="text-white/40">buy settled: <span className="text-emerald-300/80 break-all">{result.buyDigest}</span></div>
+            )}
+            {result.entryPriceSui && (
+              <div className="text-white/40">entry price: <span className="text-white/70">{result.entryPriceSui} SUI</span></div>
+            )}
             {result.orderId && (
               <div className="text-white/40">order id: <span className="text-white/70 break-all">{result.orderId}</span></div>
             )}
