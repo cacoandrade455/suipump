@@ -194,23 +194,37 @@ export default function AgentPage({ onBack }) {
 
     try {
       const payload = await buildPayload(plan);
-      const res  = await fetch(`${RUNNER_URL}/run-dag`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      const data = await res.json();
-      clearAnim();
-      if (!res.ok || data.ok === false) throw new Error(data.error || 'DAG execution failed');
 
-      // The DAG request emitted the on-chain Nexus execution digest above. Now
-      // settle the swap through the bridge so the tokens actually move. The DAG
-      // digest is the agentic-decision proof; the settle digest is the trade.
+      // STEP 1 — Emit the Nexus DAG request (agentic-decision proof). This is
+      // BEST-EFFORT: the on-chain walk request is the orchestration paper trail,
+      // not the settlement path. A slow/failed /run-dag must NEVER block the trade
+      // from settling. We capture whatever the runner returns and move on.
+      let data = {};
+      try {
+        const res = await fetch(`${RUNNER_URL}/run-dag`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        data = await res.json().catch(() => ({}));
+        if (!res.ok || data.ok === false) {
+          // Emission failed — log it, keep going. Settlement is independent.
+          console.warn('[agent] Nexus emit failed, settling anyway:', data.error || res.status);
+          data = {};
+        }
+      } catch (e) {
+        console.warn('[agent] Nexus emit threw, settling anyway:', e.message);
+        data = {};
+      }
+      clearAnim();
+
+      // STEP 2 — Settle the swap through the bridge so the tokens actually move.
+      // This is the money path and runs REGARDLESS of whether the Nexus emit
+      // above succeeded. Only this step's failure fails the action.
       let settleDigest = null;
       try {
         settleDigest = await settleViaBridge(payload);
       } catch (e) {
-        // Settlement failed — surface it, but keep the Nexus digest we already got.
         clearAnim();
         setNodeState(Object.fromEntries(nodes.map(n => [n.id, 'error'])));
         setResult({
@@ -221,7 +235,7 @@ export default function AgentPage({ onBack }) {
           dagId:       data.dagId ?? null,
           settleDigest: null,
         });
-        setError(`Nexus emitted, but settlement failed: ${e.message}`);
+        setError(`Settlement failed: ${e.message}`);
         setPhase('failed');
         return;
       }
