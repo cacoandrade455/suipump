@@ -244,13 +244,20 @@ async function fireSell(curveId, tokenWhole, minSuiOut, sellAll = false) {
   // is what every working manual/agent sell this project has used. Partial sells
   // (sellPct < 100) still pass a specific integer amount.
   const tokenAmount = sellAll ? 'all' : Math.floor(tokenWhole);
+  // The Nexus /run-dag emit validates sell.tokenAmount > 0 and rejects the
+  // string "all" (only the bridge settle path resolves "all" to the on-chain
+  // balance). So for the emit — which is the agentic-decision PROOF, not the
+  // money path — we always pass a positive integer derived from the known
+  // balance. The bridge settle below still uses `tokenAmount` ("all" for whole
+  // sells) so coin-selection stays robust.
+  const emitTokenAmount = Math.max(1, Math.floor(tokenWhole));
 
   // ── 1. Emit the Nexus DAG request (non-blocking) ───────────────────────────
   let nexusDigest = null, nexusExecutionId = null;
   try {
     const rr = await fetch(`${RUNNER_URL}/run-dag`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workflow: 'sell', sell: { curveId, tokenAmount, minSuiOut: minSuiOut ?? 0 } }),
+      body: JSON.stringify({ workflow: 'sell', sell: { curveId, tokenAmount: emitTokenAmount, minSuiOut: minSuiOut ?? 0 } }),
       signal: AbortSignal.timeout(190000),
     });
     const rd = await rr.json().catch(() => ({}));
@@ -424,12 +431,12 @@ async function processOrder(order) {
       if (moved >= sellWhole * 0.9) { confirmed = true; break; }
     }
     if (!confirmed) {
-      err(`${order.id}: SELL NOT CONFIRMED — runner returned digest ${receipt.digest} but on-chain balance moved ${moved.toFixed(6)} of ${sellWhole.toFixed(6)} expected (${balBefore.toFixed(6)} -> ${balAfter.toFixed(6)}); order stays active, will retry`);
+      err(`${order.id}: SELL NOT CONFIRMED — bridge returned digest ${receipt.txDigest ?? '?'} but on-chain balance moved ${moved.toFixed(6)} of ${sellWhole.toFixed(6)} expected (${balBefore.toFixed(6)} -> ${balAfter.toFixed(6)}); order stays active, will retry`);
       order._cooldownUntil = Date.now() + ERROR_COOLDOWN_MS;
       return; // do NOT mark fired/done — the sell did not move tokens
     }
 
-    log(`${order.id}: SOLD ${moved.toFixed(6)} tokens CONFIRMED on-chain — balance ${balBefore.toFixed(6)} -> ${balAfter.toFixed(6)} | digest ${receipt.digest} execId ${receipt.executionId}`);
+    log(`${order.id}: SOLD ${moved.toFixed(6)} tokens CONFIRMED on-chain — balance ${balBefore.toFixed(6)} -> ${balAfter.toFixed(6)} | settle ${receipt.txDigest ?? '?'} | nexus ${receipt.nexusDigest ?? 'not-emitted'}`);
 
     balWhole = balAfter; // trust the verified on-chain balance, not an assumption
     if (action.kind === 'SL') order.done = true;
