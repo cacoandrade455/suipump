@@ -16,6 +16,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+# Prebuilt nexus binary installed by build.sh into ./bin — put it on PATH.
+export PATH="$(pwd)/bin:$PATH"
+
 RPC_URL="${SUI_RPC_URL:-https://fullnode.testnet.sui.io}"
 # Objects live in the project dir (preserved from build), not $HOME.
 OBJECTS="$(pwd)/objects.testnet.toml"
@@ -33,6 +36,7 @@ if ! command -v nexus >/dev/null 2>&1; then
   exit 1
 fi
 
+echo "[start] nexus: $(command -v nexus) ($(nexus --version 2>/dev/null || echo '?'))"
 echo "[start] configuring nexus CLI (network=testnet)…"
 nexus conf set \
   --sui.rpc-url "$RPC_URL" \
