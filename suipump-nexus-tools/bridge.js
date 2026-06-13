@@ -31,6 +31,18 @@ const __dirname     = path.dirname(fileURLToPath(import.meta.url));
 const PORT          = parseInt(process.env.PORT ?? '3030', 10);
 const INDEXER_URL   = process.env.SUIPUMP_INDEXER_URL ?? 'https://suipump-62s2.onrender.com';
 
+// ── Write-endpoint auth ───────────────────────────────────────────────────────
+// /buy /sell /launch /claim mutate state and SPEND THE AGENT WALLET'S SUI. They
+// must only be reachable by our own server-side callers (the Vercel agent proxy
+// and the strategy brain), never by a random browser or a direct curl. We gate
+// them behind a shared secret sent as `x-agent-key`. The key lives ONLY in the
+// bridge env and in the callers' server-side envs — it is NEVER shipped to the
+// browser. Reads (/status /health) stay open. If AGENT_API_KEY is unset the gate
+// is OPEN (local dev) but we log a loud warning so it's never silently open in
+// production.
+const AGENT_API_KEY = process.env.AGENT_API_KEY ?? '';
+const WRITE_ENDPOINTS = new Set(['/buy', '/sell', '/launch', '/claim']);
+
 // ── Active package for NEW launches (V9) ──────────────────────────────────────
 const ACTIVE_PACKAGE_ID = process.env.ACTIVE_PACKAGE_ID
   ?? '0x719698e5138582d78ee95317271e8bce05769569a4f58c940a7f1b424d90ffe2'; // V9
@@ -901,6 +913,20 @@ const server = http.createServer(async (req, res) => {
 
   try {
     let result;
+    // Auth gate: write endpoints (which spend the agent wallet) require the
+    // shared secret. Reads (/status /health) are open. The key is sent by our
+    // own server-side callers only (Vercel proxy, brain), never the browser.
+    if (WRITE_ENDPOINTS.has(req.url)) {
+      if (AGENT_API_KEY) {
+        const provided = req.headers['x-agent-key'];
+        if (provided !== AGENT_API_KEY) {
+          jsonResp(res, 401, { ok: false, error: 'unauthorized' });
+          return;
+        }
+      } else {
+        console.warn(`[bridge] WARNING: AGENT_API_KEY unset — ${req.url} is OPEN to anyone. Set AGENT_API_KEY in env to lock write endpoints.`);
+      }
+    }
     switch (req.url) {
       case '/buy':    result = await handleBuy(body);    break;
       case '/sell':   result = await handleSell(body);   break;

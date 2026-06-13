@@ -47,6 +47,13 @@ import { execFile } from 'node:child_process';
 const PORT           = parseInt(process.env.PORT ?? '3040', 10);
 const RUN_TIMEOUT_MS = parseInt(process.env.RUN_TIMEOUT_MS ?? '180000', 10);
 
+// Write-endpoint auth: /run-dag and /schedule-task emit on-chain Nexus walks and
+// must only be reachable by our own server-side callers (Vercel agent proxy and
+// the strategy brain), never a random browser/curl. Shared secret via x-agent-key
+// header; key lives only in server-side envs, never the browser. Unset = open
+// (dev) with a loud warning.
+const AGENT_API_KEY  = process.env.AGENT_API_KEY ?? '';
+
 // Published DAG ids (testnet). Override any via env if re-published.
 // launch_and_buy defaults to the PROVEN combined DAG 0xfd88 (verified Ok/Ok).
 const DAG_IDS = {
@@ -97,7 +104,7 @@ function cors(req, res) {
   const origin = req.headers.origin;
   res.setHeader('Access-Control-Allow-Origin', origin && ALLOWED_ORIGINS.has(origin) ? origin : 'https://suipump.org');
   res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-agent-key');
 }
 
 function json(res, status, body) {
@@ -354,6 +361,20 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && req.url === '/health') {
     return json(res, 200, { ok: true, ts: Date.now(), dags: DAG_IDS });
+  }
+
+  // Auth gate: /run-dag and /schedule-task emit on-chain walks and must only be
+  // reachable by our server-side callers (Vercel proxy, brain). Shared secret via
+  // x-agent-key. Reads (GET /health above) are open. Unset key = open (dev) with
+  // a loud warning so production is never silently open.
+  if (req.method === 'POST' && (req.url === '/run-dag' || req.url === '/schedule-task')) {
+    if (AGENT_API_KEY) {
+      if (req.headers['x-agent-key'] !== AGENT_API_KEY) {
+        return json(res, 401, { ok: false, error: 'unauthorized' });
+      }
+    } else {
+      console.warn(`[runner] WARNING: AGENT_API_KEY unset — ${req.url} is OPEN to anyone. Set AGENT_API_KEY in env to lock it.`);
+    }
   }
 
   if (req.method === 'POST' && req.url === '/run-dag') {

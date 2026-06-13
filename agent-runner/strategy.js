@@ -31,6 +31,11 @@ const INDEXER_URL       = process.env.INDEXER_URL     ?? 'https://suipump-62s2.o
 const SUI_GRAPHQL_URL   = process.env.SUI_GRAPHQL_URL ?? 'https://graphql.testnet.sui.io/graphql';
 const INVOKER_ADDRESS   = process.env.INVOKER_ADDRESS ?? '0x877af0fae3fa4f8ea936943b59bcd66104f67cf1895302e97761a28b3c3a5906';
 const STRATEGY_API_KEY  = process.env.STRATEGY_API_KEY ?? '';
+// Shared secret for the gated bridge/runner write endpoints. The brain calls
+// bridge /sell and runner /run-dag server-to-server for autonomous fires, so it
+// must present this header or those endpoints now 401. Lives in the brain's env
+// only (same value as the bridge's and runner's AGENT_API_KEY).
+const AGENT_API_KEY     = process.env.AGENT_API_KEY ?? '';
 const ORDERS_REFRESH_MS = parseInt(process.env.STRATEGY_ORDERS_REFRESH_MS ?? '15000', 10);
 const RECONNECT_MS      = parseInt(process.env.STRATEGY_RECONNECT_MS ?? '3000', 10);
 const ERROR_COOLDOWN_MS = parseInt(process.env.STRATEGY_ERROR_COOLDOWN_MS ?? '60000', 10);
@@ -244,19 +249,20 @@ async function fireSell(curveId, tokenWhole, minSuiOut, sellAll = false) {
   // is what every working manual/agent sell this project has used. Partial sells
   // (sellPct < 100) still pass a specific integer amount.
   const tokenAmount = sellAll ? 'all' : Math.floor(tokenWhole);
-  // The Nexus /run-dag emit validates sell.tokenAmount > 0 and rejects the
-  // string "all" (only the bridge settle path resolves "all" to the on-chain
-  // balance). So for the emit — which is the agentic-decision PROOF, not the
-  // money path — we always pass a positive integer derived from the known
-  // balance. The bridge settle below still uses `tokenAmount` ("all" for whole
-  // sells) so coin-selection stays robust.
+  // The Nexus /run-dag emit validates sell.tokenAmount > 0 and rejects "all"
+  // (only the bridge settle path resolves "all" to the on-chain balance). The
+  // emit is the agentic-decision PROOF, not the money path, so we always send it
+  // a positive integer derived from the known balance. The bridge settle below
+  // still uses `tokenAmount` ("all" for whole sells) so coin-selection stays
+  // robust across multiple coin objects.
   const emitTokenAmount = Math.max(1, Math.floor(tokenWhole));
 
   // ── 1. Emit the Nexus DAG request (non-blocking) ───────────────────────────
   let nexusDigest = null, nexusExecutionId = null;
   try {
     const rr = await fetch(`${RUNNER_URL}/run-dag`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(AGENT_API_KEY ? { 'x-agent-key': AGENT_API_KEY } : {}) },
       body: JSON.stringify({ workflow: 'sell', sell: { curveId, tokenAmount: emitTokenAmount, minSuiOut: minSuiOut ?? 0 } }),
       signal: AbortSignal.timeout(190000),
     });
@@ -280,7 +286,8 @@ async function fireSell(curveId, tokenWhole, minSuiOut, sellAll = false) {
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       const r = await fetch(`${BRIDGE_URL}/sell`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(AGENT_API_KEY ? { 'x-agent-key': AGENT_API_KEY } : {}) },
         body: JSON.stringify(body), signal: AbortSignal.timeout(190000),
       });
       const d = await r.json().catch(() => ({}));

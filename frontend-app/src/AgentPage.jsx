@@ -255,21 +255,24 @@ export default function AgentPage({ onBack }) {
   // Settle the swap through the bridge — the path that actually moves tokens
   // (the Nexus DAG request emits the on-chain execution digest but does not
   // settle, so we settle here, the same bridge every working SuiPump trade uses).
-  // Maps the runner payload's fields to the bridge's body. The bridge signs with
-  // its own SUI_PRIVATE_KEY, so no key is sent. Returns the settlement txDigest,
-  // or null for workflows the bridge doesn't settle (claim/alerts go DAG-only).
+  // Maps the runner payload's fields to the bridge's body. Calls go through the
+  // same-origin Vercel proxy (/api/agent-bridge), which injects AGENT_API_KEY
+  // server-side and forwards to the bridge's gated write endpoints. The key never
+  // ships to the browser, so only our deployed UI (via this proxy) can spend the
+  // agent wallet — a direct browser/curl to the bridge gets 401. We pass the
+  // target bridge path in `path`. Returns the settlement txDigest, or null for
+  // workflows the bridge doesn't settle (claim/alerts go DAG-only).
   async function settleViaBridge(payload) {
     const wf = payload.workflow;
-    let url, body;
+    let path, body;
     if (wf === 'buy') {
-      url = `${BRIDGE_URL}/buy`;
+      path = '/buy';
       body = { curveId: payload.buy.curveId, suiAmount: payload.buy.amountSui };
     } else if (wf === 'sell') {
-      url = `${BRIDGE_URL}/sell`;
+      path = '/sell';
       body = { curveId: payload.sell.curveId, tokenAmount: payload.sell.tokenAmount, minSuiOut: 0 };
     } else if (wf === 'launch_and_buy') {
-      // Launch settles through the bridge /launch; the buy leg rides with it.
-      url = `${BRIDGE_URL}/launch`;
+      path = '/launch';
       body = {
         name: payload.launch.name,
         symbol: payload.launch.symbol,
@@ -281,9 +284,9 @@ export default function AgentPage({ onBack }) {
     } else {
       return null; // claim / alerts: no bridge settlement
     }
-    const r = await fetch(url, {
+    const r = await fetch(`/api/agent-bridge`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ path, ...body }),
     });
     const d = await r.json().catch(() => ({}));
     if (!r.ok || d.ok === false) throw new Error(d.error || `bridge ${wf} failed (${r.status})`);
@@ -404,7 +407,7 @@ export default function AgentPage({ onBack }) {
       // from settling. We capture whatever the runner returns and move on.
       let data = {};
       try {
-        const res = await fetch(`${RUNNER_URL}/run-dag`, {
+        const res = await fetch(`/api/agent-run`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
