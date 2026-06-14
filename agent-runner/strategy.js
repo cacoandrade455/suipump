@@ -622,12 +622,20 @@ function handleEvent(ev) {
   if (!ev || ev.type === 'connected') return;
   const isTrade  = ev.type === 'TokensPurchased' || ev.type === 'TokensBought' || ev.type === 'TokensSold';
   const isLaunch = ev.type === 'CurveCreated';
+  // DIAGNOSTIC: surface any event whose type mentions sell/sold/trade but did NOT
+  // classify as a trade above — catches a sell event with an unexpected type tail.
+  if (!isTrade && !isLaunch && /sold|sell|trade|purchas|bought/i.test(String(ev.type ?? ''))) {
+    log(`[unmatched-ev] type=${ev.type} curve=${String(ev.curveId ?? '∅').slice(0, 10)}… keys=${Object.keys(ev.data ?? {}).join(',')}`);
+  }
 
   if (isTrade && ev.curveId) {
     const side = ev.type === 'TokensSold' ? 'sell' : 'buy';
     const trader = side === 'sell'
       ? (ev.data?.seller ?? null)
       : (ev.data?.buyer ?? null);
+    // DIAGNOSTIC: log every trade event the brain sees, so a non-matching sell is
+    // visible on the wire (type tail + buyer/seller fields). Remove once resolved.
+    log(`[trade-ev] type=${ev.type} side=${side} curve=${String(ev.curveId).slice(0, 10)}… buyer=${ev.data?.buyer ?? '∅'} seller=${ev.data?.seller ?? '∅'}`);
     for (const order of ORDERS.values()) {
       if (order.done) continue;
       const w = HANDLERS[order.type]?.wakesOn;
