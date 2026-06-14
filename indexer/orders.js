@@ -90,6 +90,21 @@ function sanitizeStop(sl) {
 
 const ORDER_TYPES = ['tpsl', 'sniper', 'dca', 'copytrade'];
 
+// sanitizeThen — validate an optional `then` chaining block. After a buy-strategy
+// (sniper/dca/copytrade) settles a buy, the brain arms whatever `then` specifies
+// on the bought curve. Today the only child is `tpsl` (an auto-exit). Returns a
+// clean { tpsl: { takeProfit, stopLoss } } or null. Structured so more child
+// types can be added without changing callers.
+function sanitizeThen(then) {
+  if (!then || typeof then !== 'object' || Array.isArray(then)) return null;
+  if (then.tpsl && typeof then.tpsl === 'object') {
+    const tp = sanitizeRungs(then.tpsl.takeProfit);
+    const sl = sanitizeStop(then.tpsl.stopLoss);
+    if (tp.length || sl) return { tpsl: { takeProfit: tp, stopLoss: sl } };
+  }
+  return null;
+}
+
 // Validate + clean per-type params for the non-tpsl strategies. Returns a clean
 // params object, or null if required fields are missing/invalid. These shapes
 // are the contract the strategy brain's handlers (A2/A3/A4) will consume.
@@ -145,32 +160,57 @@ function sanitizeParams(type, raw) {
     const fired = num(p.fired);
     out.fired = (fired != null && fired >= 0) ? Math.trunc(fired) : 0;
 
-    // Preserve the set of curves already sniped (brain PATCHes this back so a
-    // restart doesn't re-buy a past launch).
+    // Preserve curves already sniped (brain PATCHes this back so a restart
+    // doesn't re-buy a past launch).
     if (Array.isArray(p.snipedCurves)) out.snipedCurves = p.snipedCurves.filter(isHex);
 
-    // `then.tpsl` (optional): after each snipe buys a curve, arm a TP/SL on it.
-    // Validate the rungs/stop the same way a standalone tpsl order is validated,
-    // so the brain's spawned child order is well-formed.
-    if (p.then && typeof p.then === 'object' && p.then.tpsl && typeof p.then.tpsl === 'object') {
-      const tp = sanitizeRungs(p.then.tpsl.takeProfit);
-      const sl = sanitizeStop(p.then.tpsl.stopLoss);
-      if (tp.length || sl) out.then = { tpsl: { takeProfit: tp, stopLoss: sl } };
-    }
+    // Optional `then` chaining (e.g. arm TP/SL on each sniped curve).
+    const then = sanitizeThen(p.then);
+    if (then) out.then = then;
 
     if (slippage != null) out.slippageBps = slippage;
     return out;
   }
 
   if (type === 'dca') {
-    // Buy a fixed SUI amount on curveId every intervalMs, up to `buys` times.
-    const intervalMs = num(p.intervalMs);
-    const suiPerBuy  = num(p.suiPerBuy);
-    const buys       = num(p.buys);
-    if (!(intervalMs >= 1000)) return null;      // 1s floor
+    // Accumulate `suiPerBuy` on curveId across `buys` fills, with one of two
+    // triggers. The strategy brain owns the loop (emits a Nexus task + settles
+    // each buy through the bridge) and tracks a running average cost.
+    //   • time mode: a fill every `intervalMs` (>= 1s).
+    //   • dip  mode: a fill each time price drops `dropPct`% (×rung) from entry.
+    // Provide intervalMs for time, or dropPct for dip. If both are given, dropPct
+    // wins (mode:'dip'). Tracking fields (done/avgPriceSui/filledSui/entryPriceSui/
+    // lastFireMs) are preserved across PATCH round-trips so a restart resumes.
+    const suiPerBuy = num(p.suiPerBuy);
+    const buys      = num(p.buys);
     if (!(suiPerBuy > 0)) return null;
     if (!(buys > 0)) return null;
-    const out = { intervalMs: Math.trunc(intervalMs), suiPerBuy, buys: Math.trunc(buys), done: 0 };
+
+    const intervalMs = num(p.intervalMs);
+    const dropPct    = num(p.dropPct);
+    const dipMode    = p.mode === 'dip' || (dropPct > 0 && !(intervalMs >= 1000));
+    if (!dipMode && !(intervalMs >= 1000)) return null;   // time mode needs a valid interval
+    if (dipMode && !(dropPct > 0)) return null;           // dip mode needs a drop step
+
+    const out = { suiPerBuy, buys: Math.trunc(buys) };
+    if (dipMode) {
+      out.mode = 'dip';
+      out.dropPct = dropPct;
+    } else {
+      out.intervalMs = Math.trunc(intervalMs);
+    }
+
+    // Preserve runtime tracking across re-create / PATCH (default fresh).
+    out.done = (() => { const d = num(p.done); return (d != null && d >= 0) ? Math.trunc(d) : 0; })();
+    const filled = num(p.filledSui);   if (filled  > 0) out.filledSui    = filled;
+    const avg    = num(p.avgPriceSui); if (avg     > 0) out.avgPriceSui  = avg;
+    const entry  = num(p.entryPriceSui); if (entry > 0) out.entryPriceSui = entry;
+    const last   = num(p.lastFireMs);  if (last    > 0) out.lastFireMs    = Math.trunc(last);
+
+    // Optional `then` chaining: arm a child (e.g. TP/SL) after the buys settle,
+    // targeting the blended average cost.
+    const then = sanitizeThen(p.then);
+    if (then) out.then = then;
     if (slippage != null) out.slippageBps = slippage;
     return out;
   }
@@ -185,6 +225,9 @@ function sanitizeParams(type, raw) {
     const out = { targetWallet: p.targetWallet };
     if (ratio > 0)       out.ratio = ratio;
     if (suiPerTrade > 0) out.suiPerTrade = suiPerTrade;
+    // Optional `then` chaining: arm a child (e.g. TP/SL) on each mirrored buy.
+    const then = sanitizeThen(p.then);
+    if (then) out.then = then;
     if (slippage != null) out.slippageBps = slippage;
     return out;
   }

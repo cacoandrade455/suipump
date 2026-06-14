@@ -146,35 +146,82 @@ async function persistParams(order) {
   } catch (e) { err(`${order.id}: persistParams error ${e.message}`); }
 }
 
-// spawnChildTpsl — after a sniper buys a curve, optionally arm a TP/SL on that
-// curve seeded at the real post-buy price. Creates a child `tpsl` order in the
-// store; the existing TP/SL engine then watches it and auto-sells on trigger.
-// This is the sniper -> tpsl composition. Returns the child order id or null.
-async function spawnChildTpsl(parentId, curveId, tokenType, entryPrice, thenTpsl) {
-  const tp = Array.isArray(thenTpsl?.takeProfit) ? thenTpsl.takeProfit : [];
-  const sl = thenTpsl?.stopLoss ?? null;
-  if (!tp.length && !sl) return null;   // nothing to arm
+// spawnChild — after a buy-strategy (sniper / dca / copytrade) buys a curve,
+// optionally arm a CHILD strategy on that curve, seeded at the real post-buy
+// price. This is the generalized `then` composition: a parent buy chains into
+// a child order the engine then tracks independently.
+//
+// The `then` block is shaped { <childType>: <spec> }. Today the only meaningful
+// child for a buy-strategy is `tpsl` (an auto-exit on the position just bought),
+// so that is what is implemented. The dispatch is structured so additional child
+// types can be added without touching any caller. Returns the child id or null.
+async function spawnChild(parentId, curveId, tokenType, entryPrice, then) {
+  if (!then || typeof then !== 'object') return null;
 
-  const childId = `${parentId}_tp_${curveId.slice(2, 10)}`;
-  const body = {
-    id:            childId,
-    curveId,
-    tokenType,
-    type:          'tpsl',
-    entryPriceSui: (entryPrice != null && Number.isFinite(entryPrice) && entryPrice > 0) ? entryPrice : null,
-    takeProfit:    tp,
-    stopLoss:      sl,
-  };
+  // ---- child: tpsl (auto take-profit / stop-loss on the bought position) ----
+  if (then.tpsl) {
+    const t = then.tpsl;
+    const tp = Array.isArray(t.takeProfit) ? t.takeProfit : [];
+    const sl = t.stopLoss ?? null;
+    if (!tp.length && !sl) return null;   // nothing to arm
+
+    const childId = `${parentId}_tp_${curveId.slice(2, 10)}`;
+    const body = {
+      id:            childId,
+      curveId,
+      tokenType,
+      type:          'tpsl',
+      entryPriceSui: (entryPrice != null && Number.isFinite(entryPrice) && entryPrice > 0) ? entryPrice : null,
+      takeProfit:    tp,
+      stopLoss:      sl,
+    };
+    try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (STRATEGY_API_KEY) headers['x-strategy-key'] = STRATEGY_API_KEY;
+      const r = await fetch(`${INDEXER_URL}/orders`, {
+        method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(8000),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { err(`${parentId}: spawn child tpsl ${r.status} ${d.error ?? ''}`); return null; }
+      return d.id ?? childId;
+    } catch (e) { err(`${parentId}: spawn child tpsl error ${e.message}`); return null; }
+  }
+
+  // (future child types — e.g. then.dca — slot in here with the same contract)
+  return null;
+}
+
+// armThen — shared helper: after a buy-strategy settles a buy on `curveId`, read
+// the REAL post-buy price and arm whatever the parent's `then` block specifies.
+// Used by sniper, dca, and copytrade so chaining is identical across all three.
+async function armThen(parentId, curveId, then) {
+  if (!then || typeof then !== 'object') return null;
+  let entryPrice = null, childTokenType = null;
   try {
-    const headers = { 'Content-Type': 'application/json' };
-    if (STRATEGY_API_KEY) headers['x-strategy-key'] = STRATEGY_API_KEY;
-    const r = await fetch(`${INDEXER_URL}/orders`, {
-      method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(8000),
-    });
-    const d = await r.json().catch(() => ({}));
-    if (!r.ok) { err(`${parentId}: spawn child tpsl ${r.status} ${d.error ?? ''}`); return null; }
-    return d.id ?? childId;
-  } catch (e) { err(`${parentId}: spawn child tpsl error ${e.message}`); return null; }
+    const st = await getCurveState(curveId);
+    childTokenType = st.tokenType ?? null;
+    entryPrice = priceFromReserve(getVSui(st.packageId), st.reserveMist);
+  } catch (e) {
+    err(`${parentId}: could not read post-buy price for child (${e.message}); arming on observe`);
+  }
+  const childId = await spawnChild(parentId, curveId, childTokenType, entryPrice, then);
+  if (childId) {
+    log(`${parentId}: armed child ${childId} on ${curveId.slice(0, 10)}… entry=${entryPrice != null ? entryPrice.toExponential(3) : 'observe'} SUI`);
+  }
+  return childId;
+}
+
+// armThenAt — like armThen, but uses a SUPPLIED entry price and tokenType rather
+// than reading the curve fresh. DCA uses this to arm the child (e.g. TP/SL) on
+// the blended AVERAGE cost across all fills, so profit/loss is measured against
+// what was actually paid — not a single fill or a fresh spot read.
+async function armThenAt(parentId, curveId, tokenType, entryPrice, then) {
+  if (!then || typeof then !== 'object') return null;
+  const childId = await spawnChild(parentId, curveId, tokenType, entryPrice, then);
+  if (childId) {
+    log(`${parentId}: armed child ${childId} on ${curveId.slice(0, 10)}… entry(avg)=${entryPrice != null ? entryPrice.toExponential(3) : 'observe'} SUI`);
+  }
+  return childId;
 }
 
 async function syncOrders() {
@@ -765,24 +812,10 @@ const HANDLERS = {
         const settleDigest = await fireBridgeBuy(curveId, amountSui);
         log(`${order.id}: sniper settled buy digest=${settleDigest}`);
 
-        // COMPOSE: if this sniper carries a `then.tpsl`, arm a TP/SL on the curve
-        // we just bought, seeded at the REAL post-buy price. The buy has settled,
-        // so reading the curve now gives the true fill basis; the existing TP/SL
-        // engine then watches it and auto-sells on trigger.
-        if (p.then?.tpsl) {
-          let entryPrice = null, childTokenType = null;
-          try {
-            const st = await getCurveState(curveId);
-            childTokenType = st.tokenType ?? null;
-            entryPrice = priceFromReserve(getVSui(st.packageId), st.reserveMist);
-          } catch (e) {
-            err(`${order.id}: could not read post-buy price for child tpsl (${e.message}); arming on observe`);
-          }
-          const childId = await spawnChildTpsl(order.id, curveId, childTokenType, entryPrice, p.then.tpsl);
-          if (childId) {
-            log(`${order.id}: armed child TP/SL ${childId} on ${curveId.slice(0, 10)}… entry=${entryPrice != null ? entryPrice.toExponential(3) : 'observe'} SUI`);
-          }
-        }
+        // COMPOSE: if this sniper carries a `then` block, arm the child strategy
+        // (e.g. TP/SL) on the curve we just bought, seeded at the REAL post-buy
+        // price. Shared with dca/copytrade via armThen so chaining is identical.
+        if (p.then) await armThen(order.id, curveId, p.then);
 
         // Count the fire (settlement succeeded) and persist.
         p.fired = num2(p.fired, 0) + 1;
@@ -800,32 +833,116 @@ const HANDLERS = {
     },
   },
 
-  // DCA — wakes on the timer tick. Emits ONE periodic buy task on first fire
-  // (the on-chain periodic generator then produces occurrences on cadence), so
-  // we don't fire every tick: after creating the periodic task we mark the order
-  // done. params: { curveId, amountSui, periodMs?, maxIterations? }.
+  // DCA / scale-in — brain-driven accumulation. Two trigger modes:
+  //   • time: buy `suiPerBuy` every `intervalMs`, up to `buys` times.
+  //   • dip:  buy `suiPerBuy` each time price drops `dropPct`% (×rung) from the
+  //           entry price, up to `buys` rungs.
+  // Each fire emits a Nexus task (the agentic-decision proof) AND settles the buy
+  // through the bridge (the path that moves tokens), exactly like sniper. Every
+  // fill updates a running average cost (params.avgPriceSui), persisted so the
+  // panel can show it and a `then.tpsl` can target the blended basis. After the
+  // FINAL buy, arms the `then` child (e.g. TP/SL) via the shared armThen.
+  //
+  // Wakes on the timer tick; dip mode also re-checks price each tick (poll-based —
+  // dip-buying is not latency-critical the way sniping is).
+  // params: { curveId, suiPerBuy, buys, done, intervalMs?, dropPct?, mode?,
+  //           entryPriceSui?, avgPriceSui?, filledSui?, lastFireMs?, then? }
   dca: {
     label: 'dca',
     wakesOn: 'timer',
     normalize: scaffoldNormalize,
-    summarize: (o) => `${o.id} dca buy ${num2(o.params.amountSui, 0.1)} SUI every ${num2(o.params.periodMs, 3600000) / 1000}s on ${o.curveId ? o.curveId.slice(0, 10) + '…' : o.params.curveId?.slice(0, 10) + '…'}`,
+    summarize: (o) => {
+      const p = o.params || {};
+      const mode = p.mode === 'dip' ? `every -${num2(p.dropPct, 10)}%` : `every ${Math.round(num2(p.intervalMs, 86400000) / 1000)}s`;
+      return `${o.id} dca buy ${num2(p.suiPerBuy, 0.1)} SUI ${mode} · ${num2(p.done, 0)}/${num2(p.buys, 1)} on ${(o.curveId ?? p.curveId ?? '').slice(0, 10)}…`;
+    },
     process: async (order) => {
-      if (order._dcaArmed) return;       // periodic task already created
-      const curveId = order.curveId ?? order.params.curveId;
-      if (!curveId) { if (!order._warned) { err(`${order.id}: dca needs params.curveId`); order._warned = true; } return; }
-      const amountSui = num2(order.params.amountSui, 0.1);
-      const periodMs  = num2(order.params.periodMs, 3600000);
-      log(`${order.id}: DCA arm periodic buy ${amountSui} SUI every ${periodMs}ms on ${curveId.slice(0, 10)}…`);
+      const p = order.params || {};
+      const curveId = order.curveId ?? p.curveId;
+      if (!curveId) { if (!order._warned) { err(`${order.id}: dca needs curveId`); order._warned = true; } return; }
+
+      const suiPerBuy = num2(p.suiPerBuy, 0);
+      const buys      = Math.trunc(num2(p.buys, 0));
+      const done      = Math.trunc(num2(p.done, 0));
+      if (!(suiPerBuy > 0) || !(buys > 0)) { if (!order._warned) { err(`${order.id}: dca bad params`); order._warned = true; } return; }
+      if (done >= buys) { order.done = true; return; }
+
+      const isDip = p.mode === 'dip' || (p.dropPct != null && p.intervalMs == null);
+      const now = Date.now();
+
+      // Read live price up front (needed for dip gating AND avg-cost recording).
+      let price = null, pkgId = null, tokenType = order.tokenType ?? null, graduated = false;
       try {
-        const d = await fireScheduleTask('buy', { buy: { curveId, amountSui } }, {
-          generator: 'periodic',
-          periodMs,
-          firstStartMs: Date.now() + 5000,
-          maxIterations: num2(order.params.maxIterations, 0),
-        });
-        order._dcaArmed = true;
-        log(`${order.id}: dca periodic task ${d.taskId} (digest ${d.detail?.created?.digest ?? d.detail?.digest ?? '?'})`);
-      } catch (e) { err(`${order.id}: dca fire failed: ${e.message}`); }
+        const st = await getCurveState(curveId);
+        pkgId = st.packageId; tokenType = st.tokenType ?? tokenType; graduated = st.graduated;
+        price = priceFromReserve(getVSui(pkgId), st.reserveMist);
+      } catch (e) {
+        err(`${order.id}: dca price read failed (${e.message}); skipping this tick`);
+        return;
+      }
+      if (graduated) { log(`${order.id}: dca curve graduated — closing`); order.done = true; await persistParams(order); return; }
+
+      // ── Trigger gating ────────────────────────────────────────────────────
+      if (isDip) {
+        // First buy establishes the entry reference; subsequent buys require the
+        // price to have fallen dropPct% × (rung number) below entry.
+        const dropPct = num2(p.dropPct, 10) / 100;
+        if (done === 0) {
+          // fire the anchor buy immediately (no drop required for rung 0)
+        } else {
+          const entry = num2(p.entryPriceSui, price);
+          const targetRungPrice = entry * (1 - dropPct * done); // -10%, -20%, ... from entry
+          if (!(price <= targetRungPrice)) return;              // not dropped enough yet
+        }
+      } else {
+        // time mode: require intervalMs since last fire (first fire is immediate)
+        const intervalMs = num2(p.intervalMs, 86400000);
+        const lastFireMs = num2(p.lastFireMs, 0);
+        if (done > 0 && (now - lastFireMs) < intervalMs) return;
+      }
+
+      // ── Fire one buy: Nexus proof task + bridge settle ─────────────────────
+      if (onCooldown(order)) return;   // guard against double-fire within a tick window
+      let taskId = null;
+      try {
+        const d = await fireScheduleTask('buy', { buy: { curveId, amountSui: suiPerBuy } }, { generator: 'queue' });
+        taskId = d?.taskId ?? null;
+      } catch (e) {
+        err(`${order.id}: dca emit failed: ${e.message} (continuing to settle)`);
+      }
+
+      let settleDigest;
+      try {
+        settleDigest = await fireBridgeBuy(curveId, suiPerBuy);
+      } catch (e) {
+        err(`${order.id}: dca settle failed: ${e.message}`);
+        return; // do not count a fill that didn't settle
+      }
+
+      // ── Record fill + update running average cost ──────────────────────────
+      const prevFilled = num2(p.filledSui, 0);
+      const prevAvg    = num2(p.avgPriceSui, 0);
+      const newFilled  = prevFilled + suiPerBuy;
+      // Weighted average of price across SUI deployed (approx: weight by SUI in).
+      p.avgPriceSui   = (prevFilled > 0 && prevAvg > 0)
+        ? (prevAvg * prevFilled + price * suiPerBuy) / newFilled
+        : price;
+      p.filledSui     = newFilled;
+      if (done === 0) p.entryPriceSui = num2(p.entryPriceSui, price); // lock entry on first fill
+      p.lastFireMs    = now;
+      p.done          = done + 1;
+      order.params    = p;
+      if (p.done >= buys) order.done = true;
+      await persistParams(order);
+
+      log(`${order.id}: DCA buy ${p.done}/${buys} ${suiPerBuy} SUI @ ${price.toExponential(3)} (avg ${p.avgPriceSui.toExponential(3)}) task=${taskId ?? 'n/a'} settle=${settleDigest}${order.done ? ' — complete' : ''}`);
+
+      // ── COMPOSE: after the FINAL buy, arm the `then` child on the blended
+      //    basis. We pass the average cost as the entry so a then.tpsl targets
+      //    profit/loss relative to what was actually paid across all fills.
+      if (order.done && p.then) {
+        await armThenAt(order.id, curveId, tokenType, p.avgPriceSui, p.then);
+      }
     },
   },
 
