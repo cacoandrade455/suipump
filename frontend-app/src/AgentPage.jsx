@@ -549,7 +549,7 @@ export default function AgentPage({ onBack }) {
   const account = useCurrentAccount();
 
   const [goal, setGoal]         = useState('');
-  const [guideOpen, setGuideOpen]     = useState(true);   // tutorial block expanded by default
+  const [guideOpen, setGuideOpen]     = useState(false);  // tutorial collapsed by default — page loads compact
   const [openStrategy, setOpenStrategy] = useState(null); // which accordion row is open
   const [planning, setPlanning] = useState(false);
   const [plan, setPlan]         = useState(null);
@@ -1208,9 +1208,12 @@ export default function AgentPage({ onBack }) {
         <div className="flex items-center gap-2.5 mb-2">
           <Bot size={20} className="text-violet-400" />
           <h1 className="text-xl font-bold tracking-tight text-white" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>AUTONOMOUS AGENT</h1>
+          <span className="ml-auto text-[9px] font-mono text-violet-300/50 tracking-widest border border-violet-400/20 rounded-full px-2.5 py-1 whitespace-nowrap">
+            POWERED BY TALUS
+          </span>
         </div>
         <p className="text-white/40 text-[11px] font-mono leading-relaxed max-w-xl">
-          State a goal in plain language. The agent plans with an LLM, then executes it on-chain through a published Nexus DAG — launch, buy, sell, claim, or monitor.
+          State a goal in plain language. The agent plans with an LLM, then executes it on-chain through published Nexus DAGs. Five base tools — launch, buy, sell, claim, monitor — power four standing strategies (sniper, DCA, copy-trade, take-profit / stop-loss), which can be combined into entry-plus-exit setups. See HOW TO OPERATE below.
         </p>
       </div>
 
