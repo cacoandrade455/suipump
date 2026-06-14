@@ -145,6 +145,19 @@ function sanitizeParams(type, raw) {
     const fired = num(p.fired);
     out.fired = (fired != null && fired >= 0) ? Math.trunc(fired) : 0;
 
+    // Preserve the set of curves already sniped (brain PATCHes this back so a
+    // restart doesn't re-buy a past launch).
+    if (Array.isArray(p.snipedCurves)) out.snipedCurves = p.snipedCurves.filter(isHex);
+
+    // `then.tpsl` (optional): after each snipe buys a curve, arm a TP/SL on it.
+    // Validate the rungs/stop the same way a standalone tpsl order is validated,
+    // so the brain's spawned child order is well-formed.
+    if (p.then && typeof p.then === 'object' && p.then.tpsl && typeof p.then.tpsl === 'object') {
+      const tp = sanitizeRungs(p.then.tpsl.takeProfit);
+      const sl = sanitizeStop(p.then.tpsl.stopLoss);
+      if (tp.length || sl) out.then = { tpsl: { takeProfit: tp, stopLoss: sl } };
+    }
+
     if (slippage != null) out.slippageBps = slippage;
     return out;
   }
