@@ -549,14 +549,18 @@ function summarizeOrder(o) {
 // loads + routes their triggers, but their process() is inert until each is
 // built. A handler is { label, wakesOn, normalize, process, summarize }.
 function scaffoldNormalize(R) {
+  const params = (R.params && typeof R.params === 'object') ? R.params : {};
   return {
     id: R.id,
     curveId: R.curveId ?? null,
     tokenType: R.tokenType ?? null,
-    params: (R.params && typeof R.params === 'object') ? R.params : {},
+    params,
     done: false,
     _cooldownUntil: 0,
     _warned: false,
+    // Restore the set of curves this order has already sniped so a restart does
+    // not re-buy a launch it already bought (sniper idempotency across reboots).
+    _sniped: new Set(Array.isArray(params.snipedCurves) ? params.snipedCurves : []),
   };
 }
 
@@ -620,6 +624,16 @@ const HANDLERS = {
 
       const p = order.params ?? {};
 
+      // ── Idempotency: claim this curve SYNCHRONOUSLY before any await. The
+      // indexer can emit the same CurveCreated over SSE more than once (gRPC
+      // stream + GraphQL backfill overlap), and two wakes can enter process()
+      // back-to-back before the in-flight lock releases. A sniper must buy a
+      // given launch AT MOST ONCE, so we claim the curveId here, synchronously,
+      // and any duplicate that arrives bails instantly. (Persisted snipes are
+      // also seeded into this set on load via normalize, below.)
+      if (!order._sniped) order._sniped = new Set();
+      if (order._sniped.has(curveId)) return;   // already fired for this curve
+
       // Cap reached? (defensive — sync also closes it; this stops an in-flight wake)
       if (p.maxSnipes > 0 && num2(p.fired, 0) >= p.maxSnipes) {
         order.done = true; await persistParams(order); return;
@@ -649,6 +663,10 @@ const HANDLERS = {
         return;
       }
 
+      // Claim the curve NOW (passed the filter, committed to firing). Done before
+      // the await so a concurrent duplicate sees it claimed and bails above.
+      order._sniped.add(curveId);
+
       if (onCooldown(order)) return;
       const amountSui = num2(p.amountSui, 0.1);
       log(`${order.id}: SNIPE launch ${curveId.slice(0, 10)}… (${symbol || name || 'unknown'}) buy ${amountSui} SUI`);
@@ -656,11 +674,18 @@ const HANDLERS = {
         const r = await fireScheduleTask('buy', { buy: { curveId, amountSui } }, { generator: 'queue' });
         // Count the fire and persist so the cap survives a restart.
         p.fired = num2(p.fired, 0) + 1;
+        // Persist the sniped curve list so a restart won't re-buy a past launch.
+        p.snipedCurves = Array.from(order._sniped);
         order.params = p;
         if (p.maxSnipes > 0 && p.fired >= p.maxSnipes) order.done = true;
         await persistParams(order);
         log(`${order.id}: sniper task ${r.taskId} (digest ${r.detail?.digest ?? '?'}) fired=${p.fired}${p.maxSnipes > 0 ? `/${p.maxSnipes}` : ''}${order.done ? ' — cap reached, closing' : ''}`);
-      } catch (e) { err(`${order.id}: sniper fire failed: ${e.message}`); }
+      } catch (e) {
+        // Fire failed — release the claim so a genuine retry can re-attempt this
+        // curve (the failure was not a successful buy).
+        order._sniped.delete(curveId);
+        err(`${order.id}: sniper fire failed: ${e.message}`);
+      }
     },
   },
 
