@@ -417,10 +417,20 @@ async function executeBuy(body) {
     tx.transferObjects([results], address);
   }
 
-  const result = await client.signAndExecuteTransaction({
-    signer: keypair, transaction: tx,
-    include: { balanceChanges: true },
-  });
+  const result = await (async () => {
+    try {
+      return await client.signAndExecuteTransaction({
+        signer: keypair, transaction: tx,
+        include: { balanceChanges: true },
+      });
+    } catch (e) {
+      // The SDK wraps simulation failures as a generic "Failed to simulate
+      // transaction". Surface the underlying Move/validation reason (abort code,
+      // insufficient gas/balance, slippage, version) so the real cause is visible.
+      const detail = e?.cause?.message ?? e?.cause ?? e?.message ?? String(e);
+      throw new Error(`buy simulate/execute failed: ${typeof detail === 'string' ? detail : JSON.stringify(detail)}`);
+    }
+  })();
 
   if (!txOk(result)) {
     throw new Error(`buy() failed: ${txErrorOf(result) ?? 'transaction failed'}`);
