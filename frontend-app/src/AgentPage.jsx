@@ -223,6 +223,47 @@ function parseSniperGoal(text) {
   return { workflow: 'sniper', summary, sniper, then };
 }
 
+// ── Active-strategies helpers ─────────────────────────────────────────────────
+const ORDER_LABEL = { tpsl: 'TP / SL', sniper: 'Sniper', dca: 'DCA', copytrade: 'Copy-trade' };
+const shortId  = (s) => (typeof s === 'string' && s.startsWith('0x') && s.length > 14) ? `${s.slice(0, 8)}…${s.slice(-4)}` : s;
+const shortType = (t) => {
+  if (typeof t !== 'string') return '';
+  const m = t.match(/::([^:]+)::([^>]+)$/);
+  return m ? m[2] : t.slice(0, 14);
+};
+
+// One-line human summary of any standing order, for the panel.
+function describeOrder(o) {
+  const p = o.params || {};
+  if (o.type === 'sniper') {
+    const bits = [];
+    if (Array.isArray(p.creators) && p.creators.length) bits.push(`creator ${shortId(p.creators[0])}${p.creators.length > 1 ? ` +${p.creators.length - 1}` : ''}`);
+    if (Array.isArray(p.symbols) && p.symbols.length)   bits.push(`$${p.symbols.join('/$')}`);
+    if (p.nameIncludes) bits.push(`name~"${p.nameIncludes}"`);
+    if (!bits.length && p.all) bits.push('every launch');
+    const cap = p.maxSnipes ? ` · ${p.fired || 0}/${p.maxSnipes} fired` : ` · ${p.fired || 0} fired`;
+    const then = p.then?.tpsl ? ' → then TP/SL' : '';
+    return `Buy ${p.amountSui} SUI on ${bits.join(p.match === 'any' ? ' or ' : ' & ')}${cap}${then}`;
+  }
+  if (o.type === 'dca') {
+    const every = p.intervalMs >= 60000 ? `${Math.round(p.intervalMs / 60000)}m` : `${Math.round((p.intervalMs || 0) / 1000)}s`;
+    const then = p.then?.tpsl ? ' → then TP/SL' : '';
+    return `Buy ${p.suiPerBuy} SUI every ${every} · ${p.done || 0}/${p.buys} done${then}`;
+  }
+  if (o.type === 'copytrade') {
+    const size = p.suiPerTrade ? `${p.suiPerTrade} SUI/trade` : `${p.ratio}× their size`;
+    const then = p.then?.tpsl ? ' → then TP/SL' : '';
+    return `Mirror ${shortId(p.targetWallet)} at ${size}${then}`;
+  }
+  // tpsl
+  const tp = Array.isArray(o.takeProfit) ? o.takeProfit : [];
+  const tpStr = tp.length
+    ? 'TP ' + tp.map((r) => (r.multiple ? `${r.multiple}×` : `${r.priceSui} SUI`) + ` (${r.sellPct}%)`).join(', ')
+    : '';
+  const sl = o.stopLoss ? `SL ${o.stopLoss.multiple ? `${o.stopLoss.multiple}×` : `${o.stopLoss.priceSui} SUI`}` : '';
+  return [tpStr, sl].filter(Boolean).join(' · ') || 'TP/SL order';
+}
+
 export default function AgentPage({ onBack }) {
   const account = useCurrentAccount();
 
@@ -234,6 +275,55 @@ export default function AgentPage({ onBack }) {
   const [phase, setPhase]         = useState('idle'); // idle | running | done | failed
   const [nodeState, setNodeState] = useState({});
   const [result, setResult]       = useState(null);
+
+  // Active-strategies panel: standing orders the brain is currently tracking.
+  const [orders, setOrders]           = useState([]);
+  const [ordersLoading, setOrdersL]   = useState(true);
+  const [ordersError, setOrdersError] = useState(null);
+  const [confirmId, setConfirmId]     = useState(null);   // order pending cancel-confirm
+  const [cancelingId, setCancelingId] = useState(null);   // order mid-cancel
+
+  // Load active orders straight from the indexer (GET is unguarded; cancel goes
+  // through the /api/cancel-order proxy so the key never reaches the browser).
+  const loadOrders = useCallback(async () => {
+    setOrdersError(null);
+    try {
+      const r = await fetch(`${INDEXER_URL}/orders?status=active`, { signal: AbortSignal.timeout(8000) });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      setOrders(Array.isArray(d) ? d : []);
+    } catch (e) {
+      setOrdersError(e.message || 'could not load strategies');
+    } finally {
+      setOrdersL(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadOrders();
+    const t = setInterval(loadOrders, 15000); // light refresh; SSE not needed here
+    return () => clearInterval(t);
+  }, [loadOrders]);
+
+  const cancelOrder = useCallback(async (id) => {
+    setCancelingId(id);
+    try {
+      const r = await fetch('/api/cancel-order', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || `cancel failed (${r.status})`);
+      // Drop it from the list immediately; the next refresh confirms.
+      setOrders((prev) => prev.filter((o) => o.id !== id));
+    } catch (e) {
+      setOrdersError(e.message || 'cancel failed');
+    } finally {
+      setCancelingId(null);
+      setConfirmId(null);
+    }
+  }, []);
 
   const animTimers = useRef([]);
   const clearAnim = useCallback(() => {
@@ -480,6 +570,7 @@ export default function AgentPage({ onBack }) {
           clearAnim();
           setNodeState({ buy: 'done', arm: 'done' });
           setResult({ workflow: 'buy_then_tpsl', buyDigest, orderId: d.id ?? null, order: d, entryPriceSui });
+          loadOrders();
           setPhase('done');
         } catch (e) {
           // Buy already settled; only the arm failed. Surface it but keep the buy.
@@ -517,6 +608,7 @@ export default function AgentPage({ onBack }) {
           clearAnim();
           setNodeState({ arm: 'done' });
           setResult({ workflow: 'tpsl', orderId: d.id ?? null, order: d });
+          loadOrders();
           setPhase('done');
         } catch (e) {
           clearAnim();
@@ -542,6 +634,7 @@ export default function AgentPage({ onBack }) {
           clearAnim();
           setNodeState({ arm: 'done' });
           setResult({ workflow: 'sniper', orderId: d.id ?? null, order: d });
+          loadOrders();
           setPhase('done');
         } catch (e) {
           clearAnim();
@@ -882,6 +975,98 @@ export default function AgentPage({ onBack }) {
           {error}
         </div>
       )}
+
+      {/* ── Active strategies ─────────────────────────────────────────────── */}
+      <div className="mt-10 pt-6 border-t border-white/10">
+        <div className="flex items-center justify-between mb-4">
+          <div className="text-[10px] font-mono text-violet-400/70 tracking-widest">
+            ACTIVE STRATEGIES{orders.length ? ` · ${orders.length}` : ''}
+          </div>
+          <button
+            onClick={loadOrders}
+            className="text-[9px] font-mono text-white/30 hover:text-white/60 tracking-widest"
+          >
+            REFRESH
+          </button>
+        </div>
+
+        {ordersLoading ? (
+          <div className="flex items-center gap-2 text-[11px] font-mono text-white/30">
+            <Loader size={13} className="animate-spin" /> loading…
+          </div>
+        ) : ordersError ? (
+          <div className="text-[11px] font-mono text-red-400/70">{ordersError}</div>
+        ) : orders.length === 0 ? (
+          <div className="border border-white/10 rounded-xl p-4 text-[11px] font-mono text-white/30">
+            No active strategies. Arm one above and it will appear here.
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {orders.map((o) => {
+              const isConfirm = confirmId === o.id;
+              const isCanceling = cancelingId === o.id;
+              return (
+                <div
+                  key={o.id}
+                  className="border border-white/10 rounded-xl p-3 bg-white/[0.02] flex items-start justify-between gap-3"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-[9px] font-mono text-violet-300/90 bg-violet-400/10 border border-violet-400/20 rounded px-1.5 py-0.5 tracking-wider">
+                        {ORDER_LABEL[o.type] || o.type}
+                      </span>
+                      {o.tokenType && (
+                        <span className="text-[9px] font-mono text-white/35">${shortType(o.tokenType)}</span>
+                      )}
+                    </div>
+                    <div className="text-[11px] font-mono text-white/70 leading-relaxed break-words">
+                      {describeOrder(o)}
+                    </div>
+                    {o.curveId && (
+                      <a
+                        href={suiscanObject(o.curveId)}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 text-[9px] font-mono text-white/25 hover:text-violet-400/80 mt-1"
+                      >
+                        {shortId(o.curveId)} <ExternalLink size={9} />
+                      </a>
+                    )}
+                  </div>
+
+                  <div className="shrink-0">
+                    {isConfirm ? (
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => cancelOrder(o.id)}
+                          disabled={isCanceling}
+                          className="text-[9px] font-mono text-red-400 hover:text-red-300 border border-red-400/30 rounded px-2 py-1 tracking-widest disabled:opacity-50"
+                        >
+                          {isCanceling ? '…' : 'CONFIRM'}
+                        </button>
+                        <button
+                          onClick={() => setConfirmId(null)}
+                          disabled={isCanceling}
+                          className="text-[9px] font-mono text-white/40 hover:text-white/70 px-1 tracking-widest disabled:opacity-50"
+                        >
+                          KEEP
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => { setConfirmId(o.id); setOrdersError(null); }}
+                        className="text-[9px] font-mono text-white/30 hover:text-red-400/90 border border-white/10 hover:border-red-400/30 rounded px-2 py-1 tracking-widest transition-colors"
+                      >
+                        CANCEL
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
