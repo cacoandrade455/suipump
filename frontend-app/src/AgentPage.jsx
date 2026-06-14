@@ -176,6 +176,33 @@ function parseSniperGoal(text) {
   if (!hasFilter)           sniper.all = true;   // explicit opt-in to every launch
   if (maxSnipes != null)    sniper.maxSnipes = maxSnipes;
 
+  // ── then.tpsl: a "dump all / take profit at +X%" (and/or "stop loss at -Y%")
+  // in the SAME sentence means "after each snipe, arm a TP/SL on that curve".
+  // The brain reads the real post-buy fill price and seeds entry, so "+X%" is
+  // measured from what the snipe actually paid. Same extraction shape as
+  // parseStrategyGoal. `then` stays null when no exit leg is present.
+  let then = null;
+  {
+    const tp = [];
+    const tpPct = lower.match(/(?:take\s*profit|tp|dump\s+all|dump|profit)[^+\-]*\+?\s*(\d+(?:\.\d+)?)\s*%/);
+    if (tpPct) {
+      const pct = Number(tpPct[1]);
+      let sellPct = 100;
+      const sellMatch = lower.match(/sell\s+(\d+(?:\.\d+)?)\s*%/);
+      if (sellMatch) sellPct = Number(sellMatch[1]);
+      else if (/dump\s+all|sell\s+all/.test(lower)) sellPct = 100;
+      if (pct > 0) tp.push({ multiple: 1 + pct / 100, sellPct });
+    }
+    let stopLoss = null;
+    const slPct = lower.match(/(?:stop\s*loss|sl)[^+\-]*-\s*(\d+(?:\.\d+)?)\s*%/);
+    if (slPct) {
+      const pct = Number(slPct[1]);
+      if (pct > 0 && pct < 100) stopLoss = { multiple: 1 - pct / 100 };
+    }
+    if (tp.length || stopLoss) then = { tpsl: { takeProfit: tp, stopLoss } };
+  }
+  if (then) sniper.then = then;
+
   const scope = hasFilter
     ? [
         creators.length ? `${creators.length} creator${creators.length > 1 ? 's' : ''}` : null,
@@ -184,9 +211,16 @@ function parseSniperGoal(text) {
       ].filter(Boolean).join(match === 'any' ? ' OR ' : ' AND ')
     : 'every new launch';
 
-  const summary = `Arm a standing sniper: buy ${amountSui} SUI of ${scope}${maxSnipes != null ? `, first ${maxSnipes} only` : ' (unbounded)'}. The agent watches new launches and buys automatically the moment one matches.`;
+  const thenDesc = then
+    ? `, then arm ${[
+        then.tpsl.takeProfit.length ? `take-profit ${then.tpsl.takeProfit.map(r => `+${Math.round((r.multiple - 1) * 100)}% (sell ${r.sellPct}%)`).join(', ')}` : '',
+        then.tpsl.stopLoss ? `stop-loss -${Math.round((1 - then.tpsl.stopLoss.multiple) * 100)}%` : '',
+      ].filter(Boolean).join(' · ')} on each buy`
+    : '';
 
-  return { workflow: 'sniper', summary, sniper, then: null };
+  const summary = `Arm a standing sniper: buy ${amountSui} SUI of ${scope}${maxSnipes != null ? `, first ${maxSnipes} only` : ' (unbounded)'}${thenDesc}. The agent watches new launches, buys automatically the moment one matches${then ? ', then auto-sells each position when its trigger is hit' : ''}.`;
+
+  return { workflow: 'sniper', summary, sniper, then };
 }
 
 export default function AgentPage({ onBack }) {
@@ -669,6 +703,12 @@ export default function AgentPage({ onBack }) {
         if (!s.creators && !s.symbols && !s.nameIncludes && s.all)
           rows.push(['scope', 'EVERY new launch']);
         rows.push(['limit', s.maxSnipes != null ? `${s.maxSnipes} snipes` : 'unbounded']);
+        if (s.then?.tpsl) {
+          (s.then.tpsl.takeProfit ?? []).forEach((r, i) =>
+            rows.push([`then take-profit ${i + 1}`, `+${Math.round((r.multiple - 1) * 100)}% · sell ${r.sellPct}%`]));
+          if (s.then.tpsl.stopLoss)
+            rows.push(['then stop-loss', `-${Math.round((1 - s.then.tpsl.stopLoss.multiple) * 100)}%`]);
+        }
         return rows;
       }
       default:
