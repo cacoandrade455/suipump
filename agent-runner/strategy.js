@@ -146,6 +146,37 @@ async function persistParams(order) {
   } catch (e) { err(`${order.id}: persistParams error ${e.message}`); }
 }
 
+// spawnChildTpsl — after a sniper buys a curve, optionally arm a TP/SL on that
+// curve seeded at the real post-buy price. Creates a child `tpsl` order in the
+// store; the existing TP/SL engine then watches it and auto-sells on trigger.
+// This is the sniper -> tpsl composition. Returns the child order id or null.
+async function spawnChildTpsl(parentId, curveId, tokenType, entryPrice, thenTpsl) {
+  const tp = Array.isArray(thenTpsl?.takeProfit) ? thenTpsl.takeProfit : [];
+  const sl = thenTpsl?.stopLoss ?? null;
+  if (!tp.length && !sl) return null;   // nothing to arm
+
+  const childId = `${parentId}_tp_${curveId.slice(2, 10)}`;
+  const body = {
+    id:            childId,
+    curveId,
+    tokenType,
+    type:          'tpsl',
+    entryPriceSui: (entryPrice != null && Number.isFinite(entryPrice) && entryPrice > 0) ? entryPrice : null,
+    takeProfit:    tp,
+    stopLoss:      sl,
+  };
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (STRATEGY_API_KEY) headers['x-strategy-key'] = STRATEGY_API_KEY;
+    const r = await fetch(`${INDEXER_URL}/orders`, {
+      method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(8000),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { err(`${parentId}: spawn child tpsl ${r.status} ${d.error ?? ''}`); return null; }
+    return d.id ?? childId;
+  } catch (e) { err(`${parentId}: spawn child tpsl error ${e.message}`); return null; }
+}
+
 async function syncOrders() {
   let remote;
   try { remote = await fetchActiveOrders(); }
@@ -733,6 +764,25 @@ const HANDLERS = {
         //    tokens. THIS is what makes the snipe real; the task above is proof.
         const settleDigest = await fireBridgeBuy(curveId, amountSui);
         log(`${order.id}: sniper settled buy digest=${settleDigest}`);
+
+        // COMPOSE: if this sniper carries a `then.tpsl`, arm a TP/SL on the curve
+        // we just bought, seeded at the REAL post-buy price. The buy has settled,
+        // so reading the curve now gives the true fill basis; the existing TP/SL
+        // engine then watches it and auto-sells on trigger.
+        if (p.then?.tpsl) {
+          let entryPrice = null, childTokenType = null;
+          try {
+            const st = await getCurveState(curveId);
+            childTokenType = st.tokenType ?? null;
+            entryPrice = priceFromReserve(getVSui(st.packageId), st.reserveMist);
+          } catch (e) {
+            err(`${order.id}: could not read post-buy price for child tpsl (${e.message}); arming on observe`);
+          }
+          const childId = await spawnChildTpsl(order.id, curveId, childTokenType, entryPrice, p.then.tpsl);
+          if (childId) {
+            log(`${order.id}: armed child TP/SL ${childId} on ${curveId.slice(0, 10)}… entry=${entryPrice != null ? entryPrice.toExponential(3) : 'observe'} SUI`);
+          }
+        }
 
         // Count the fire (settlement succeeded) and persist.
         p.fired = num2(p.fired, 0) + 1;
