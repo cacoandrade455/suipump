@@ -366,6 +366,42 @@ async function fireScheduleTask(workflow, payload, schedule) {
   throw lastErr;
 }
 
+// ── Settle a BUY through the bridge (the path that actually moves tokens) ──────
+// The scheduler task (fireScheduleTask above) emits the on-chain agentic-decision
+// PROOF, but on testnet no Talus leader consumes the occurrence, so the task
+// alone never moves tokens. This is the sniper analog of fireSell's settle leg:
+// it calls the bridge /buy — the same endpoint the site's wallet buys use, which
+// signs with the bridge's own key and executes the swap now. Returns the
+// settlement txDigest. 3-try retry for the stale-object coin-version race, same
+// as fireSell. The task emit stays best-effort PROOF; this is the money path and
+// must NEVER be gated behind the emit.
+async function fireBridgeBuy(curveId, amountSui) {
+  const body = { curveId, suiAmount: amountSui };
+  let lastErr;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const r = await fetch(`${BRIDGE_URL}/buy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(AGENT_API_KEY ? { 'x-agent-key': AGENT_API_KEY } : {}) },
+        body: JSON.stringify(body), signal: AbortSignal.timeout(190000),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || d.ok === false) throw new Error(d.error ?? `bridge ${r.status}`);
+      return d.txDigest ?? null;
+    } catch (e) {
+      lastErr = e;
+      if (attempt < 3 && STALE_OBJECT_RE.test(e.message ?? '')) {
+        const wait = 2000 * attempt;
+        err(`buy settle attempt ${attempt} hit a stale object version; rebuilding in ${wait}ms`);
+        await sleep(wait);
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw lastErr;
+}
+
 // ── Order evaluation ──────────────────────────────────────────────────────────
 const slPriceOf   = (order)    => { const s = order.stopLoss; return s ? (s.priceSui ?? order.entryPriceSui * s.multiple) : null; };
 const rungPriceOf = (order, r) => r.priceSui ?? order.entryPriceSui * r.multiple;
@@ -671,20 +707,36 @@ const HANDLERS = {
       const amountSui = num2(p.amountSui, 0.1);
       log(`${order.id}: SNIPE launch ${curveId.slice(0, 10)}… (${symbol || name || 'unknown'}) buy ${amountSui} SUI`);
       try {
-        const r = await fireScheduleTask('buy', { buy: { curveId, amountSui } }, { generator: 'queue' });
-        // Count the fire and persist so the cap survives a restart.
+        // 1) EMIT the Nexus scheduler task — the on-chain agentic-decision PROOF.
+        //    Best-effort: a leader may not consume it on testnet, so this never
+        //    blocks settlement. We keep the task id/digest for the demo trail.
+        let taskId = null, emitDigest = null;
+        try {
+          const r = await fireScheduleTask('buy', { buy: { curveId, amountSui } }, { generator: 'queue' });
+          taskId = r.taskId ?? null;
+          emitDigest = r.detail?.digest ?? null;
+          log(`${order.id}: sniper task ${taskId} (emit digest ${emitDigest ?? '?'})`);
+        } catch (e) {
+          err(`${order.id}: sniper emit failed: ${e.message} (continuing to settle)`);
+        }
+
+        // 2) SETTLE the buy through the bridge — the path that actually moves
+        //    tokens. THIS is what makes the snipe real; the task above is proof.
+        const settleDigest = await fireBridgeBuy(curveId, amountSui);
+        log(`${order.id}: sniper settled buy digest=${settleDigest}`);
+
+        // Count the fire (settlement succeeded) and persist.
         p.fired = num2(p.fired, 0) + 1;
-        // Persist the sniped curve list so a restart won't re-buy a past launch.
         p.snipedCurves = Array.from(order._sniped);
         order.params = p;
         if (p.maxSnipes > 0 && p.fired >= p.maxSnipes) order.done = true;
         await persistParams(order);
-        log(`${order.id}: sniper task ${r.taskId} (digest ${r.detail?.digest ?? '?'}) fired=${p.fired}${p.maxSnipes > 0 ? `/${p.maxSnipes}` : ''}${order.done ? ' — cap reached, closing' : ''}`);
+        log(`${order.id}: SNIPE COMPLETE ${curveId.slice(0, 10)}… task=${taskId ?? 'n/a'} settle=${settleDigest} fired=${p.fired}${p.maxSnipes > 0 ? `/${p.maxSnipes}` : ''}${order.done ? ' — cap reached, closing' : ''}`);
       } catch (e) {
-        // Fire failed — release the claim so a genuine retry can re-attempt this
-        // curve (the failure was not a successful buy).
+        // Settlement failed — release the claim so a genuine retry can re-attempt
+        // this curve (no tokens moved, so it must not count as a snipe).
         order._sniped.delete(curveId);
-        err(`${order.id}: sniper fire failed: ${e.message}`);
+        err(`${order.id}: sniper settle failed: ${e.message}`);
       }
     },
   },
