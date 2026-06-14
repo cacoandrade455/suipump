@@ -284,7 +284,13 @@ function pump() {
 function schedule(order, trigger) {
   if (order.done) return;
   if (firing.has(order.id)) return;
-  if (Date.now() < (order._cooldownUntil ?? 0)) return;
+  // The order-wide cooldown gate suits single-curve strategies (tpsl/sniper/dca).
+  // Wallet-followers (copytrade) legitimately fire on every target trade across
+  // buys, sells, and multiple curves, so a single order-wide cooldown would let a
+  // buy suppress a following sell. Those manage their own per-side/curve dedup
+  // inside the handler, so skip the order-wide gate for them.
+  const isWalletTrade = trigger?.kind === 'walletTrade';
+  if (!isWalletTrade && Date.now() < (order._cooldownUntil ?? 0)) return;
   const h = HANDLERS[order.type] ?? HANDLERS.tpsl;
   firing.add(order.id);
   queue.push(async () => { try { await h.process(order, trigger); } finally { firing.delete(order.id); } });
@@ -1052,7 +1058,21 @@ const HANDLERS = {
       const ev     = trigger?.ev;
       const curveId = ev?.curveId;
       if (!target || !curveId || !side) return;
-      if (onCooldown(order)) return;   // one mirror action per window per order
+      // Per-(side+curve) dedup: a target's buy and a following sell are distinct
+      // actions and must BOTH mirror, and trades on different curves are distinct
+      // too — so the cooldown is keyed by side+curve, NOT order-wide. This still
+      // catches a genuine duplicate (same side+curve fired twice in quick
+      // succession — the duplicate-event issue seen in logs) without letting a
+      // buy suppress a sell.
+      const COPY_DEDUP_MS = parseInt(process.env.STRATEGY_COPY_DEDUP_MS ?? '15000', 10);
+      const dedupKey = `${side}:${curveId}`;
+      order._copyFired = order._copyFired || {};
+      const lastFired = order._copyFired[dedupKey] ?? 0;
+      if (Date.now() - lastFired < COPY_DEDUP_MS) {
+        log(`${order.id}: copytrade dedup — ${dedupKey.slice(0, 16)}… fired ${Date.now() - lastFired}ms ago, skipping duplicate`);
+        return;
+      }
+      order._copyFired[dedupKey] = Date.now();
 
       // Resolve tokenType for this curve (needed for balance reads + sell).
       let tokenType = null;
