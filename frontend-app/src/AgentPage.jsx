@@ -36,6 +36,7 @@ const WORKFLOW_NODES = {
   claim:  [{ id: 'claim',  tool: 'xyz.suipump.claim@1',  label: 'Claim',  desc: 'Claim creator fees' }],
   alerts: [{ id: 'alerts', tool: 'xyz.suipump.alerts@1', label: 'Monitor', desc: 'Watch graduation / price' }],
   tpsl:   [{ id: 'arm',    tool: 'strategy.tpsl@1',      label: 'Arm strategy', desc: 'Standing TP/SL order the agent watches' }],
+  sniper: [{ id: 'arm',    tool: 'strategy.sniper@1',    label: 'Arm sniper',   desc: 'Standing buy that fires on every matching launch' }],
   buy_then_tpsl: [
     { id: 'buy', tool: 'xyz.suipump.buy@1', label: 'Buy',          desc: 'Buy the position now' },
     { id: 'arm', tool: 'strategy.tpsl@1',   label: 'Arm strategy', desc: 'Then watch price and auto-sell at the target' },
@@ -115,6 +116,79 @@ function parseStrategyGoal(text) {
   return { workflow: 'tpsl', summary, tpsl: { curveId, takeProfit: tp, stopLoss } };
 }
 
+// Client-side sniper intent parser. Sniper is a STANDING order keyed on a filter
+// (creator wallet / symbol / name) that fires a buy on every NEW launch the brain
+// sees match. Like TP/SL it is recognized here so the 64-hex creator address is
+// never handed to the LLM (which mangles it) and no network round-trip is needed
+// to plan. Returns a sniper plan or null.
+//
+// Trigger verb required ("snipe"/"sniper", or a "buy/ape every|all token(s)"
+// standing-buy phrasing) so a stray "every" in a normal buy never misroutes.
+// The `then` field is reserved (null) so sniper -> TP/SL chaining is additive.
+function parseSniperGoal(text) {
+  const g = String(text || '');
+  const lower = g.toLowerCase();
+
+  const isSnipe =
+    /\bsnipe\b|\bsniper\b/.test(lower) ||
+    /\b(?:buy|ape|grab|get)\b[\s\S]*\b(?:every|all)\b[\s\S]*\b(?:token|launch|coin)/.test(lower) ||
+    /\b(?:every|all)\b[\s\S]*\b(?:token|launch|coin)s?\b[\s\S]*\b(?:launched\s+)?by\b/.test(lower);
+  if (!isSnipe) return null;
+
+  // All 64-hex ids -> creator filters (a creator is a wallet; same shape as a CA).
+  const hexes = g.match(/0x[a-fA-F0-9]{60,66}/g);
+  const creators = hexes ? Array.from(new Set(hexes.map(s => s.toLowerCase()))) : [];
+
+  // amount: "snipe N sui" / "buy N sui" / "N sui"; default 0.1.
+  let amountSui = 0.1;
+  const amt = lower.match(/(?:dev[\s-]?buy|buy|ape|snipe)\s+(\d+(?:\.\d+)?)\s*sui/) || lower.match(/(\d+(?:\.\d+)?)\s*sui/);
+  if (amt) amountSui = Number(amt[1]);
+
+  // symbols: "symbol: PEPE" / "ticker PEPE".
+  const symbols = [];
+  { let m; const re = /(?:symbol|ticker)\s*[:\-]?\s*\$?([a-z0-9]{1,12})/ig;
+    while ((m = re.exec(g)) !== null) symbols.push(m[1].toUpperCase()); }
+
+  // nameIncludes: "named X" / "called X" / "name contains X" — stop at a clause
+  // boundary or a 0x address so it doesn't swallow "by 0x…".
+  let nameIncludes = null;
+  {
+    const m = g.match(/(?:name\s+(?:contains|includes|with)|named|called)\s*[:\-]?\s*["']?([a-z0-9][a-z0-9 ]{0,38}?)["']?(?=\s+(?:by|from|launched|with|and|or|symbol|ticker|max|first|up\s+to|limit)\b|\s+0x|["']|$)/i);
+    if (m) { let v = m[1].trim().toLowerCase().replace(/\s+(?:by|from|launched|with|and|or)$/i, '').trim(); if (v) nameIncludes = v.slice(0, 64); }
+  }
+
+  // match: any/or across categories -> "any"; default "all" (AND).
+  const match = /\b(?:any of|or|either)\b/i.test(g) ? 'any' : 'all';
+
+  // maxSnipes: "first N" / "up to N" / "max N" / "N snipes|times|buys". null = unbounded.
+  let maxSnipes = null;
+  {
+    const m = lower.match(/(?:first|up\s+to|max(?:imum)?|limit(?:\s+to)?)\s+(\d+)/) || lower.match(/(\d+)\s*(?:snipes?|times|buys?)\b/);
+    if (m) { const n = parseInt(m[1], 10); if (Number.isFinite(n) && n > 0) maxSnipes = n; }
+  }
+
+  const hasFilter = creators.length > 0 || symbols.length > 0 || nameIncludes != null;
+
+  const sniper = { amountSui, match };
+  if (creators.length)      sniper.creators = creators;
+  if (symbols.length)       sniper.symbols = symbols;
+  if (nameIncludes != null) sniper.nameIncludes = nameIncludes;
+  if (!hasFilter)           sniper.all = true;   // explicit opt-in to every launch
+  if (maxSnipes != null)    sniper.maxSnipes = maxSnipes;
+
+  const scope = hasFilter
+    ? [
+        creators.length ? `${creators.length} creator${creators.length > 1 ? 's' : ''}` : null,
+        symbols.length ? `symbol ${symbols.join('/')}` : null,
+        nameIncludes ? `name~"${nameIncludes}"` : null,
+      ].filter(Boolean).join(match === 'any' ? ' OR ' : ' AND ')
+    : 'every new launch';
+
+  const summary = `Arm a standing sniper: buy ${amountSui} SUI of ${scope}${maxSnipes != null ? `, first ${maxSnipes} only` : ' (unbounded)'}. The agent watches new launches and buys automatically the moment one matches.`;
+
+  return { workflow: 'sniper', summary, sniper, then: null };
+}
+
 export default function AgentPage({ onBack }) {
   const account = useCurrentAccount();
 
@@ -142,6 +216,12 @@ export default function AgentPage({ onBack }) {
       // Strategy goals (take-profit / stop-loss) are standing orders, not one-shot
       // workflows. Recognize them client-side so the LLM can't collapse them into
       // a plain immediate sell. If it's not a strategy, fall through to the planner.
+      // Standing-order goals are recognized client-side so the LLM can't collapse
+      // them into a one-shot trade (and so 64-hex addresses aren't LLM-mangled).
+      // Sniper is checked first: it is the most specific standing intent.
+      const snipe = parseSniperGoal(goal.trim());
+      if (snipe) { setPlan(snipe); setPlanning(false); return; }
+
       const strat = parseStrategyGoal(goal.trim());
       if (strat) { setPlan(strat); setPlanning(false); return; }
 
@@ -246,6 +326,18 @@ export default function AgentPage({ onBack }) {
             stopLoss: p.tpsl.stopLoss ?? null,
           },
         };
+      }
+      case 'sniper': {
+        // Standing order: no curve to resolve (the target is discovered at launch
+        // time). Pass the validated filter params straight to the store.
+        const s = p.sniper ?? {};
+        if (!(Number(s.amountSui) > 0)) throw new Error('Sniper needs a SUI amount (e.g. "snipe 1 sui …")');
+        const hasFilter = (Array.isArray(s.creators) && s.creators.length) ||
+                          (Array.isArray(s.symbols) && s.symbols.length) || !!s.nameIncludes;
+        if (!hasFilter && s.all !== true) {
+          throw new Error('Sniper needs a filter (creator / symbol / name) or say "every token"');
+        }
+        return { workflow: 'sniper', sniper: s };
       }
       default:
         throw new Error(`Unknown workflow: ${p.workflow}`);
@@ -401,6 +493,31 @@ export default function AgentPage({ onBack }) {
         return;
       }
 
+      // STRATEGY (sniper): standing buy keyed on a launch filter. Like tpsl, it
+      // creates an order in the strategy store and nothing settles now — the brain
+      // fires a buy (real Nexus scheduler task) on every NEW launch that matches.
+      if (payload.workflow === 'sniper') {
+        try {
+          const r = await fetch(`/api/create-order`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: 'sniper', params: payload.sniper }),
+          });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(d.error || `order create failed (${r.status})`);
+          clearAnim();
+          setNodeState({ arm: 'done' });
+          setResult({ workflow: 'sniper', orderId: d.id ?? null, order: d });
+          setPhase('done');
+        } catch (e) {
+          clearAnim();
+          setNodeState({ arm: 'error' });
+          setError(`Could not arm sniper: ${e.message}`);
+          setPhase('failed');
+        }
+        return;
+      }
+
       // STEP 1 — Emit the Nexus DAG request (agentic-decision proof). This is
       // BEST-EFFORT: the on-chain walk request is the orchestration paper trail,
       // not the settlement path. A slow/failed /run-dag must NEVER block the trade
@@ -533,6 +650,27 @@ export default function AgentPage({ onBack }) {
           rows.push(['stop-loss', `-${Math.round((1 - p.tpsl.stopLoss.multiple) * 100)}%`]);
         return rows;
       }
+      case 'sniper': {
+        const s = p.sniper ?? {};
+        const rows = [
+          ['workflow', 'sniper (standing buy)'],
+          ['buy size', `${s.amountSui ?? 0} SUI per launch`],
+        ];
+        if (Array.isArray(s.creators) && s.creators.length)
+          rows.push(['creators', s.creators.map(c => `${c.slice(0, 10)}…`).join(', ')]);
+        if (Array.isArray(s.symbols) && s.symbols.length)
+          rows.push(['symbols', s.symbols.join(', ')]);
+        if (s.nameIncludes)
+          rows.push(['name contains', `"${s.nameIncludes}"`]);
+        if ((Array.isArray(s.creators) && s.creators.length ? 1 : 0) +
+            (Array.isArray(s.symbols) && s.symbols.length ? 1 : 0) +
+            (s.nameIncludes ? 1 : 0) > 1)
+          rows.push(['match', s.match === 'any' ? 'ANY (OR)' : 'ALL (AND)']);
+        if (!s.creators && !s.symbols && !s.nameIncludes && s.all)
+          rows.push(['scope', 'EVERY new launch']);
+        rows.push(['limit', s.maxSnipes != null ? `${s.maxSnipes} snipes` : 'unbounded']);
+        return rows;
+      }
       default:
         return [['workflow', p.workflow]];
     }
@@ -639,10 +777,14 @@ export default function AgentPage({ onBack }) {
         </div>
       )}
 
-      {result && (result.workflow === 'tpsl' || result.workflow === 'buy_then_tpsl') && (
+      {result && (result.workflow === 'tpsl' || result.workflow === 'buy_then_tpsl' || result.workflow === 'sniper') && (
         <div className="border border-emerald-400/30 rounded-xl p-4 bg-emerald-400/[0.05]">
           <div className="text-[10px] font-mono text-emerald-400/80 tracking-widest mb-3">
-            {result.workflow === 'buy_then_tpsl' ? '✓ BOUGHT & STRATEGY ARMED — AGENT IS WATCHING' : '✓ STRATEGY ARMED — AGENT IS WATCHING'}
+            {result.workflow === 'buy_then_tpsl'
+              ? '✓ BOUGHT & STRATEGY ARMED — AGENT IS WATCHING'
+              : result.workflow === 'sniper'
+              ? '✓ SNIPER ARMED — AGENT IS WATCHING LAUNCHES'
+              : '✓ STRATEGY ARMED — AGENT IS WATCHING'}
           </div>
           <div className="space-y-2 text-[10px] font-mono">
             {result.buyDigest && (
@@ -655,7 +797,9 @@ export default function AgentPage({ onBack }) {
               <div className="text-white/40">order id: <span className="text-white/70 break-all">{result.orderId}</span></div>
             )}
             <div className="text-white/50 leading-relaxed">
-              The agent now watches this curve's price and sells automatically through Nexus when a trigger is hit. No further action needed.
+              {result.workflow === 'sniper'
+                ? "The agent now watches new launches and fires a buy through Nexus the moment one matches your filter. No further action needed."
+                : "The agent now watches this curve's price and sells automatically through Nexus when a trigger is hit. No further action needed."}
             </div>
           </div>
         </div>
