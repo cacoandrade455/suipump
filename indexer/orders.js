@@ -193,6 +193,9 @@ function sanitizeParams(type, raw) {
     if (dipMode && !(dropPct > 0)) return null;           // dip mode needs a drop step
 
     const out = { suiPerBuy, buys: Math.trunc(buys) };
+    // Optional distinct anchor (first-buy) size; rungs use suiPerBuy.
+    const anchorSui = num(p.anchorSui);
+    if (anchorSui > 0) out.anchorSui = anchorSui;
     if (dipMode) {
       out.mode = 'dip';
       out.dropPct = dropPct;

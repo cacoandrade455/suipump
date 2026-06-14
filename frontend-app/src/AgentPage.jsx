@@ -37,6 +37,7 @@ const WORKFLOW_NODES = {
   alerts: [{ id: 'alerts', tool: 'xyz.suipump.alerts@1', label: 'Monitor', desc: 'Watch graduation / price' }],
   tpsl:   [{ id: 'arm',    tool: 'strategy.tpsl@1',      label: 'Arm strategy', desc: 'Standing TP/SL order the agent watches' }],
   sniper: [{ id: 'arm',    tool: 'strategy.sniper@1',    label: 'Arm sniper',   desc: 'Standing buy that fires on every matching launch' }],
+  dca:    [{ id: 'arm',    tool: 'strategy.dca@1',       label: 'Arm DCA',      desc: 'Standing accumulation: buys on a schedule or on each dip' }],
   buy_then_tpsl: [
     { id: 'buy', tool: 'xyz.suipump.buy@1', label: 'Buy',          desc: 'Buy the position now' },
     { id: 'arm', tool: 'strategy.tpsl@1',   label: 'Arm strategy', desc: 'Then watch price and auto-sell at the target' },
@@ -223,6 +224,135 @@ function parseSniperGoal(text) {
   return { workflow: 'sniper', summary, sniper, then };
 }
 
+// Client-side DCA / scale-in parser. DCA is a STANDING accumulation order on a
+// SPECIFIC curve (so a CA is required in the goal). Two trigger shapes:
+//   • time: "buy 10 sui of <CA> every day for 10"  -> intervalMs + buys
+//   • dip:  "buy 5 sui of <CA>, 10 more each -10% drop, 3 buys" -> dropPct + buys
+// Recognized here (not via the LLM) so the 64-hex CA is never mangled and the
+// amount/interval/drop are parsed deterministically. `then.tpsl` in the same
+// goal arms an exit on the blended average cost after the final buy.
+// Returns a dca plan or null. (parseSniperGoal runs FIRST, so "every token
+// launched by 0x…" routes to sniper, not here.)
+function parseDcaGoal(text) {
+  const g = String(text || '');
+  const lower = g.toLowerCase();
+
+  // Trigger: must look like DCA/accumulation. Either an explicit "dca", or a
+  // recurring/scale-in phrasing ("every <time>", a percentage drop, "N more").
+  // Requires a SUI buy amount somewhere.
+  const hasDcaWord = /\bdca\b|\bdollar[\s-]?cost\b|\baverage\s+(?:in|down)\b|\bscale\s+in\b|\baccumulate\b/.test(lower);
+  const hasEveryTime = /\bevery\s+(?:\d+\s*)?(?:second|sec|minute|min|hour|hr|day|week)s?\b/.test(lower);
+  // Dip: any percentage tied to a fall — "drops/falls/dips/down/lower X%",
+  // "if it drops 10%", "each -10%", "on a 10% dip", or "N more" (scale-in) with a %.
+  const dropPhrase =
+    /(?:drops?|falls?|dips?|down|lower|loses?)\s*(?:by\s*)?-?\s*\d+(?:\.\d+)?\s*%/.test(lower) ||
+    /-?\s*\d+(?:\.\d+)?\s*%\s*(?:drop|dip|down|lower)/.test(lower) ||
+    /(?:each|every|per|on\s+(?:a|each|every))\s*-?\s*\d+(?:\.\d+)?\s*%/.test(lower);
+  const scaleInMore = /\b\d+\s*(?:sui\s+)?more\b/.test(lower) || /\bbuy\s+more\b/.test(lower);
+  const hasDip = dropPhrase || (scaleInMore && /\d+(?:\.\d+)?\s*%/.test(lower));
+  if (!hasDcaWord && !hasEveryTime && !hasDip) return null;
+
+  // Must target a specific curve (a CA). DCA has no launch-time discovery.
+  const ca = g.match(/0x[a-fA-F0-9]{60,66}/);
+  const curveId = ca ? ca[0].toLowerCase() : null;
+  if (!curveId) return null; // can't DCA without a target curve
+
+  // Per-buy SUI. Your phrasing can carry TWO sizes: an anchor ("buy 5 sui …")
+  // and a per-dip rung ("…buy 10 more each -10%"). Capture both; the rung size is
+  // the one tied to "more". If only one amount, it is both anchor and rung.
+  const allAmts = [...lower.matchAll(/(\d+(?:\.\d+)?)\s*sui/g)].map(m => Number(m[1]));
+  const moreMatch = lower.match(/(\d+(?:\.\d+)?)\s*(?:sui\s+)?more/);
+  let anchorSui = allAmts.length ? allAmts[0] : null;
+  let rungSui   = moreMatch ? Number(moreMatch[1]) : (allAmts.length ? allAmts[allAmts.length - 1] : null);
+  // If there are two distinct amounts and no explicit "more", treat first as
+  // anchor and second as rung (e.g. "buy 5 then 10 each dip").
+  if (!moreMatch && allAmts.length >= 2) { anchorSui = allAmts[0]; rungSui = allAmts[1]; }
+  const suiPerBuy = rungSui ?? anchorSui;
+  if (!(suiPerBuy > 0)) return null;
+
+  // Dip percentage: "drops/falls/dips/down/lower X%", "X% drop", or "each -X%".
+  const dipPct =
+    lower.match(/(?:drops?|falls?|dips?|down|lower|loses?)\s*(?:by\s*)?-?\s*(\d+(?:\.\d+)?)\s*%/) ||
+    lower.match(/-?\s*(\d+(?:\.\d+)?)\s*%\s*(?:drop|dip|down|lower)/) ||
+    lower.match(/(?:each|every|per|on)\s*-?\s*(\d+(?:\.\d+)?)\s*%/);
+  const isDip = hasDip && dipPct;
+
+  // buys / rungs: "for N", "N buys", "N rungs", "N times", "N more" (+1 for anchor).
+  let buys = null;
+  {
+    const m =
+      lower.match(/\bfor\s+(\d+)\b/) ||
+      lower.match(/(\d+)\s*(?:buys?|rungs?|times|orders?|fills?)\b/);
+    if (m) buys = parseInt(m[1], 10);
+    // "buy 5, 10 more each -10%" with no explicit count: anchor + the rungs we can
+    // infer. If a single "N more" appears, treat as 2 total (anchor + 1). Default 3.
+    if (buys == null && isDip) {
+      const moreN = lower.match(/(\d+)\s*sui\s*more|\bmore\b/);
+      buys = moreN ? 2 : 3;
+    }
+    if (buys == null) buys = 1;
+  }
+  if (!(buys > 0)) buys = 1;
+
+  const dca = { curveId, suiPerBuy, buys };
+  // If the anchor (first buy) differs from the per-dip rung size, carry it so the
+  // brain buys `anchorSui` on rung 0 and `suiPerBuy` on each subsequent dip.
+  if (anchorSui > 0 && anchorSui !== suiPerBuy) dca.anchorSui = anchorSui;
+  let modeDesc;
+  if (isDip) {
+    dca.mode = 'dip';
+    dca.dropPct = Number(dipPct[1]);
+    modeDesc = `on each -${dca.dropPct}% drop from entry`;
+  } else {
+    // time mode: parse "every N <unit>"; default 1 day.
+    const unitMs = { second: 1000, sec: 1000, minute: 60000, min: 60000, hour: 3600000, hr: 3600000, day: 86400000, week: 604800000 };
+    const m = lower.match(/every\s+(\d+)?\s*(second|sec|minute|min|hour|hr|day|week)s?/);
+    let intervalMs = 86400000, label = 'day';
+    if (m) {
+      const n = m[1] ? parseInt(m[1], 10) : 1;
+      const u = m[2];
+      intervalMs = (unitMs[u] ?? 86400000) * (n > 0 ? n : 1);
+      label = `${n > 1 ? n + ' ' : ''}${u}${n > 1 ? 's' : ''}`;
+    }
+    dca.intervalMs = intervalMs;
+    modeDesc = `every ${label}`;
+  }
+
+  // then.tpsl — shared extraction (same shape as sniper / parseStrategyGoal). The
+  // brain arms this on the BLENDED average cost after the final buy.
+  let then = null;
+  {
+    const tp = [];
+    const tpPct = lower.match(/(?:take\s*profit|tp|profit|exit)\s*(?:at|@|of|by)?\s*\+?\s*(\d+(?:\.\d+)?)\s*%/);
+    if (tpPct) {
+      const pct = Number(tpPct[1]);
+      let sellPct = 100;
+      const sellMatch = lower.match(/sell\s+(\d+(?:\.\d+)?)\s*%/);
+      if (sellMatch) sellPct = Number(sellMatch[1]);
+      if (pct > 0) tp.push({ multiple: 1 + pct / 100, sellPct });
+    }
+    let stopLoss = null;
+    const slPct = lower.match(/(?:stop\s*loss|sl)\s*(?:at|@|of|by)?\s*-?\s*(\d+(?:\.\d+)?)\s*%/);
+    if (slPct) {
+      const pct = Number(slPct[1]);
+      if (pct > 0 && pct < 100) stopLoss = { multiple: 1 - pct / 100 };
+    }
+    if (tp.length || stopLoss) then = { tpsl: { takeProfit: tp, stopLoss } };
+  }
+  if (then) dca.then = then;
+
+  const thenDesc = then
+    ? `, then arm ${[
+        then.tpsl.takeProfit.length ? `take-profit +${Math.round((then.tpsl.takeProfit[0].multiple - 1) * 100)}%` : '',
+        then.tpsl.stopLoss ? `stop-loss -${Math.round((1 - then.tpsl.stopLoss.multiple) * 100)}%` : '',
+      ].filter(Boolean).join(' · ')} on the average cost`
+    : '';
+
+  const summary = `Arm DCA on ${curveId.slice(0, 10)}…: buy ${suiPerBuy} SUI ${modeDesc}, ${buys} buy${buys > 1 ? 's' : ''} total${thenDesc}. The agent accumulates automatically and tracks the average cost${then ? ', then auto-exits against that average' : ''}.`;
+
+  return { workflow: 'dca', summary, dca, then };
+}
+
 // ── Active-strategies helpers ─────────────────────────────────────────────────
 const ORDER_LABEL = { tpsl: 'TP / SL', sniper: 'Sniper', dca: 'DCA', copytrade: 'Copy-trade' };
 const shortId  = (s) => (typeof s === 'string' && s.startsWith('0x') && s.length > 14) ? `${s.slice(0, 8)}…${s.slice(-4)}` : s;
@@ -346,6 +476,9 @@ export default function AgentPage({ onBack }) {
       const snipe = parseSniperGoal(goal.trim());
       if (snipe) { setPlan(snipe); setPlanning(false); return; }
 
+      const dca = parseDcaGoal(goal.trim());
+      if (dca) { setPlan(dca); setPlanning(false); return; }
+
       const strat = parseStrategyGoal(goal.trim());
       if (strat) { setPlan(strat); setPlanning(false); return; }
 
@@ -462,6 +595,14 @@ export default function AgentPage({ onBack }) {
           throw new Error('Sniper needs a filter (creator / symbol / name) or say "every token"');
         }
         return { workflow: 'sniper', sniper: s };
+      }
+      case 'dca': {
+        const d = p.dca ?? {};
+        if (!d.curveId) throw new Error('DCA needs a curve — paste the token CA in your goal');
+        if (!(Number(d.suiPerBuy) > 0)) throw new Error('DCA needs a SUI amount (e.g. "buy 5 sui …")');
+        // Resolve tokenType so a then.tpsl child can sell the right coin.
+        const { tokenType } = await fetchCurveMeta(d.curveId);
+        return { workflow: 'dca', dca: { ...d, tokenType } };
       }
       default:
         throw new Error(`Unknown workflow: ${p.workflow}`);
@@ -645,6 +786,38 @@ export default function AgentPage({ onBack }) {
         return;
       }
 
+      // STRATEGY (dca): standing accumulation on a specific curve. Like sniper it
+      // creates a store order and nothing settles now — the brain fires each buy
+      // (Nexus task + bridge settle) on its schedule / dip trigger, tracks the
+      // average cost, and arms the `then` exit on that average after the final buy.
+      if (payload.workflow === 'dca') {
+        try {
+          const r = await fetch(`/api/create-order`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              type: 'dca',
+              curveId: payload.dca.curveId,
+              tokenType: payload.dca.tokenType,
+              params: payload.dca,
+            }),
+          });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(d.error || `order create failed (${r.status})`);
+          clearAnim();
+          setNodeState({ arm: 'done' });
+          setResult({ workflow: 'dca', orderId: d.id ?? null, order: d });
+          loadOrders();
+          setPhase('done');
+        } catch (e) {
+          clearAnim();
+          setNodeState({ arm: 'error' });
+          setError(`Could not arm DCA: ${e.message}`);
+          setPhase('failed');
+        }
+        return;
+      }
+
       // STEP 1 — Emit the Nexus DAG request (agentic-decision proof). This is
       // BEST-EFFORT: the on-chain walk request is the orchestration paper trail,
       // not the settlement path. A slow/failed /run-dag must NEVER block the trade
@@ -804,6 +977,23 @@ export default function AgentPage({ onBack }) {
         }
         return rows;
       }
+      case 'dca': {
+        const d = p.dca ?? {};
+        const rows = [
+          ['workflow', 'dca (standing accumulation)'],
+          ['curve', d.curveId ? `${d.curveId.slice(0, 10)}…` : '(missing — paste CA)'],
+          ['buy size', `${d.suiPerBuy ?? 0} SUI per buy`],
+          ['trigger', d.mode === 'dip' ? `each -${d.dropPct}% drop from entry` : `every ${Math.round((d.intervalMs ?? 86400000) / 1000)}s`],
+          ['total buys', `${d.buys ?? 1}`],
+        ];
+        if (d.then?.tpsl) {
+          (d.then.tpsl.takeProfit ?? []).forEach((r, i) =>
+            rows.push([`then take-profit ${i + 1}`, `+${Math.round((r.multiple - 1) * 100)}% · sell ${r.sellPct}% (on avg cost)`]));
+          if (d.then.tpsl.stopLoss)
+            rows.push(['then stop-loss', `-${Math.round((1 - d.then.tpsl.stopLoss.multiple) * 100)}% (on avg cost)`]);
+        }
+        return rows;
+      }
       default:
         return [['workflow', p.workflow]];
     }
@@ -910,13 +1100,15 @@ export default function AgentPage({ onBack }) {
         </div>
       )}
 
-      {result && (result.workflow === 'tpsl' || result.workflow === 'buy_then_tpsl' || result.workflow === 'sniper') && (
+      {result && (result.workflow === 'tpsl' || result.workflow === 'buy_then_tpsl' || result.workflow === 'sniper' || result.workflow === 'dca') && (
         <div className="border border-emerald-400/30 rounded-xl p-4 bg-emerald-400/[0.05]">
           <div className="text-[10px] font-mono text-emerald-400/80 tracking-widest mb-3">
             {result.workflow === 'buy_then_tpsl'
               ? '✓ BOUGHT & STRATEGY ARMED — AGENT IS WATCHING'
               : result.workflow === 'sniper'
               ? '✓ SNIPER ARMED — AGENT IS WATCHING LAUNCHES'
+              : result.workflow === 'dca'
+              ? '✓ DCA ARMED — AGENT IS ACCUMULATING'
               : '✓ STRATEGY ARMED — AGENT IS WATCHING'}
           </div>
           <div className="space-y-2 text-[10px] font-mono">
@@ -932,6 +1124,8 @@ export default function AgentPage({ onBack }) {
             <div className="text-white/50 leading-relaxed">
               {result.workflow === 'sniper'
                 ? "The agent now watches new launches and fires a buy through Nexus the moment one matches your filter. No further action needed."
+                : result.workflow === 'dca'
+                ? "The agent now accumulates on this curve automatically through Nexus — on schedule or on each dip — tracking your average cost. Watch it in Active Strategies below."
                 : "The agent now watches this curve's price and sells automatically through Nexus when a trigger is hit. No further action needed."}
             </div>
           </div>

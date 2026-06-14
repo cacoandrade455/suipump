@@ -866,6 +866,8 @@ const HANDLERS = {
       const done      = Math.trunc(num2(p.done, 0));
       if (!(suiPerBuy > 0) || !(buys > 0)) { if (!order._warned) { err(`${order.id}: dca bad params`); order._warned = true; } return; }
       if (done >= buys) { order.done = true; return; }
+      // The first buy (rung 0) may use a distinct anchor size; rungs use suiPerBuy.
+      const thisBuySui = (done === 0 && num2(p.anchorSui, 0) > 0) ? num2(p.anchorSui, 0) : suiPerBuy;
 
       const isDip = p.mode === 'dip' || (p.dropPct != null && p.intervalMs == null);
       const now = Date.now();
@@ -905,7 +907,7 @@ const HANDLERS = {
       if (onCooldown(order)) return;   // guard against double-fire within a tick window
       let taskId = null;
       try {
-        const d = await fireScheduleTask('buy', { buy: { curveId, amountSui: suiPerBuy } }, { generator: 'queue' });
+        const d = await fireScheduleTask("buy", { buy: { curveId, amountSui: thisBuySui } }, { generator: 'queue' });
         taskId = d?.taskId ?? null;
       } catch (e) {
         err(`${order.id}: dca emit failed: ${e.message} (continuing to settle)`);
@@ -913,7 +915,7 @@ const HANDLERS = {
 
       let settleDigest;
       try {
-        settleDigest = await fireBridgeBuy(curveId, suiPerBuy);
+        settleDigest = await fireBridgeBuy(curveId, thisBuySui);
       } catch (e) {
         err(`${order.id}: dca settle failed: ${e.message}`);
         return; // do not count a fill that didn't settle
@@ -922,10 +924,10 @@ const HANDLERS = {
       // ── Record fill + update running average cost ──────────────────────────
       const prevFilled = num2(p.filledSui, 0);
       const prevAvg    = num2(p.avgPriceSui, 0);
-      const newFilled  = prevFilled + suiPerBuy;
+      const newFilled  = prevFilled + thisBuySui;
       // Weighted average of price across SUI deployed (approx: weight by SUI in).
       p.avgPriceSui   = (prevFilled > 0 && prevAvg > 0)
-        ? (prevAvg * prevFilled + price * suiPerBuy) / newFilled
+        ? (prevAvg * prevFilled + price * thisBuySui) / newFilled
         : price;
       p.filledSui     = newFilled;
       if (done === 0) p.entryPriceSui = num2(p.entryPriceSui, price); // lock entry on first fill
@@ -935,7 +937,7 @@ const HANDLERS = {
       if (p.done >= buys) order.done = true;
       await persistParams(order);
 
-      log(`${order.id}: DCA buy ${p.done}/${buys} ${suiPerBuy} SUI @ ${price.toExponential(3)} (avg ${p.avgPriceSui.toExponential(3)}) task=${taskId ?? 'n/a'} settle=${settleDigest}${order.done ? ' — complete' : ''}`);
+      log(`${order.id}: DCA buy ${p.done}/${buys} ${thisBuySui} SUI @ ${price.toExponential(3)} (avg ${p.avgPriceSui.toExponential(3)}) task=${taskId ?? 'n/a'} settle=${settleDigest}${order.done ? ' — complete' : ''}`);
 
       // ── COMPOSE: after the FINAL buy, arm the `then` child on the blended
       //    basis. We pass the average cost as the entry so a then.tpsl targets
