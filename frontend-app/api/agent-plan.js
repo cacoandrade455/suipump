@@ -43,6 +43,72 @@ function extractDescription(goal) {
   return m[1].trim().replace(/\s+/g, ' ').slice(0, 200);
 }
 
+// ── Sniper intent + filters (deterministic; the LLM is unreliable on 64-hex) ──
+//
+// Sniper is a STANDING order, not a one-shot DAG run: "buy when a launch matching
+// X appears". It routes to /api/create-order (strategy store), NOT /run-dag.
+//
+// Trigger: an explicit snipe/standing-buy verb. We require one of these so a
+// stray "every" in a normal buy can never misroute. Matches:
+//   "snipe", "snipe every", "buy every token", "every launch",
+//   "every token (launched) by", "all tokens (launched) by".
+function isSniperGoal(goal) {
+  const g = String(goal).toLowerCase();
+  if (/\bsnipe\b|\bsniper\b/.test(g)) return true;
+  // "buy/ape every|all token(s)|launch(es)" — standing-buy phrasing without "snipe".
+  if (/\b(?:buy|ape|grab|get)\b[\s\S]*\b(?:every|all)\b[\s\S]*\b(?:token|launch|coin)/.test(g)) return true;
+  if (/\b(?:every|all)\b[\s\S]*\b(?:token|launch|coin)s?\b[\s\S]*\b(?:launched\s+)?by\b/.test(g)) return true;
+  return false;
+}
+
+// All 64-hex object/address ids in the goal -> creator filter list. (A creator is
+// a wallet address; same 0x{60,66} shape as a curve id, so we lift ALL of them
+// and treat them as creators in sniper context.)
+function extractAllHex(goal) {
+  const m = String(goal).match(/0x[a-fA-F0-9]{60,66}/g);
+  return m ? Array.from(new Set(m.map(s => s.toLowerCase()))) : [];
+}
+
+// Optional snipe cap: "first 5", "up to 5", "max 5", "5 snipes", "5 times".
+// Returns a positive integer or null (null = unbounded, by design).
+function extractMaxSnipes(goal) {
+  const g = String(goal).toLowerCase();
+  const m = g.match(/(?:first|up\s+to|max(?:imum)?|limit(?:\s+to)?)\s+(\d+)/)
+        ?? g.match(/(\d+)\s*(?:snipes?|times|buys?)\b/);
+  if (!m) return null;
+  const n = parseInt(m[1], 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+// "any"/"or" across categories -> match:"any"; default "all" (AND).
+function extractMatchMode(goal) {
+  return /\b(?:any of|or|either)\b/i.test(String(goal)) ? 'any' : 'all';
+}
+
+// Optional symbol/name narrative filters from explicit markers, so we don't lean
+// on the LLM for these either. "symbol: PEPE" / "ticker PEPE" / 'named "ai"' /
+// "name contains ai" / "called ai".
+function extractSymbolFilters(goal) {
+  const out = [];
+  const g = String(goal);
+  let m;
+  const re = /(?:symbol|ticker)\s*[:\-]?\s*\$?([a-z0-9]{1,12})/ig;
+  while ((m = re.exec(g)) !== null) out.push(m[1].toUpperCase());
+  return Array.from(new Set(out));
+}
+function extractNameIncludes(goal) {
+  const g = String(goal);
+  // Capture the word(s) right after the marker, but STOP at a clause boundary
+  // (by/from/launched/with/and/symbol/ticker), at a 0x address, or end of string.
+  // Non-greedy, bounded, and we strip any trailing boundary word that slipped in.
+  const m = g.match(/(?:name\s+(?:contains|includes|with)|named|called)\s*[:\-]?\s*["']?([a-z0-9][a-z0-9 ]{0,38}?)["']?(?=\s+(?:by|from|launched|with|and|or|symbol|ticker|max|first|up\s+to|limit)\b|\s+0x|["']|$)/i);
+  if (!m) return null;
+  let v = m[1].trim().toLowerCase();
+  // Defensive: drop a trailing boundary word if the lookahead still let one in.
+  v = v.replace(/\s+(?:by|from|launched|with|and|or)$/i, '').trim();
+  return v ? v.slice(0, 64) : null;
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -67,6 +133,45 @@ export default async function handler(req, res) {
   // Deterministic extractors (used as fallback / override of the LLM).
   const explicitSui  = extractSuiAmount(goal);   // number | null
   const explicitDesc = extractDescription(goal); // string | null
+
+  // ── SNIPER short-circuit (deterministic; never hits the LLM) ──────────────
+  // Sniper is a standing order keyed on a filter, routed to /api/create-order
+  // (not /run-dag). The address(es) are CREATOR filters, not a curve to buy, so
+  // we lift all 0x ids as creators and ignore pastedCurveId here. The `then`
+  // block is reserved now (empty) so sniper->TP/SL chaining is additive later.
+  if (isSniperGoal(goal)) {
+    const creators     = extractAllHex(goal);
+    const symbols      = extractSymbolFilters(goal);
+    const nameIncludes = extractNameIncludes(goal);
+    const hasFilter    = creators.length > 0 || symbols.length > 0 || nameIncludes != null;
+    const amountSui    = explicitSui != null ? explicitSui : 0.1;
+
+    const params = { amountSui, match: extractMatchMode(goal) };
+    if (creators.length)      params.creators = creators;
+    if (symbols.length)       params.symbols = symbols;
+    if (nameIncludes != null) params.nameIncludes = nameIncludes;
+    // No filter named -> explicit all-launches opt-in (store requires one or the
+    // other; this makes "snipe 1 sui of every token" valid).
+    if (!hasFilter)           params.all = true;
+    const maxSnipes = extractMaxSnipes(goal);
+    if (maxSnipes != null)    params.maxSnipes = maxSnipes;
+
+    const scope = hasFilter
+      ? [
+          creators.length ? `creators[${creators.length}]` : null,
+          symbols.length ? `symbol ${symbols.join('/')}` : null,
+          nameIncludes ? `name~"${nameIncludes}"` : null,
+        ].filter(Boolean).join(params.match === 'any' ? ' OR ' : ' AND ')
+      : 'every new launch';
+
+    return res.status(200).json({
+      plan: {
+        workflow: 'sniper',
+        sniper: params,
+        summary: `Standing snipe: buy ${amountSui} SUI of ${scope}${maxSnipes != null ? ` (first ${maxSnipes})` : ' (unbounded)'}.`,
+      },
+    });
+  }
 
   const prompt = `You are the planning layer of an autonomous agent on SuiPump, a bonding-curve token launchpad on Sui. The agent executes ONE workflow per run, each a published Nexus DAG. Pick the single workflow that matches the user's goal and emit ONLY that workflow's fields.
 
