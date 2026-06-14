@@ -11,7 +11,7 @@
 //
 // The LLM plans OFF-CHAIN; the DAG does the on-chain work. Violet identity.
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { ArrowLeft, Sparkles, Play, Check, X, Loader, ExternalLink, Bot } from 'lucide-react';
+import { ArrowLeft, Sparkles, Play, Check, X, Loader, ExternalLink, Bot, ChevronDown } from 'lucide-react';
 import { useCurrentAccount } from '@mysten/dapp-kit-react';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 
@@ -35,6 +35,103 @@ const WORKFLOW_DAGS = {
   tpsl:      ['sell'],
   buy_then_tpsl: ['buy', 'sell'],
 };
+
+// "How to operate" content for the agent-page accordion, in three tiers:
+//   TOOLS      — the 5 atomic Nexus tools (xyz.suipump.*@1), from the Rust source.
+//   STRATEGIES — the 4 standing behaviours built on those tools.
+//   COMBINING  — the one real composition (a buy-strategy auto-arming an exit).
+// Example goals match the deterministic parsers / planner verbatim; clicking one
+// loads it into the goal box. Content is limited to what actually works on-chain.
+const OPERATE_GUIDE = [
+  {
+    section: 'TOOLS',
+    blurb: 'The five atomic Nexus tools the agent calls. Every strategy is built from these.',
+    items: [
+      {
+        key: 'launch', title: 'Launch', fqn: 'xyz.suipump.launch@1',
+        tagline: 'Create a new token (with an optional dev-buy)',
+        body: 'Publishes a new token on SuiPump — handles the bytecode patching and publishing — and optionally does a dev-buy in the same transaction. You can set the graduation DEX (Cetus, DeepBook, or Turbos) and an anti-bot delay.',
+        inputs: ['Name, symbol, description', 'Optional: icon URL', 'Optional: dev-buy in SUI', 'Optional: graduation target (cetus / deepbook / turbos)', 'Optional: anti-bot delay (0 / 15 / 30s)'],
+        examples: ['Launch a dog token called MoonCat, symbol MCAT, dev-buy 1 SUI'],
+      },
+      {
+        key: 'buy', title: 'Buy', fqn: 'xyz.suipump.buy@1',
+        tagline: 'Spend SUI to buy a token on its curve',
+        body: 'Buys tokens on a bonding curve for a set amount of SUI, with a slippage tolerance (default 2%). Optionally credits a referrer.',
+        inputs: ['A token CA', 'An amount of SUI to spend', 'Optional: slippage tolerance', 'Optional: referrer address'],
+        examples: ['Buy 2 SUI of 0xCURVE'],
+      },
+      {
+        key: 'sell', title: 'Sell', fqn: 'xyz.suipump.sell@1',
+        tagline: 'Sell tokens back to SUI',
+        body: 'Sells tokens back to SUI on a curve. You can set a minimum-SUI-out as a slippage guard. Sell a specific amount or your whole position.',
+        inputs: ['A token CA', 'How many tokens (or all)', 'Optional: minimum SUI out (slippage guard)'],
+        examples: ['Sell all tokens of 0xCURVE'],
+      },
+      {
+        key: 'claim', title: 'Claim', fqn: 'xyz.suipump.claim@1',
+        tagline: 'Collect pending creator fees',
+        body: 'Claims the creator fees that have accrued on a curve you launched. Does nothing if there are no fees pending.',
+        inputs: ['A token CA you created'],
+        examples: ['Claim creator fees on 0xCURVE'],
+      },
+      {
+        key: 'alerts', title: 'Alerts / Monitor', fqn: 'xyz.suipump.alerts@1',
+        tagline: 'Watch curves for graduation, fees, and price moves',
+        body: 'Monitors up to 10 curves and reports status: a graduation warning as a curve nears its threshold, a reminder when creator fees are worth claiming, and a price-movement alert past a set percentage.',
+        inputs: ['One or more curve CAs (max 10)', 'Optional: graduation-warning SUI level', 'Optional: claim-reminder fee level', 'Optional: price-move % to flag'],
+        examples: ['Monitor 0xCURVE and alert me when it nears graduation'],
+      },
+    ],
+  },
+  {
+    section: 'STRATEGIES',
+    blurb: 'Standing behaviours the agent runs on its own, orchestrating the tools above.',
+    items: [
+      {
+        key: 'sniper', title: 'Sniper', fqn: 'strategy.sniper@1',
+        tagline: 'Auto-buy new launches the moment they appear',
+        body: 'A standing order that watches for new token launches and fires a buy through Nexus the instant one is created — every launch, or only launches from a specific creator. Runs until cancelled or an optional cap is hit.',
+        inputs: ['A SUI amount per snipe', 'Optional: a creator wallet to restrict to', 'Optional: a max number of snipes', 'Optional: an exit armed on each buy'],
+        examples: ['Snipe 1 SUI of every new token launch', 'Snipe 2 SUI of every token launched by 0xCREATOR, take profit at 50%'],
+      },
+      {
+        key: 'dca', title: 'DCA / Scale-in', fqn: 'strategy.dca@1',
+        tagline: 'Accumulate over time, or buy each dip — tracking average cost',
+        body: 'A standing accumulation order on one curve. TIME mode buys on a schedule; DIP mode buys each time price drops a set %. The agent tracks your blended average cost across fills and can auto-arm a take-profit measured against that average.',
+        inputs: ['A token CA', 'A SUI amount per buy', 'A trigger: an interval (time) OR a % drop (dip)', 'How many buys total', 'Optional: a take-profit on the average cost'],
+        examples: ['Buy 5 SUI of 0xCURVE every day for 10', 'Buy 5 SUI of 0xCURVE, buy 5 more if it drops 10%, take profit at 20%'],
+      },
+      {
+        key: 'copytrade', title: 'Copy-trade', fqn: 'strategy.copytrade@1',
+        tagline: 'Mirror a wallet: buy when it buys, sell when it sells',
+        body: 'Follows a target wallet across every curve it trades. When the target buys, the agent buys a fixed SUI amount. When the target sells, the agent sells the same proportion of its own position. It never mirrors its own execution wallet.',
+        inputs: ['A target wallet to follow', 'A SUI amount per mirrored buy'],
+        examples: ['Copy wallet 0xWALLET buying 5 SUI per trade', 'Mirror 0xWALLET at 2 SUI each'],
+      },
+      {
+        key: 'tpsl', title: 'Take-profit / Stop-loss', fqn: 'strategy.tpsl@1',
+        tagline: 'Auto-sell a position at a price target',
+        body: 'Watches a curve you hold and sells automatically through Nexus when price hits a take-profit multiple or falls to a stop-loss. Take-profit can be tiered — sell part at one level, the rest higher.',
+        inputs: ['A token CA you hold', 'A take-profit target and/or a stop-loss'],
+        examples: ['Take profit on 0xCURVE at 50% and stop loss at 20%', 'Sell 50% of 0xCURVE at +30%, sell the rest at +100%'],
+      },
+    ],
+  },
+  {
+    section: 'COMBINING',
+    blurb: 'How strategies fit together.',
+    items: [
+      {
+        key: 'combining', title: 'Entry strategy + automatic TP/SL exit', fqn: null,
+        tagline: 'Pair Sniper or DCA with a hands-off take-profit / stop-loss',
+        body: 'Two pairings are supported today, both adding a TP/SL exit onto an entry strategy:\n\n• Sniper + TP/SL — each snipe auto-arms an exit, seeded at that buy\'s real fill price.\n• DCA + TP/SL — after the accumulation completes, an exit arms on the blended average cost.\n\nIn both cases you just add "take profit at X%" and/or "stop loss at Y%" to the same goal; the exit then watches and sells on its own. Copy-trade does not take an added exit — its selling is already driven by the target wallet. These two entry→exit pairings are the only compositions: strategies otherwise run independently, and there is no multi-step chaining of one strategy into another (e.g. no Sniper→DCA, no DCA→Copy-trade).',
+        inputs: null,
+        examples: ['Snipe 1 SUI of every new launch, take profit at 50%', 'Buy 5 SUI of 0xCURVE, buy 5 more if it drops 10%, take profit at 20% and stop loss at 15%'],
+      },
+    ],
+  },
+];
 const suiscanTx     = (d)  => `https://suiscan.xyz/testnet/tx/${d}`;
 
 const GRAD = { 0: 'Cetus', 1: 'DeepBook', 2: 'Turbos' };
@@ -452,6 +549,8 @@ export default function AgentPage({ onBack }) {
   const account = useCurrentAccount();
 
   const [goal, setGoal]         = useState('');
+  const [guideOpen, setGuideOpen]     = useState(true);   // tutorial block expanded by default
+  const [openStrategy, setOpenStrategy] = useState(null); // which accordion row is open
   const [planning, setPlanning] = useState(false);
   const [plan, setPlan]         = useState(null);
   const [error, setError]       = useState(null);
@@ -1113,6 +1212,83 @@ export default function AgentPage({ onBack }) {
         <p className="text-white/40 text-[11px] font-mono leading-relaxed max-w-xl">
           State a goal in plain language. The agent plans with an LLM, then executes it on-chain through a published Nexus DAG — launch, buy, sell, claim, or monitor.
         </p>
+      </div>
+
+      {/* ── Strategy guide (accordion) ─────────────────────────────────── */}
+      <div className="border border-white/10 rounded-xl bg-white/[0.02] mb-4 overflow-hidden">
+        <button
+          onClick={() => setGuideOpen(v => !v)}
+          className="w-full flex items-center justify-between px-4 py-3 text-left"
+        >
+          <span className="flex items-center gap-2">
+            <Bot size={12} className="text-violet-400" />
+            <span className="text-[10px] font-mono text-white/40 tracking-widest">HOW TO OPERATE</span>
+          </span>
+          <ChevronDown size={14} className={`text-white/30 transition-transform ${guideOpen ? 'rotate-180' : ''}`} />
+        </button>
+        {guideOpen && (
+          <div className="px-3 pb-3 space-y-4">
+            {OPERATE_GUIDE.map((sec) => (
+              <div key={sec.section}>
+                <div className="px-1 pt-1 pb-2">
+                  <div className="text-[9px] font-mono text-violet-400/70 tracking-widest">{sec.section}</div>
+                  <div className="text-[10px] font-mono text-white/30 mt-0.5">{sec.blurb}</div>
+                </div>
+                <div className="space-y-1.5">
+                  {sec.items.map((s) => {
+                    const open = openStrategy === s.key;
+                    return (
+                      <div key={s.key} className="border border-white/10 rounded-lg bg-black/30 overflow-hidden">
+                        <button
+                          onClick={() => setOpenStrategy(open ? null : s.key)}
+                          className="w-full flex items-center justify-between px-3 py-2.5 text-left hover:bg-white/[0.03]"
+                        >
+                          <span className="min-w-0">
+                            <span className="text-[12px] font-mono text-white/80">{s.title}</span>
+                            {s.fqn && <span className="text-[9px] font-mono text-violet-300/40 ml-2">{s.fqn}</span>}
+                            <span className="block text-[10px] font-mono text-white/35 mt-0.5">{s.tagline}</span>
+                          </span>
+                          <ChevronDown size={13} className={`shrink-0 text-violet-400/60 transition-transform ${open ? 'rotate-180' : ''}`} />
+                        </button>
+                        {open && (
+                          <div className="px-3 pb-3 pt-1 space-y-3 border-t border-white/5">
+                            <p className="text-[11px] font-mono text-white/55 leading-relaxed whitespace-pre-line">{s.body}</p>
+                            {s.inputs && (
+                              <div>
+                                <div className="text-[9px] font-mono text-white/30 tracking-widest mb-1.5">YOU PROVIDE</div>
+                                <ul className="space-y-1">
+                                  {s.inputs.map((inp, i) => (
+                                    <li key={i} className="text-[11px] font-mono text-white/55 flex gap-2">
+                                      <span className="text-violet-400/50">·</span>{inp}
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                            <div>
+                              <div className="text-[9px] font-mono text-white/30 tracking-widest mb-1.5">EXAMPLES — CLICK TO USE</div>
+                              <div className="space-y-1.5">
+                                {s.examples.map((ex, i) => (
+                                  <button
+                                    key={i}
+                                    onClick={() => { setGoal(ex); setGuideOpen(false); }}
+                                    className="w-full text-left text-[11px] font-mono text-emerald-300/70 hover:text-emerald-300 bg-emerald-400/[0.04] hover:bg-emerald-400/[0.08] border border-emerald-400/15 rounded px-2.5 py-2 leading-relaxed"
+                                  >
+                                    {ex}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="border border-white/10 rounded-xl p-4 bg-white/[0.02] mb-4">
