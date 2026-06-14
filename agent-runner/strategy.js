@@ -146,6 +146,24 @@ async function persistParams(order) {
   } catch (e) { err(`${order.id}: persistParams error ${e.message}`); }
 }
 
+// recordFire — stamp the most recent on-chain fire (Nexus task/execution + the
+// bridge settle digest) onto the order so the agent page can surface live proof
+// of execution per strategy. Stored under params._lastFire (the PATCH route
+// keeps params raw, so it survives). curveId lets the UI link the right curve.
+async function recordFire(order, fire) {
+  if (!order.params || typeof order.params !== 'object') order.params = {};
+  order.params._lastFire = {
+    at:          Date.now(),
+    kind:        fire.kind ?? null,        // 'buy' | 'sell'
+    curveId:     fire.curveId ?? null,
+    nexusTask:   fire.nexusTask ?? null,   // scheduler task id
+    nexusExec:   fire.nexusExec ?? null,   // DAG execution id (sells)
+    nexusDigest: fire.nexusDigest ?? null, // on-chain Nexus emit digest
+    settle:      fire.settle ?? null,      // bridge settle digest (the money path)
+  };
+  await persistParams(order);
+}
+
 // spawnChild — after a buy-strategy (sniper / dca / copytrade) buys a curve,
 // optionally arm a CHILD strategy on that curve, seeded at the real post-buy
 // price. This is the generalized `then` composition: a parent buy chains into
@@ -592,6 +610,7 @@ async function processOrder(order) {
     if (action.kind === 'SL') order.done = true;
     else { action.rung._fired = true; if (order.takeProfit.every(r => r._fired)) order.done = true; }
     await persistOrder(order); // persist immediately so a restart resumes correctly
+    await recordFire(order, { kind: 'sell', curveId: order.curveId, nexusExec: receipt.nexusExecutionId ?? null, nexusDigest: receipt.nexusDigest ?? null, settle: receipt.txDigest ?? null });
     if (order.done) break;
   }
 
@@ -621,6 +640,11 @@ function handleEvent(ev) {
       // Move event (data: parsedJson), so buyer/seller are available here.
       if (w === 'walletTrade') {
         const target = String(order.params?.targetWallet ?? '').toLowerCase();
+        // Self-copy guard: the agent executes mirror trades from INVOKER_ADDRESS,
+        // which themselves emit buyer/seller events. If the target IS the agent
+        // wallet, mirroring its own trades would feed back into an infinite loop
+        // that drains the wallet. Never mirror the agent's own execution wallet.
+        if (target && target === INVOKER_ADDRESS.toLowerCase()) continue;
         if (target && trader && String(trader).toLowerCase() === target) {
           schedule(order, { kind: 'walletTrade', ev, side, trader });
         }
@@ -839,6 +863,7 @@ const HANDLERS = {
         order.params = p;
         if (p.maxSnipes > 0 && p.fired >= p.maxSnipes) order.done = true;
         await persistParams(order);
+        await recordFire(order, { kind: 'buy', curveId, nexusTask: taskId, settle: settleDigest });
         log(`${order.id}: SNIPE COMPLETE ${curveId.slice(0, 10)}… task=${taskId ?? 'n/a'} settle=${settleDigest} fired=${p.fired}${p.maxSnipes > 0 ? `/${p.maxSnipes}` : ''}${order.done ? ' — cap reached, closing' : ''}`);
       } catch (e) {
         // Settlement failed — release the claim so a genuine retry can re-attempt
@@ -982,6 +1007,7 @@ const HANDLERS = {
       order.params    = p;
       if (p.done >= buys) order.done = true;
       await persistParams(order);
+      await recordFire(order, { kind: 'buy', curveId, nexusTask: taskId, settle: settleDigest });
 
       log(`${order.id}: DCA buy ${p.done}/${buys} ${thisBuySui} SUI @ ${price.toExponential(3)} (avg ${p.avgPriceSui.toExponential(3)}) task=${taskId ?? 'n/a'} settle=${settleDigest}${order.done ? ' — complete' : ''}`);
 
@@ -1043,6 +1069,7 @@ const HANDLERS = {
         try {
           const settle = await fireBridgeBuy(curveId, suiPerTrade);
           log(`${order.id}: copytrade BUY settled ${suiPerTrade} SUI on ${curveId.slice(0, 10)}… task=${taskId ?? 'n/a'} settle=${settle}`);
+          await recordFire(order, { kind: 'buy', curveId, nexusTask: taskId, settle });
         } catch (e) { err(`${order.id}: copytrade buy settle failed: ${e.message}`); }
         return;
       }
@@ -1069,6 +1096,7 @@ const HANDLERS = {
       try {
         const receipt = await fireSell(curveId, sellWhole, 0, sellAll);
         log(`${order.id}: copytrade SELL settled on ${curveId.slice(0, 10)}… settle=${receipt?.txDigest ?? '?'} nexus=${receipt?.nexusDigest ?? '?'}`);
+        await recordFire(order, { kind: 'sell', curveId, nexusExec: receipt?.nexusExecutionId ?? null, nexusDigest: receipt?.nexusDigest ?? null, settle: receipt?.txDigest ?? null });
       } catch (e) { err(`${order.id}: copytrade sell settle failed: ${e.message}`); }
     },
   },

@@ -21,6 +21,20 @@ const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || 'https://suipump-62s2.on
 const TOKEN_DECIMALS = 6;
 
 const suiscanObject = (id) => `https://suiscan.xyz/testnet/object/${id}`;
+
+// Published Nexus DAG IDs each strategy executes through (testnet). Shown on the
+// plan/result so the on-chain orchestration path is visible at arm time.
+const NEXUS_DAG = {
+  buy:  '0xf59d689bc1697ddc03e8ca3363ed93eb71c8c3ada1011b6a23eb83c0bef22831',
+  sell: '0x73db18930ab13894e46279fbf8ef2700dd8772aac566021abf5214df9fa43d68',
+};
+const WORKFLOW_DAGS = {
+  sniper:    ['buy'],
+  dca:       ['buy', 'sell'],
+  copytrade: ['buy', 'sell'],
+  tpsl:      ['sell'],
+  buy_then_tpsl: ['buy', 'sell'],
+};
 const suiscanTx     = (d)  => `https://suiscan.xyz/testnet/tx/${d}`;
 
 const GRAD = { 0: 'Cetus', 1: 'DeepBook', 2: 'Turbos' };
@@ -1209,6 +1223,20 @@ export default function AgentPage({ onBack }) {
             {result.orderId && (
               <div className="text-white/40">order id: <span className="text-white/70 break-all">{result.orderId}</span></div>
             )}
+            {WORKFLOW_DAGS[result.workflow] && (
+              <div className="text-white/40 pt-1">
+                executes through Nexus {WORKFLOW_DAGS[result.workflow].length > 1 ? 'DAGs' : 'DAG'}:
+                <div className="mt-1 space-y-0.5">
+                  {WORKFLOW_DAGS[result.workflow].map((k) => (
+                    <a key={k} href={suiscanObject(NEXUS_DAG[k])} target="_blank" rel="noreferrer"
+                       className="flex items-center gap-1 text-violet-300/70 hover:text-violet-300 break-all">
+                      <span className="text-white/30 uppercase w-7 shrink-0">{k}</span>
+                      {NEXUS_DAG[k].slice(0, 18)}… <ExternalLink size={9} />
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
             <div className="text-white/50 leading-relaxed">
               {result.workflow === 'sniper'
                 ? "The agent now watches new launches and fires a buy through Nexus the moment one matches your filter. No further action needed."
@@ -1315,6 +1343,33 @@ export default function AgentPage({ onBack }) {
                       >
                         {shortId(o.curveId)} <ExternalLink size={9} />
                       </a>
+                    )}
+                    {o.params?._lastFire && (o.params._lastFire.settle || o.params._lastFire.nexusDigest) && (
+                      <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[9px] font-mono">
+                        <span className="text-emerald-400/60 tracking-wider">
+                          LAST {String(o.params._lastFire.kind || 'fire').toUpperCase()}
+                        </span>
+                        {(o.params._lastFire.nexusDigest || o.params._lastFire.nexusTask) && (
+                          <a
+                            href={suiscanTx(o.params._lastFire.nexusDigest || o.params._lastFire.nexusTask)}
+                            target="_blank" rel="noreferrer"
+                            className="inline-flex items-center gap-1 text-violet-300/60 hover:text-violet-300"
+                            title="Nexus DAG execution"
+                          >
+                            nexus {String(o.params._lastFire.nexusDigest || o.params._lastFire.nexusTask).slice(0, 10)}… <ExternalLink size={8} />
+                          </a>
+                        )}
+                        {o.params._lastFire.settle && (
+                          <a
+                            href={suiscanTx(o.params._lastFire.settle)}
+                            target="_blank" rel="noreferrer"
+                            className="inline-flex items-center gap-1 text-emerald-300/60 hover:text-emerald-300"
+                            title="bridge settlement"
+                          >
+                            settle {String(o.params._lastFire.settle).slice(0, 10)}… <ExternalLink size={8} />
+                          </a>
+                        )}
+                      </div>
                     )}
                   </div>
 
