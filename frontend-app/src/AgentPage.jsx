@@ -1213,7 +1213,7 @@ export default function AgentPage({ onBack }) {
           </span>
         </div>
         <p className="text-white/40 text-[11px] font-mono leading-relaxed max-w-xl">
-          State a goal in plain language. The agent plans with an LLM, then executes it on-chain through published Nexus DAGs. Five base tools — launch, buy, sell, claim, monitor — power four standing strategies (sniper, DCA, copy-trade, take-profit / stop-loss), which can be combined into entry-plus-exit setups. See HOW TO OPERATE below.
+          State a goal in plain language and the agent produces autonomous workflows — planning with an LLM, then executing on-chain through published Nexus DAGs. Five base tools — launch, buy, sell, claim, monitor — power four standing strategies (sniper, DCA, copy-trade, take-profit / stop-loss), which can be combined into entry-plus-exit setups. See HOW TO OPERATE below.
         </p>
       </div>
 
