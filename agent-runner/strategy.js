@@ -377,8 +377,17 @@ async function fireScheduleTask(workflow, payload, schedule) {
 // must NEVER be gated behind the emit.
 async function fireBridgeBuy(curveId, amountSui) {
   const body = { curveId, suiAmount: amountSui };
+  // A snipe fires seconds after launch; the fresh curve's object version / coin
+  // state can still be settling, so the first simulate may fail transiently
+  // ("Failed to simulate transaction") even though a manual buy moments later
+  // works. Retry on BOTH the stale-object class AND generic simulate failures,
+  // with growing backoff, so the snipe waits the curve out the way a human
+  // clicking a few seconds later does. Non-transient errors (bad params, slippage
+  // abort) still surface after the attempts are spent.
+  const RETRYABLE = /unavailable for consumption|needs to be rebuilt|rejected as invalid|not available for consumption|equivocat|failed to simulate|simulate\/execute failed|object version|not found|could not be resolved/i;
+  const MAX = 5;
   let lastErr;
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  for (let attempt = 1; attempt <= MAX; attempt++) {
     try {
       const r = await fetch(`${BRIDGE_URL}/buy`, {
         method: 'POST',
@@ -390,9 +399,9 @@ async function fireBridgeBuy(curveId, amountSui) {
       return d.txDigest ?? null;
     } catch (e) {
       lastErr = e;
-      if (attempt < 3 && STALE_OBJECT_RE.test(e.message ?? '')) {
-        const wait = 2000 * attempt;
-        err(`buy settle attempt ${attempt} hit a stale object version; rebuilding in ${wait}ms`);
+      if (attempt < MAX && RETRYABLE.test(e.message ?? '')) {
+        const wait = 2500 * attempt;   // 2.5s, 5s, 7.5s, 10s — rides out fresh-curve settle
+        err(`buy settle attempt ${attempt}/${MAX} not ready (${String(e.message).slice(0, 80)}); retrying in ${wait}ms`);
         await sleep(wait);
         continue;
       }
