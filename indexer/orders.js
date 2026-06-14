@@ -99,16 +99,52 @@ function sanitizeParams(type, raw) {
   const slippage = num(p.slippageBps);
 
   if (type === 'sniper') {
-    // Buy the moment a NEW launch matches. Match on any of creator / symbol /
-    // nameIncludes (at least one required). suiPerBuy > 0 required.
-    const match = {};
-    if (isHex(p.creator)) match.creator = p.creator;
-    if (typeof p.symbol === 'string' && p.symbol.trim()) match.symbol = p.symbol.trim().toUpperCase().slice(0, 12);
-    if (typeof p.nameIncludes === 'string' && p.nameIncludes.trim()) match.nameIncludes = p.nameIncludes.trim().slice(0, 64);
-    const suiPerBuy = num(p.suiPerBuy);
-    if (!Object.keys(match).length) return null;
-    if (!(suiPerBuy > 0)) return null;
-    const out = { match, suiPerBuy };
+    // Buy `amountSui` the moment a NEW launch matches the filters. This shape is
+    // the exact contract the strategy brain's sniper handler reads:
+    //   ev.data.creator  vs  creators[]   (OR within the list)
+    //   ev.data.symbol   vs  symbols[]    (OR within the list, exact)
+    //   ev.data.name     vs  nameIncludes (case-insensitive substring)
+    // `match` controls AND ("all", default) vs OR ("any") ACROSS those categories.
+    // With NO filters, `all:true` is required to opt into sniping every launch
+    // (guard against accidentally draining the agent wallet on the whole chain).
+    // `maxSnipes` caps total fires (optional; UNBOUNDED if omitted — by design).
+    // `fired` is the internal counter; it is preserved across re-creates / PATCH
+    // round-trips so a restart resumes the cap correctly.
+    const amountSui = num(p.amountSui);
+    if (!(amountSui > 0)) return null;
+
+    const creators = Array.isArray(p.creators)
+      ? p.creators.filter(isHex).map(s => s.toLowerCase())
+      : [];
+    const symbols = Array.isArray(p.symbols)
+      ? p.symbols.filter(s => typeof s === 'string' && s.trim())
+          .map(s => s.trim().toUpperCase().slice(0, 12))
+      : [];
+    const nameIncludes = (typeof p.nameIncludes === 'string' && p.nameIncludes.trim())
+      ? p.nameIncludes.trim().toLowerCase().slice(0, 64)
+      : null;
+
+    const hasFilter = creators.length > 0 || symbols.length > 0 || nameIncludes != null;
+    const all = p.all === true;
+    // Require at least one filter, OR an explicit all-launches opt-in.
+    if (!hasFilter && !all) return null;
+
+    const out = { amountSui };
+    if (creators.length)     out.creators = creators;
+    if (symbols.length)      out.symbols = symbols;
+    if (nameIncludes != null) out.nameIncludes = nameIncludes;
+    // `all` is only meaningful with NO filters; if filters are present it is
+    // dropped so a stray all:true can never silently bypass the filters.
+    if (!hasFilter && all)   out.all = true;
+    out.match = p.match === 'any' ? 'any' : 'all';
+
+    const maxSnipes = num(p.maxSnipes);
+    if (maxSnipes > 0) out.maxSnipes = Math.trunc(maxSnipes);
+
+    // Preserve the fired counter on re-create / PATCH; default to 0.
+    const fired = num(p.fired);
+    out.fired = (fired != null && fired >= 0) ? Math.trunc(fired) : 0;
+
     if (slippage != null) out.slippageBps = slippage;
     return out;
   }

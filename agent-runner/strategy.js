@@ -127,6 +127,25 @@ async function persistOrder(order) {
   } catch (e) { err(`${order.id}: persist error ${e.message}`); }
 }
 
+// persistParams — PATCH back the params object (and status) for the param-driven
+// strategies (sniper, dca, …) so counters like sniper's `fired` survive a brain
+// restart. persistOrder above only carries tpsl ladder state; this is its
+// params analog. The indexer PATCH route accepts { params, status }.
+async function persistParams(order) {
+  const body = {
+    params: (order.params && typeof order.params === 'object') ? order.params : {},
+    status: order.done ? 'done' : 'active',
+  };
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (STRATEGY_API_KEY) headers['x-strategy-key'] = STRATEGY_API_KEY;
+    const r = await fetch(`${INDEXER_URL}/orders/${order.id}`, {
+      method: 'PATCH', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(8000),
+    });
+    if (!r.ok) { const d = await r.json().catch(() => ({})); err(`${order.id}: persistParams ${r.status} ${d.error ?? ''}`); }
+  } catch (e) { err(`${order.id}: persistParams error ${e.message}`); }
+}
+
 async function syncOrders() {
   let remote;
   try { remote = await fetchActiveOrders(); }
@@ -583,17 +602,63 @@ const HANDLERS = {
     label: 'sniper',
     wakesOn: 'launch',
     normalize: scaffoldNormalize,
-    summarize: (o) => `${o.id} sniper buy ${num2(o.params.amountSui, 0.1)} SUI on new launches${o.params.filter ? ` matching "${o.params.filter}"` : ''}`,
+    summarize: (o) => {
+      const p = o.params ?? {};
+      const bits = [];
+      if (Array.isArray(p.creators) && p.creators.length) bits.push(`creators[${p.creators.length}]`);
+      if (Array.isArray(p.symbols)  && p.symbols.length)  bits.push(`symbols[${p.symbols.join(',')}]`);
+      if (p.nameIncludes)                                  bits.push(`name~"${p.nameIncludes}"`);
+      const scope = bits.length ? `${bits.join(` ${p.match === 'any' ? 'OR' : 'AND'} `)}` : 'EVERY launch';
+      const cap   = p.maxSnipes > 0 ? ` cap ${num2(p.fired, 0)}/${p.maxSnipes}` : '';
+      return `${o.id} sniper buy ${num2(p.amountSui, 0.1)} SUI on ${scope}${cap}`;
+    },
     process: async (order, trigger) => {
-      const curveId = trigger?.ev?.curveId;
+      const ev = trigger?.ev;
+      const curveId = ev?.curveId;
       if (!curveId) return;
-      if (order.params.filter && !String(curveId).includes(order.params.filter)) return;
+
+      const p = order.params ?? {};
+
+      // Cap reached? (defensive — sync also closes it; this stops an in-flight wake)
+      if (p.maxSnipes > 0 && num2(p.fired, 0) >= p.maxSnipes) {
+        order.done = true; await persistParams(order); return;
+      }
+
+      // ── Filter against the launch event. The indexer's pg_notify payload puts
+      // the raw Move event under ev.data, so creator/name/symbol live there.
+      const d        = ev.data ?? {};
+      const creator  = typeof d.creator === 'string' ? d.creator.toLowerCase() : null;
+      const name     = typeof d.name    === 'string' ? d.name.toLowerCase()    : '';
+      const symbol   = typeof d.symbol  === 'string' ? d.symbol.toUpperCase()  : '';
+
+      const hasCreators = Array.isArray(p.creators) && p.creators.length > 0;
+      const hasSymbols  = Array.isArray(p.symbols)  && p.symbols.length  > 0;
+      const hasName     = typeof p.nameIncludes === 'string' && p.nameIncludes.length > 0;
+      const hasFilter   = hasCreators || hasSymbols || hasName;
+
+      if (hasFilter) {
+        const creatorHit = hasCreators ? (creator != null && p.creators.includes(creator)) : null;
+        const symbolHit  = hasSymbols  ? p.symbols.includes(symbol)                          : null;
+        const nameHit    = hasName     ? name.includes(p.nameIncludes)                       : null;
+        const hits = [creatorHit, symbolHit, nameHit].filter(v => v !== null);
+        const pass = p.match === 'any' ? hits.some(Boolean) : hits.every(Boolean);
+        if (!pass) return;
+      } else if (p.all !== true) {
+        // No filters and not explicitly all → never fire (store guards this too).
+        return;
+      }
+
       if (onCooldown(order)) return;
-      const amountSui = num2(order.params.amountSui, 0.1);
-      log(`${order.id}: SNIPE launch ${curveId.slice(0, 10)}… buy ${amountSui} SUI`);
+      const amountSui = num2(p.amountSui, 0.1);
+      log(`${order.id}: SNIPE launch ${curveId.slice(0, 10)}… (${symbol || name || 'unknown'}) buy ${amountSui} SUI`);
       try {
-        const d = await fireScheduleTask('buy', { buy: { curveId, amountSui } }, { generator: 'queue' });
-        log(`${order.id}: sniper task ${d.taskId} (digest ${d.detail?.digest ?? '?'})`);
+        const r = await fireScheduleTask('buy', { buy: { curveId, amountSui } }, { generator: 'queue' });
+        // Count the fire and persist so the cap survives a restart.
+        p.fired = num2(p.fired, 0) + 1;
+        order.params = p;
+        if (p.maxSnipes > 0 && p.fired >= p.maxSnipes) order.done = true;
+        await persistParams(order);
+        log(`${order.id}: sniper task ${r.taskId} (digest ${r.detail?.digest ?? '?'}) fired=${p.fired}${p.maxSnipes > 0 ? `/${p.maxSnipes}` : ''}${order.done ? ' — cap reached, closing' : ''}`);
       } catch (e) { err(`${order.id}: sniper fire failed: ${e.message}`); }
     },
   },
