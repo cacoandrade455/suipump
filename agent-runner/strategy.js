@@ -885,22 +885,31 @@ const HANDLERS = {
       if (graduated) { log(`${order.id}: dca curve graduated — closing`); order.done = true; await persistParams(order); return; }
 
       // ── Trigger gating ────────────────────────────────────────────────────
+      // Minimum spacing between ANY two fires on this order, so a rung can never
+      // fire in the settle-shadow of the previous buy (which transiently moves
+      // the reserve/price and previously let a dip rung fire with no real dip).
+      const MIN_FIRE_GAP_MS = parseInt(process.env.STRATEGY_DCA_MIN_GAP_MS ?? '20000', 10);
+      const sinceLast = now - num2(p.lastFireMs, 0);
+      if (done > 0 && sinceLast < MIN_FIRE_GAP_MS) return;   // too soon after last fill
+
       if (isDip) {
-        // First buy establishes the entry reference; subsequent buys require the
-        // price to have fallen dropPct% × (rung number) below entry.
+        // Rung 0 establishes entry; rungs 1+ require price to have fallen
+        // dropPct% × rung BELOW the locked entry. Entry must be locked (set on the
+        // anchor's settled fill) — if it isn't yet, do not evaluate a dip.
         const dropPct = num2(p.dropPct, 10) / 100;
         if (done === 0) {
-          // fire the anchor buy immediately (no drop required for rung 0)
+          // anchor fires immediately (no drop required)
         } else {
-          const entry = num2(p.entryPriceSui, price);
-          const targetRungPrice = entry * (1 - dropPct * done); // -10%, -20%, ... from entry
-          if (!(price <= targetRungPrice)) return;              // not dropped enough yet
+          const entry = num2(p.entryPriceSui, 0);
+          if (!(entry > 0)) return;                          // entry not locked yet — wait
+          const targetRungPrice = entry * (1 - dropPct * done); // -10%, -20%, … from entry
+          if (!(price <= targetRungPrice)) return;           // not dropped enough yet
+          log(`${order.id}: dip rung ${done} eligible — price ${price.toExponential(3)} <= target ${targetRungPrice.toExponential(3)} (entry ${entry.toExponential(3)})`);
         }
       } else {
         // time mode: require intervalMs since last fire (first fire is immediate)
         const intervalMs = num2(p.intervalMs, 86400000);
-        const lastFireMs = num2(p.lastFireMs, 0);
-        if (done > 0 && (now - lastFireMs) < intervalMs) return;
+        if (done > 0 && sinceLast < intervalMs) return;
       }
 
       // ── Fire one buy: Nexus proof task + bridge settle ─────────────────────
@@ -921,6 +930,26 @@ const HANDLERS = {
         return; // do not count a fill that didn't settle
       }
 
+      // DRY-BUY GUARD: a real second buy must have a NEW on-chain digest. If the
+      // bridge returns the SAME digest as the previous fill (the known dry/
+      // duplicate-execution failure mode), or no digest at all on a rung buy, the
+      // buy did NOT actually move tokens — do not count it, do not advance the
+      // rung, and back off so a genuine retry can happen on a later tick.
+      if (settleDigest && settleDigest === p._lastSettleDigest) {
+        err(`${order.id}: dca dry buy — settle digest ${settleDigest.slice(0, 10)}… matches previous fill; NOT counting (no tokens moved)`);
+        p.lastFireMs = now;          // space out the retry
+        order.params = p;
+        await persistParams(order);
+        return;
+      }
+      if (!settleDigest && done > 0) {
+        err(`${order.id}: dca rung ${done} returned no digest; NOT counting (treating as non-fill)`);
+        p.lastFireMs = now;
+        order.params = p;
+        await persistParams(order);
+        return;
+      }
+
       // ── Record fill + update running average cost ──────────────────────────
       const prevFilled = num2(p.filledSui, 0);
       const prevAvg    = num2(p.avgPriceSui, 0);
@@ -930,6 +959,7 @@ const HANDLERS = {
         ? (prevAvg * prevFilled + price * thisBuySui) / newFilled
         : price;
       p.filledSui     = newFilled;
+      p._lastSettleDigest = settleDigest ?? p._lastSettleDigest ?? null;
       if (done === 0) p.entryPriceSui = num2(p.entryPriceSui, price); // lock entry on first fill
       p.lastFireMs    = now;
       p.done          = done + 1;
