@@ -306,10 +306,10 @@ async function getCurveState(curveId) {
   return { packageId, tokenType, reserveMist, graduated };
 }
 
-async function getBalanceWhole(tokenType) {
+async function getBalanceWhole(tokenType, addr = INVOKER_ADDRESS) {
   const data = await gql(
     `query($addr: SuiAddress!, $coinType: String!) { address(address: $addr) { balance(coinType: $coinType) { totalBalance } } }`,
-    { addr: INVOKER_ADDRESS, coinType: tokenType },
+    { addr, coinType: tokenType },
   );
   const atomic = data?.address?.balance?.totalBalance ?? '0';
   return Number(BigInt(atomic)) / 10 ** TOKEN_DECIMALS;
@@ -605,9 +605,25 @@ function handleEvent(ev) {
   const isLaunch = ev.type === 'CurveCreated';
 
   if (isTrade && ev.curveId) {
+    const side = ev.type === 'TokensSold' ? 'sell' : 'buy';
+    const trader = side === 'sell'
+      ? (ev.data?.seller ?? null)
+      : (ev.data?.buyer ?? null);
     for (const order of ORDERS.values()) {
-      if (!order.done && HANDLERS[order.type]?.wakesOn === 'trade' && order.curveId === ev.curveId) {
+      if (order.done) continue;
+      const w = HANDLERS[order.type]?.wakesOn;
+      // Curve-scoped trade strategies (tpsl): only their own curve.
+      if (w === 'trade' && order.curveId === ev.curveId) {
         schedule(order, { kind: 'trade', ev });
+      }
+      // Wallet-following strategies (copytrade): any curve, but only when the
+      // trade was made BY the target wallet. The SSE event forwards the full
+      // Move event (data: parsedJson), so buyer/seller are available here.
+      if (w === 'walletTrade') {
+        const target = String(order.params?.targetWallet ?? '').toLowerCase();
+        if (target && trader && String(trader).toLowerCase() === target) {
+          schedule(order, { kind: 'walletTrade', ev, side, trader });
+        }
       }
     }
     return;
@@ -978,30 +994,82 @@ const HANDLERS = {
     },
   },
 
-  // COPY-TRADE — wakes on a trade. Mirrors a trade on the watched curve as a buy
-  // task. NOTE: the SSE trade event does not yet carry the trader address, so we
-  // cannot filter by params.wallet here — this mirrors ALL trades on the watched
-  // curveId. True per-wallet mirroring needs the indexer to include the trader
-  // address on the trade event; until then params.wallet is recorded but not
-  // enforced, and this acts as "copy activity on this curve". One task per
-  // window (cooldown-guarded).
+  // COPY-TRADE — follows a TARGET WALLET across any curve. wakesOn 'walletTrade':
+  // handleEvent only schedules this when the trade's buyer/seller IS the target.
+  //   • target BUYS curve C  -> agent buys `suiPerTrade` SUI of C (Nexus + bridge).
+  //   • target SELLS curve C -> agent sells the SAME FRACTION of its own C balance
+  //     that the target just sold of theirs (proportional mirror).
+  // Proportional sell math: fraction = sold / (sold + target's remaining balance),
+  // read on-chain right after their sell. The agent then sells fraction × (agent's
+  // own balance of C). Uses the proven fireBridgeBuy / fireSell settle paths.
+  // params: { targetWallet, suiPerTrade }
   copytrade: {
     label: 'copytrade',
-    wakesOn: 'trade',
+    wakesOn: 'walletTrade',
     normalize: scaffoldNormalize,
-    summarize: (o) => `${o.id} copytrade buy ${num2(o.params.amountSui, 0.1)} SUI on ${o.curveId ? o.curveId.slice(0, 10) + '…' : '?'}${o.params.wallet ? ` (target ${String(o.params.wallet).slice(0, 10)}…, wallet-filter pending indexer)` : ''}`,
+    summarize: (o) => {
+      const p = o.params || {};
+      return `${o.id} copytrade ${num2(p.suiPerTrade, 0.1)} SUI/buy mirroring ${String(p.targetWallet ?? '?').slice(0, 10)}…`;
+    },
     process: async (order, trigger) => {
-      const evCurve = trigger?.ev?.curveId;
-      if (order.curveId && evCurve && order.curveId !== evCurve) return;
-      const curveId = order.curveId ?? evCurve;
-      if (!curveId) return;
-      if (onCooldown(order)) return;
-      const amountSui = num2(order.params.amountSui, 0.1);
-      log(`${order.id}: COPYTRADE buy ${amountSui} SUI on ${curveId.slice(0, 10)}…`);
+      const p = order.params || {};
+      const target = String(p.targetWallet ?? '').toLowerCase();
+      const side   = trigger?.side;
+      const ev     = trigger?.ev;
+      const curveId = ev?.curveId;
+      if (!target || !curveId || !side) return;
+      if (onCooldown(order)) return;   // one mirror action per window per order
+
+      // Resolve tokenType for this curve (needed for balance reads + sell).
+      let tokenType = null;
       try {
-        const d = await fireScheduleTask('buy', { buy: { curveId, amountSui } }, { generator: 'queue' });
-        log(`${order.id}: copytrade task ${d.taskId} (digest ${d.detail?.digest ?? '?'})`);
-      } catch (e) { err(`${order.id}: copytrade fire failed: ${e.message}`); }
+        const st = await getCurveState(curveId);
+        tokenType = st.tokenType ?? null;
+        if (st.graduated) { log(`${order.id}: copytrade skip — ${curveId.slice(0, 10)}… graduated`); return; }
+      } catch (e) {
+        err(`${order.id}: copytrade curve read failed (${e.message})`); return;
+      }
+
+      if (side === 'buy') {
+        // Mirror the target's BUY with a fixed-size agent buy.
+        const suiPerTrade = num2(p.suiPerTrade, 0);
+        if (!(suiPerTrade > 0)) { if (!order._warned) { err(`${order.id}: copytrade needs suiPerTrade`); order._warned = true; } return; }
+        log(`${order.id}: COPYTRADE target BUY -> agent buy ${suiPerTrade} SUI on ${curveId.slice(0, 10)}…`);
+        let taskId = null;
+        try {
+          const d = await fireScheduleTask('buy', { buy: { curveId, amountSui: suiPerTrade } }, { generator: 'queue' });
+          taskId = d?.taskId ?? null;
+        } catch (e) { err(`${order.id}: copytrade buy emit failed: ${e.message} (continuing to settle)`); }
+        try {
+          const settle = await fireBridgeBuy(curveId, suiPerTrade);
+          log(`${order.id}: copytrade BUY settled ${suiPerTrade} SUI on ${curveId.slice(0, 10)}… task=${taskId ?? 'n/a'} settle=${settle}`);
+        } catch (e) { err(`${order.id}: copytrade buy settle failed: ${e.message}`); }
+        return;
+      }
+
+      // side === 'sell': proportional mirror.
+      // 1) the fraction the TARGET sold = sold / (sold + their remaining balance).
+      const soldWhole = num2(ev?.data?.tokens_in, 0) / 1e6; // tokens_in = tokens sold (atomic, 6 decimals)
+      if (!(soldWhole > 0)) { log(`${order.id}: copytrade sell — target sold amount unknown, skipping`); return; }
+      let targetRemaining = 0;
+      try { targetRemaining = await getBalanceWhole(tokenType, target); }
+      catch (e) { err(`${order.id}: copytrade target balance read failed (${e.message})`); }
+      const fraction = soldWhole / (soldWhole + targetRemaining);
+      if (!(fraction > 0)) { log(`${order.id}: copytrade sell — computed zero fraction, skipping`); return; }
+
+      // 2) agent sells the same fraction of ITS OWN balance of this curve.
+      let agentBal = 0;
+      try { agentBal = await getBalanceWhole(tokenType, INVOKER_ADDRESS); }
+      catch (e) { err(`${order.id}: copytrade agent balance read failed (${e.message})`); return; }
+      if (!(agentBal > 0)) { log(`${order.id}: copytrade sell — agent holds none of ${curveId.slice(0, 10)}…, nothing to mirror`); return; }
+
+      const sellWhole = agentBal * fraction;
+      const sellAll = fraction >= 0.999; // target dumped ~everything -> agent sells all (robust coin-merge path)
+      log(`${order.id}: COPYTRADE target SELL ${(fraction * 100).toFixed(1)}% -> agent sell ${sellAll ? 'ALL' : sellWhole.toFixed(4)} of ${agentBal.toFixed(4)} on ${curveId.slice(0, 10)}…`);
+      try {
+        const receipt = await fireSell(curveId, sellWhole, 0, sellAll);
+        log(`${order.id}: copytrade SELL settled on ${curveId.slice(0, 10)}… settle=${receipt?.txDigest ?? '?'} nexus=${receipt?.nexusDigest ?? '?'}`);
+      } catch (e) { err(`${order.id}: copytrade sell settle failed: ${e.message}`); }
     },
   },
 };

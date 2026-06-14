@@ -38,6 +38,7 @@ const WORKFLOW_NODES = {
   tpsl:   [{ id: 'arm',    tool: 'strategy.tpsl@1',      label: 'Arm strategy', desc: 'Standing TP/SL order the agent watches' }],
   sniper: [{ id: 'arm',    tool: 'strategy.sniper@1',    label: 'Arm sniper',   desc: 'Standing buy that fires on every matching launch' }],
   dca:    [{ id: 'arm',    tool: 'strategy.dca@1',       label: 'Arm DCA',      desc: 'Standing accumulation: buys on a schedule or on each dip' }],
+  copytrade: [{ id: 'arm', tool: 'strategy.copytrade@1', label: 'Arm copy-trade', desc: 'Mirror a target wallet: buy when it buys, sell when it sells' }],
   buy_then_tpsl: [
     { id: 'buy', tool: 'xyz.suipump.buy@1', label: 'Buy',          desc: 'Buy the position now' },
     { id: 'arm', tool: 'strategy.tpsl@1',   label: 'Arm strategy', desc: 'Then watch price and auto-sell at the target' },
@@ -353,6 +354,45 @@ function parseDcaGoal(text) {
   return { workflow: 'dca', summary, dca, then };
 }
 
+// Client-side copy-trade parser. Copy-trade FOLLOWS A TARGET WALLET across any
+// curve: when the target buys, the agent buys a fixed `suiPerTrade` SUI; when the
+// target sells, the agent sells the SAME FRACTION of its position (proportional).
+// Recognized here so the 64-hex target wallet is never handed to the LLM. The
+// target is a wallet, not a curve, so NO curve CA is needed (curves are
+// discovered at runtime from the target's trades). Returns a copytrade plan or
+// null. (parseSniperGoal / parseDcaGoal run first; "copy/mirror/follow <wallet>"
+// is distinctive enough not to collide.)
+function parseCopytradeGoal(text) {
+  const g = String(text || '');
+  const lower = g.toLowerCase();
+
+  // Trigger verb: copy / mirror / follow / shadow a wallet/trader/address.
+  const isCopy =
+    /\b(copy|mirror|shadow|follow|copytrade|copy[\s-]?trade)\b/.test(lower) &&
+    /\b(wallet|trader|address|0x[a-f0-9]{6,})\b/.test(lower);
+  if (!isCopy) return null;
+
+  // Target wallet: the 64-hex address.
+  const ca = g.match(/0x[a-fA-F0-9]{60,66}/);
+  const targetWallet = ca ? ca[0].toLowerCase() : null;
+  if (!targetWallet) return null;
+
+  // Per-trade SUI size: "5 sui per trade" / "buy 5 sui" / "5 sui each" / "5 sui".
+  let suiPerTrade = null;
+  const amt =
+    lower.match(/(\d+(?:\.\d+)?)\s*sui\s*(?:per\s*(?:trade|buy)|each|a\s*trade)/) ||
+    lower.match(/(?:buy|at|with|use)\s+(\d+(?:\.\d+)?)\s*sui/) ||
+    lower.match(/(\d+(?:\.\d+)?)\s*sui/);
+  if (amt) suiPerTrade = Number(amt[1]);
+  if (!(suiPerTrade > 0)) return null;
+
+  const copytrade = { targetWallet, suiPerTrade };
+
+  const summary = `Arm copy-trade on ${targetWallet.slice(0, 10)}…: when they buy, the agent buys ${suiPerTrade} SUI; when they sell, the agent sells the same proportion of its position. Mirrors across every curve the target trades, automatically through Nexus.`;
+
+  return { workflow: 'copytrade', summary, copytrade };
+}
+
 // ── Active-strategies helpers ─────────────────────────────────────────────────
 const ORDER_LABEL = { tpsl: 'TP / SL', sniper: 'Sniper', dca: 'DCA', copytrade: 'Copy-trade' };
 const shortId  = (s) => (typeof s === 'string' && s.startsWith('0x') && s.length > 14) ? `${s.slice(0, 8)}…${s.slice(-4)}` : s;
@@ -479,6 +519,9 @@ export default function AgentPage({ onBack }) {
       const dca = parseDcaGoal(goal.trim());
       if (dca) { setPlan(dca); setPlanning(false); return; }
 
+      const copy = parseCopytradeGoal(goal.trim());
+      if (copy) { setPlan(copy); setPlanning(false); return; }
+
       const strat = parseStrategyGoal(goal.trim());
       if (strat) { setPlan(strat); setPlanning(false); return; }
 
@@ -603,6 +646,13 @@ export default function AgentPage({ onBack }) {
         // Resolve tokenType so a then.tpsl child can sell the right coin.
         const { tokenType } = await fetchCurveMeta(d.curveId);
         return { workflow: 'dca', dca: { ...d, tokenType } };
+      }
+      case 'copytrade': {
+        const c = p.copytrade ?? {};
+        if (!/^0x[a-fA-F0-9]{60,66}$/.test(c.targetWallet ?? '')) throw new Error('Copy-trade needs a target wallet (paste the 0x address)');
+        if (!(Number(c.suiPerTrade) > 0)) throw new Error('Copy-trade needs a SUI size (e.g. "5 sui per trade")');
+        // No curve to resolve — the target's curves are discovered at runtime.
+        return { workflow: 'copytrade', copytrade: c };
       }
       default:
         throw new Error(`Unknown workflow: ${p.workflow}`);
@@ -818,6 +868,32 @@ export default function AgentPage({ onBack }) {
         return;
       }
 
+      // STRATEGY (copytrade): standing wallet-follow. Creates a store order; the
+      // brain mirrors the target's buys (fixed SUI) and sells (proportional) as
+      // they happen, across any curve. Nothing settles now.
+      if (payload.workflow === 'copytrade') {
+        try {
+          const r = await fetch(`/api/create-order`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: 'copytrade', params: payload.copytrade }),
+          });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(d.error || `order create failed (${r.status})`);
+          clearAnim();
+          setNodeState({ arm: 'done' });
+          setResult({ workflow: 'copytrade', orderId: d.id ?? null, order: d });
+          loadOrders();
+          setPhase('done');
+        } catch (e) {
+          clearAnim();
+          setNodeState({ arm: 'error' });
+          setError(`Could not arm copy-trade: ${e.message}`);
+          setPhase('failed');
+        }
+        return;
+      }
+
       // STEP 1 — Emit the Nexus DAG request (agentic-decision proof). This is
       // BEST-EFFORT: the on-chain walk request is the orchestration paper trail,
       // not the settlement path. A slow/failed /run-dag must NEVER block the trade
@@ -994,6 +1070,16 @@ export default function AgentPage({ onBack }) {
         }
         return rows;
       }
+      case 'copytrade': {
+        const c = p.copytrade ?? {};
+        return [
+          ['workflow', 'copy-trade (wallet follow)'],
+          ['target wallet', c.targetWallet ? `${c.targetWallet.slice(0, 10)}…${c.targetWallet.slice(-4)}` : '(missing — paste 0x)'],
+          ['buy size', `${c.suiPerTrade ?? 0} SUI per trade`],
+          ['sells', 'proportional to target'],
+          ['scope', 'every curve the target trades'],
+        ];
+      }
       default:
         return [['workflow', p.workflow]];
     }
@@ -1100,7 +1186,7 @@ export default function AgentPage({ onBack }) {
         </div>
       )}
 
-      {result && (result.workflow === 'tpsl' || result.workflow === 'buy_then_tpsl' || result.workflow === 'sniper' || result.workflow === 'dca') && (
+      {result && (result.workflow === 'tpsl' || result.workflow === 'buy_then_tpsl' || result.workflow === 'sniper' || result.workflow === 'dca' || result.workflow === 'copytrade') && (
         <div className="border border-emerald-400/30 rounded-xl p-4 bg-emerald-400/[0.05]">
           <div className="text-[10px] font-mono text-emerald-400/80 tracking-widest mb-3">
             {result.workflow === 'buy_then_tpsl'
@@ -1109,6 +1195,8 @@ export default function AgentPage({ onBack }) {
               ? '✓ SNIPER ARMED — AGENT IS WATCHING LAUNCHES'
               : result.workflow === 'dca'
               ? '✓ DCA ARMED — AGENT IS ACCUMULATING'
+              : result.workflow === 'copytrade'
+              ? '✓ COPY-TRADE ARMED — AGENT IS MIRRORING THE WALLET'
               : '✓ STRATEGY ARMED — AGENT IS WATCHING'}
           </div>
           <div className="space-y-2 text-[10px] font-mono">
@@ -1126,6 +1214,8 @@ export default function AgentPage({ onBack }) {
                 ? "The agent now watches new launches and fires a buy through Nexus the moment one matches your filter. No further action needed."
                 : result.workflow === 'dca'
                 ? "The agent now accumulates on this curve automatically through Nexus — on schedule or on each dip — tracking your average cost. Watch it in Active Strategies below."
+                : result.workflow === 'copytrade'
+                ? "The agent now follows the target wallet through Nexus: buying when it buys, selling proportionally when it sells, across every curve it trades. Watch it in Active Strategies below."
                 : "The agent now watches this curve's price and sells automatically through Nexus when a trigger is hit. No further action needed."}
             </div>
           </div>
