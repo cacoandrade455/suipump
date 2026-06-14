@@ -345,7 +345,8 @@ async function fireScheduleTask(workflow, payload, schedule) {
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       const r = await fetch(`${RUNNER_URL}/schedule-task`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(AGENT_API_KEY ? { 'x-agent-key': AGENT_API_KEY } : {}) },
         body: JSON.stringify(body), signal: AbortSignal.timeout(190000),
       });
       const d = await r.json().catch(() => ({}));
