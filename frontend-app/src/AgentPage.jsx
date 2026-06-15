@@ -818,7 +818,9 @@ export default function AgentPage({ onBack }) {
     setError(null); setResult(null); setPhase('running');
     clearAnim();
 
-    const nodes = WORKFLOW_NODES[plan.workflow] ?? [];
+    const nodes = isBareLaunch(plan)
+      ? [{ id: 'launch', tool: 'xyz.suipump.launch@1', label: 'Launch', desc: 'Create token on bonding curve' }]
+      : (WORKFLOW_NODES[plan.workflow] ?? []);
     setNodeState(Object.fromEntries(nodes.map((n, i) => [n.id, i === 0 ? 'running' : 'idle'])));
     if (nodes.length > 1) {
       animTimers.current.push(setTimeout(() => {
@@ -1082,10 +1084,28 @@ export default function AgentPage({ onBack }) {
                       'border-white/10 bg-white/[0.02]';
 
   const showExecutionPanel = phase !== 'idle';
-  const nodes = plan ? (WORKFLOW_NODES[plan.workflow] ?? []) : [];
+  // A launch_and_buy with no dev-buy is, to the user, just a launch. We keep the
+  // proven launch_and_buy DAG (0xfd88, buy=0 settles fine) under the hood but
+  // relabel the display: single "Launch" node, "launch" workflow, no dev-buy row.
+  function isBareLaunch(p) {
+    return !!(p && p.workflow === 'launch_and_buy' && !(Number(p.buy?.amountSui ?? p.launch?.devBuySui ?? 0) > 0));
+  }
+
+  const nodes = plan
+    ? (isBareLaunch(plan)
+        ? [{ id: 'launch', tool: 'xyz.suipump.launch@1', label: 'Launch', desc: 'Create token on bonding curve' }]
+        : (WORKFLOW_NODES[plan.workflow] ?? []))
+    : [];
 
   // Per-workflow plan summary rows (no launch fields bleed onto non-launch plans).
   function planRows(p) {
+    if (isBareLaunch(p)) {
+      return [
+        ['workflow', 'launch'],
+        ['token', `${p.launch.name} ($${p.launch.symbol})`],
+        ['graduates to', GRAD[p.launch.graduationTarget] ?? 'Cetus'],
+      ];
+    }
     switch (p.workflow) {
       case 'launch_and_buy':
         return [
@@ -1321,7 +1341,7 @@ export default function AgentPage({ onBack }) {
       {plan && (
         <div className="border border-violet-400/20 rounded-xl p-4 bg-violet-400/[0.03] mb-4">
           <div className="text-[10px] font-mono text-violet-400/70 tracking-widest mb-2">AGENT PLAN</div>
-          <p className="text-[12px] font-mono text-white/80 mb-3 leading-relaxed">{plan.summary}</p>
+          <p className="text-[12px] font-mono text-white/80 mb-3 leading-relaxed">{isBareLaunch(plan) ? `Launch ${plan.launch?.name ?? 'token'} ($${plan.launch?.symbol ?? ''}) on the bonding curve.` : plan.summary}</p>
           <div className="grid grid-cols-2 gap-2 text-[10px] font-mono text-white/45 mb-4">
             {planRows(plan).map(([k, v]) => (
               <div key={k}>{k}: <span className="text-white/80">{v}</span></div>
@@ -1347,7 +1367,7 @@ export default function AgentPage({ onBack }) {
             </div>
             <div className="flex-1">
               <div className="text-[12px] font-mono text-white/90 font-bold">Agent executing autonomously on Nexus</div>
-              <div className="text-[10px] font-mono text-white/40">Running the {plan?.workflow} DAG on-chain.</div>
+              <div className="text-[10px] font-mono text-white/40">Running the {isBareLaunch(plan) ? 'launch' : plan?.workflow} DAG on-chain.</div>
             </div>
             <Loader size={14} className="text-violet-400 animate-spin" />
           </div>
