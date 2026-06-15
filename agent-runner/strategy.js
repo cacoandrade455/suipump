@@ -568,6 +568,8 @@ async function processOrder(order) {
 
     if (!(balWhole > DUST_WHOLE)) {
       log(`${order.id}: ${action.kind} crossed but balance is dust (${balWhole}); marking consumed`);
+      // Dust = nothing left to sell, so the order is genuinely done regardless of
+      // which leg crossed (no position remains for an SL to protect).
       if (action.kind === 'SL') order.done = true;
       else { action.rung._fired = true; if (order.takeProfit.every(r => r._fired)) order.done = true; }
       await persistOrder(order);
@@ -613,8 +615,19 @@ async function processOrder(order) {
     log(`${order.id}: SOLD ${moved.toFixed(6)} tokens CONFIRMED on-chain — balance ${balBefore.toFixed(6)} -> ${balAfter.toFixed(6)} | settle ${receipt.txDigest ?? '?'} | nexus ${receipt.nexusDigest ?? 'not-emitted'}`);
 
     balWhole = balAfter; // trust the verified on-chain balance, not an assumption
-    if (action.kind === 'SL') order.done = true;
-    else { action.rung._fired = true; if (order.takeProfit.every(r => r._fired)) order.done = true; }
+    if (action.kind === 'SL') {
+      order.done = true;                       // SL always closes the whole position
+    } else {
+      action.rung._fired = true;
+      // A TP rung firing only COMPLETES the order if nothing is left to protect:
+      // either all TP rungs are done AND there is no stop-loss still arming, OR the
+      // remaining balance is dust (TP effectively sold everything). A partial TP
+      // (e.g. sell 50% at +10%) with a live SL must keep the order ALIVE so the SL
+      // continues protecting the held remainder against falling below the stop.
+      const allTpFired = order.takeProfit.every(r => r._fired);
+      const nothingLeft = !(balWhole > DUST_WHOLE);
+      if (allTpFired && (!order.stopLoss || nothingLeft)) order.done = true;
+    }
     await persistOrder(order); // persist immediately so a restart resumes correctly
     await recordFire(order, { kind: 'sell', curveId: order.curveId, nexusExec: receipt.nexusExecutionId ?? null, nexusDigest: receipt.nexusDigest ?? null, settle: receipt.txDigest ?? null });
     if (order.done) break;
