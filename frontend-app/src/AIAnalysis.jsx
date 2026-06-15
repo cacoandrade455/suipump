@@ -337,6 +337,7 @@ ${posText}`;
       {prose && !loading && (
         <p className="text-[11px] font-mono text-white/70 leading-relaxed">
           {proseLines.join(' ')}
+          <span className="text-white/40"> NFA — Not Financial Advice.</span>
         </p>
       )}
 
@@ -355,7 +356,7 @@ ${posText}`;
       )}
 
       <div className="mt-3 pt-2 border-t border-white/5 flex items-center justify-end">
-        <span className="text-[9px] font-mono text-white/15 tracking-widest">ANALYSIS BY CLAUDE · ANTHROPIC</span>
+        <span className="text-[9px] font-mono text-white/15 tracking-widest">ANALYSIS BY GROQ</span>
       </div>
     </div>
   );
