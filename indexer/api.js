@@ -160,7 +160,27 @@ app.get('/token/:curveId', async (req, res) => {
     );
     if (!result.rows[0]) return res.status(404).json({ error: 'Not found' });
     const row = result.rows[0];
-    res.json({ ...row, stats: { ...row }, initialSharedVersion: row.initial_shared_version, initial_shared_version: row.initial_shared_version });
+    // Derive metadata_updated from the events table — the curves table has no
+    // such column, so reading c.metadata_updated returned undefined and the
+    // one-time creator lock never engaged. The contract emits MetadataUpdated
+    // (once, enforced on-chain), so its presence is authoritative. Read-path
+    // only: no schema change, no worker change.
+    let metadataUpdated = false;
+    try {
+      const mu = await pool.query(
+        `SELECT 1 FROM events WHERE curve_id = $1 AND event_type LIKE '%MetadataUpdated' LIMIT 1`,
+        [req.params.curveId]
+      );
+      metadataUpdated = mu.rows.length > 0;
+    } catch { /* events table issue — default false, never wrongly lock */ }
+    res.json({
+      ...row,
+      metadata_updated: metadataUpdated,
+      metadataUpdated,
+      stats: { ...row, metadata_updated: metadataUpdated, metadataUpdated },
+      initialSharedVersion: row.initial_shared_version,
+      initial_shared_version: row.initial_shared_version,
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
