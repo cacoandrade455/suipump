@@ -160,19 +160,25 @@ app.get('/token/:curveId', async (req, res) => {
     );
     if (!result.rows[0]) return res.status(404).json({ error: 'Not found' });
     const row = result.rows[0];
-    // Derive metadata_updated from the events table — the curves table has no
-    // such column, so reading c.metadata_updated returned undefined and the
-    // one-time creator lock never engaged. The contract emits MetadataUpdated
-    // (once, enforced on-chain), so its presence is authoritative. Read-path
-    // only: no schema change, no worker change.
+    // Read metadata_updated DIRECTLY from the Curve object on-chain. The
+    // curves TABLE has no such column, and the MetadataUpdated event is not
+    // reliably indexed — but the Curve Move object carries `metadata_updated:
+    // bool` as a real field that the contract flips (once, enforced on-chain).
+    // The object always exists and the chain is the source of truth, so this
+    // can't silently miss the way an event-existence check did. Same GraphQL
+    // shape TokenPage uses for creator_fees. Read-path only; no schema change.
     let metadataUpdated = false;
     try {
-      const mu = await pool.query(
-        `SELECT 1 FROM events WHERE curve_id = $1 AND event_type LIKE '%MetadataUpdated' LIMIT 1`,
-        [req.params.curveId]
-      );
-      metadataUpdated = mu.rows.length > 0;
-    } catch { /* events table issue — default false, never wrongly lock */ }
+      const GQL = process.env.SUI_GRAPHQL_URL ?? 'https://graphql.testnet.sui.io/graphql';
+      const q = '{ object(address: "' + req.params.curveId + '") { asMoveObject { contents { json } } } }';
+      const rGql = await fetch(GQL, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: q }), signal: AbortSignal.timeout(8000),
+      });
+      const dGql = await rGql.json();
+      const cj = dGql?.data?.object?.asMoveObject?.contents?.json;
+      if (cj && cj.metadata_updated != null) metadataUpdated = cj.metadata_updated === true;
+    } catch { /* chain read failed — default false, never wrongly lock */ }
     res.json({
       ...row,
       metadata_updated: metadataUpdated,
