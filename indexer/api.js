@@ -337,13 +337,16 @@ app.get('/leaderboard/traders', async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit || '20'), 100);
     const MIST_L = 1_000_000_000;
+    // COUNT(*) per wallet — the previous version did `buys++` once per GROUPED
+    // row, which is always 1 row per wallet, so every trader showed exactly
+    // "2 trades" (1 buy + 1 sell) regardless of real activity. Count real trades.
     const [buysRes, sellsRes] = await Promise.all([
-      pool.query(`SELECT data->>'buyer' AS address, SUM((data->>'sui_in')::float) AS sui_spent FROM events WHERE (event_type LIKE '%TokensPurchased' OR event_type LIKE '%TokensBought') GROUP BY data->>'buyer'`),
-      pool.query(`SELECT data->>'seller' AS address, SUM((data->>'sui_out')::float) AS sui_received FROM events WHERE event_type LIKE '%TokensSold' GROUP BY data->>'seller'`),
+      pool.query(`SELECT data->>'buyer' AS address, COUNT(*) AS n, SUM((data->>'sui_in')::float) AS sui_spent FROM events WHERE (event_type LIKE '%TokensPurchased' OR event_type LIKE '%TokensBought') GROUP BY data->>'buyer'`),
+      pool.query(`SELECT data->>'seller' AS address, COUNT(*) AS n, SUM((data->>'sui_out')::float) AS sui_received FROM events WHERE event_type LIKE '%TokensSold' GROUP BY data->>'seller'`),
     ]);
     const tm = {};
-    for (const r of buysRes.rows) { const a = r.address; if (!a) continue; if (!tm[a]) tm[a] = { address: a, sui_spent: 0, sui_received: 0, buys: 0, sells: 0 }; tm[a].sui_spent += Number(r.sui_spent ?? 0) / MIST_L; tm[a].buys++; }
-    for (const r of sellsRes.rows) { const a = r.address; if (!a) continue; if (!tm[a]) tm[a] = { address: a, sui_spent: 0, sui_received: 0, buys: 0, sells: 0 }; tm[a].sui_received += Number(r.sui_received ?? 0) / MIST_L; tm[a].sells++; }
+    for (const r of buysRes.rows) { const a = r.address; if (!a) continue; if (!tm[a]) tm[a] = { address: a, sui_spent: 0, sui_received: 0, buys: 0, sells: 0 }; tm[a].sui_spent += Number(r.sui_spent ?? 0) / MIST_L; tm[a].buys += Number(r.n ?? 0); }
+    for (const r of sellsRes.rows) { const a = r.address; if (!a) continue; if (!tm[a]) tm[a] = { address: a, sui_spent: 0, sui_received: 0, buys: 0, sells: 0 }; tm[a].sui_received += Number(r.sui_received ?? 0) / MIST_L; tm[a].sells += Number(r.n ?? 0); }
     res.json(Object.values(tm).sort((a, b) => (b.sui_spent + b.sui_received) - (a.sui_spent + a.sui_received)).slice(0, limit));
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -504,6 +507,27 @@ app.get('/internal/agent-run/:id', async (req, res) => {
   const { id } = req.params;
   const found = [...agentRuns].reverse().find(r => r.executionId === id);
   res.json(found ?? null);
+});
+
+// ── /debug/wallet-trades/:address (TEMPORARY — strip after diagnosis) ────────
+// Counts RAW event rows for a wallet, plus how many buys share a tx_digest.
+// Tells us whether stress-test trades are individually stored or were collapsed
+// by the UNIQUE(tx_digest, event_type) constraint at insert time.
+app.get('/debug/wallet-trades/:address', async (req, res) => {
+  try {
+    const { address } = req.params;
+    const [byType, byTx] = await Promise.all([
+      pool.query(
+        `SELECT event_type, COUNT(*) AS n FROM events WHERE data->>'buyer' = $1 OR data->>'seller' = $1 GROUP BY event_type`,
+        [address]
+      ),
+      pool.query(
+        `SELECT tx_digest, COUNT(*) AS n FROM events WHERE data->>'buyer' = $1 AND event_type LIKE '%TokensPurchased' GROUP BY tx_digest ORDER BY COUNT(*) DESC LIMIT 5`,
+        [address]
+      ),
+    ]);
+    res.json({ byEventType: byType.rows, topTxByEventCount: byTx.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ── /debug/isv/:id ────────────────────────────────────────────────────────────
