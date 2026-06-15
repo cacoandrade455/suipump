@@ -217,14 +217,35 @@ app.get('/token/:curveId/ohlc', async (req, res) => {
 app.get('/token/:curveId/holders', async (req, res) => {
   try {
     const TOK = 1_000_000;
-    const [buysRes, sellsRes] = await Promise.all([
+    const [buysRes, sellsRes, creatorRes, locksRes] = await Promise.all([
       pool.query(`SELECT data->>'buyer' AS address, SUM((data->>'tokens_out')::float) AS tokens FROM events WHERE curve_id = $1 AND (event_type LIKE '%TokensPurchased' OR event_type LIKE '%TokensBought') GROUP BY data->>'buyer'`, [req.params.curveId]),
       pool.query(`SELECT data->>'seller' AS address, SUM((data->>'tokens_in')::float) AS tokens FROM events WHERE curve_id = $1 AND event_type LIKE '%TokensSold' GROUP BY data->>'seller'`, [req.params.curveId]),
+      pool.query(`SELECT creator FROM curves WHERE curve_id = $1`, [req.params.curveId]),
+      // Locked balance per beneficiary for this curve. total_amount/claimed are
+      // ATOMIC (×1e6); convert to whole tokens to match the netted balances below.
+      // Table may not exist on older deploys — tolerated via catch returning [].
+      pool.query(`SELECT beneficiary, SUM(total_amount - claimed) AS locked_atomic FROM vesting_locks WHERE curve_id = $1 GROUP BY beneficiary`, [req.params.curveId]).catch(() => ({ rows: [] })),
     ]);
+    const creator = creatorRes.rows[0]?.creator ?? null;
+    const lockedByWallet = {};
+    for (const r of locksRes.rows) {
+      if (r.beneficiary) lockedByWallet[r.beneficiary] = Number(r.locked_atomic ?? 0) / TOK;
+    }
     const hmap = {};
     for (const r of buysRes.rows) { if (r.address) hmap[r.address] = (hmap[r.address] ?? 0) + Number(r.tokens ?? 0) / TOK; }
     for (const r of sellsRes.rows) { if (r.address) hmap[r.address] = (hmap[r.address] ?? 0) - Number(r.tokens ?? 0) / TOK; }
-    res.json(Object.entries(hmap).filter(([, b]) => b > 0.0001).map(([address, balance]) => ({ address, balance })).sort((a, b) => b.balance - a.balance));
+    res.json(
+      Object.entries(hmap)
+        .filter(([, b]) => b > 0.0001)
+        .map(([address, balance]) => {
+          const locked = Math.min(balance, lockedByWallet[address] ?? 0); // never exceed held
+          const liquid = Math.max(0, balance - locked);
+          // additive fields only — `address` and `balance` unchanged so existing
+          // consumers (HolderList) keep working untouched.
+          return { address, balance, locked, liquid, isCreator: creator != null && address === creator };
+        })
+        .sort((a, b) => b.balance - a.balance)
+    );
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

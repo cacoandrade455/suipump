@@ -1867,7 +1867,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
           </div>
 
           <PriceChart ohlc={feedOhlc} connected={feedConnected} suiUsd={suiUsd} loading={feedLoading} />
-          <AIAnalysis curveId={curveId} tokenType={tokenType} name={name} symbol={symbol} progress={progress} reserveSui={mistToSui(reserveMist)} creatorFeesSui={Number(creatorFeesMist) / 1e9} graduated={graduated} tokensSoldWhole={Number(tokensSold) / 10 ** TOKEN_DECIMALS} />
+          <AIAnalysis curveId={curveId} tokenType={tokenType} name={name} symbol={symbol} progress={progress} reserveSui={mistToSui(reserveMist)} creatorFeesSui={Number(creatorFeesMist) / 1e9} graduated={graduated} tokensSoldWhole={Number(tokensSold) / 10 ** TOKEN_DECIMALS} creator={creatorAddr} />
 
           <div className="lg:hidden"><TradePanelContent {...tradePanelProps} /></div>
 

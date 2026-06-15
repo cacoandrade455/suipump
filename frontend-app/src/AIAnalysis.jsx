@@ -1,8 +1,42 @@
 // AIAnalysis.jsx — AI-powered token analysis card
+//
+// Risk model rationale (rewritten):
+//   On a memecoin launchpad EVERYTHING is speculative, so a flat High/Med/Low
+//   "risk" badge is information-free — when a healthy-distribution token and a
+//   genuinely dangerous one both read "HIGH", the signal is useless and trains
+//   users to ignore it. So we DON'T score "how risky is this asset" (answer:
+//   always very). We surface SPECIFIC, DETECTABLE red flags relative to a normal
+//   early launchpad token, plus a neutral STAGE for context.
+//
+//   - Flags are computed deterministically in code from on-chain holder/trade
+//     data — the LLM never decides them, it only writes explanatory prose.
+//   - Flags render INSTANTLY (client-side) the moment holder data loads; only
+//     the prose waits on the model. This also kills the old lag where the card
+//     re-fetched everything and showed numbers inconsistent with the page.
+//   - "new = risky" is gone. Thin/early data is a neutral STAGE ("Early —
+//     limited data"), never a red flag. Absence of data is never a positive
+//     signal and never a danger signal — it's just limited data.
+//
+//   Concentration (the real, detectable danger):
+//     - excludes the bonding curve (never a holder here — curve isn't a buyer)
+//     - excludes VESTED/LOCKED balances (creator who locked tokens is LOW risk)
+//     - measured against CIRCULATING liquid supply held by real wallets,
+//       NOT the full 1B (200M is LP/reserve that never circulates)
+//     - single non-creator wallet > 20% liquid          → strong flag
+//     - top-10 wallets combined > 50% liquid             → strong flag
+//     - top-10 combined 30–50% liquid                    → moderate flag
+//
+//   Creator:
+//     - holding mostly LOCKED/vested      → positive context (not a flag)
+//     - holding large & LIQUID            → flag (dump risk)
+//     - creator fees claimed              → NEVER a flag (it's their reward)
+//     - if lock data is unavailable (older indexer) → contextual, never flagged
+//
+//   Wash/thin liquidity:
+//     - trades concentrated in 1–2 wallets → flag (possible wash volume)
+
 import React, { useState } from 'react';
-import { Sparkles, AlertTriangle, TrendingUp, Minus } from 'lucide-react';
-import { ALL_PACKAGE_IDS } from './constants.js';
-import { paginateMultipleEvents } from './paginateEvents.js';
+import { Sparkles, AlertTriangle, ShieldCheck, Info } from 'lucide-react';
 
 const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
 const TOKEN_SCALE = 1e6;
@@ -12,149 +46,177 @@ function fmt(n, d = 2) {
   return Number(n).toLocaleString(undefined, { maximumFractionDigits: d });
 }
 
-// Deterministic risk tier — computed from hard thresholds so the badge never
-// changes unless the underlying metrics do. The model only writes the prose.
-//   High:   untested (thin activity) OR heavy top-holder concentration
-//   Medium: moderate concentration OR still-thin activity
-//   Low:    healthy distribution + real activity (or graduated)
-function computeRisk({ holderCount, topHolderPct, totalTrades }) {
-  if (totalTrades < 10 || holderCount < 5)               return 'High';
-  if (topHolderPct >= 50)                                return 'High';
-  if (topHolderPct >= 25 || totalTrades < 50 || holderCount < 20) return 'Medium';
-  return 'Low';
+// ── Neutral stage from curve progress — CONTEXT, not risk ──────────────────
+function computeStage({ graduated, progress }) {
+  if (graduated)         return { label: 'Graduated', note: 'Now trading on a DEX' };
+  const p = Number(progress) || 0;
+  if (p < 5)             return { label: 'Early',           note: 'Limited data — recently launched' };
+  if (p < 60)            return { label: 'Active',          note: 'Filling the bonding curve' };
+  return { label: 'Near graduation', note: 'Approaching the DEX listing threshold' };
 }
 
-export default function AIAnalysis({ curveId, tokenType, name, symbol, progress, reserveSui, creatorFeesSui, graduated, tokensSoldWhole }) {
-  const [result, setResult] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
-  const [done, setDone] = useState(false);
-  const [riskTier, setRiskTier] = useState(null);
+// ── Deterministic flags from on-chain data. The LLM never decides these. ────
+// holders: [{ address, balance, locked, liquid, isCreator }]  (whole tokens)
+//   `locked`/`liquid`/`isCreator` may be absent on older indexer deploys — in
+//   that case we degrade gracefully: treat full balance as liquid and the
+//   creator axis as contextual (never a false flag).
+function computeFlags({ holders, creator, buys, sells, distinctBuyers }) {
+  const flags = [];      // [{ level: 'strong'|'moderate', text }]
+  const positives = [];  // ['…']
 
-  // Fetches trade + holder stats from the SAME source HolderList uses
-  // (indexer first, RPC fallback) so the AI's numbers match the holder list.
-  async function fetchTradeStats() {
-    try {
-      let buys = [], sells = [];
+  const hasLockData = holders.some(h => h.liquid != null || h.locked != null);
 
-      // ── Indexer path (complete data, up to 500 trades) ──────────────────
-      if (INDEXER_URL) {
-        try {
-          const res = await fetch(`${INDEXER_URL}/token/${curveId}/trades?limit=500`, { signal: AbortSignal.timeout(5000) });
-          if (res.ok) {
-            const rows = await res.json();
-            buys  = rows.filter(r => r.event_type.includes('TokensPurchased'))
-                        .map(r => ({ parsedJson: { ...r.data, curve_id: curveId } }));
-            sells = rows.filter(r => r.event_type.includes('TokensSold'))
-                        .map(r => ({ parsedJson: { ...r.data, curve_id: curveId } }));
-          }
-        } catch {}
-      }
+  // Liquid balance per wallet (exclude vested/locked). Curve is already absent
+  // (never a buyer in trade events), so no special-case needed.
+  const liquidOf = (h) => {
+    if (h.liquid != null) return Math.max(0, Number(h.liquid));
+    return Math.max(0, Number(h.balance) || 0); // no lock data → full balance is liquid
+  };
+  const lockedOf = (h) => Math.max(0, Number(h.locked) || 0);
+  const isCreatorRow = (h) =>
+    (h.isCreator === true) || (creator != null && h.address === creator);
 
-      // ── RPC fallback — all package versions (v4/v5/v6) ──────────────────
-      if (buys.length === 0 && sells.length === 0) {
-        const buyTypes  = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensPurchased`);
-        const sellTypes = ALL_PACKAGE_IDS.map(p => `${p}::bonding_curve::TokensSold`);
-        // RPC fallback removed (CORS blocked) — indexer is primary path
-        buys = []; sells = [];
-      }
+  // Circulating = sum of LIQUID balances across real wallets.
+  const circulating = holders.reduce((a, h) => a + liquidOf(h), 0);
 
-      const buyCount  = buys.length;
-      const sellCount = sells.length;
+  // ── Concentration (non-creator wallets, liquid only) ──────────────────────
+  if (circulating > 0) {
+    const nonCreatorLiquid = holders
+      .filter(h => !isCreatorRow(h))
+      .map(liquidOf)
+      .sort((a, b) => b - a);
 
-      // Volume from buy sui_in + sell sui_out (event-derived = exact)
-      const volumeSui =
-        buys.reduce((acc, e)  => acc + Number(e.parsedJson?.sui_in  ?? 0), 0) / 1e9 +
-        sells.reduce((acc, e) => acc + Number(e.parsedJson?.sui_out ?? 0), 0) / 1e9;
+    const topSingle = nonCreatorLiquid[0] ?? 0;
+    const topSinglePct = (topSingle / circulating) * 100;
+    const top10Pct = (nonCreatorLiquid.slice(0, 10).reduce((a, b) => a + b, 0) / circulating) * 100;
 
-      // Holder balances — REAL on-chain balances, not netted trade events.
-      // Netting events is wrong: a wallet that sold tokens acquired before
-      // the queried window nets negative while still holding a real balance.
-      // We collect every address that ever traded (candidates), then query
-      // each one's actual current balance. Identical method to HolderList.
-      const candidates = new Set();
-      for (const e of buys)  { const a = e.parsedJson?.buyer;  if (a) candidates.add(a); }
-      for (const e of sells) { const a = e.parsedJson?.seller; if (a) candidates.add(a); }
-
-      // Load holders from indexer — avoids CORS
-      let holderRaws = [];
-      const IURL_AI = import.meta.env.VITE_INDEXER_URL || '';
-      if (IURL_AI && curveId) {
-        try {
-          const hr = await fetch(`${IURL_AI}/token/${curveId}/holders`, { signal: AbortSignal.timeout(5000) });
-          if (hr.ok) { const rows = await hr.json(); holderRaws = rows.map(r => BigInt(r.balance ?? 0)).filter(v => v > 0n); }
-        } catch {}
-      }
-
-      const holderCount = holderRaws.length;
-
-      // Top-3 concentration as % of total 1B supply
-      const TOTAL_SUPPLY_ATOMIC = 1_000_000_000 * TOKEN_SCALE;
-      const top3 = [...holderRaws].sort((a, b) => (b > a ? 1 : b < a ? -1 : 0)).slice(0, 3)
-        .reduce((a, b) => a + b, 0n);
-      const topHolderPct = (Number(top3) / TOTAL_SUPPLY_ATOMIC) * 100;
-
-      return { buys: buyCount, sells: sellCount, volumeSui, holderCount, topHolderPct };
-    } catch {
-      return { buys: 0, sells: 0, volumeSui: 0, holderCount: 0, topHolderPct: 0 };
+    if (topSinglePct > 20) {
+      flags.push({ level: 'strong', text: `One wallet holds ${fmt(topSinglePct, 0)}% of circulating supply` });
+    }
+    if (top10Pct > 50) {
+      flags.push({ level: 'strong', text: `Top 10 wallets hold ${fmt(top10Pct, 0)}% of circulating supply` });
+    } else if (top10Pct >= 30) {
+      flags.push({ level: 'moderate', text: `Top 10 wallets hold ${fmt(top10Pct, 0)}% of circulating supply` });
     }
   }
 
-  const getRiskColor = (text) => {
-    if (!text) return 'text-white/50';
-    const lower = text.toLowerCase();
-    if (lower.includes('low'))    return 'text-lime-400';
-    if (lower.includes('high'))   return 'text-red-400';
-    if (lower.includes('medium')) return 'text-yellow-400';
-    return 'text-white/50';
-  };
+  // ── Creator behaviour ─────────────────────────────────────────────────────
+  const creatorRow = holders.find(isCreatorRow);
+  if (creatorRow) {
+    const cLiquid = liquidOf(creatorRow);
+    const cLocked = lockedOf(creatorRow);
+    const cTotal = cLiquid + cLocked;
+    if (hasLockData && cTotal > 0 && cLocked / cTotal >= 0.6) {
+      positives.push('Creator tokens are mostly vested/locked');
+    } else if (circulating > 0) {
+      const cPct = (cLiquid / circulating) * 100;
+      if (cPct > 20) {
+        flags.push({ level: 'moderate', text: `Creator holds ${fmt(cPct, 0)}% liquid (unlocked) supply` });
+      }
+    }
+  }
 
-  const getRiskIcon = (text) => {
-    if (!text) return null;
-    const lower = text.toLowerCase();
-    if (lower.includes('low'))    return <TrendingUp  size={11} className="text-lime-400"   />;
-    if (lower.includes('high'))   return <AlertTriangle size={11} className="text-red-400"  />;
-    if (lower.includes('medium')) return <Minus        size={11} className="text-yellow-400" />;
-    return null;
-  };
+  // ── Wash / thin liquidity ─────────────────────────────────────────────────
+  const totalTrades = buys + sells;
+  if (totalTrades >= 8 && distinctBuyers != null && distinctBuyers <= 2) {
+    flags.push({ level: 'moderate', text: `Trades concentrated in ${distinctBuyers} wallet${distinctBuyers === 1 ? '' : 's'} — possible wash volume` });
+  }
+
+  return { flags, positives, hasLockData, circulating };
+}
+
+export default function AIAnalysis({ curveId, tokenType, name, symbol, progress, reserveSui, creatorFeesSui, graduated, tokensSoldWhole, creator = null }) {
+  const [prose, setProse]     = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError]     = useState(null);
+  const [done, setDone]       = useState(false);
+  const [read, setRead]       = useState(null); // { stage, flags, positives, stats }
+
+  // Fetch holder + trade data once, compute flags client-side (instant),
+  // then ask the LLM only for prose. Returns the computed read so analyze()
+  // can render flags immediately before the model responds.
+  async function fetchAndCompute() {
+    let holders = [];
+    let buys = 0, sells = 0, volumeSui = 0, distinctBuyers = null;
+
+    if (INDEXER_URL && curveId) {
+      // Holders (with liquid/locked/isCreator when available)
+      try {
+        const hr = await fetch(`${INDEXER_URL}/token/${curveId}/holders`, { signal: AbortSignal.timeout(5000) });
+        if (hr.ok) holders = await hr.json();
+      } catch {}
+
+      // Trades
+      try {
+        const tr = await fetch(`${INDEXER_URL}/token/${curveId}/trades?limit=500`, { signal: AbortSignal.timeout(5000) });
+        if (tr.ok) {
+          const rows = await tr.json();
+          const buyRows  = rows.filter(r => r.event_type.includes('TokensPurchased') || r.event_type.includes('TokensBought'));
+          const sellRows = rows.filter(r => r.event_type.includes('TokensSold'));
+          buys  = buyRows.length;
+          sells = sellRows.length;
+          volumeSui =
+            buyRows.reduce((a, r)  => a + Number(r.data?.sui_in  ?? 0), 0) / 1e9 +
+            sellRows.reduce((a, r) => a + Number(r.data?.sui_out ?? 0), 0) / 1e9;
+          distinctBuyers = new Set(buyRows.map(r => r.data?.buyer).filter(Boolean)).size;
+        }
+      } catch {}
+    }
+
+    const stage = computeStage({ graduated, progress });
+    const { flags, positives, hasLockData, circulating } =
+      computeFlags({ holders, creator, buys, sells, distinctBuyers });
+
+    const stats = {
+      holderCount: holders.length,
+      buys, sells, totalTrades: buys + sells, volumeSui,
+      distinctBuyers, circulating, hasLockData,
+    };
+    return { stage, flags, positives, stats };
+  }
 
   const analyze = async () => {
     setLoading(true);
     setError(null);
-    setResult(null);
+    setProse(null);
     setDone(false);
-    setRiskTier(null);
+    setRead(null);
 
     try {
-      const { buys, sells, volumeSui, holderCount, topHolderPct } = await fetchTradeStats();
-      const totalTrades  = buys + sells;
-      const buySellRatio = sells > 0 ? ((buys / sells) * 100).toFixed(0) : '100';
+      const computed = await fetchAndCompute();
+      // Render flags + stage IMMEDIATELY — no wait on the model.
+      setRead(computed);
 
-      // Risk tier is determined deterministically in code — the model must
-      // write prose consistent with it and must NOT invent its own rating.
-      const risk = computeRisk({ holderCount, topHolderPct, totalTrades });
-      setRiskTier(risk);
+      const { stage, flags, positives, stats } = computed;
+      const flagText = flags.length
+        ? flags.map(f => `- (${f.level}) ${f.text}`).join('\n')
+        : '- None detected';
+      const posText = positives.length ? positives.map(p => `- ${p}`).join('\n') : '- None noted';
 
-      const prompt = `You are a DeFi token analyst on SuiPump, a bonding curve token launchpad on the Sui blockchain.
+      const prompt = `You are a DeFi token analyst on SuiPump, a bonding-curve memecoin launchpad on Sui.
 
-The risk level for this token has already been determined as: ${risk.toUpperCase()}.
-Write exactly 3 sentences covering: (1) holder concentration, (2) trading momentum, (3) one specific thing to watch. Your sentences MUST be consistent with a ${risk.toUpperCase()} risk rating. Do NOT output a risk rating line of any kind — only the 3 sentences. No fluff, no intro, be direct and specific.
+Detectable signals have ALREADY been computed deterministically. Do NOT invent a risk rating, do NOT contradict these, and do NOT output any "Risk:" line. Write exactly 3 short, direct sentences that explain these findings to a trader: (1) what the concentration/flags mean, (2) the trading picture, (3) one specific thing to watch next. No intro, no fluff.
 
-IMPORTANT framing rules:
-- If the token has zero or very few trades and holders, do NOT describe it as "fairly distributed" or "no concentration risk" — a token with no activity is not well-distributed, it is simply untested. Frame it as "too early to assess distribution" instead.
-- Lack of trading activity is itself the primary risk for an early-stage token; say so plainly.
-- Never present an absence of data as a positive signal.
+Framing rules (strict):
+- This is a memecoin launchpad; ALL tokens here are speculative by default. Never imply a token is "safe" or "low risk."
+- An early token with little activity is "too early to assess," NOT "well distributed" and NOT inherently dangerous. Never present an absence of data as either a positive or a red flag.
+- Locked/vested creator tokens REDUCE concern; do not describe them as a dump risk.
+- Creator fee earnings are normal protocol revenue — never a risk.
 
-Token data:
-- Name: ${name} ($${symbol})
-- Status: ${graduated ? 'GRADUATED — now trading on a DEX (Cetus / Turbos / DeepBook)' : 'Active on bonding curve'}
-- Curve progress: ${fmt(progress, 1)}% filled (${fmt(reserveSui, 1)} SUI raised; graduation threshold is oracle-based, recomputed each buy against SUI's USD price, ~12,305 SUI at $1)
-- Holders: ${holderCount}
-- Top holder concentration: ${fmt(topHolderPct, 1)}% of total 1B supply held by top 3 wallets
-- Total trades: ${totalTrades} (${buys} buys / ${sells} sells)
-- Buy/sell ratio: ${buySellRatio}% buys
-- Volume: ${fmt(volumeSui, 2)} SUI
-- Creator fees earned: ${fmt(creatorFeesSui, 3)} SUI (this is normal protocol revenue, not a risk signal)`;
+Token: ${name} ($${symbol})
+Stage: ${stage.label} — ${stage.note}
+Curve progress: ${fmt(progress, 1)}% (${fmt(reserveSui, 1)} SUI raised)
+Holders: ${stats.holderCount}
+Trades: ${stats.totalTrades} (${stats.buys} buys / ${stats.sells} sells), ${stats.distinctBuyers ?? '?'} distinct buyers
+Volume: ${fmt(stats.volumeSui, 2)} SUI
+Creator fees earned: ${fmt(creatorFeesSui, 3)} SUI (normal revenue, not a risk)
+Lock data available: ${stats.hasLockData ? 'yes' : 'no'}
+
+Detected flags:
+${flagText}
+
+Positive notes:
+${posText}`;
 
       const res = await fetch('/api/analyze', {
         method: 'POST',
@@ -163,7 +225,7 @@ Token data:
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Analysis failed');
-      setResult(data.result);
+      setProse(data.result);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -172,10 +234,12 @@ Token data:
     }
   };
 
-  const lines         = result ? result.split('\n').filter(Boolean) : [];
-  const analysisLines = lines.filter(l => !l.toLowerCase().startsWith('risk:'));
-  // Risk badge is the deterministic tier computed in code, never the model's text.
-  const riskText      = riskTier;
+  const proseLines = prose
+    ? prose.split('\n').filter(Boolean).filter(l => !l.toLowerCase().startsWith('risk:'))
+    : [];
+
+  const strongCount = read?.flags.filter(f => f.level === 'strong').length ?? 0;
+  const flagCount   = read?.flags.length ?? 0;
 
   return (
     <div className="border border-white/10 rounded-lg p-4 bg-black/40">
@@ -203,7 +267,47 @@ Token data:
         )}
       </div>
 
-      {/* Loading */}
+      {/* Stage + flags render INSTANTLY once computed (before prose) */}
+      {read && (
+        <div className="space-y-2 mb-3">
+          <div className="flex items-center gap-1.5">
+            <Info size={11} className="text-white/40" />
+            <span className="text-[10px] font-mono text-white/60 tracking-wide">
+              {read.stage.label.toUpperCase()}
+            </span>
+            <span className="text-[9px] font-mono text-white/30">· {read.stage.note}</span>
+          </div>
+
+          {flagCount > 0 ? (
+            <div className="space-y-1">
+              {read.flags.map((f, i) => (
+                <div key={i} className="flex items-start gap-1.5">
+                  <AlertTriangle size={10} className={`mt-0.5 shrink-0 ${f.level === 'strong' ? 'text-red-400' : 'text-yellow-400'}`} />
+                  <span className={`text-[10px] font-mono leading-snug ${f.level === 'strong' ? 'text-red-400/90' : 'text-yellow-400/90'}`}>
+                    {f.text}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="flex items-center gap-1.5">
+              <ShieldCheck size={10} className="text-white/40 shrink-0" />
+              <span className="text-[10px] font-mono text-white/45 leading-snug">
+                No specific red flags detected in on-chain data
+              </span>
+            </div>
+          )}
+
+          {read.positives.map((p, i) => (
+            <div key={`p${i}`} className="flex items-center gap-1.5">
+              <ShieldCheck size={10} className="text-lime-400/70 shrink-0" />
+              <span className="text-[10px] font-mono text-lime-400/70 leading-snug">{p}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Loading prose (flags already shown above) */}
       {loading && (
         <div className="flex items-center gap-2 py-2">
           <div className="flex gap-1">
@@ -211,7 +315,7 @@ Token data:
             <span className="w-1.5 h-1.5 rounded-full bg-lime-400 animate-bounce" style={{ animationDelay: '150ms' }} />
             <span className="w-1.5 h-1.5 rounded-full bg-lime-400 animate-bounce" style={{ animationDelay: '300ms' }} />
           </div>
-          <span className="text-[10px] font-mono text-white/35">Analyzing on-chain data…</span>
+          <span className="text-[10px] font-mono text-white/35">{read ? 'Writing analysis…' : 'Reading on-chain data…'}</span>
         </div>
       )}
 
@@ -222,27 +326,24 @@ Token data:
         </div>
       )}
 
-      {/* Result */}
-      {result && !loading && (
-        <div className="space-y-2">
-          <p className="text-[11px] font-mono text-white/70 leading-relaxed">
-            {analysisLines.join(' ')}
-          </p>
-          {riskText && (
-            <div className="flex items-center gap-1.5 pt-1 border-t border-white/5 mt-2">
-              {getRiskIcon(riskText)}
-              <span className={`text-[10px] font-mono font-bold tracking-widest ${getRiskColor(riskText)}`}>
-                {riskText.toUpperCase()} RISK
-              </span>
-            </div>
-          )}
-        </div>
+      {/* Prose */}
+      {prose && !loading && (
+        <p className="text-[11px] font-mono text-white/70 leading-relaxed">
+          {proseLines.join(' ')}
+        </p>
       )}
 
       {/* Idle */}
-      {!loading && !result && !error && (
+      {!loading && !read && !error && (
         <p className="text-[10px] font-mono text-white/25 leading-relaxed">
-          Get an AI-generated risk assessment based on holder concentration, trading momentum, and curve progress.
+          Get an on-chain read: holder concentration (excluding vested/locked), trading activity, and curve stage. Flags are computed from chain data, not guessed.
+        </p>
+      )}
+
+      {/* Always-on baseline disclaimer */}
+      {read && (
+        <p className="text-[9px] font-mono text-white/20 leading-snug mt-2 pt-2 border-t border-white/5">
+          All launchpad tokens are highly speculative. Flags show risks beyond that baseline — absence of flags is not a safety signal.
         </p>
       )}
 
