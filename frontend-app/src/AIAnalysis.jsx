@@ -64,10 +64,13 @@ function computeFlags({ holders, creator, buys, sells, distinctBuyers }) {
   const flags = [];      // [{ level: 'strong'|'moderate', text }]
   const positives = [];  // ['…']
 
+  const TOTAL_SUPPLY = 1_000_000_000; // 1B mint cap — concentration denominator
+
   const hasLockData = holders.some(h => h.liquid != null || h.locked != null);
 
-  // Liquid balance per wallet (exclude vested/locked). Curve is already absent
-  // (never a buyer in trade events), so no special-case needed.
+  // Liquid (sellable) balance per wallet. Concentration risk is about what can
+  // hit the market NOW, so flags use liquid only, measured against TOTAL supply
+  // (1B) — the number a trader can verify against an explorer.
   const liquidOf = (h) => {
     if (h.liquid != null) return Math.max(0, Number(h.liquid));
     return Math.max(0, Number(h.balance) || 0); // no lock data → full balance is liquid
@@ -76,43 +79,46 @@ function computeFlags({ holders, creator, buys, sells, distinctBuyers }) {
   const isCreatorRow = (h) =>
     (h.isCreator === true) || (creator != null && h.address === creator);
 
-  // Circulating = sum of LIQUID balances across real wallets.
-  const circulating = holders.reduce((a, h) => a + liquidOf(h), 0);
+  // ── Concentration (non-creator wallets, LIQUID only, vs 1B total) ─────────
+  // Locked tokens NEVER count toward a flag — they can't be dumped while
+  // locked, so they don't represent sell pressure. They surface as a POSITIVE
+  // signal below instead.
+  const nonCreatorLiquid = holders
+    .filter(h => !isCreatorRow(h))
+    .map(liquidOf)
+    .sort((a, b) => b - a);
 
-  // ── Concentration (non-creator wallets, liquid only) ──────────────────────
-  if (circulating > 0) {
-    const nonCreatorLiquid = holders
-      .filter(h => !isCreatorRow(h))
-      .map(liquidOf)
-      .sort((a, b) => b - a);
+  const topSinglePct = ((nonCreatorLiquid[0] ?? 0) / TOTAL_SUPPLY) * 100;
+  const top10Pct = (nonCreatorLiquid.slice(0, 10).reduce((a, b) => a + b, 0) / TOTAL_SUPPLY) * 100;
 
-    const topSingle = nonCreatorLiquid[0] ?? 0;
-    const topSinglePct = (topSingle / circulating) * 100;
-    const top10Pct = (nonCreatorLiquid.slice(0, 10).reduce((a, b) => a + b, 0) / circulating) * 100;
+  if (topSinglePct > 20) {
+    flags.push({ level: 'strong', text: `One wallet holds ${fmt(topSinglePct, 0)}% of total supply (liquid)` });
+  }
+  if (top10Pct > 50) {
+    flags.push({ level: 'strong', text: `Top 10 wallets hold ${fmt(top10Pct, 0)}% of total supply (liquid)` });
+  } else if (top10Pct >= 30) {
+    flags.push({ level: 'moderate', text: `Top 10 wallets hold ${fmt(top10Pct, 0)}% of total supply (liquid)` });
+  }
 
-    if (topSinglePct > 20) {
-      flags.push({ level: 'strong', text: `One wallet holds ${fmt(topSinglePct, 0)}% of circulating supply` });
-    }
-    if (top10Pct > 50) {
-      flags.push({ level: 'strong', text: `Top 10 wallets hold ${fmt(top10Pct, 0)}% of circulating supply` });
-    } else if (top10Pct >= 30) {
-      flags.push({ level: 'moderate', text: `Top 10 wallets hold ${fmt(top10Pct, 0)}% of circulating supply` });
+  // ── Locked supply = POSITIVE signal (can't be dumped while locked) ────────
+  const totalLocked = holders.reduce((a, h) => a + lockedOf(h), 0);
+  if (hasLockData && totalLocked > 0) {
+    const lockedPct = (totalLocked / TOTAL_SUPPLY) * 100;
+    if (lockedPct >= 1) {
+      positives.push(`${fmt(lockedPct, 0)}% of supply is locked/vested — cannot be dumped while locked`);
     }
   }
 
-  // ── Creator behaviour ─────────────────────────────────────────────────────
+  // ── Creator: locked holding is a positive; liquid holding is NOT flagged ──
+  // (Liquid creator tokens already fall under the concentration check above if
+  // large; we don't double-count. Creator fees are never a risk.)
   const creatorRow = holders.find(isCreatorRow);
-  if (creatorRow) {
+  if (creatorRow && hasLockData) {
     const cLiquid = liquidOf(creatorRow);
     const cLocked = lockedOf(creatorRow);
     const cTotal = cLiquid + cLocked;
-    if (hasLockData && cTotal > 0 && cLocked / cTotal >= 0.6) {
+    if (cTotal > 0 && cLocked / cTotal >= 0.5) {
       positives.push('Creator tokens are mostly vested/locked');
-    } else if (circulating > 0) {
-      const cPct = (cLiquid / circulating) * 100;
-      if (cPct > 20) {
-        flags.push({ level: 'moderate', text: `Creator holds ${fmt(cPct, 0)}% liquid (unlocked) supply` });
-      }
     }
   }
 
@@ -122,7 +128,7 @@ function computeFlags({ holders, creator, buys, sells, distinctBuyers }) {
     flags.push({ level: 'moderate', text: `Trades concentrated in ${distinctBuyers} wallet${distinctBuyers === 1 ? '' : 's'} — possible wash volume` });
   }
 
-  return { flags, positives, hasLockData, circulating };
+  return { flags, positives, hasLockData, totalLocked };
 }
 
 export default function AIAnalysis({ curveId, tokenType, name, symbol, progress, reserveSui, creatorFeesSui, graduated, tokensSoldWhole, creator = null }) {
@@ -164,13 +170,13 @@ export default function AIAnalysis({ curveId, tokenType, name, symbol, progress,
     }
 
     const stage = computeStage({ graduated, progress });
-    const { flags, positives, hasLockData, circulating } =
+    const { flags, positives, hasLockData, totalLocked } =
       computeFlags({ holders, creator, buys, sells, distinctBuyers });
 
     const stats = {
       holderCount: holders.length,
       buys, sells, totalTrades: buys + sells, volumeSui,
-      distinctBuyers, circulating, hasLockData,
+      distinctBuyers, totalLocked, hasLockData,
     };
     return { stage, flags, positives, stats };
   }
@@ -199,8 +205,9 @@ Detectable signals have ALREADY been computed deterministically. Do NOT invent a
 
 Framing rules (strict):
 - This is a memecoin launchpad; ALL tokens here are speculative by default. Never imply a token is "safe" or "low risk."
+- Concentration percentages are LIQUID (sellable) holdings as a share of TOTAL supply (1B). Locked/vested tokens are EXCLUDED from concentration because they cannot be sold while locked.
+- Locked/vested supply is a POSITIVE signal (reduces sell pressure / dump risk), not a concern. Never describe locked tokens as a dump risk.
 - An early token with little activity is "too early to assess," NOT "well distributed" and NOT inherently dangerous. Never present an absence of data as either a positive or a red flag.
-- Locked/vested creator tokens REDUCE concern; do not describe them as a dump risk.
 - Creator fee earnings are normal protocol revenue — never a risk.
 
 Token: ${name} ($${symbol})
