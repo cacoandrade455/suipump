@@ -690,7 +690,7 @@ export default function AgentPage({ onBack }) {
           launch: {
             name: p.launch.name,
             symbol: p.launch.symbol,
-            description: p.summary || `${p.launch.name} via SuiPump agent`,
+            description: p.launch.description || p.summary || `${p.launch.name} via SuiPump agent`,
             graduationTarget: p.launch.graduationTarget,
             devBuySui: p.launch.devBuySui,
             antiBotDelay: p.launch.antiBotDelay ?? 0,

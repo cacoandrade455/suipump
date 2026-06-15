@@ -39,8 +39,12 @@ function extractSuiAmount(goal) {
 function extractDescription(goal) {
   const m = String(goal).match(/description\s*[:\-]\s*(.+)$/i);
   if (!m) return null;
-  // Stop at a sentence-ending period if there's trailing unrelated text; keep it simple:
-  return m[1].trim().replace(/\s+/g, ' ').slice(0, 200);
+  let v = m[1].trim().replace(/\s+/g, ' ');
+  // Stop before a trailing launch-instruction clause that isn't part of the
+  // description (e.g. "... pre-demo video. graduate to cetus" -> drop the grad
+  // clause). Cut at the first occurrence of these clause markers.
+  v = v.replace(/[.;,]?\s*(?:graduate(?:s|d)?\s+to|grad(?:uate)?\s+target|anti[\s-]?bot|dev[\s-]?buy|buy\s+\d|symbol\b|ticker\b|name(?:d)?\s*[:\-]).*$/i, '').trim();
+  return v ? v.slice(0, 200) : null;
 }
 
 // ── Sniper intent + filters (deterministic; the LLM is unreliable on 64-hex) ──
