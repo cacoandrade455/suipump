@@ -848,14 +848,16 @@ export default function AgentPage({ onBack }) {
           return;
         }
 
-        // 2) Read the post-buy price from the curve so the TP/SL entry is the
-        //    real fill basis (not a stale pre-buy quote). Best-effort: if the
-        //    read fails, omit entryPriceSui and let the brain seed on load.
-        let entryPriceSui = null;
-        try {
-          const sr = await fetch(`${INDEXER_URL}/token/${payload.buy.curveId}/stats`, { signal: AbortSignal.timeout(6000) });
-          if (sr.ok) { const sd = await sr.json(); entryPriceSui = Number(sd.last_price) || null; }
-        } catch { /* seed on brain load */ }
+        // 2) Entry MUST be seeded on the SAME price basis the brain ticks use —
+        //    priceFromReserve (current spot from reserve). The indexer's
+        //    `last_price` is the fill price, which on a bonding curve sits BELOW
+        //    the post-buy spot price (you move price as you buy). Seeding entry
+        //    from fill made a freshly-armed position read ~+10% instantly (spot
+        //    already above fill), firing a tight TP the moment it armed. Passing
+        //    entryPriceSui=null makes the brain seed entry from its own spot read
+        //    on first load, so a just-armed position reads ~1.00x. (TP/SL is a
+        //    market-price trigger; cost-basis tracking is DCA's avgPrice path.)
+        const entryPriceSui = null;
 
         // 3) ARM the standing TP/SL via the secure create-order proxy.
         try {
