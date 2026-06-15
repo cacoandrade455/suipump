@@ -504,6 +504,34 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
   const [iconUploading, setIconUploading]   = useState(false);
   const [iconUploadError, setIconUploadError] = useState(null);
 
+  // One-time metadata lock state.
+  //   justUpdated  — set the instant our own update tx succeeds. A successful
+  //                  update_metadata PROVABLY set metadata_updated=true on-chain
+  //                  (the contract aborts otherwise), so we can lock the form
+  //                  immediately without waiting on the indexer to re-index.
+  //   chainUpdated — authoritative on-chain flag, fetched fresh on mount so a
+  //                  returning creator sees the locked state right away rather
+  //                  than a deceptively-open form. null = not yet known.
+  const [justUpdated,  setJustUpdated]  = useState(false);
+  const [chainUpdated, setChainUpdated] = useState(null);
+
+  useEffect(() => {
+    if (!curveId) return;
+    const IURL = import.meta.env.VITE_INDEXER_URL || '';
+    if (!IURL) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch(`${IURL}/token/${curveId}`, { signal: AbortSignal.timeout(5000) });
+        if (r.ok && !cancelled) {
+          const d = await r.json();
+          setChainUpdated((d.metadataUpdated ?? d.metadata_updated) === true);
+        }
+      } catch { /* keep null — falls back to curveState prop */ }
+    })();
+    return () => { cancelled = true; };
+  }, [curveId]);
+
   const showMsg = (m) => { setMsg(m); setTimeout(() => setMsg(''), 4000); };
 
   const getCapId = async () => {
@@ -529,7 +557,7 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
     if (!(isV7Token || isV8Token || isV9OrLater(pkgId)) || !metadataPkg) { showMsg('Metadata update requires V7+ token'); return; }
     const windowClosesAt = curveState?.created_at_ms ? Number(curveState.created_at_ms) + 24 * 60 * 60 * 1000 : 0;
     if (windowClosesAt > 0 && Date.now() >= windowClosesAt) { showMsg('24h window has closed'); return; }
-    if (curveState?.metadata_updated === true) { showMsg('Already updated — one time only'); return; }
+    if (justUpdated || chainUpdated === true || curveState?.metadata_updated === true) { showMsg('Already updated — one time only'); return; }
     setBusy(true); setMsg('');
     try {
       // Fetch CoinMetadata object info via indexer proxy — avoids CORS
@@ -554,7 +582,13 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
       });
       const metaResult = await dAppKit.signAndExecuteTransaction({ transaction: tx });
       if (metaResult.$kind === 'FailedTransaction') throw new Error(metaResult.FailedTransaction.status.error ?? 'Update failed');
-      showMsg('Metadata updated on-chain ✅'); setBusy(false); setTimeout(() => window.location.reload(), 1400);
+      // Lock immediately. A successful update_metadata PROVABLY flipped
+      // metadata_updated=true on-chain, so don't wait on the indexer (its
+      // write-lag on that column was what kept the form open before). The new
+      // icon/name propagate via the parent's existing 10s poll + SSE; no reload.
+      setJustUpdated(true);
+      setChainUpdated(true);
+      showMsg('Metadata updated on-chain ✅ — locked (one-time)'); setBusy(false);
     } catch (e) { showMsg(e.message || 'Update failed'); setBusy(false); }
   };
 
@@ -588,7 +622,12 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
         const nowMs      = Date.now();
         const windowOpen = windowClosesAt > 0 && nowMs < windowClosesAt;
         const hoursLeft  = windowOpen ? Math.ceil((windowClosesAt - nowMs) / (1000 * 60 * 60)) : 0;
-        const alreadyUpdated = isV7Token ? curveState?.metadata_updated === true : JSON.parse(localStorage.getItem(`suipump_meta_${curveId}`) || '{}').used === true;
+        // Authoritative one-time lock. localStorage was never a real lock
+        // (cleared per-browser); the on-chain metadata_updated flag is the
+        // source of truth. Lock if our own tx just succeeded (provable),
+        // OR the fresh mount fetch says true, OR the parent's polled curveState
+        // says true. Any one is sufficient; none can wrongly unlock.
+        const alreadyUpdated = justUpdated || chainUpdated === true || curveState?.metadata_updated === true;
         return (
           <div className="space-y-2.5">
             {alreadyUpdated ? (
