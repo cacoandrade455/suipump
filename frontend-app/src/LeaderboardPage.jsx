@@ -1,6 +1,7 @@
 // LeaderboardPage.jsx
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useCurrentAccount } from '@mysten/dapp-kit-react';
 import { ArrowLeft, TrendingUp, Trophy, Zap } from 'lucide-react';
 import { ALL_PACKAGE_IDS } from './constants.js';
 import { useTokenList } from './useTokenList.js';
@@ -32,6 +33,8 @@ function RankBadge({ rank }) {
 
 export default function LeaderboardPage({ onBack, lang = 'en' }) {
   const navigate = useNavigate();
+  const account  = useCurrentAccount();
+  const myAddr   = account?.address ?? null;
   const { tokens } = useTokenList();
   const [tokenVolumes, setTokenVolumes] = useState([]);
   const [topTraders, setTopTraders] = useState([]);
@@ -51,7 +54,14 @@ export default function LeaderboardPage({ onBack, lang = 'en' }) {
       const trdRows = await trdRes.json();
       return {
         sortedTokens:  tokRows.map(r => ({ curveId: r.curve_id, volume: Number(r.volume_sui ?? 0), trades: Number(r.trades ?? 0) })),
-        sortedTraders: trdRows.map(r => ({ addr: r.wallet, volume: Number(r.volume_sui ?? 0), trades: Number(r.trades ?? 0) })),
+        // /leaderboard/traders returns { address, sui_spent, sui_received, buys, sells }
+        // — NOT wallet/volume_sui/trades. Mapping the wrong keys is why every row
+        // read 0.00 SUI / 0 trades. Volume = spent + received; trades = buys + sells.
+        sortedTraders: trdRows.map(r => ({
+          addr:   r.address,
+          volume: Number(r.sui_spent ?? 0) + Number(r.sui_received ?? 0),
+          trades: Number(r.buys ?? 0) + Number(r.sells ?? 0),
+        })),
       };
     }
 
@@ -144,7 +154,10 @@ export default function LeaderboardPage({ onBack, lang = 'en' }) {
               className="w-full flex items-center gap-3 bg-white/[0.03] border border-white/10 rounded-xl px-4 py-3 hover:border-lime-400/30 transition-colors text-left">
               <RankBadge rank={i + 1} />
               <div className="flex-1 min-w-0">
-                <div className="text-xs font-mono text-white/70">{shortAddr(tr.addr)}</div>
+                <div className="flex items-center gap-1.5">
+                  <div className="text-xs font-mono text-white/70">{shortAddr(tr.addr)}</div>
+                  {myAddr && tr.addr === myAddr && <span className="text-[8px] font-mono text-violet-400 border border-violet-400/40 px-1 rounded">YOU</span>}
+                </div>
               </div>
               <div className="text-right">
                 <div className="text-xs font-mono font-bold text-white">{fmt(tr.volume)} SUI</div>

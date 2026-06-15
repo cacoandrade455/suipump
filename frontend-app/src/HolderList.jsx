@@ -1,5 +1,6 @@
 // HolderList.jsx — SSE triggers re-fetch on trade, no time-based polling
 import React, { useState, useEffect, useRef } from 'react';
+import { useCurrentAccount } from '@mysten/dapp-kit-react';
 import { Users, BarChart2, Lock } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { ALL_PACKAGE_IDS } from './constants.js';
@@ -35,6 +36,9 @@ async function fetchTradeEvents(curveId) {
 }
 
 export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = null }) {
+  const account  = useCurrentAccount();
+  const myAddr   = account?.address ?? null;
+  const isMe     = (a) => myAddr != null && a === myAddr;
   const [tab,     setTab]     = useState('holders');
   const [holders, setHolders] = useState([]);
   const [traders, setTraders] = useState([]);
@@ -165,6 +169,7 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = n
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5">
                       <Link to={`/portfolio/${h.addr}`} className="text-[10px] font-mono text-white/60 truncate hover:text-lime-400 transition-colors">{shortAddr(h.addr)}</Link>
+                      {isMe(h.addr) && <span className="text-[8px] font-mono text-violet-400 border border-violet-400/40 px-1 rounded">YOU</span>}
                       {isCreator && <span className="text-[8px] font-mono text-lime-400/60 border border-lime-400/20 px-1 rounded">DEV</span>}
                     </div>
                     <div className="h-1 bg-white/5 rounded-full mt-1 overflow-hidden">
@@ -188,7 +193,11 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = n
               <div key={t.addr} className="px-4 py-2.5 flex items-center gap-3">
                 <span className="text-[10px] font-mono text-white/20 w-4">{i + 1}</span>
                 <div className="flex-1 min-w-0">
-                  <Link to={`/portfolio/${t.addr}`} className="text-[10px] font-mono text-white/60 hover:text-lime-400 transition-colors">{shortAddr(t.addr)}</Link>
+                  <div className="flex items-center gap-1.5">
+                    <Link to={`/portfolio/${t.addr}`} className="text-[10px] font-mono text-white/60 hover:text-lime-400 transition-colors">{shortAddr(t.addr)}</Link>
+                    {isMe(t.addr) && <span className="text-[8px] font-mono text-violet-400 border border-violet-400/40 px-1 rounded">YOU</span>}
+                    {creator && t.addr === creator && <span className="text-[8px] font-mono text-lime-400/60 border border-lime-400/20 px-1 rounded">DEV</span>}
+                  </div>
                   <div className="text-[9px] font-mono mt-0.5 flex items-center gap-1">
                     <span className="text-white/30">{t.buyCount + t.sellCount}T</span>
                     <span className="text-white/20">·</span>
