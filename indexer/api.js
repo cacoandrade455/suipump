@@ -546,32 +546,28 @@ app.get('/token/:id/metadata-object', async (req, res) => {
     }
     if (!objectId) return res.status(404).json({ error: 'CoinMetadata not found on-chain' });
 
-    // Get ISV by querying the package that contains the token type
-    // The token type package was published in Tx1 which also created CoinMetadata
+    // Get the CoinMetadata's initialSharedVersion DIRECTLY from the object's
+    // owner. For a shared object the owner carries `initialSharedVersion` — the
+    // version at the moment it was shared. This is authoritative regardless of
+    // how many transactions the launch took to publish + share the metadata.
+    //
+    // (The previous implementation walked the package PUBLISH tx looking for the
+    // metadata's version there. That is the wrong tx: the SuiPump launch shares
+    // the CoinMetadata in a LATER transaction (public_share_object), so the
+    // publish-tx walk either found nothing — returning isv=null — or found the
+    // pre-share version, which is wrong for a sharedObjectRef. This is the root
+    // cause of `initialSharedVersion: null` from this endpoint.)
     let isv = null;
-    const tokenPkg = tokenType.split('::')[0];
-    if (tokenPkg) {
-      // Query the package publish tx — it created the metadata object
-      const q2 = '{ object(address: "' + tokenPkg + '") { previousTransactionBlock { digest } } }';
-      const r2 = await fetch(GRAPHQL_URL, {
+    {
+      const qOwner = '{ object(address: "' + objectId + '") { owner { __typename ... on Shared { initialSharedVersion } } } }';
+      const rOwner = await fetch(GRAPHQL_URL, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: q2 }), signal: AbortSignal.timeout(8000),
+        body: JSON.stringify({ query: qOwner }), signal: AbortSignal.timeout(8000),
       });
-      const d2 = await r2.json();
-      const publishDigest = d2?.data?.object?.previousTransactionBlock?.digest ?? null;
-
-      if (publishDigest) {
-        const q3 = '{ transactionBlock(digest: "' + publishDigest + '") { effects { objectChanges { nodes { address outputState { version } } } } } }';
-        const r3 = await fetch(GRAPHQL_URL, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: q3 }), signal: AbortSignal.timeout(8000),
-        });
-        const d3 = await r3.json();
-        const changes = d3?.data?.transactionBlock?.effects?.objectChanges?.nodes ?? [];
-        const metaChange = changes.find(c => c.address === objectId);
-        if (metaChange?.outputState?.version) {
-          isv = Number(metaChange.outputState.version);
-        }
+      const dOwner = await rOwner.json();
+      const owner = dOwner?.data?.object?.owner ?? null;
+      if (owner && owner.__typename === 'Shared' && owner.initialSharedVersion != null) {
+        isv = Number(owner.initialSharedVersion);
       }
     }
 
