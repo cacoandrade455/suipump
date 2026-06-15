@@ -509,27 +509,6 @@ app.get('/internal/agent-run/:id', async (req, res) => {
   res.json(found ?? null);
 });
 
-// ── /debug/wallet-trades/:address (TEMPORARY — strip after diagnosis) ────────
-// Counts RAW event rows for a wallet, plus how many buys share a tx_digest.
-// Tells us whether stress-test trades are individually stored or were collapsed
-// by the UNIQUE(tx_digest, event_type) constraint at insert time.
-app.get('/debug/wallet-trades/:address', async (req, res) => {
-  try {
-    const { address } = req.params;
-    const [byType, byTx] = await Promise.all([
-      pool.query(
-        `SELECT event_type, COUNT(*) AS n FROM events WHERE data->>'buyer' = $1 OR data->>'seller' = $1 GROUP BY event_type`,
-        [address]
-      ),
-      pool.query(
-        `SELECT tx_digest, COUNT(*) AS n FROM events WHERE data->>'buyer' = $1 AND event_type LIKE '%TokensPurchased' GROUP BY tx_digest ORDER BY COUNT(*) DESC LIMIT 5`,
-        [address]
-      ),
-    ]);
-    res.json({ byEventType: byType.rows, topTxByEventCount: byTx.rows });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
 // ── /debug/isv/:id ────────────────────────────────────────────────────────────
 app.get('/debug/isv/:id', async (req, res) => {
   try {
