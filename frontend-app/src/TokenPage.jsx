@@ -5,7 +5,7 @@ import { useNavigate } from 'react-router-dom';
 import { useCurrentAccount, useDAppKit, useCurrentClient } from '@mysten/dapp-kit-react';
 import { Transaction } from '@mysten/sui/transactions';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
-import { ArrowLeft, Copy, Check, Share2, ExternalLink, Settings, Edit3, Clock, Zap, ShieldAlert, Plus, Trash2, Bell } from 'lucide-react';
+import { ArrowLeft, Copy, Check, Share2, ExternalLink, Settings, Edit3, Clock, Zap, ShieldAlert, Plus, Trash2, Bell, ChevronDown } from 'lucide-react';
 import { useTPSL, makeLevel } from './useTPSL.js';
 import PriceChart from './PriceChart.jsx';
 import TradeHistory from './TradeHistory.jsx';
@@ -1472,6 +1472,8 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   const [copied,          setCopied]          = useState(false);
   const [shared,          setShared]          = useState(false);
   const [linkCopied,      setLinkCopied]      = useState(false);
+  const [mTpslOpen,       setMTpslOpen]       = useState(false); // mobile-only TP/SL accordion (right column hidden <lg)
+  const [mVestOpen,       setMVestOpen]       = useState(false); // mobile-only Vesting accordion (right column hidden <lg)
 
   // ── data loading ──────────────────────────────────────────────────────────
 
@@ -1914,6 +1916,46 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
               <CreatorToolsPanel curveId={curveId} tokenType={tokenType} packageIdHint={pkgId} account={account} curveState={curveState} currentDesc={desc} currentTwitter={twitter} currentTelegram={telegram} currentWebsite={website} currentDex={dex} lang={lang} onMetaUpdated={handleMetaUpdated} />
             </div>
           )}
+
+          {/* Mobile-only accordions — the right column is hidden below lg, so TP/SL and
+              Vesting are surfaced here as collapsible grids (lime, token-page palette). */}
+          <div className="lg:hidden border border-white/10 rounded-xl bg-white/[0.02] overflow-hidden">
+            <button onClick={() => setMTpslOpen(v => !v)} className="w-full flex items-center justify-between px-4 py-3 text-left">
+              <span className="text-[10px] font-mono text-white/35 tracking-widest">TP / SL</span>
+              <ChevronDown size={14} className={`text-white/30 transition-transform ${mTpslOpen ? 'rotate-180' : ''}`} />
+            </button>
+            {mTpslOpen && (
+              <div className="border-t border-white/10">
+                <TPSLPanel
+                  account={account}
+                  curveId={curveId}
+                  tokenType={tokenType}
+                  pkgId={pkgId}
+                  priceSui={priceSui}
+                  latestOhlcPoint={feedOhlc.length > 0 ? feedOhlc[feedOhlc.length - 1] : null}
+                  tokenBalance={tokenBalance}
+                  reserveMist={reserveMist}
+                  tokensRemaining={tokensRemaining}
+                  vSui={vSui}
+                  vTok={vTok}
+                  slippage={slippage}
+                  keypair={tradeKeyReady ? tradeKeypair : null}
+                />
+              </div>
+            )}
+          </div>
+
+          <div className="lg:hidden border border-white/10 rounded-xl bg-white/[0.02] overflow-hidden">
+            <button onClick={() => setMVestOpen(v => !v)} className="w-full flex items-center justify-between px-4 py-3 text-left">
+              <span className="text-[10px] font-mono text-white/35 tracking-widest">VESTING LOCKS</span>
+              <ChevronDown size={14} className={`text-white/30 transition-transform ${mVestOpen ? 'rotate-180' : ''}`} />
+            </button>
+            {mVestOpen && (
+              <div className="border-t border-white/10">
+                <VestingPanel curveId={curveId} tokenType={tokenType} packageId={pkgId} account={account} tokenBalance={tokenBalance} lang={lang} initialSharedVersion={curveState?.initial_shared_version ?? null} />
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Right column */}
