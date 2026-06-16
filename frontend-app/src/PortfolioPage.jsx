@@ -180,36 +180,45 @@ function _isMobileDevice() {
   return false;
 }
 
-// Deliver a canvas as a PNG. Native share sheet on mobile only; desktop
-// downloads the file directly (no OS share dialog).
+// Deliver a canvas as a PNG. Tries the native share sheet on mobile; if the
+// platform refuses (Android Chrome throws NotAllowedError when the user gesture
+// /transient activation is lost across the async toBlob, or canShare is false),
+// ALWAYS falls back to a real file download so the user gets the image either
+// way. Desktop downloads directly.
 async function sharePngFromCanvas(canvas, filename, shareText) {
   const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
   if (!blob) return 'error';
 
   const isMobile = _isMobileDevice();
 
-  // Mobile only: open the native share sheet.
+  // Mobile: try the native share sheet first.
   if (isMobile && typeof navigator !== 'undefined' && navigator.canShare) {
     const file = new File([blob], filename, { type: 'image/png' });
     if (navigator.canShare({ files: [file] })) {
       try {
-        await navigator.share({ files: [file], text: shareText });
+        // Blank title improves file-share compatibility across some targets.
+        await navigator.share({ files: [file], title: '', text: shareText });
         return 'shared';
       } catch (err) {
-        if (err && err.name === 'AbortError') return 'cancelled'; // user dismissed the sheet
-        // otherwise fall through to the download / open fallback
+        // User dismissed the sheet — do NOT then dump a download on them.
+        if (err && err.name === 'AbortError') return 'cancelled';
+        // Any other error (notably Android's NotAllowedError when transient
+        // activation was spent by the await above) falls through to download.
       }
     }
   }
 
-  // Desktop: download directly. Mobile without file-share: open in a new tab so
-  // the user can long-press to save.
+  // Fallback for EVERYONE who didn't share: download the PNG. The <a download>
+  // click works on Android Chrome (the previous window.open got popup-blocked
+  // once activation was gone, so Android users saw nothing happen). window.open
+  // is only a last resort if the download attribute is genuinely unsupported.
   const url = URL.createObjectURL(blob);
   try {
     const a = document.createElement('a');
-    if ('download' in a && !isMobile) {
+    if ('download' in a) {
       a.href = url;
       a.download = filename;
+      a.rel = 'noopener';
       document.body.appendChild(a);
       a.click();
       a.remove();
