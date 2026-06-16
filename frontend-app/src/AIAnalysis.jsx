@@ -254,7 +254,7 @@ ${posText}`;
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
           <Sparkles size={11} className="text-lime-400" />
-          <span className="text-[10px] font-mono text-white/35 tracking-widest">AI ANALYSIS</span>
+          <span className="text-[10px] font-mono text-lime-400/70 tracking-widest">AI ANALYSIS</span>
         </div>
         {!loading && !done && (
           <button

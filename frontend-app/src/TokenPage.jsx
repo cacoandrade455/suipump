@@ -229,6 +229,24 @@ function resolvePackageId(tokenType, packageIdHint) {
 }
 
 const SLIPPAGE_PRESETS = ['0.5', '1', '2', '5'];
+const AUTO_SLIPPAGE_FLOOR = 1;    // % — minimum auto tolerance even on tiny/zero-impact trades
+const AUTO_SLIPPAGE_BUFFER = 3;   // % — added on top of measured price impact (covers block delay)
+const AUTO_SLIPPAGE_CEILING = 20; // % — hard cap; above this, auto refuses silent acceptance
+
+// Resolve the effective slippage % to use for a trade.
+//   - 'auto'  → sized to this trade's price impact (floor/buffer/ceiling above)
+//   - number  → user's manual value, with the legacy impact>5 → impact+3 safety bump
+// Returns a Number (percent). impactPct is the quote's priceImpact (percent).
+function resolveSlippagePct(slippage, impactPct) {
+  const impact = Number(impactPct) || 0;
+  if (slippage === 'auto') {
+    const sized = Math.max(AUTO_SLIPPAGE_FLOOR, impact + AUTO_SLIPPAGE_BUFFER);
+    return Math.min(AUTO_SLIPPAGE_CEILING, sized);
+  }
+  const manual = parseFloat(slippage) || 0;
+  // Manual mode keeps the original safety net: bump only if impact would abort.
+  return Math.max(manual, impact > 5 ? impact + AUTO_SLIPPAGE_BUFFER : manual);
+}
 
 // ── Target Return Calculator ──────────────────────────────────────────────────
 // Given current curve state + a buy amount, shows what mcap the token needs to
@@ -411,7 +429,7 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
   return (
     <div className="bg-white/[0.03] border border-white/10 rounded-xl overflow-hidden">
       <div className="px-4 py-3 border-b border-white/10 flex items-center justify-between">
-        <span className="text-[10px] font-mono text-white/35 tracking-widest">VESTING LOCKS</span>
+        <span className="text-[10px] font-mono text-lime-400/70 tracking-widest">VESTING LOCKS</span>
         {account && <button onClick={() => setShowLockForm(o => !o)} className="text-[10px] font-mono text-lime-400 hover:text-lime-300 transition-colors">{showLockForm ? 'Cancel' : '+ Lock tokens'}</button>}
       </div>
       {showLockForm && (
@@ -718,8 +736,9 @@ function TradePanelContent({
   const [showReturnCalc, setShowReturnCalc] = useState(false);
   const isPending  = txStatus === 'pending';
   const pkgId      = resolvePackageId(panelTokenType, panelPkgHint);
-  const slippageNum = parseFloat(slippage) || 0;
-  const isCustom   = !SLIPPAGE_PRESETS.includes(slippage);
+  const isAuto     = slippage === 'auto';
+  const slippageNum = isAuto ? 0 : (parseFloat(slippage) || 0);
+  const isCustom   = !isAuto && !SLIPPAGE_PRESETS.includes(slippage);
 
   const handleSlippagePreset = (v) => { setSlippage(v); setCustomSlippage(''); };
   const handleCustomSlippage = (v) => {
@@ -798,10 +817,10 @@ function TradePanelContent({
     <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 space-y-4">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <div className="text-[10px] font-mono text-white/35 tracking-widest">{t(lang, 'trade')}</div>
+        <div className="text-[10px] font-mono text-lime-400/70 tracking-widest">{t(lang, 'trade')}</div>
         <button onClick={() => setShowSlippage(s => !s)} className={`flex items-center gap-1.5 px-2 py-1 rounded-lg text-[10px] font-mono transition-colors ${showSlippage ? 'bg-lime-400/10 border border-lime-400/30 text-lime-400' : 'text-white/35 hover:text-white/60'}`}>
           <Settings size={10} />
-          {slippageNum === 0 ? 'NO SLIPPAGE' : `${slippage}% ${t(lang, 'slippage')}`}
+          {isAuto ? 'AUTO SLIPPAGE' : slippageNum === 0 ? 'NO SLIPPAGE' : `${slippage}% ${t(lang, 'slippage')}`}
         </button>
       </div>
 
@@ -810,11 +829,17 @@ function TradePanelContent({
         <div className="bg-white/[0.02] border border-white/10 rounded-lg p-3 space-y-2">
           <div className="text-[9px] font-mono text-white/35 tracking-widest">SLIPPAGE TOLERANCE</div>
           <div className="flex gap-1.5">
+            <button onClick={() => handleSlippagePreset('auto')} className={`px-3 py-1.5 text-[10px] font-mono font-bold rounded-lg border transition-colors ${isAuto ? 'bg-lime-400/10 border-lime-400/30 text-lime-400' : 'border-white/10 text-white/40 hover:border-white/25 hover:text-white/60'}`}>AUTO</button>
             {SLIPPAGE_PRESETS.map(v => (
               <button key={v} onClick={() => handleSlippagePreset(v)} className={`flex-1 py-1.5 text-[10px] font-mono rounded-lg border transition-colors ${slippage === v && !isCustom ? 'bg-lime-400/10 border-lime-400/30 text-lime-400' : 'border-white/10 text-white/40 hover:border-white/25 hover:text-white/60'}`}>{v}%</button>
             ))}
             <input type="number" min="0" max="50" step="0.1" value={customSlippage} onChange={e => handleCustomSlippage(e.target.value)} placeholder="—"
               className={`w-14 py-1.5 text-[10px] font-mono rounded-lg border text-center bg-transparent transition-colors ${isCustom ? 'border-lime-400/30 text-lime-400' : 'border-white/10 text-white/40'} focus:outline-none focus:border-lime-400/50`} />
+          </div>
+          <div className="text-[8px] font-mono text-white/20 leading-relaxed">
+            {isAuto
+              ? `Auto sizes tolerance to each trade's price impact (capped at ${AUTO_SLIPPAGE_CEILING}%). Switch to a fixed % anytime.`
+              : 'Fixed tolerance. The trade aborts if the price moves past it.'}
           </div>
         </div>
       )}
@@ -923,7 +948,7 @@ function TradePanelContent({
                 <>
                   <div className="flex justify-between text-[10px] font-mono">
                     <span className="text-white/35">{t(lang, 'youReceive')} <span className="text-white/20 text-[8px]">(min)</span></span>
-                    <span className="text-white">{fmt(Number(quote.tokensOut) * (1 - slippageNum / 100) / 1e6, 0)} ${symbol}</span>
+                    <span className="text-white">{fmt(Number(quote.tokensOut) * (1 - resolveSlippagePct(slippage, quote.priceImpact) / 100) / 1e6, 0)} ${symbol}</span>
                   </div>
                   <div className="flex justify-between text-[10px] font-mono">
                     <span className="text-white/35">{t(lang, 'priceImpact')}</span>
@@ -934,7 +959,7 @@ function TradePanelContent({
                 <>
                   <div className="flex justify-between text-[10px] font-mono">
                     <span className="text-white/35">{t(lang, 'youReceive')} <span className="text-white/20 text-[8px]">(min)</span></span>
-                    <span className="text-white">{fmt(Number(quote.suiOut) * (1 - slippageNum / 100) / 1e9, 4)} SUI</span>
+                    <span className="text-white">{fmt(Number(quote.suiOut) * (1 - resolveSlippagePct(slippage, quote.priceImpact) / 100) / 1e9, 4)} SUI</span>
                   </div>
                   <div className="flex justify-between text-[10px] font-mono">
                     <span className="text-white/35">{t(lang, 'priceImpact')}</span>
@@ -1081,10 +1106,10 @@ function TPSLPanel({
       if (coinObjs.length > 1) tx.mergeCoins(coinObjs[0], coinObjs.slice(1));
       const [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(tokInAtomic)]);
 
-      const slippageNum = parseFloat(slippage) || 1;
       const sq = sellQuote(reserveMist, tokensRemaining, tokInAtomic, vSui, vTok);
+      const effSlip = resolveSlippagePct(slippage === 'auto' ? 'auto' : (slippage || '1'), sq?.priceImpact ?? 0);
       const minOut = sq?.suiOut != null
-        ? BigInt(Math.floor(Number(sq.suiOut) * (1 - slippageNum / 100)))
+        ? BigInt(Math.floor(Number(sq.suiOut) * (1 - effSlip / 100)))
         : 0n;
 
       const sellArgs = isV7OrLater(pkgId)
@@ -1184,7 +1209,7 @@ function TPSLPanel({
       <div className="px-4 py-3 flex items-center justify-between border-b border-white/5">
         <div className="flex items-center gap-2">
           <ShieldAlert size={11} className={isActive ? 'text-lime-400' : 'text-white/30'} />
-          <span className="text-[10px] font-mono tracking-widest text-white/35">TP / SL</span>
+          <span className="text-[10px] font-mono tracking-widest text-lime-400/70">TP / SL</span>
           {isActive && (
             <span className="flex items-center gap-1 text-[9px] font-mono text-lime-400/70">
               <span className="w-1.5 h-1.5 rounded-full bg-lime-400 animate-pulse inline-block" />
@@ -1439,7 +1464,7 @@ function TradesHoldersBlock({ curveId, tokenType, suiUsd, lang, creator, trades,
 function CommentsBlock({ curveId, packageId, lang, initialSharedVersion = null, tokenType = null }) {
   return (
     <div>
-      <div className="text-[10px] font-mono text-white/35 tracking-widest mb-2">{t(lang, 'comments')}</div>
+      <div className="text-[10px] font-mono text-lime-400/70 tracking-widest mb-2">{t(lang, 'comments')}</div>
       <Comments curveId={curveId} packageId={packageId} initialSharedVersion={initialSharedVersion} tokenType={tokenType} />
     </div>
   );
@@ -1466,7 +1491,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   const [tokenBalance,    setTokenBalance]    = useState(0);
   const [side,            setSide]            = useState('buy');
   const [amount,          setAmount]          = useState('');
-  const [slippage,        setSlippage]        = useState('1');
+  const [slippage,        setSlippage]        = useState('auto');
   const [txStatus,        setTxStatus]        = useState(null);
   const [txMsg,           setTxMsg]           = useState('');
   const [copied,          setCopied]          = useState(false);
@@ -1735,7 +1760,6 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
         ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion, mutable: true })
         : tx.object(curveId);
 
-      const slippageNum = parseFloat(slippage) || 0;
       const isV5 = isV5OrLater(pkgId);
 
       if (side === 'buy') {
@@ -1762,11 +1786,11 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
         const [payment] = tx.splitCoins(tx.gas, [tx.pure.u64(suiInMist)]);
         const bq = buyQuote(freshReserveMist, freshTokensRemaining, suiInMist, vSui, vTok);
 
-        // Auto-bump effective slippage if price impact exceeds user's setting.
-        // Prevents E_SLIPPAGE_EXCEEDED on high-impact buys without forcing user
-        // to manually raise slippage every time.
+        // Effective slippage: 'auto' sizes to this trade's impact; manual keeps
+        // its value with the legacy impact>5 safety bump. One shared resolver so
+        // execution, display, and sell all agree.
         const impactPct = bq?.priceImpact ?? 0;
-        const effectiveSlippage = Math.max(slippageNum, impactPct > 5 ? impactPct + 3 : slippageNum);
+        const effectiveSlippage = resolveSlippagePct(slippage, impactPct);
         const minOut = bq?.tokensOut != null ? BigInt(Math.floor(Number(bq.tokensOut) * (1 - effectiveSlippage / 100))) : 0n;
         // V9: buy(curve, payment, min_out, referral, sui_price_scaled, clock)
         // Fetch live SUI price for oracle; pass 0 as fallback if unavailable
@@ -1799,7 +1823,8 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
         if (coinObjs.length === 1) { [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(tokInAtomic)]); }
         else { tx.mergeCoins(coinObjs[0], coinObjs.slice(1)); [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(tokInAtomic)]); }
         const sq = sellQuote(reserveMist, tokensRemaining, tokInAtomic, vSui, vTok);
-        const minOut = sq?.suiOut != null ? BigInt(Math.floor(Number(sq.suiOut) * (1 - slippageNum / 100))) : 0n;
+        const effectiveSlippage = resolveSlippagePct(slippage, sq?.priceImpact ?? 0);
+        const minOut = sq?.suiOut != null ? BigInt(Math.floor(Number(sq.suiOut) * (1 - effectiveSlippage / 100))) : 0n;
         const sellArgs = isV7OrLater(pkgId)
           ? [curveRef, tokenCoin, tx.pure.u64(minOut), tx.pure.option('address', null)]
           : [curveRef, tokenCoin, tx.pure.u64(minOut)];
@@ -1921,7 +1946,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
               Vesting are surfaced here as collapsible grids (lime, token-page palette). */}
           <div className="lg:hidden border border-white/10 rounded-xl bg-white/[0.02] overflow-hidden">
             <button onClick={() => setMTpslOpen(v => !v)} className="w-full flex items-center justify-between px-4 py-3 text-left">
-              <span className="text-[10px] font-mono text-white/35 tracking-widest">TP / SL</span>
+              <span className="text-[10px] font-mono text-lime-400/70 tracking-widest">TP / SL</span>
               <ChevronDown size={14} className={`text-white/30 transition-transform ${mTpslOpen ? 'rotate-180' : ''}`} />
             </button>
             {mTpslOpen && (
@@ -1947,7 +1972,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
 
           <div className="lg:hidden border border-white/10 rounded-xl bg-white/[0.02] overflow-hidden">
             <button onClick={() => setMVestOpen(v => !v)} className="w-full flex items-center justify-between px-4 py-3 text-left">
-              <span className="text-[10px] font-mono text-white/35 tracking-widest">VESTING LOCKS</span>
+              <span className="text-[10px] font-mono text-lime-400/70 tracking-widest">VESTING LOCKS</span>
               <ChevronDown size={14} className={`text-white/30 transition-transform ${mVestOpen ? 'rotate-180' : ''}`} />
             </button>
             {mVestOpen && (
