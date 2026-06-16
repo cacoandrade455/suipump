@@ -568,31 +568,36 @@ async function handleClaim(body) {
   // any package version, so we match the CreatorCap struct type across all
   // versions AND the cap's curve_id field.
   //
-  // NOTE: this client is a SuiGraphQLClient — it has `listOwnedObjects`, NOT
-  // `getOwnedObjects` (a JSON-RPC method that does not exist here; calling it
-  // threw "is not a function" before the Move call, so claim never settled —
-  // the same class of bug already fixed for sell, where getCoins -> listCoins).
-  // We list the wallet's owned objects and filter LOCALLY by type + curve_id,
-  // which avoids depending on a server-side struct-type filter key. Response
-  // shape follows the same convention as listCoins in this file
-  // (`.objects ?? .data`), with each item exposing objectId + content.fields.
-  const capTypes = new Set(ALL_PACKAGE_IDS.map(pkg => `${pkg}::bonding_curve::CreatorCap`));
+  // SDK NOTES (verified against @mysten/sui types):
+  //  • This client is a SuiGraphQLClient — the method is `listOwnedObjects`, NOT
+  //    `getOwnedObjects` (JSON-RPC only; calling it threw "is not a function"
+  //    and claim never settled — same class of bug fixed earlier for sell).
+  //  • listOwnedObjects returns 20 objects PER PAGE; this wallet holds ~188
+  //    objects incl. 44 CreatorCaps, so we MUST paginate via `res.cursor` /
+  //    `res.hasNextPage` until the cap is found.
+  //  • By default the response carries only objectId/version/digest/owner/type —
+  //    NO struct fields. To read `curve_id` we pass `include: { json: true }`,
+  //    which adds `object.json` = the Move struct fields as JSON. So the cap's
+  //    curve id is at `o.json.curve_id`.
   let capObjectId = null;
   let cursor = null;
-  for (let page = 0; page < 20 && !capObjectId; page++) {
-    const ownedRes = await client.listOwnedObjects(cursor ? { owner: address, cursor } : { owner: address });
+  for (let page = 0; page < 200 && !capObjectId; page++) {
+    const ownedRes = await client.listOwnedObjects(
+      cursor
+        ? { owner: address, include: { json: true }, cursor }
+        : { owner: address, include: { json: true } }
+    );
     const owned = ownedRes?.objects ?? ownedRes?.data ?? [];
     for (const o of owned) {
-      const type   = o.type ?? o.objectType ?? o.content?.type ?? o.data?.type ?? '';
-      const fields = o.content?.fields ?? o.data?.content?.fields ?? o.fields ?? {};
-      const oid    = o.objectId ?? o.id ?? o.data?.objectId ?? null;
-      // Match by package-versioned CreatorCap type and this specific curve.
-      const isCreatorCap = type.includes('::bonding_curve::CreatorCap') || capTypes.has(type);
-      if (isCreatorCap && fields?.curve_id === curveId && oid) { capObjectId = oid; break; }
+      const type = o.type ?? '';
+      if (!type.includes('::bonding_curve::CreatorCap')) continue;
+      // CreatorCap matched by type — confirm it is THIS curve's cap.
+      const cid = o.json?.curve_id ?? o.json?.curveId ?? null;
+      if (cid === curveId) { capObjectId = o.objectId ?? null; break; }
     }
-    cursor = ownedRes?.nextCursor ?? ownedRes?.cursor ?? null;
-    const hasNext = ownedRes?.hasNextPage ?? (cursor != null);
-    if (!hasNext) break;
+    cursor = ownedRes?.cursor ?? null;
+    const hasNext = ownedRes?.hasNextPage ?? false;
+    if (!hasNext || !cursor) break;
   }
   if (!capObjectId) throw new Error(`No CreatorCap found in agent wallet for curve ${curveId}`);
 
