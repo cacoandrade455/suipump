@@ -1517,8 +1517,8 @@ export default function AgentPage({ onBack }) {
                     <span className="text-[9px] font-mono text-white/30">{Number(row.feesSui).toFixed(4)} SUI</span>
                   </div>
                   {row.ok ? (
-                    (row.digest || row.executionId) && (
-                      <a href={row.digest ? suiscanTx(row.digest) : suiscanObject(row.executionId)} target="_blank" rel="noreferrer"
+                    row.digest && (
+                      <a href={suiscanTx(row.digest)} target="_blank" rel="noreferrer"
                          className="text-violet-400 hover:text-violet-300 shrink-0"><ExternalLink size={11} /></a>
                     )
                   ) : (

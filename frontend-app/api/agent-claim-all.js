@@ -1,20 +1,21 @@
 // api/agent-claim-all.js — Vercel serverless proxy for "claim all creator fees".
 //
-// FAN-OUT claim: enumerates every curve the connected (agent) wallet created
-// that has creator fees pending, then fires the SAME claim DAG that agent-run.js
-// fires (workflow:'claim'), once per curve, sequentially. Mirrors agent-run.js
-// for key injection (AGENT_API_KEY -> x-agent-key) and the runner /run-dag call.
+// FAN-OUT claim that SETTLES THROUGH THE BRIDGE — same as every other on-chain
+// action in SuiPump. The DAG plans; the bridge executes and moves the SUI. This
+// proxy enumerates every curve the connected (agent) wallet created with fees
+// pending, then calls the bridge POST /claim once per curve. The bridge finds
+// the CreatorCap in the agent wallet, runs claim_creator_fees on-chain, and
+// returns a REAL txDigest + the actual SUI claimed (from balanceChanges).
 //
-// Why server-side: the runner is gated by AGENT_API_KEY which must never ship to
-// the browser. The browser only supplies the address it is connected as
-// (creatorAddress); this proxy holds the key and signs each claim as the agent
-// wallet (the same wallet, since the site is operated connected AS the agent
-// wallet, which both created the curves and holds the CreatorCaps).
+// A curve is only marked ok when the bridge returns a settled txDigest — so the
+// UI can never show a green check for a claim that didn't actually land. The
+// total is summed from the bridge's on-chain suiClaimed, not the indexer's
+// estimate.
 //
-// Everything settles through Nexus (the claim DAG) — no bridge path. One failed
-// curve does not abort the rest; each result is reported individually.
+// Key handling mirrors agent-run.js: AGENT_API_KEY is injected server-side as
+// x-agent-key (the bridge gates /claim behind it) and never ships to the browser.
 
-const RUNNER_URL  = process.env.AGENT_RUNNER_URL ?? 'https://suipump-agent-runner.onrender.com';
+const BRIDGE_URL  = process.env.AGENT_BRIDGE_URL ?? 'https://suipump-bridge.onrender.com';
 const INDEXER_URL = process.env.INDEXER_URL ?? process.env.VITE_INDEXER_URL ?? 'https://suipump-62s2.onrender.com';
 
 export default async function handler(req, res) {
@@ -38,9 +39,10 @@ export default async function handler(req, res) {
   if (key) headers['x-agent-key'] = key;
 
   try {
-    // 1) Enumerate every curve this wallet created. The indexer returns
-    //    tokenType per row and stats (incl. creator_fees_sui) inline, so no
-    //    per-curve metadata round-trips are needed.
+    // 1) Enumerate every curve this wallet created. The indexer returns tokenType
+    //    per row and stats (incl. creator_fees_sui) inline, so the only purpose
+    //    here is to find which curves are worth a claim call. The bridge resolves
+    //    the actual CreatorCap + tokenType itself, so it just needs curveId.
     const enumRes = await fetch(`${INDEXER_URL}/tokens?creator=${encodeURIComponent(creatorAddress)}`, {
       signal: AbortSignal.timeout(8000),
     });
@@ -50,55 +52,60 @@ export default async function handler(req, res) {
     const rows = await enumRes.json().catch(() => []);
     const allCurves = Array.isArray(rows) ? rows : [];
 
-    // 2) Keep only curves with creator fees pending. creator_fees_sui lives in
-    //    the nested stats object (row_to_json(s.*)). Treat missing/0 as nothing
-    //    to claim. tokenType is required to fire the claim DAG.
-    const claimable = allCurves
+    // 2) Keep only curves the indexer believes have creator fees pending. This is
+    //    a pre-filter to avoid firing no-op claims; the bridge is still the
+    //    source of truth for what actually settles.
+    const candidates = allCurves
       .map(r => ({
-        curveId:   r.curveId,
-        tokenType: r.tokenType,
-        symbol:    r.symbol ?? null,
-        feesSui:   Number(r.stats?.creator_fees_sui ?? 0),
+        curveId:    r.curveId,
+        symbol:     r.symbol ?? null,
+        feesSuiEst: Number(r.stats?.creator_fees_sui ?? 0),
       }))
-      .filter(c => c.curveId && c.tokenType && c.feesSui > 0);
+      .filter(c => c.curveId && c.feesSuiEst > 0);
 
-    if (claimable.length === 0) {
+    if (candidates.length === 0) {
       return res.status(200).json({
         ok: true,
         claimedCount: 0,
         totalCurves: allCurves.length,
+        attempted: 0,
         totalFeesSui: 0,
         results: [],
         message: 'No curves with creator fees pending.',
       });
     }
 
-    // 3) Fire the claim DAG once per curve, SEQUENTIALLY. Same /run-dag call
-    //    agent-run.js makes. One failure is recorded and does not abort the rest.
+    // 3) Settle each through the bridge POST /claim, SEQUENTIALLY. ok is true ONLY
+    //    when the bridge returns a real txDigest. totalFeesSui sums the bridge's
+    //    on-chain suiClaimed (falling back to the indexer estimate only for the
+    //    display amount on a settled row). One failure does not abort the rest.
     const results = [];
     let claimedCount = 0;
     let totalFeesSui = 0;
-    for (const c of claimable) {
+    for (const c of candidates) {
       try {
-        const r = await fetch(`${RUNNER_URL}/run-dag`, {
+        const r = await fetch(`${BRIDGE_URL}/claim`, {
           method: 'POST',
           headers,
-          body: JSON.stringify({ workflow: 'claim', claim: { curveId: c.curveId, tokenType: c.tokenType } }),
+          body: JSON.stringify({ curveId: c.curveId }),
         });
         const d = await r.json().catch(() => ({}));
-        const ok = r.ok && d.ok !== false;
-        if (ok) { claimedCount++; totalFeesSui += c.feesSui; }
+        const txDigest = d.txDigest ?? null;
+        const ok = r.ok && !!txDigest;
+        const suiClaimed = (d.suiClaimed != null && d.suiClaimed !== 'unknown')
+          ? Number(d.suiClaimed)
+          : null;
+        if (ok) { claimedCount++; totalFeesSui += (suiClaimed ?? c.feesSuiEst); }
         results.push({
-          curveId: c.curveId,
-          symbol:  c.symbol,
-          feesSui: c.feesSui,
+          curveId:  c.curveId,
+          symbol:   c.symbol,
+          feesSui:  suiClaimed ?? c.feesSuiEst,
           ok,
-          digest:      d.digest ?? null,
-          executionId: d.executionId ?? null,
-          error:       ok ? null : (d.error ?? `runner ${r.status}`),
+          digest:   txDigest,
+          error:    ok ? null : (d.error ?? `bridge ${r.status}`),
         });
       } catch (e) {
-        results.push({ curveId: c.curveId, symbol: c.symbol, feesSui: c.feesSui, ok: false, digest: null, executionId: null, error: e.message || 'claim failed' });
+        results.push({ curveId: c.curveId, symbol: c.symbol, feesSui: c.feesSuiEst, ok: false, digest: null, error: e.message || 'claim failed' });
       }
     }
 
@@ -106,7 +113,7 @@ export default async function handler(req, res) {
       ok: true,
       claimedCount,
       totalCurves: allCurves.length,
-      attempted: claimable.length,
+      attempted: candidates.length,
       totalFeesSui,
       results,
     });
