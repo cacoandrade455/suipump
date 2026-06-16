@@ -183,6 +183,7 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
               const rows = await res.json();
               loadedComments = rows.map(r => ({
                 id:        r.tx_digest + '_' + (r.event_seq ?? 0),
+                digestKey: r.tx_digest ?? null,
                 author:    r.author ?? r.data?.author ?? '',
                 text:      r.text  ?? r.data?.text  ?? '',
                 timestamp: r.timestamp_ms ? Number(r.timestamp_ms) : null,
@@ -219,8 +220,13 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
             const txDigest = event.digest ?? d.tx_digest ?? null;
             const id = txDigest ? `${txDigest}_0` : `sse_${Date.now()}_${Math.random()}`;
             setComments(prev => {
+              // Dedup on the bare tx_digest, NOT the seq-suffixed id. The initial
+              // load keys comments as `${digest}_${event_seq}` (seq may be nonzero),
+              // while SSE/optimistic use `${digest}_0` — so matching on full id
+              // missed same-digest comments and rendered duplicates until refresh.
+              if (txDigest && prev.find(c => c.digestKey === txDigest)) return prev;
               if (prev.find(c => c.id === id)) return prev;
-              return [...prev, { id, author: d.author ?? '', text: d.text ?? '', timestamp: event.ts ?? Date.now(), curveId }];
+              return [...prev, { id, digestKey: txDigest, author: d.author ?? '', text: d.text ?? '', timestamp: event.ts ?? Date.now(), curveId }];
             });
           }
         } catch {}
@@ -296,11 +302,13 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
 
       const txDigest = result.digest ?? result.Transaction?.digest ?? null;
       setText('');
-      // Optimistic update — ID matches indexer format (txDigest_0) so SSE dedup works
+      // Optimistic update — keyed on the bare tx_digest so the SSE event for the
+      // same comment dedups against it (both use digestKey) instead of appending.
       setComments(prev => {
         const id = txDigest ? `${txDigest}_0` : `opt_${Date.now()}`;
+        if (txDigest && prev.find(c => c.digestKey === txDigest)) return prev;
         if (prev.find(c => c.id === id)) return prev;
-        return [...prev, { id, author: account.address, text: trimmed, timestamp: Date.now(), curveId }];
+        return [...prev, { id, digestKey: txDigest, author: account.address, text: trimmed, timestamp: Date.now(), curveId }];
       });
     } catch (err) {
       setPostErr(err.message || 'Failed to post comment');
@@ -313,6 +321,17 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handlePost(); }
   };
 
+  // Final render-time dedup: collapse any same-digest duplicates that could slip
+  // through a state race, so the list can never DISPLAY one comment twice.
+  // Keyed on digestKey when present, else id.
+  const seenKeys = new Set();
+  const visibleComments = comments.filter(c => {
+    const k = c.digestKey ?? c.id;
+    if (seenKeys.has(k)) return false;
+    seenKeys.add(k);
+    return true;
+  });
+
   const repliesByParent = {};
   for (const r of replies) {
     if (!repliesByParent[r.parentId]) repliesByParent[r.parentId] = [];
@@ -323,11 +342,11 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
     <div className="bg-white/[0.03] border border-white/10 rounded-xl overflow-hidden">
       {loading ? (
         <div className="py-8 text-center text-white/20 text-xs font-mono">Loading…</div>
-      ) : comments.length === 0 ? (
+      ) : visibleComments.length === 0 ? (
         <div className="py-8 text-center text-white/20 text-xs font-mono">No comments yet. Be the first!</div>
       ) : (
         <div className="divide-y divide-white/5 max-h-[500px] overflow-y-auto">
-          {comments.map(c => (
+          {visibleComments.map(c => (
             <CommentItem
               key={c.id}
               comment={c}
