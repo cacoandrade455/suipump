@@ -564,18 +564,37 @@ async function handleClaim(body) {
 
   const { pkgId, tokenType, sharedVersion } = await resolveCurve(client, curveId);
 
-  // Search all package versions for CreatorCap — curve may be on any version
-  let cap = null;
-  for (const pkg of ALL_PACKAGE_IDS) {
-    const caps = await client.getOwnedObjects({
-      owner: address,
-      filter: { StructType: `${pkg}::bonding_curve::CreatorCap` },
-      options: { showContent: true },
-    });
-    cap = caps.data.find(o => o.data?.content?.fields?.curve_id === curveId);
-    if (cap) break;
+  // Find the CreatorCap this wallet holds for this curve. The curve may be on
+  // any package version, so we match the CreatorCap struct type across all
+  // versions AND the cap's curve_id field.
+  //
+  // NOTE: this client is a SuiGraphQLClient — it has `listOwnedObjects`, NOT
+  // `getOwnedObjects` (a JSON-RPC method that does not exist here; calling it
+  // threw "is not a function" before the Move call, so claim never settled —
+  // the same class of bug already fixed for sell, where getCoins -> listCoins).
+  // We list the wallet's owned objects and filter LOCALLY by type + curve_id,
+  // which avoids depending on a server-side struct-type filter key. Response
+  // shape follows the same convention as listCoins in this file
+  // (`.objects ?? .data`), with each item exposing objectId + content.fields.
+  const capTypes = new Set(ALL_PACKAGE_IDS.map(pkg => `${pkg}::bonding_curve::CreatorCap`));
+  let capObjectId = null;
+  let cursor = null;
+  for (let page = 0; page < 20 && !capObjectId; page++) {
+    const ownedRes = await client.listOwnedObjects(cursor ? { owner: address, cursor } : { owner: address });
+    const owned = ownedRes?.objects ?? ownedRes?.data ?? [];
+    for (const o of owned) {
+      const type   = o.type ?? o.objectType ?? o.content?.type ?? o.data?.type ?? '';
+      const fields = o.content?.fields ?? o.data?.content?.fields ?? o.fields ?? {};
+      const oid    = o.objectId ?? o.id ?? o.data?.objectId ?? null;
+      // Match by package-versioned CreatorCap type and this specific curve.
+      const isCreatorCap = type.includes('::bonding_curve::CreatorCap') || capTypes.has(type);
+      if (isCreatorCap && fields?.curve_id === curveId && oid) { capObjectId = oid; break; }
+    }
+    cursor = ownedRes?.nextCursor ?? ownedRes?.cursor ?? null;
+    const hasNext = ownedRes?.hasNextPage ?? (cursor != null);
+    if (!hasNext) break;
   }
-  if (!cap) throw new Error(`No CreatorCap found in agent wallet for curve ${curveId}`);
+  if (!capObjectId) throw new Error(`No CreatorCap found in agent wallet for curve ${curveId}`);
 
   const tx       = new Transaction();
   const curveRef = tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: sharedVersion, mutable: true });
@@ -583,7 +602,7 @@ async function handleClaim(body) {
   tx.moveCall({
     target: `${pkgId}::bonding_curve::claim_creator_fees`,
     typeArguments: [tokenType],
-    arguments: [tx.object(cap.data.objectId), curveRef],
+    arguments: [tx.object(capObjectId), curveRef],
   });
 
   const result = await client.signAndExecuteTransaction({
