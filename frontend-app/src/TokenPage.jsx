@@ -485,7 +485,7 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
 
 // ── Creator Tools Panel ───────────────────────────────────────────────────────
 
-function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveState, currentDesc, currentTwitter, currentTelegram, currentWebsite, currentDex, lang }) {
+function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveState, currentDesc, currentTwitter, currentTelegram, currentWebsite, currentDex, lang, onMetaUpdated }) {
   const client = useCurrentClient();
   const dAppKit = useDAppKit();
   const pkgId   = resolvePackageId(tokenType, packageIdHint);
@@ -584,10 +584,30 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
       if (metaResult.$kind === 'FailedTransaction') throw new Error(metaResult.FailedTransaction.status.error ?? 'Update failed');
       // Lock immediately. A successful update_metadata PROVABLY flipped
       // metadata_updated=true on-chain, so don't wait on the indexer (its
-      // write-lag on that column was what kept the form open before). The new
-      // icon/name propagate via the parent's existing 10s poll + SSE; no reload.
+      // write-lag on that column was what kept the form open before).
       setJustUpdated(true);
       setChainUpdated(true);
+
+      // Instant display: build a partial override from ONLY the fields the
+      // creator actually filled in. Blank fields pass `null` on-chain and don't
+      // overwrite, so we mirror that here — merge, never replace. Two surfaces:
+      //   1. localStorage `suipump_meta_${curveId}` — the durable override the
+      //      header already reads (_metaOverride), so it survives a later
+      //      indexer refetch that may still be serving stale metadata.
+      //   2. onMetaUpdated(partial) — pushes straight into the parent's
+      //      metadata/iconUrl state so the header re-renders this frame,
+      //      with no reload and no indexer round-trip.
+      const partial = {};
+      if (meta.name.trim())        partial.name        = meta.name.trim();
+      if (meta.symbol.trim())      partial.symbol      = meta.symbol.trim();
+      if (meta.description.trim()) partial.description = meta.description.trim();
+      if (meta.iconUrl.trim())     partial.iconUrl     = meta.iconUrl.trim();
+      try {
+        const prev = JSON.parse(localStorage.getItem(`suipump_meta_${curveId}`) || '{}');
+        localStorage.setItem(`suipump_meta_${curveId}`, JSON.stringify({ ...prev, ...partial, updatedAt: Date.now() }));
+      } catch {}
+      if (typeof onMetaUpdated === 'function') onMetaUpdated(partial);
+
       showMsg('Metadata updated on-chain ✅ — locked (one-time)'); setBusy(false);
     } catch (e) { showMsg(e.message || 'Update failed'); setBusy(false); }
   };
@@ -1644,6 +1664,22 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   const dex      = _linksOverride.dex      || _parsed.dex;
   const _overrideIcon = _metaOverride.iconUrl || null;
 
+  // Instant metadata reflection: when the creator's update_metadata tx settles,
+  // CreatorToolsPanel calls this with ONLY the fields that changed. Merge them
+  // into display state so the header (name/symbol/icon) updates this frame —
+  // no page reload, no waiting on the indexer's 10s poll. The panel also writes
+  // the same partial to localStorage as a durable backstop across remounts.
+  const handleMetaUpdated = React.useCallback((partial) => {
+    if (!partial || typeof partial !== 'object') return;
+    setMetadata(prev => ({
+      name:        partial.name        ?? prev?.name        ?? '',
+      symbol:      partial.symbol      ?? prev?.symbol      ?? '',
+      description: partial.description ?? prev?.description ?? '',
+      iconUrl:     partial.iconUrl     ?? prev?.iconUrl     ?? null,
+    }));
+    if (partial.iconUrl) setIconUrl(partial.iconUrl);
+  }, []);
+
   const [isCreator, setIsCreator] = React.useState(false);
   // isCreator: true when wallet address matches the curve's creator field.
   // This is fast, reliable, and doesn't require a GQL call.
@@ -1875,7 +1911,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
           <CommentsBlock curveId={curveId} packageId={pkgId} lang={lang} initialSharedVersion={initialSharedVersionProp ?? curveState?.initial_shared_version ?? null} tokenType={tokenType} />
           {isCreator && (
             <div className="lg:hidden">
-              <CreatorToolsPanel curveId={curveId} tokenType={tokenType} packageIdHint={pkgId} account={account} curveState={curveState} currentDesc={desc} currentTwitter={twitter} currentTelegram={telegram} currentWebsite={website} currentDex={dex} lang={lang} />
+              <CreatorToolsPanel curveId={curveId} tokenType={tokenType} packageIdHint={pkgId} account={account} curveState={curveState} currentDesc={desc} currentTwitter={twitter} currentTelegram={telegram} currentWebsite={website} currentDex={dex} lang={lang} onMetaUpdated={handleMetaUpdated} />
             </div>
           )}
         </div>
@@ -1900,7 +1936,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
           />
           <VestingPanel curveId={curveId} tokenType={tokenType} packageId={pkgId} account={account} tokenBalance={tokenBalance} lang={lang} initialSharedVersion={curveState?.initial_shared_version ?? null} />
           {isCreator && (
-            <CreatorToolsPanel curveId={curveId} tokenType={tokenType} packageIdHint={pkgId} account={account} curveState={curveState} currentDesc={desc} currentTwitter={twitter} currentTelegram={telegram} currentWebsite={website} currentDex={dex} lang={lang} />
+            <CreatorToolsPanel curveId={curveId} tokenType={tokenType} packageIdHint={pkgId} account={account} curveState={curveState} currentDesc={desc} currentTwitter={twitter} currentTelegram={telegram} currentWebsite={website} currentDex={dex} lang={lang} onMetaUpdated={handleMetaUpdated} />
           )}
         </div>
       </div>
