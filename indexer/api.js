@@ -337,16 +337,61 @@ app.get('/leaderboard/traders', async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit || '20'), 100);
     const MIST_L = 1_000_000_000;
-    // COUNT(*) per wallet — the previous version did `buys++` once per GROUPED
-    // row, which is always 1 row per wallet, so every trader showed exactly
-    // "2 trades" (1 buy + 1 sell) regardless of real activity. Count real trades.
+    const TOK    = 1_000_000;
+    // Group by (wallet, curve) — NOT wallet alone — because realized PnL needs
+    // per-token cost basis. We use the same average-cost method the
+    // /trader/:address endpoint already uses, for consistency:
+    //   avg_entry_price (per token) = sui_spent / tokens_bought
+    //   realized_pnl    (per token) = sui_received - avg_entry_price * tokens_sold
+    // Summed across every token a wallet traded. "Realized-only" means tokens
+    // still held (tokens_sold = 0) contribute 0 — never a phantom loss for an
+    // unsold bag. COUNT(*) gives real trade counts (one row per wallet+curve,
+    // so we must sum the counts, not increment once per group).
     const [buysRes, sellsRes] = await Promise.all([
-      pool.query(`SELECT data->>'buyer' AS address, COUNT(*) AS n, SUM((data->>'sui_in')::float) AS sui_spent FROM events WHERE (event_type LIKE '%TokensPurchased' OR event_type LIKE '%TokensBought') GROUP BY data->>'buyer'`),
-      pool.query(`SELECT data->>'seller' AS address, COUNT(*) AS n, SUM((data->>'sui_out')::float) AS sui_received FROM events WHERE event_type LIKE '%TokensSold' GROUP BY data->>'seller'`),
+      pool.query(`SELECT data->>'buyer' AS address, curve_id, COUNT(*) AS n, SUM((data->>'sui_in')::float) AS sui_spent, SUM((data->>'tokens_out')::float) AS tokens_bought FROM events WHERE (event_type LIKE '%TokensPurchased' OR event_type LIKE '%TokensBought') GROUP BY data->>'buyer', curve_id`),
+      pool.query(`SELECT data->>'seller' AS address, curve_id, COUNT(*) AS n, SUM((data->>'sui_out')::float) AS sui_received, SUM((data->>'tokens_in')::float) AS tokens_sold FROM events WHERE event_type LIKE '%TokensSold' GROUP BY data->>'seller', curve_id`),
     ]);
+
+    // Per-(wallet,curve) accumulator so we can compute cost basis token-by-token.
+    const pc = {}; // key: `${address}|${curve_id}`
+    const keyOf = (a, c) => `${a}|${c}`;
+    for (const r of buysRes.rows) {
+      const a = r.address; if (!a) continue;
+      const k = keyOf(a, r.curve_id);
+      if (!pc[k]) pc[k] = { address: a, sui_spent: 0, sui_received: 0, tokens_bought: 0, tokens_sold: 0, buys: 0, sells: 0 };
+      pc[k].sui_spent     += Number(r.sui_spent ?? 0) / MIST_L;
+      pc[k].tokens_bought += Number(r.tokens_bought ?? 0) / TOK;
+      pc[k].buys          += Number(r.n ?? 0);
+    }
+    for (const r of sellsRes.rows) {
+      const a = r.address; if (!a) continue;
+      const k = keyOf(a, r.curve_id);
+      if (!pc[k]) pc[k] = { address: a, sui_spent: 0, sui_received: 0, tokens_bought: 0, tokens_sold: 0, buys: 0, sells: 0 };
+      pc[k].sui_received += Number(r.sui_received ?? 0) / MIST_L;
+      pc[k].tokens_sold  += Number(r.tokens_sold ?? 0) / TOK;
+      pc[k].sells        += Number(r.n ?? 0);
+    }
+
+    // Roll per-token results up to per-wallet, computing realized PnL per token.
     const tm = {};
-    for (const r of buysRes.rows) { const a = r.address; if (!a) continue; if (!tm[a]) tm[a] = { address: a, sui_spent: 0, sui_received: 0, buys: 0, sells: 0 }; tm[a].sui_spent += Number(r.sui_spent ?? 0) / MIST_L; tm[a].buys += Number(r.n ?? 0); }
-    for (const r of sellsRes.rows) { const a = r.address; if (!a) continue; if (!tm[a]) tm[a] = { address: a, sui_spent: 0, sui_received: 0, buys: 0, sells: 0 }; tm[a].sui_received += Number(r.sui_received ?? 0) / MIST_L; tm[a].sells += Number(r.n ?? 0); }
+    for (const c of Object.values(pc)) {
+      const a = c.address;
+      if (!tm[a]) tm[a] = { address: a, sui_spent: 0, sui_received: 0, buys: 0, sells: 0, realized_pnl: 0 };
+      const avgEntry  = c.tokens_bought > 0 ? c.sui_spent / c.tokens_bought : 0;
+      // Cost basis of tokens actually sold. Cap at tokens_bought so a wallet that
+      // received tokens by transfer (sold more than it bought on-curve) can't
+      // produce a negative cost basis that inflates PnL.
+      const soldForBasis = Math.min(c.tokens_sold, c.tokens_bought);
+      const realized  = c.sui_received - avgEntry * soldForBasis;
+      tm[a].sui_spent    += c.sui_spent;
+      tm[a].sui_received += c.sui_received;
+      tm[a].buys         += c.buys;
+      tm[a].sells        += c.sells;
+      tm[a].realized_pnl += realized;
+    }
+
+    // Sort by volume (spent + received) by default — preserves existing behavior.
+    // The frontend re-sorts client-side when the PnL toggle is active.
     res.json(Object.values(tm).sort((a, b) => (b.sui_spent + b.sui_received) - (a.sui_spent + a.sui_received)).slice(0, limit));
   } catch (err) { res.status(500).json({ error: err.message }); }
 });

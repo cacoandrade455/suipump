@@ -19,6 +19,15 @@ function fmt(n, d = 2) {
   return n.toFixed(d);
 }
 
+// Signed PnL: keeps the +/- and the magnitude readable at k/M scale.
+function fmtPnl(n, d = 2) {
+  if (n == null || !Number.isFinite(n)) return '—';
+  const sign = n >= 0 ? '+' : '−';
+  const a = Math.abs(n);
+  const mag = a >= 1e6 ? (a / 1e6).toFixed(d) + 'M' : a >= 1e3 ? (a / 1e3).toFixed(d) + 'k' : a.toFixed(d);
+  return `${sign}${mag}`;
+}
+
 function shortAddr(addr) {
   if (!addr) return '—';
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
@@ -40,6 +49,7 @@ export default function LeaderboardPage({ onBack, lang = 'en' }) {
   const [topTraders, setTopTraders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState('tokens');
+  const [traderSort, setTraderSort] = useState('volume'); // 'volume' | 'pnl'
 
   useEffect(() => {
     let cancelled = false;
@@ -61,6 +71,7 @@ export default function LeaderboardPage({ onBack, lang = 'en' }) {
           addr:   r.address,
           volume: Number(r.sui_spent ?? 0) + Number(r.sui_received ?? 0),
           trades: Number(r.buys ?? 0) + Number(r.sells ?? 0),
+          pnl:    Number(r.realized_pnl ?? 0),
         })),
       };
     }
@@ -86,7 +97,7 @@ export default function LeaderboardPage({ onBack, lang = 'en' }) {
       }
       return {
         sortedTokens:  Object.entries(volumeByCurve).map(([curveId, volume]) => ({ curveId, volume, trades: tradesByCurve[curveId] || 0 })).sort((a, b) => b.volume - a.volume),
-        sortedTraders: Object.entries(volumeByTrader).map(([addr, volume]) => ({ addr, volume, trades: tradesByTrader[addr] || 0 })).sort((a, b) => b.volume - a.volume).slice(0, 20),
+        sortedTraders: Object.entries(volumeByTrader).map(([addr, volume]) => ({ addr, volume, trades: tradesByTrader[addr] || 0, pnl: null })).sort((a, b) => b.volume - a.volume).slice(0, 20),
       };
     }
 
@@ -149,7 +160,28 @@ export default function LeaderboardPage({ onBack, lang = 'en' }) {
         </div>
       ) : (
         <div className="space-y-2">
-          {topTraders.map((tr, i) => (
+          <div className="flex items-center justify-between mb-1">
+            <div className="text-[10px] font-mono text-white/30 tracking-widest">SORT BY</div>
+            <div className="flex gap-1.5">
+              {[
+                { id: 'volume', label: 'VOLUME' },
+                { id: 'pnl',    label: 'REALIZED PNL' },
+              ].map(s => (
+                <button key={s.id} onClick={() => setTraderSort(s.id)}
+                  className={`px-2.5 py-1 rounded-lg text-[9px] font-mono font-bold transition-colors ${traderSort === s.id ? 'bg-lime-400/10 text-lime-400 border border-lime-400/30' : 'text-white/30 hover:text-white/60 border border-transparent'}`}>
+                  {s.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          {traderSort === 'pnl' && (
+            <div className="text-[9px] font-mono text-white/20 pb-1">Realized PnL only — proceeds minus average cost of tokens sold. Unsold holdings excluded.</div>
+          )}
+          {[...topTraders]
+            .sort((a, b) => traderSort === 'pnl'
+              ? (Number(b.pnl ?? -Infinity) - Number(a.pnl ?? -Infinity))
+              : (b.volume - a.volume))
+            .map((tr, i) => (
             <button key={tr.addr} onClick={() => navigate(`/portfolio/${tr.addr}`)}
               className="w-full flex items-center gap-3 bg-white/[0.03] border border-white/10 rounded-xl px-4 py-3 hover:border-lime-400/30 transition-colors text-left">
               <RankBadge rank={i + 1} />
@@ -160,8 +192,19 @@ export default function LeaderboardPage({ onBack, lang = 'en' }) {
                 </div>
               </div>
               <div className="text-right">
-                <div className="text-xs font-mono font-bold text-white">{fmt(tr.volume)} SUI</div>
-                <div className="text-[10px] font-mono text-white/30">{tr.trades} trades</div>
+                {traderSort === 'pnl' ? (
+                  <>
+                    <div className={`text-xs font-mono font-bold ${tr.pnl == null ? 'text-white/40' : tr.pnl >= 0 ? 'text-lime-400' : 'text-red-400'}`}>
+                      {tr.pnl == null ? '—' : `${fmtPnl(tr.pnl)} SUI`}
+                    </div>
+                    <div className="text-[10px] font-mono text-white/30">{fmt(tr.volume)} SUI vol</div>
+                  </>
+                ) : (
+                  <>
+                    <div className="text-xs font-mono font-bold text-white">{fmt(tr.volume)} SUI</div>
+                    <div className="text-[10px] font-mono text-white/30">{tr.trades} trades</div>
+                  </>
+                )}
               </div>
             </button>
           ))}
