@@ -218,7 +218,9 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
             // ID format matches indexer: txDigest + '_0'
             // event.digest is populated by the indexer's pg_notify payload
             const txDigest = event.digest ?? d.tx_digest ?? null;
-            const id = txDigest ? `${txDigest}_0` : `sse_${Date.now()}_${Math.random()}`;
+            const author = d.author ?? '';
+            const cText = d.text ?? '';
+            const id = txDigest ? `${txDigest}_0` : `sse_${author}_${cText}`;
             setComments(prev => {
               // Dedup on the bare tx_digest, NOT the seq-suffixed id. The initial
               // load keys comments as `${digest}_${event_seq}` (seq may be nonzero),
@@ -226,7 +228,10 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
               // missed same-digest comments and rendered duplicates until refresh.
               if (txDigest && prev.find(c => c.digestKey === txDigest)) return prev;
               if (prev.find(c => c.id === id)) return prev;
-              return [...prev, { id, digestKey: txDigest, author: d.author ?? '', text: d.text ?? '', timestamp: event.ts ?? Date.now(), curveId }];
+              // Last-resort guard when no digest: don't append an identical
+              // author+text that's already present from the optimistic add.
+              if (!txDigest && prev.find(c => c.author === author && c.text === cText)) return prev;
+              return [...prev, { id, digestKey: txDigest, author, text: cText, timestamp: event.ts ?? Date.now(), curveId }];
             });
           }
         } catch {}
