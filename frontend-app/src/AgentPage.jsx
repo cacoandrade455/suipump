@@ -71,9 +71,9 @@ const OPERATE_GUIDE = [
       {
         key: 'claim', title: 'Claim', fqn: 'xyz.suipump.claim@1',
         tagline: 'Collect pending creator fees',
-        body: 'Claims the creator fees that have accrued on a curve you launched. Does nothing if there are no fees pending.',
-        inputs: ['A token CA you created'],
-        examples: ['Claim creator fees on 0xCURVE'],
+        body: 'Claims the creator fees that have accrued on a curve you launched. Does nothing if there are no fees pending. You can claim one curve by pasting its CA, or claim every curve you created at once — say "claim all" with no CA and the agent enumerates your curves and claims each one through Nexus.',
+        inputs: ['A token CA you created — or "claim all" for every curve at once'],
+        examples: ['Claim creator fees on 0xCURVE', 'Claim all my creator fees'],
       },
       {
         key: 'alerts', title: 'Alerts / Monitor', fqn: 'xyz.suipump.alerts@1',
@@ -145,6 +145,7 @@ const WORKFLOW_NODES = {
   buy:    [{ id: 'buy',    tool: 'xyz.suipump.buy@1',    label: 'Buy',    desc: 'Buy tokens on the curve' }],
   sell:   [{ id: 'sell',   tool: 'xyz.suipump.sell@1',   label: 'Sell',   desc: 'Sell tokens back to SUI' }],
   claim:  [{ id: 'claim',  tool: 'xyz.suipump.claim@1',  label: 'Claim',  desc: 'Claim creator fees' }],
+  claim_all: [{ id: 'claim', tool: 'xyz.suipump.claim@1', label: 'Claim all', desc: 'Claim creator fees from every curve you created' }],
   alerts: [{ id: 'alerts', tool: 'xyz.suipump.alerts@1', label: 'Monitor', desc: 'Watch graduation / price' }],
   tpsl:   [{ id: 'arm',    tool: 'strategy.tpsl@1',      label: 'Arm strategy', desc: 'Standing TP/SL order the agent watches' }],
   sniper: [{ id: 'arm',    tool: 'strategy.sniper@1',    label: 'Arm sniper',   desc: 'Standing buy that fires on every matching launch' }],
@@ -710,6 +711,11 @@ export default function AgentPage({ onBack }) {
         const { tokenType } = await fetchCurveMeta(p.claim.curveId);
         return { workflow: 'claim', claim: { curveId: p.claim.curveId, tokenType } };
       }
+      case 'claim_all':
+        // Fan-out claim. No CA and no per-curve metadata here — the server-side
+        // proxy enumerates the connected wallet's curves and resolves each
+        // tokenType itself. Just carry the workflow through.
+        return { workflow: 'claim_all', claimAll: {} };
       case 'alerts':
         if (!p.alerts?.curveIds?.length) throw new Error('No curve ids for alerts');
         return { workflow: 'alerts', alerts: { curveIds: p.alerts.curveIds } };
@@ -1011,6 +1017,39 @@ export default function AgentPage({ onBack }) {
         return;
       }
 
+      // FAN-OUT (claim_all): claim creator fees across every curve the connected
+      // (agent) wallet created with fees pending. The server-side proxy
+      // enumerates, filters, and fires the claim DAG per curve — each a real
+      // Nexus walk. Nothing routes through the bridge (claim is DAG-only).
+      if (payload.workflow === 'claim_all') {
+        if (!account?.address) {
+          clearAnim();
+          setNodeState({ claim: 'error' });
+          setError('Connect your wallet to claim — the agent claims fees for the curves this wallet created.');
+          setPhase('failed');
+          return;
+        }
+        try {
+          const r = await fetch(`/api/agent-claim-all`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ creatorAddress: account.address }),
+          });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok || d.ok === false) throw new Error(d.error || `claim-all failed (${r.status})`);
+          clearAnim();
+          setNodeState({ claim: 'done' });
+          setResult({ workflow: 'claim_all', ...d });
+          setPhase('done');
+        } catch (e) {
+          clearAnim();
+          setNodeState({ claim: 'error' });
+          setError(`Claim-all failed: ${e.message}`);
+          setPhase('failed');
+        }
+        return;
+      }
+
       // STEP 1 — Emit the Nexus DAG request (agentic-decision proof). This is
       // BEST-EFFORT: the on-chain walk request is the orchestration paper trail,
       // not the settlement path. A slow/failed /run-dag must NEVER block the trade
@@ -1132,6 +1171,11 @@ export default function AgentPage({ onBack }) {
         return [
           ['workflow', p.workflow],
           ['curve', p.claim?.curveId ? `${p.claim.curveId.slice(0, 10)}…` : '(missing — paste CA)'],
+        ];
+      case 'claim_all':
+        return [
+          ['workflow', 'claim all'],
+          ['scope', 'every curve you created with fees pending'],
         ];
       case 'alerts':
         return [
@@ -1448,6 +1492,42 @@ export default function AgentPage({ onBack }) {
                 : "The agent now watches this curve's price and sells automatically through Nexus when a trigger is hit. No further action needed."}
             </div>
           </div>
+        </div>
+      )}
+
+      {result && result.workflow === 'claim_all' && (
+        <div className="border border-violet-400/30 rounded-xl p-4 bg-violet-400/[0.05]">
+          <div className="text-[10px] font-mono text-violet-400/80 tracking-widest mb-3">✓ CLAIM ALL — VIA NEXUS</div>
+          <div className="text-[11px] font-mono text-white/80 mb-3">
+            Claimed {result.claimedCount ?? 0} of {result.attempted ?? 0} curve(s) with fees pending
+            {Number(result.totalFeesSui) > 0 ? ` · ~${Number(result.totalFeesSui).toFixed(4)} SUI` : ''}.
+            {(result.totalCurves != null) && <span className="text-white/30"> ({result.totalCurves} created total)</span>}
+          </div>
+          {(!result.results || result.results.length === 0) ? (
+            <div className="text-[10px] font-mono text-white/40">{result.message || 'No curves with creator fees pending.'}</div>
+          ) : (
+            <div className="space-y-1.5 max-h-60 overflow-y-auto">
+              {result.results.map((row, i) => (
+                <div key={row.curveId ?? i} className="flex items-center justify-between gap-2 py-1 border-b border-white/[0.04]">
+                  <div className="min-w-0 flex items-center gap-1.5">
+                    <span className={`text-[10px] font-mono ${row.ok ? 'text-emerald-400' : 'text-red-400'}`}>{row.ok ? '✓' : '✗'}</span>
+                    <span className="text-[10px] font-mono text-white/70 truncate">
+                      {row.symbol ? `$${row.symbol}` : `${String(row.curveId).slice(0, 10)}…`}
+                    </span>
+                    <span className="text-[9px] font-mono text-white/30">{Number(row.feesSui).toFixed(4)} SUI</span>
+                  </div>
+                  {row.ok ? (
+                    (row.digest || row.executionId) && (
+                      <a href={row.digest ? suiscanTx(row.digest) : suiscanObject(row.executionId)} target="_blank" rel="noreferrer"
+                         className="text-violet-400 hover:text-violet-300 shrink-0"><ExternalLink size={11} /></a>
+                    )
+                  ) : (
+                    <span className="text-[9px] font-mono text-red-400/60 truncate max-w-[40%]">{row.error}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

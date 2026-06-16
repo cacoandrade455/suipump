@@ -65,6 +65,23 @@ function isSniperGoal(goal) {
   return false;
 }
 
+// ── Claim-all intent (deterministic; never hits the LLM) ─────────────────────
+//
+// "claim all (my) creator fees" / "claim everything" / "claim all fees" — a
+// FAN-OUT over every curve the connected (agent) wallet created that has fees
+// pending. Routed to /api/agent-claim-all, which enumerates server-side and
+// fires the claim DAG per curve. Like sniper, this short-circuits before the
+// LLM. ONLY fires when NO specific curve id is pasted: "claim 0xCURVE" stays the
+// normal single-curve claim, preserving the tutorial's "Claim ... on 0xCURVE".
+function isClaimAllGoal(goal, pastedCurveId) {
+  if (pastedCurveId) return false; // a specific CA -> single-curve claim
+  const g = String(goal).toLowerCase();
+  if (!/\bclaim\b/.test(g)) return false;
+  // Requires an "all/every/everything" scope alongside the claim verb.
+  return /\bclaim\b[\s\S]*\b(?:all|every|everything)\b/.test(g)
+      || /\b(?:all|every|everything)\b[\s\S]*\bclaim\b/.test(g);
+}
+
 // All 64-hex object/address ids in the goal -> creator filter list. (A creator is
 // a wallet address; same 0x{60,66} shape as a curve id, so we lift ALL of them
 // and treat them as creators in sniper context.)
@@ -137,6 +154,22 @@ export default async function handler(req, res) {
   // Deterministic extractors (used as fallback / override of the LLM).
   const explicitSui  = extractSuiAmount(goal);   // number | null
   const explicitDesc = extractDescription(goal); // string | null
+
+  // ── CLAIM-ALL short-circuit (deterministic; never hits the LLM) ───────────
+  // Fan-out over every curve the connected (agent) wallet created with fees
+  // pending. Enumeration happens SERVER-SIDE in /api/agent-claim-all (the planner
+  // doesn't know the wallet). Checked BEFORE sniper so claim intent is
+  // unambiguous. A pasted CA suppresses this (handled inside isClaimAllGoal),
+  // so single-curve "claim 0xCURVE" still routes to the normal claim workflow.
+  if (isClaimAllGoal(goal, pastedCurveId)) {
+    return res.status(200).json({
+      plan: {
+        workflow: 'claim_all',
+        claimAll: {},
+        summary: 'Claim creator fees from every curve you created that has fees pending. The agent enumerates your curves and claims each one through Nexus.',
+      },
+    });
+  }
 
   // ── SNIPER short-circuit (deterministic; never hits the LLM) ──────────────
   // Sniper is a standing order keyed on a filter, routed to /api/create-order
