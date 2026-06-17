@@ -668,6 +668,12 @@ export default function AgentPage({ onBack }) {
     }
   }, [goal, clearAnim]);
 
+  // A real curve id is a 0x + 64 hex address. Anything else (a "$ticker", a bare
+  // word the LLM hallucinated into the slot, null) counts as UNRESOLVED.
+  function isRealCurveId(v) {
+    return typeof v === 'string' && /^0x[0-9a-fA-F]{64}$/.test(v.trim());
+  }
+
   // Pull a bare ticker from the goal text ("buy 1 sui of $TEST" / "sell my TEST").
   // Mirrors the planner's symbol marker but also catches a leading $TICKER.
   function extractTickerFromGoal(g) {
@@ -679,15 +685,19 @@ export default function AgentPage({ onBack }) {
     return null;
   }
 
-  // For buy/sell/claim/tpsl/dca plans missing a curveId, resolve by ticker.
+  // For buy/sell/claim/tpsl/dca plans without a REAL curve id, resolve by ticker.
   async function maybeResolveTicker(p) {
     setCandidates(null); setResolvedNote(null);
     if (!p) return;
     const needsCurve = ['buy', 'sell', 'claim', 'tpsl', 'dca'].includes(p.workflow);
     if (!needsCurve) return;
     const slot = p.buy ?? p.sell ?? p.claim ?? p.tpsl ?? p.dca ?? {};
-    if (slot.curveId) return; // already have a curve (pasted CA) — nothing to do
-    const ticker = extractTickerFromGoal(goal);
+    if (isRealCurveId(slot.curveId)) return; // genuine pasted CA — nothing to do
+    // Ticker comes from the goal, or from a hallucinated "$final"/"final" the LLM
+    // dropped into the curveId slot. Clear that bad value so the slot is null.
+    const ticker = extractTickerFromGoal(goal)
+      ?? (typeof slot.curveId === 'string' ? slot.curveId.replace(/^\$/, '').trim() : null);
+    clearBadCurveId();
     if (!ticker) return; // no ticker either — execute() will throw the CA error
     try {
       setResolving(true);
@@ -705,6 +715,19 @@ export default function AgentPage({ onBack }) {
       }
     } catch { /* leave plan unresolved; execute() surfaces the CA error */ }
     finally { setResolving(false); }
+  }
+
+  // Null out a non-real curveId the LLM hallucinated into the slot, so the plan
+  // display shows the picker (not "$final…") and execute() won't try to use it.
+  function clearBadCurveId() {
+    setPlan(prev => {
+      if (!prev) return prev;
+      const next = { ...prev };
+      for (const k of ['buy', 'sell', 'claim', 'tpsl', 'dca']) {
+        if (next[k] && !isRealCurveId(next[k].curveId)) next[k] = { ...next[k], curveId: null };
+      }
+      return next;
+    });
   }
 
   // Inject a chosen curve id into whichever slot the current plan uses.
