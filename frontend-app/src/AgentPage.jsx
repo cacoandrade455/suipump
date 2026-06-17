@@ -136,31 +136,26 @@ const suiscanTx     = (d)  => `https://suiscan.xyz/testnet/tx/${d}`;
 
 const GRAD = { 0: 'Cetus', 1: 'DeepBook', 2: 'Turbos' };
 
-// Token avatar with graceful fallback: if the icon URL is missing or fails to
-// load, show a lettered placeholder instead of the browser's broken-image glyph.
+// Token avatar with the app's standard fallback: if the icon URL is missing or
+// fails to load, show the 🔥 placeholder (same convention as TokenCard / token
+// header). Symbol kept in the signature for the alt text only.
 function TokenIcon({ url, symbol, size = 28 }) {
   const [failed, setFailed] = useState(false);
   const dim = { width: size, height: size };
-  if (!url || failed) {
-    return (
-      <div
-        style={dim}
-        className="rounded-full flex-shrink-0 bg-violet-400/15 border border-violet-400/20 flex items-center justify-center"
-      >
-        <span className="text-[10px] font-mono font-bold text-violet-300/70">
-          {(symbol || '?').slice(0, 1).toUpperCase()}
-        </span>
-      </div>
-    );
-  }
   return (
-    <img
-      src={url}
-      alt=""
+    <div
       style={dim}
-      onError={() => setFailed(true)}
-      className="rounded-full flex-shrink-0 object-cover bg-black/40"
-    />
+      className="rounded-full flex-shrink-0 overflow-hidden bg-white/[0.06] flex items-center justify-center"
+    >
+      {url && !failed
+        ? <img
+            src={url}
+            alt={symbol || ''}
+            onError={() => setFailed(true)}
+            className="w-full h-full object-cover"
+          />
+        : <span className="text-sm leading-none">🔥</span>}
+    </div>
   );
 }
 
