@@ -136,6 +136,34 @@ const suiscanTx     = (d)  => `https://suiscan.xyz/testnet/tx/${d}`;
 
 const GRAD = { 0: 'Cetus', 1: 'DeepBook', 2: 'Turbos' };
 
+// Token avatar with graceful fallback: if the icon URL is missing or fails to
+// load, show a lettered placeholder instead of the browser's broken-image glyph.
+function TokenIcon({ url, symbol, size = 28 }) {
+  const [failed, setFailed] = useState(false);
+  const dim = { width: size, height: size };
+  if (!url || failed) {
+    return (
+      <div
+        style={dim}
+        className="rounded-full flex-shrink-0 bg-violet-400/15 border border-violet-400/20 flex items-center justify-center"
+      >
+        <span className="text-[10px] font-mono font-bold text-violet-300/70">
+          {(symbol || '?').slice(0, 1).toUpperCase()}
+        </span>
+      </div>
+    );
+  }
+  return (
+    <img
+      src={url}
+      alt=""
+      style={dim}
+      onError={() => setFailed(true)}
+      className="rounded-full flex-shrink-0 object-cover bg-black/40"
+    />
+  );
+}
+
 // Tool node metadata per workflow — drives the execution animation.
 const WORKFLOW_NODES = {
   launch_and_buy: [
@@ -1505,9 +1533,7 @@ export default function AgentPage({ onBack }) {
                     onClick={() => choosePick(c)}
                     className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border border-white/10 bg-white/[0.02] hover:bg-violet-400/[0.08] hover:border-violet-400/40 transition-all text-left"
                   >
-                    {c.iconUrl
-                      ? <img src={c.iconUrl} alt="" className="w-7 h-7 rounded-full flex-shrink-0 object-cover" />
-                      : <div className="w-7 h-7 rounded-full bg-white/10 flex-shrink-0" />}
+                    <TokenIcon url={c.iconUrl} symbol={c.symbol} />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-1.5">
                         <span className="text-[12px] font-mono font-bold text-white/90">${c.symbol}</span>
@@ -1529,9 +1555,7 @@ export default function AgentPage({ onBack }) {
           {/* Single match auto-resolved — shown for confirmation (b-soft). */}
           {resolvedNote && (
             <div className="mb-4 flex items-center gap-3 px-3 py-2.5 rounded-lg border border-violet-400/25 bg-violet-400/[0.05]">
-              {resolvedNote.iconUrl
-                ? <img src={resolvedNote.iconUrl} alt="" className="w-7 h-7 rounded-full flex-shrink-0 object-cover" />
-                : <div className="w-7 h-7 rounded-full bg-white/10 flex-shrink-0" />}
+              <TokenIcon url={resolvedNote.iconUrl} symbol={resolvedNote.symbol} />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-1.5">
                   <span className="text-[8px] font-mono text-violet-400/70 tracking-widest">RESOLVED</span>
