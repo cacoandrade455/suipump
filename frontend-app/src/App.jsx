@@ -923,6 +923,7 @@ function Header({ onLaunch, lang, setLang, onToggleFeed, showFeed, onStrategies 
             </Link>
           )}
           <WalletButton size="md" lang={lang} />
+          <NotificationBell walletAddress={account?.address} />
         </div>
 
         {/* Mobile right */}
