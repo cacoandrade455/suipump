@@ -556,6 +556,14 @@ export default function AgentPage({ onBack }) {
   const [plan, setPlan]         = useState(null);
   const [error, setError]       = useState(null);
 
+  // Ticker disambiguation: when a buy/sell/claim plan has no curve id (the user
+  // named a token by ticker, not a pasted CA), we resolve via the indexer.
+  // candidates = matches awaiting a pick (2+); resolvedNote = the auto-resolved
+  // single match shown for confirmation (b-soft). Both cleared on re-plan.
+  const [candidates, setCandidates]   = useState(null); // null = none pending; [] handled as 0
+  const [resolvedNote, setResolvedNote] = useState(null); // {symbol, ...stats} for single match
+  const [resolving, setResolving]     = useState(false);
+
   const [phase, setPhase]         = useState('idle'); // idle | running | done | failed
   const [nodeState, setNodeState] = useState({});
   const [result, setResult]       = useState(null);
@@ -619,6 +627,7 @@ export default function AgentPage({ onBack }) {
   const makePlan = useCallback(async () => {
     if (!goal.trim()) return;
     setPlanning(true); setError(null); setPlan(null); setResult(null);
+    setCandidates(null); setResolvedNote(null);
     setNodeState({}); setPhase('idle'); clearAnim();
     try {
       // Strategy goals (take-profit / stop-loss) are standing orders, not one-shot
@@ -647,12 +656,77 @@ export default function AgentPage({ onBack }) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Planning failed');
       setPlan(data.plan);
+      // If this is an existing-curve action with no curve id, the user named the
+      // token by ticker. Resolve it via the indexer: 1 match -> auto-fill + show
+      // a confirmation note (b-soft); 2+ -> open the picker; 0 -> leave as-is so
+      // the existing "paste the CA" error fires on execute.
+      await maybeResolveTicker(data.plan);
     } catch (err) {
       setError(err.message);
     } finally {
       setPlanning(false);
     }
   }, [goal, clearAnim]);
+
+  // Pull a bare ticker from the goal text ("buy 1 sui of $TEST" / "sell my TEST").
+  // Mirrors the planner's symbol marker but also catches a leading $TICKER.
+  function extractTickerFromGoal(g) {
+    if (!g) return null;
+    const dollar = g.match(/\$([a-z0-9]{1,12})\b/i);
+    if (dollar) return dollar[1];
+    const marked = g.match(/(?:symbol|ticker)\s*[:\-]?\s*([a-z0-9]{1,12})/i);
+    if (marked) return marked[1];
+    return null;
+  }
+
+  // For buy/sell/claim/tpsl/dca plans missing a curveId, resolve by ticker.
+  async function maybeResolveTicker(p) {
+    setCandidates(null); setResolvedNote(null);
+    if (!p) return;
+    const needsCurve = ['buy', 'sell', 'claim', 'tpsl', 'dca'].includes(p.workflow);
+    if (!needsCurve) return;
+    const slot = p.buy ?? p.sell ?? p.claim ?? p.tpsl ?? p.dca ?? {};
+    if (slot.curveId) return; // already have a curve (pasted CA) — nothing to do
+    const ticker = extractTickerFromGoal(goal);
+    if (!ticker) return; // no ticker either — execute() will throw the CA error
+    try {
+      setResolving(true);
+      const r = await fetch(`${INDEXER_URL}/search/by-symbol/${encodeURIComponent(ticker)}`, { signal: AbortSignal.timeout(6000) });
+      if (!r.ok) return;
+      const matches = await r.json();
+      if (!Array.isArray(matches) || matches.length === 0) return; // 0 -> CA error later
+      if (matches.length === 1) {
+        applyCurveToPlan(matches[0].curveId);
+        setResolvedNote(matches[0]); // b-soft: show what got resolved
+      } else {
+        // Strongest first so the obvious pick is on top: mcap, then volume.
+        matches.sort((a, b) => (b.marketCapSui - a.marketCapSui) || (b.volumeSui - a.volumeSui));
+        setCandidates(matches);
+      }
+    } catch { /* leave plan unresolved; execute() surfaces the CA error */ }
+    finally { setResolving(false); }
+  }
+
+  // Inject a chosen curve id into whichever slot the current plan uses.
+  function applyCurveToPlan(curveId) {
+    setPlan(prev => {
+      if (!prev) return prev;
+      const next = { ...prev };
+      if (next.buy)   next.buy   = { ...next.buy,   curveId };
+      if (next.sell)  next.sell  = { ...next.sell,  curveId };
+      if (next.claim) next.claim = { ...next.claim, curveId };
+      if (next.tpsl)  next.tpsl  = { ...next.tpsl,  curveId };
+      if (next.dca)   next.dca   = { ...next.dca,   curveId };
+      return next;
+    });
+  }
+
+  // User picked a candidate from the disambiguation list.
+  function choosePick(c) {
+    applyCurveToPlan(c.curveId);
+    setResolvedNote(c);
+    setCandidates(null);
+  }
 
   // ── Runtime resolvers (browser supplies what the planner can't) ───────────
 
@@ -1388,12 +1462,70 @@ export default function AgentPage({ onBack }) {
         <div className="border border-violet-400/20 rounded-xl p-4 bg-violet-400/[0.03] mb-4">
           <div className="text-[10px] font-mono text-violet-400/70 tracking-widest mb-2">AGENT PLAN</div>
           <p className="text-[12px] font-mono text-white/80 mb-3 leading-relaxed">{isBareLaunch(plan) ? `Launch ${plan.launch?.name ?? 'token'} ($${plan.launch?.symbol ?? ''}) on the bonding curve.` : plan.summary}</p>
+
+          {resolving && (
+            <div className="text-[10px] font-mono text-white/40 mb-3 flex items-center gap-2">
+              <Loader size={11} className="animate-spin text-violet-400" /> Finding matching tokens…
+            </div>
+          )}
+
+          {/* Ticker disambiguation — multiple tokens share this ticker; pick one. */}
+          {candidates && candidates.length > 1 && (
+            <div className="mb-4">
+              <div className="text-[10px] font-mono text-amber-400/80 tracking-widest mb-2">
+                MULTIPLE TOKENS MATCH — PICK ONE
+              </div>
+              <div className="space-y-1.5 max-h-72 overflow-y-auto">
+                {candidates.map(c => (
+                  <button
+                    key={c.curveId}
+                    onClick={() => choosePick(c)}
+                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border border-white/10 bg-white/[0.02] hover:bg-violet-400/[0.08] hover:border-violet-400/40 transition-all text-left"
+                  >
+                    {c.iconUrl
+                      ? <img src={c.iconUrl} alt="" className="w-7 h-7 rounded-full flex-shrink-0 object-cover" />
+                      : <div className="w-7 h-7 rounded-full bg-white/10 flex-shrink-0" />}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[12px] font-mono font-bold text-white/90">${c.symbol}</span>
+                        <span className="text-[8px] font-mono text-violet-400/60 tracking-wider">{GRAD[c.graduationTarget] ?? ''}</span>
+                      </div>
+                      <div className="text-[9px] font-mono text-white/40 truncate">{c.name}</div>
+                    </div>
+                    <div className="text-right flex-shrink-0">
+                      <div className="text-[10px] font-mono text-lime-400/80">{c.marketCapSui >= 1000 ? `${(c.marketCapSui/1000).toFixed(1)}K` : c.marketCapSui.toFixed(1)} SUI mcap</div>
+                      <div className="text-[8.5px] font-mono text-white/35">{c.volumeSui.toFixed(1)} vol · {c.holders} holder{c.holders === 1 ? '' : 's'}</div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+              <div className="text-[8.5px] font-mono text-white/25 mt-1.5">Curve address resolved from your pick — the agent acts on the exact token you choose.</div>
+            </div>
+          )}
+
+          {/* Single match auto-resolved — shown for confirmation (b-soft). */}
+          {resolvedNote && (
+            <div className="mb-4 flex items-center gap-3 px-3 py-2.5 rounded-lg border border-violet-400/25 bg-violet-400/[0.05]">
+              {resolvedNote.iconUrl
+                ? <img src={resolvedNote.iconUrl} alt="" className="w-7 h-7 rounded-full flex-shrink-0 object-cover" />
+                : <div className="w-7 h-7 rounded-full bg-white/10 flex-shrink-0" />}
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[8px] font-mono text-violet-400/70 tracking-widest">RESOLVED</span>
+                  <span className="text-[12px] font-mono font-bold text-white/90">${resolvedNote.symbol}</span>
+                  <span className="text-[8px] font-mono text-violet-400/60 tracking-wider">{GRAD[resolvedNote.graduationTarget] ?? ''}</span>
+                </div>
+                <div className="text-[8.5px] font-mono text-white/40">{resolvedNote.marketCapSui >= 1000 ? `${(resolvedNote.marketCapSui/1000).toFixed(1)}K` : resolvedNote.marketCapSui.toFixed(1)} SUI mcap · {resolvedNote.volumeSui.toFixed(1)} vol · {resolvedNote.holders} holder{resolvedNote.holders === 1 ? '' : 's'}</div>
+              </div>
+            </div>
+          )}
+
           <div className="grid grid-cols-2 gap-2 text-[10px] font-mono text-white/45 mb-4">
             {planRows(plan).map(([k, v]) => (
               <div key={k}>{k}: <span className="text-white/80">{v}</span></div>
             ))}
           </div>
-          {(phase === 'idle' || phase === 'failed') && (
+          {(phase === 'idle' || phase === 'failed') && !(candidates && candidates.length > 1) && (
             <button
               onClick={approve}
               className="w-full text-[11px] font-mono font-bold tracking-widest px-4 py-3 rounded-lg bg-violet-500 text-white hover:bg-violet-400 transition-colors flex items-center justify-center gap-2"

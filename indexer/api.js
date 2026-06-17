@@ -770,6 +770,77 @@ app.get('/wallet/:address/notifications', (req, res) => {
   res.json([...list].sort((a, b) => b.timestamp - a.timestamp));
 });
 
+// ── Agent ticker disambiguation ───────────────────────────────────────────────
+// GET /search/by-symbol/:symbol — all non-graduated curves whose symbol matches
+// (case-insensitive), each with the stats the agent's token picker needs: market
+// cap (same getVirtuals + priceFromReserve math as the token header), 24h-ish
+// volume, and a live holder count. Used when an agent goal names a token by
+// ticker ("$TEST") instead of pasting a curve id — the UI resolves the real
+// curve from the candidates here. Returned newest-first; mcap/volume break ties
+// client-side. Holder count is computed per candidate (netted buys − sells).
+const TOTAL_SUPPLY_WHOLE = 1_000_000_000;
+app.get('/search/by-symbol/:symbol', async (req, res) => {
+  try {
+    const sym = String(req.params.symbol || '').replace(/^\$/, '').trim();
+    if (!sym) return res.json([]);
+    const TOK = 1_000_000;
+    // Candidate curves matching the ticker (case-insensitive). Exclude graduated
+    // (you can't curve-trade a graduated token). Join stats for volume/reserve.
+    const curvesRes = await pool.query(
+      `SELECT c.curve_id, c.name, c.symbol, c.icon_url, c.package_id,
+              c.graduation_target, c.created_at, c.graduated,
+              ts.volume_sui, ts.reserve_sui, ts.trades
+         FROM curves c
+         LEFT JOIN token_stats ts ON ts.curve_id = c.curve_id
+        WHERE lower(c.symbol) = lower($1)
+          AND COALESCE(c.graduated, false) = false
+        ORDER BY c.created_at DESC
+        LIMIT 25`,
+      [sym]
+    );
+    if (!curvesRes.rows.length) return res.json([]);
+
+    // Holder counts for all candidates in one pass (netted balances > dust).
+    const ids = curvesRes.rows.map(r => r.curve_id);
+    const holdersRes = await pool.query(
+      `SELECT curve_id, addr, SUM(toks) AS bal FROM (
+         SELECT curve_id, data->>'buyer'  AS addr,  (data->>'tokens_out')::float AS toks
+           FROM events WHERE curve_id = ANY($1)
+             AND (event_type LIKE '%TokensPurchased' OR event_type LIKE '%TokensBought')
+         UNION ALL
+         SELECT curve_id, data->>'seller' AS addr, -(data->>'tokens_in')::float AS toks
+           FROM events WHERE curve_id = ANY($1)
+             AND event_type LIKE '%TokensSold'
+       ) t WHERE addr IS NOT NULL GROUP BY curve_id, addr`,
+      [ids]
+    );
+    const holderCount = {};
+    for (const r of holdersRes.rows) {
+      if (Number(r.bal) / TOK > 0.0001) holderCount[r.curve_id] = (holderCount[r.curve_id] ?? 0) + 1;
+    }
+
+    const out = curvesRes.rows.map(r => {
+      const { vSui, vTok } = getVirtuals(r.package_id);
+      const price = priceFromReserve(vSui, vTok, Number(r.reserve_sui ?? 0) * MIST);
+      const mcapSui = price * TOTAL_SUPPLY_WHOLE;
+      return {
+        curveId:          r.curve_id,
+        name:             r.name,
+        symbol:           r.symbol,
+        iconUrl:          r.icon_url ?? null,
+        packageId:        r.package_id,
+        graduationTarget: r.graduation_target,
+        createdAt:        r.created_at,
+        marketCapSui:     mcapSui,
+        volumeSui:        Number(r.volume_sui ?? 0),
+        trades:           Number(r.trades ?? 0),
+        holders:          holderCount[r.curve_id] ?? 0,
+      };
+    });
+    res.json(out);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 export function startApi() {
   app.listen(PORT, () => console.log(`  ✓ API listening on port ${PORT}`));
   startPgListener().catch(err => console.error('PG listener failed:', err.message));
