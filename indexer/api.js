@@ -652,6 +652,124 @@ async function startPgListener() {
   } catch (err) { console.error('  PG listener connect failed:', err.message); setTimeout(startPgListener, 5_000); }
 }
 
+// ── Agent notifications ───────────────────────────────────────────────────────
+// Two sources feed the notification bell:
+//   (1) /wallet/:address/activity — buy/sell/launch events read straight from the
+//       events table (these carry amounts + symbol natively, no extra store).
+//   (2) POST /notify + GET /wallet/:address/notifications — a small in-memory
+//       store for events whose MEANING isn't on-chain: TP/SL fires (the trigger
+//       reason TP vs SL is only known to the strategy runner) and claim amounts
+//       (computed by the bridge from balanceChanges, forwarded by the claim proxy).
+// The bell merges (1) + (2) with the existing comment/graduation notifications.
+
+// GET /wallet/:address/activity?limit= — an address's own buy/sell/launch events,
+// newest first, joined to symbol/name. Used with the AGENT wallet to surface
+// "agent bought/sold/launched" with real amounts.
+app.get('/wallet/:address/activity', async (req, res) => {
+  try {
+    const { address } = req.params;
+    const limit = Math.min(parseInt(req.query.limit || '40'), 100);
+    const MIST_L = 1_000_000_000, TOK = 1_000_000;
+
+    // Trades (buy + sell) where this wallet is buyer/seller, plus launches it created.
+    const [tradeRes, launchRes] = await Promise.all([
+      pool.query(
+        `SELECT e.tx_digest, e.event_type, e.curve_id, e.timestamp_ms, e.data,
+                c.name, c.symbol
+           FROM events e
+           LEFT JOIN curves c ON c.curve_id = e.curve_id
+          WHERE ( (e.event_type LIKE '%TokensPurchased' OR e.event_type LIKE '%TokensBought')
+                   AND e.data->>'buyer'  = $1 )
+             OR ( e.event_type LIKE '%TokensSold' AND e.data->>'seller' = $1 )
+          ORDER BY e.timestamp_ms DESC
+          LIMIT $2`,
+        [address, limit]
+      ),
+      pool.query(
+        `SELECT e.tx_digest, e.curve_id, e.timestamp_ms, c.name, c.symbol
+           FROM events e
+           LEFT JOIN curves c ON c.curve_id = e.curve_id
+          WHERE e.event_type LIKE '%CurveCreated'
+            AND lower(c.creator) = lower($1)
+          ORDER BY e.timestamp_ms DESC
+          LIMIT $2`,
+        [address, limit]
+      ),
+    ]);
+
+    const out = [];
+    for (const r of tradeRes.rows) {
+      const isSell = /TokensSold/i.test(r.event_type);
+      const d = r.data ?? {};
+      out.push({
+        id: `${r.tx_digest}_${isSell ? 'sell' : 'buy'}`,
+        type: isSell ? 'agent_sell' : 'agent_buy',
+        curveId: r.curve_id,
+        symbol: r.symbol ?? null,
+        sui: isSell ? Number(d.sui_out ?? 0) / MIST_L : Number(d.sui_in ?? 0) / MIST_L,
+        tokens: isSell ? Number(d.tokens_in ?? 0) / TOK : Number(d.tokens_out ?? 0) / TOK,
+        digest: r.tx_digest,
+        timestamp: Number(r.timestamp_ms ?? 0),
+      });
+    }
+    for (const r of launchRes.rows) {
+      out.push({
+        id: `${r.tx_digest}_launch`,
+        type: 'agent_launch',
+        curveId: r.curve_id,
+        symbol: r.symbol ?? null,
+        sui: 0, tokens: 0,
+        digest: r.tx_digest,
+        timestamp: Number(r.timestamp_ms ?? 0),
+      });
+    }
+    out.sort((a, b) => b.timestamp - a.timestamp);
+    res.json(out.slice(0, limit));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// In-memory notification store for agent fires whose meaning isn't on-chain
+// (TP/SL trigger reason; claim amount). Keyed by wallet, capped, newest-last.
+// Mirrors the agentRuns pattern — self-contained, no schema change.
+const agentNotifs = new Map();   // wallet(lowercase) -> [ {id,type,...} ]
+const MAX_NOTIFS_PER_WALLET = 60;
+
+// POST /notify — agent processes (strategy runner, claim proxy) push events here.
+// Body: { wallet, type, curveId?, symbol?, trigger?, tokens?, sui?, digest?, id? }
+//   type 'tpsl'  → trigger 'TP'|'SL', tokens sold
+//   type 'claim' → sui claimed
+app.post('/notify', (req, res) => {
+  try {
+    const b = req.body ?? {};
+    const wallet = String(b.wallet ?? '').toLowerCase();
+    if (!wallet || !b.type) return res.status(400).json({ error: 'wallet and type required' });
+    const rec = {
+      id:        b.id ?? `${b.digest ?? 'nd'}_${b.type}_${b.trigger ?? ''}_${Date.now()}`,
+      type:      String(b.type),                       // 'tpsl' | 'claim'
+      curveId:   b.curveId ?? null,
+      symbol:    b.symbol ?? null,
+      trigger:   b.trigger ?? null,                    // 'TP' | 'SL' (tpsl only)
+      tokens:    b.tokens != null ? Number(b.tokens) : null,
+      sui:       b.sui != null ? Number(b.sui) : null, // claim amount, or sell proceeds
+      digest:    b.digest ?? null,
+      timestamp: b.timestamp != null ? Number(b.timestamp) : Date.now(),
+    };
+    const list = agentNotifs.get(wallet) ?? [];
+    if (!list.some(n => n.id === rec.id)) {            // dedup by id
+      list.push(rec);
+      while (list.length > MAX_NOTIFS_PER_WALLET) list.shift();
+      agentNotifs.set(wallet, list);
+    }
+    res.json({ ok: true, id: rec.id });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /wallet/:address/notifications — the stored tpsl/claim fires for a wallet.
+app.get('/wallet/:address/notifications', (req, res) => {
+  const list = agentNotifs.get(String(req.params.address).toLowerCase()) ?? [];
+  res.json([...list].sort((a, b) => b.timestamp - a.timestamp));
+});
+
 export function startApi() {
   app.listen(PORT, () => console.log(`  ✓ API listening on port ${PORT}`));
   startPgListener().catch(err => console.error('PG listener failed:', err.message));

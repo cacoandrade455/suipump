@@ -95,7 +95,25 @@ export default async function handler(req, res) {
         const suiClaimed = (d.suiClaimed != null && d.suiClaimed !== 'unknown')
           ? Number(d.suiClaimed)
           : null;
-        if (ok) { claimedCount++; totalFeesSui += (suiClaimed ?? c.feesSuiEst); }
+        if (ok) {
+          claimedCount++;
+          totalFeesSui += (suiClaimed ?? c.feesSuiEst);
+          // Push a notification with the REAL on-chain claimed amount so the bell
+          // shows "Agent claimed X SUI on $SYMBOL". Best-effort; never blocks claim.
+          fetch(`${INDEXER_URL}/notify`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              wallet:  creatorAddress,
+              type:    'claim',
+              curveId: c.curveId,
+              symbol:  c.symbol,
+              sui:     suiClaimed ?? c.feesSuiEst,
+              digest:  txDigest,
+            }),
+            signal: AbortSignal.timeout(6000),
+          }).catch(() => {});
+        }
         results.push({
           curveId:  c.curveId,
           symbol:   c.symbol,

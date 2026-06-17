@@ -493,6 +493,11 @@ function MobileWalletButtons() {
 }
 
 // ── Notifications ─────────────────────────────────────────────────────────────
+// The autonomous agent executes from this wallet. Agent activity (buy/sell/launch/
+// claim/TP/SL) is surfaced in the bell alongside the existing comment + graduation
+// notifications on the user's own tokens.
+const AGENT_WALLET = '0x877af0fae3fa4f8ea936943b59bcd66104f67cf1895302e97761a28b3c3a5906';
+
 function useNotifications(walletAddress) {
   const [notifications, setNotifications] = useState([]);
   const [unread, setUnread] = useState(0);
@@ -505,14 +510,13 @@ function useNotifications(walletAddress) {
 
     async function load() {
       try {
-        const tokensRes = await fetch(`${IURL}/tokens?creator=${walletAddress}`, { signal: AbortSignal.timeout(5000) });
-        if (!tokensRes.ok) return;
-        const myTokens = await tokensRes.json();
-        const myCurveIds = new Set(myTokens.map(t => t.curveId).filter(Boolean));
+        const tokensRes = await fetch(`${IURL}/tokens?creator=${walletAddress}`, { signal: AbortSignal.timeout(5000) }).catch(() => null);
+        const myTokens = tokensRes && tokensRes.ok ? await tokensRes.json().catch(() => []) : [];
+        const myCurveIds = new Set((Array.isArray(myTokens) ? myTokens : []).map(t => t.curveId).filter(Boolean));
 
-        if (myCurveIds.size === 0) { if (!cancelled) setNotifications([]); return; }
-
-        const commentResults = await Promise.all(
+        // Comment + graduation notifications only exist if the user created tokens.
+        // Agent notifications (below) load regardless, so we no longer early-return.
+        const commentResults = myCurveIds.size === 0 ? [] : await Promise.all(
           [...myCurveIds].slice(0, 10).map(cid =>
             fetch(`${IURL}/token/${cid}/comments`, { signal: AbortSignal.timeout(5000) })
               .then(r => r.ok ? r.json() : [])
@@ -540,9 +544,35 @@ function useNotifications(walletAddress) {
         const allComments = commentResults.flat().filter(c => c.author !== walletAddress);
         const allGrads = gradResults.flat();
 
-        const relevant = [...allComments, ...allGrads]
+        // Agent activity — buy/sell/launch from the events table (real amounts +
+        // symbol) and tpsl/claim fires from the notify store (trigger reason +
+        // claim amount). Agent-only: always queried for AGENT_WALLET. Best-effort;
+        // a failure here must not drop the comment/graduation notifications.
+        const [agentActivity, agentNotifs] = await Promise.all([
+          fetch(`${IURL}/wallet/${AGENT_WALLET}/activity?limit=40`, { signal: AbortSignal.timeout(5000) })
+            .then(r => r.ok ? r.json() : []).catch(() => []),
+          fetch(`${IURL}/wallet/${AGENT_WALLET}/notifications`, { signal: AbortSignal.timeout(5000) })
+            .then(r => r.ok ? r.json() : []).catch(() => []),
+        ]);
+        const agentItems = [
+          ...(Array.isArray(agentActivity) ? agentActivity : []),
+          ...(Array.isArray(agentNotifs) ? agentNotifs : []),
+        ].map(a => ({
+          id: a.id,
+          type: a.type,                // agent_buy | agent_sell | agent_launch | tpsl | claim
+          curveId: a.curveId,
+          symbol: a.symbol ?? null,
+          sui: a.sui ?? null,
+          tokens: a.tokens ?? null,
+          trigger: a.trigger ?? null,  // 'TP' | 'SL'
+          author: null,
+          text: null,
+          timestamp: a.timestamp ?? 0,
+        }));
+
+        const relevant = [...allComments, ...allGrads, ...agentItems]
           .sort((a, b) => b.timestamp - a.timestamp)
-          .slice(0, 20);
+          .slice(0, 30);
 
         if (!cancelled) {
           setNotifications(relevant);
@@ -600,6 +630,34 @@ function NotificationBell({ walletAddress }) {
     return addr.slice(0, 6) + '…' + addr.slice(-4);
   }
 
+  const AGENT_TYPES = new Set(['agent_buy', 'agent_sell', 'agent_launch', 'tpsl', 'claim']);
+  function fmtNum(n, d = 2) {
+    if (n == null || isNaN(n)) return '';
+    if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + 'M';
+    if (n >= 1_000) return (n / 1_000).toFixed(2) + 'K';
+    return Number(n).toFixed(d);
+  }
+  // Returns { icon, title } for an agent notification.
+  function agentMsg(n) {
+    const sym = n.symbol ? `$${n.symbol}` : 'token';
+    switch (n.type) {
+      case 'agent_launch':
+        return { icon: '🚀', title: `Agent launched ${sym}` };
+      case 'agent_buy':
+        return { icon: '🟢', title: `Agent bought ${fmtNum(n.sui, 2)} SUI of ${sym} for ${fmtNum(n.tokens, 0)} ${n.symbol || ''}`.trim() };
+      case 'agent_sell':
+        return { icon: '🔴', title: `Agent sold ${fmtNum(n.tokens, 0)} ${n.symbol || ''} for ${fmtNum(n.sui, 2)} SUI`.replace(/\s+/g, ' ').trim() };
+      case 'claim':
+        return { icon: '💰', title: `Agent claimed ${fmtNum(n.sui, 4)} SUI in fees${n.symbol ? ` on ${sym}` : ''}` };
+      case 'tpsl':
+        return n.trigger === 'SL'
+          ? { icon: '🛑', title: `SL triggered — sold ${fmtNum(n.tokens, 0)} ${n.symbol || ''}`.trim() }
+          : { icon: '🎯', title: `TP triggered — sold ${fmtNum(n.tokens, 0)} ${n.symbol || ''}`.trim() };
+      default:
+        return { icon: '🤖', title: 'Agent action' };
+    }
+  }
+
   if (!walletAddress) return null;
 
   return (
@@ -627,7 +685,7 @@ function NotificationBell({ walletAddress }) {
           </div>
           {notifications.length === 0 ? (
             <div className="px-4 py-8 text-center text-white/25 text-xs font-mono">
-              No comments on your tokens yet
+              No notifications yet
             </div>
           ) : (
             <div className="max-h-80 overflow-y-auto divide-y divide-white/5">
@@ -637,7 +695,18 @@ function NotificationBell({ walletAddress }) {
                   onClick={() => { navigate(`/token/${n.curveId}`); setOpen(false); }}
                   className="w-full px-4 py-3 text-left hover:bg-white/[0.03] transition-colors"
                 >
-                  {n.type === 'graduated' ? (
+                  {AGENT_TYPES.has(n.type) ? (
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="text-base flex-shrink-0">{agentMsg(n).icon}</span>
+                        <div className="min-w-0">
+                          <p className="text-xs font-mono text-white/80 leading-snug">{agentMsg(n).title}</p>
+                          <p className="text-[9px] font-mono text-violet-400/70 mt-0.5">AGENT</p>
+                        </div>
+                      </div>
+                      <span className="text-[10px] font-mono text-white/25 flex-shrink-0">{timeAgo(n.timestamp)}</span>
+                    </div>
+                  ) : n.type === 'graduated' ? (
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-2">
                         <span className="text-base">🎓</span>

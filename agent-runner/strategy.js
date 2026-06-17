@@ -164,7 +164,21 @@ async function recordFire(order, fire) {
   await persistParams(order);
 }
 
-// spawnChild — after a buy-strategy (sniper / dca / copytrade) buys a curve,
+// notifyBell — push a TP/SL fire to the indexer notification store so it surfaces
+// in the user's notification bell as "TP triggered" / "SL triggered". Best-effort:
+// a failed notify must never affect the trade. The trigger reason ('TP'|'SL') is
+// only known here (the on-chain sell event can't distinguish them), which is why
+// this is posted from the runner, not derived from chain.
+async function notifyBell(payload) {
+  try {
+    await fetch(`${INDEXER_URL}/notify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ wallet: INVOKER_ADDRESS, ...payload }),
+      signal: AbortSignal.timeout(6000),
+    });
+  } catch (e) { err(`notifyBell failed: ${e.message}`); }
+}
 // optionally arm a CHILD strategy on that curve, seeded at the real post-buy
 // price. This is the generalized `then` composition: a parent buy chains into
 // a child order the engine then tracks independently.
@@ -630,6 +644,15 @@ async function processOrder(order) {
     }
     await persistOrder(order); // persist immediately so a restart resumes correctly
     await recordFire(order, { kind: 'sell', curveId: order.curveId, nexusExec: receipt.nexusExecutionId ?? null, nexusDigest: receipt.nexusDigest ?? null, settle: receipt.txDigest ?? null });
+    // Surface the fire in the notification bell, labelled by WHY it fired
+    // (TP vs SL) — only known here. tokens = confirmed on-chain amount moved.
+    await notifyBell({
+      type:    'tpsl',
+      trigger: action.kind,                 // 'TP' | 'SL'
+      curveId: order.curveId,
+      tokens:  moved,
+      digest:  receipt.txDigest ?? null,
+    });
     if (order.done) break;
   }
 
