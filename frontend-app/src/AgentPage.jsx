@@ -25,8 +25,8 @@ const suiscanObject = (id) => `https://suiscan.xyz/testnet/object/${id}`;
 // Published Nexus DAG IDs each strategy executes through (testnet). Shown on the
 // plan/result so the on-chain orchestration path is visible at arm time.
 const NEXUS_DAG = {
-  buy:  '0xf59d689bc1697ddc03e8ca3363ed93eb71c8c3ada1011b6a23eb83c0bef22831',
-  sell: '0x73db18930ab13894e46279fbf8ef2700dd8772aac566021abf5214df9fa43d68',
+  buy:  '0x922f29c5a198503c83cf1cbd26193ed8255fdf5e5a6bb1f1843b8bc3994eb403',
+  sell: '0xb48c4b8e5a68941af3a91169ebec81f6046b0e4fc58f6443c4013f6b6f13995d',
 };
 const WORKFLOW_DAGS = {
   sniper:    ['buy'],
