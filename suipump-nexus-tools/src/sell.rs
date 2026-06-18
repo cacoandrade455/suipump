@@ -50,6 +50,7 @@ async fn execute_sell(input: SellInput) -> AnyResult<SellOutput> {
         .map_err(|_| anyhow::anyhow!("SUI_PRIVATE_KEY not set"))?;
     let rpc = std::env::var("SUI_RPC_URL")
         .unwrap_or_else(|_| "https://fullnode.testnet.sui.io".to_string());
+    let agent_key = std::env::var("AGENT_API_KEY").unwrap_or_default();
 
     // Field names match bridge.js handleSell exactly:
     //   { curveId, tokenAmount, minSuiOut, referral, rpcUrl, privateKey }
@@ -59,6 +60,7 @@ async fn execute_sell(input: SellInput) -> AnyResult<SellOutput> {
     // So we send WHOLE tokens and do NOT pre-multiply.
     let resp = reqwest::Client::new()
         .post(format!("{}/sell", bridge))
+        .header("x-agent-key", agent_key)
         .json(&serde_json::json!({
             "curveId":    input.curve_id,
             "tokenAmount": input.token_amount,

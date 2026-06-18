@@ -47,6 +47,7 @@ async fn execute_claim(input: ClaimInput) -> AnyResult<ClaimOutput> {
         .unwrap_or_else(|_| "https://fullnode.testnet.sui.io".to_string());
     let indexer = std::env::var("SUIPUMP_INDEXER_URL")
         .unwrap_or_else(|_| "https://suipump-62s2.onrender.com".to_string());
+    let agent_key = std::env::var("AGENT_API_KEY").unwrap_or_default();
 
     // Check pending fees first
     let stats = reqwest::get(format!("{}/token/{}/stats", indexer, input.curve_id))
@@ -64,6 +65,7 @@ async fn execute_claim(input: ClaimInput) -> AnyResult<ClaimOutput> {
 
     let resp = reqwest::Client::new()
         .post(format!("{}/claim", bridge))
+        .header("x-agent-key", agent_key)
         .json(&serde_json::json!({
             "curveId": input.curve_id,
             "tokenType": input.token_type,

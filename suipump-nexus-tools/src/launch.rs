@@ -52,6 +52,7 @@ async fn execute_launch(input: LaunchInput) -> AnyResult<LaunchOutput> {
         .map_err(|_| anyhow::anyhow!("SUI_PRIVATE_KEY not set"))?;
     let rpc = std::env::var("SUI_RPC_URL")
         .unwrap_or_else(|_| "https://fullnode.testnet.sui.io".to_string());
+    let agent_key = std::env::var("AGENT_API_KEY").unwrap_or_default();
 
     let grad_target: u8 = match input.graduation_target.as_deref() {
         Some("deepbook") => 1,
@@ -61,6 +62,7 @@ async fn execute_launch(input: LaunchInput) -> AnyResult<LaunchOutput> {
 
     let resp = reqwest::Client::new()
         .post(format!("{}/launch", bridge))
+        .header("x-agent-key", agent_key)
         .json(&serde_json::json!({
             "name": input.name,
             "symbol": input.symbol,

@@ -2,7 +2,7 @@
   "entry_groups": [ { "name": "claim_only", "vertices": ["claim"] } ],
   "vertices": [
     {
-      "kind": { "variant": "on_chain", "tool_fqn": "xyz.suipump.claim@1" },
+      "kind": { "variant": "off_chain", "tool_fqn": "xyz.suipump.claim@1" },
       "name": "claim",
       "entry_ports": [
         { "name": "curve_id" },
@@ -10,5 +10,10 @@
       ]
     }
   ],
-  "edges": []
+  "edges": [],
+  "outputs": [
+    { "vertex": "claim", "output_variant": "ok", "output_port": "tx_digest" },
+    { "vertex": "claim", "output_variant": "ok", "output_port": "sui_claimed" },
+    { "vertex": "claim", "output_variant": "err", "output_port": "reason" }
+  ]
 }

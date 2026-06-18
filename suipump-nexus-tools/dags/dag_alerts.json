@@ -2,7 +2,7 @@
   "entry_groups": [ { "name": "alerts_only", "vertices": ["alerts"] } ],
   "vertices": [
     {
-      "kind": { "variant": "on_chain", "tool_fqn": "xyz.suipump.alerts@1" },
+      "kind": { "variant": "off_chain", "tool_fqn": "xyz.suipump.alerts@1" },
       "name": "alerts",
       "entry_ports": [
         { "name": "curve_ids" },
@@ -12,5 +12,11 @@
       ]
     }
   ],
-  "edges": []
+  "edges": [],
+  "outputs": [
+    { "vertex": "alerts", "output_variant": "ok", "output_port": "alerts" },
+    { "vertex": "alerts", "output_variant": "ok", "output_port": "curves_checked" },
+    { "vertex": "alerts", "output_variant": "ok", "output_port": "checked_at_ms" },
+    { "vertex": "alerts", "output_variant": "err", "output_port": "reason" }
+  ]
 }

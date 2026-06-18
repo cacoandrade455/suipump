@@ -2,7 +2,7 @@
   "entry_groups": [ { "name": "sell_only", "vertices": ["sell"] } ],
   "vertices": [
     {
-      "kind": { "variant": "on_chain", "tool_fqn": "xyz.suipump.sell@1" },
+      "kind": { "variant": "off_chain", "tool_fqn": "xyz.suipump.sell@1" },
       "name": "sell",
       "entry_ports": [
         { "name": "curve_id" },
@@ -12,5 +12,10 @@
       ]
     }
   ],
-  "edges": []
+  "edges": [],
+  "outputs": [
+    { "vertex": "sell", "output_variant": "ok", "output_port": "tx_digest" },
+    { "vertex": "sell", "output_variant": "ok", "output_port": "sui_received" },
+    { "vertex": "sell", "output_variant": "err", "output_port": "reason" }
+  ]
 }
