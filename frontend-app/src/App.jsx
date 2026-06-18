@@ -546,29 +546,38 @@ function useNotifications(walletAddress) {
 
         // Agent activity — buy/sell/launch from the events table (real amounts +
         // symbol) and tpsl/claim fires from the notify store (trigger reason +
-        // claim amount). Agent-only: always queried for AGENT_WALLET. Best-effort;
+        // claim amount). AGENT-ONLY: these notifications belong solely to the
+        // agent wallet's own console — a normal user connecting must NOT see the
+        // agent's trades. Gated by an exact wallet match. (When the per-user agent
+        // model ships, this generalizes to "this user's agent wallet".) Best-effort;
         // a failure here must not drop the comment/graduation notifications.
-        const [agentActivity, agentNotifs] = await Promise.all([
-          fetch(`${IURL}/wallet/${AGENT_WALLET}/activity?limit=40`, { signal: AbortSignal.timeout(5000) })
-            .then(r => r.ok ? r.json() : []).catch(() => []),
-          fetch(`${IURL}/wallet/${AGENT_WALLET}/notifications`, { signal: AbortSignal.timeout(5000) })
-            .then(r => r.ok ? r.json() : []).catch(() => []),
-        ]);
-        const agentItems = [
-          ...(Array.isArray(agentActivity) ? agentActivity : []),
-          ...(Array.isArray(agentNotifs) ? agentNotifs : []),
-        ].map(a => ({
-          id: a.id,
-          type: a.type,                // agent_buy | agent_sell | agent_launch | tpsl | claim
-          curveId: a.curveId,
-          symbol: a.symbol ?? null,
-          sui: a.sui ?? null,
-          tokens: a.tokens ?? null,
-          trigger: a.trigger ?? null,  // 'TP' | 'SL'
-          author: null,
-          text: null,
-          timestamp: a.timestamp ?? 0,
-        }));
+        const isAgentWallet =
+          (walletAddress || '').toLowerCase() === AGENT_WALLET.toLowerCase();
+
+        let agentItems = [];
+        if (isAgentWallet) {
+          const [agentActivity, agentNotifs] = await Promise.all([
+            fetch(`${IURL}/wallet/${AGENT_WALLET}/activity?limit=40`, { signal: AbortSignal.timeout(5000) })
+              .then(r => r.ok ? r.json() : []).catch(() => []),
+            fetch(`${IURL}/wallet/${AGENT_WALLET}/notifications`, { signal: AbortSignal.timeout(5000) })
+              .then(r => r.ok ? r.json() : []).catch(() => []),
+          ]);
+          agentItems = [
+            ...(Array.isArray(agentActivity) ? agentActivity : []),
+            ...(Array.isArray(agentNotifs) ? agentNotifs : []),
+          ].map(a => ({
+            id: a.id,
+            type: a.type,                // agent_buy | agent_sell | agent_launch | tpsl | claim
+            curveId: a.curveId,
+            symbol: a.symbol ?? null,
+            sui: a.sui ?? null,
+            tokens: a.tokens ?? null,
+            trigger: a.trigger ?? null,  // 'TP' | 'SL'
+            author: null,
+            text: null,
+            timestamp: a.timestamp ?? 0,
+          }));
+        }
 
         const relevant = [...allComments, ...allGrads, ...agentItems]
           .sort((a, b) => b.timestamp - a.timestamp)
