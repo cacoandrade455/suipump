@@ -1499,7 +1499,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   const [linkCopied,      setLinkCopied]      = useState(false);
   const [mTpslOpen,       setMTpslOpen]       = useState(false); // mobile-only TP/SL accordion (right column hidden <lg)
   const [mVestOpen,       setMVestOpen]       = useState(false); // mobile-only Vesting accordion (right column hidden <lg)
-  const [volumeSui,       setVolumeSui]       = useState(null);  // all-time trade volume in SUI (buys sui_in + sells sui_out)
+  const [volumeSui,       setVolumeSui]       = useState(null);  // authoritative all-time volume (token_stats.volume_sui — same as leaderboard/Crown)
 
   // ── data loading ──────────────────────────────────────────────────────────
 
@@ -1508,39 +1508,6 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
     const timer = setInterval(() => fetchSuiUsd().then(setSuiUsd), 30_000);
     return () => clearInterval(timer);
   }, []);
-
-  // ── all-time volume (SUI) ───────────────────────────────────────────────────
-  // Not part of the curve/stats fetch (that only carries reserves). Sum sui_in on
-  // buys + sui_out on sells from the indexer trade log, same computation as
-  // AIAnalysis. Best-effort; refreshes on the same 30s cadence as price/USD.
-  useEffect(() => {
-    if (!curveId) return;
-    const IURL = import.meta.env.VITE_INDEXER_URL || '';
-    if (!IURL) return;
-    let cancelled = false;
-    async function loadVolume() {
-      try {
-        const r = await fetch(`${IURL}/token/${curveId}/trades?limit=1000`, { signal: AbortSignal.timeout(5000) });
-        if (!r.ok || cancelled) return;
-        const rows = await r.json();
-        if (!Array.isArray(rows)) return;
-        let vol = 0;
-        for (const row of rows) {
-          const et = row.event_type || '';
-          const d  = row.data || {};
-          if (et.includes('TokensPurchased') || et.includes('TokensBought')) {
-            vol += Number(d.sui_in ?? 0) / 1e9;
-          } else if (et.includes('TokensSold')) {
-            vol += Number(d.sui_out ?? 0) / 1e9;
-          }
-        }
-        if (!cancelled) setVolumeSui(vol);
-      } catch {}
-    }
-    loadVolume();
-    const timer = setInterval(loadVolume, 30_000);
-    return () => { cancelled = true; clearInterval(timer); };
-  }, [curveId]);
 
   useEffect(() => {
     if (!curveId) return;
@@ -1552,6 +1519,12 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
         const res = await fetch(`${IURL}/token/${curveId}`, { signal: AbortSignal.timeout(5000) });
         if (res.ok && !cancelled) {
           const d = await res.json();
+          // Authoritative all-time volume: the indexer's token_stats.volume_sui —
+          // the SAME server-aggregated column the leaderboard and Community Crown
+          // rank on, computed with no row limit. Read it here so the header number
+          // always matches the rest of the app. (Available top-level and under stats.)
+          const _vol = d.volume_sui ?? d.stats?.volume_sui ?? null;
+          if (_vol != null && !cancelled) setVolumeSui(Number(_vol));
           // Map indexer response to curve state field names expected by component
           // Handle both camelCase (getAllCurves alias) and snake_case (raw SELECT c.*)
           const stats = d.stats ?? {};
