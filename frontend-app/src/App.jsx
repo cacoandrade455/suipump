@@ -1208,7 +1208,7 @@ function HomePage({ onLaunch, lang = 'en' }) {
 
           {/* Catchphrase */}
           <p className="text-sm font-black tracking-widest mt-1" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
-            <span className="text-white">LAUNCH. BUILD. PUMP.</span> <span className="text-lime-400">EARN.</span>
+            <span className="text-white">LAUNCH. BUILD. TRADE. PUMP.</span> <span className="text-lime-400">EARN.</span>
           </p>
 
           {/* CTA */}
