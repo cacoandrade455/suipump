@@ -31,7 +31,7 @@ impl NexusTool for BuyTool {
     type Input  = BuyInput;
     type Output = BuyOutput;
     async fn new() -> Self { Self }
-    fn fqn() -> ToolFqn { fqn!("xyz.suipump.buy@1") }
+    fn fqn() -> ToolFqn { fqn!("xyz.suipump.buy@2") }
     fn path() -> &'static str { "buy" }
     fn description() -> &'static str { "Buy tokens on a SuiPump bonding curve." }
     async fn health(&self) -> AnyResult<StatusCode> { Ok(StatusCode::OK) }
