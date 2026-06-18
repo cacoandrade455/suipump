@@ -30,11 +30,13 @@ pub struct BuyTool;
 impl NexusTool for BuyTool {
     type Input  = BuyInput;
     type Output = BuyOutput;
+
     async fn new() -> Self { Self }
     fn fqn() -> ToolFqn { fqn!("xyz.suipump.buy@2") }
     fn path() -> &'static str { "buy" }
     fn description() -> &'static str { "Buy tokens on a SuiPump bonding curve." }
     async fn health(&self) -> AnyResult<StatusCode> { Ok(StatusCode::OK) }
+
     async fn invoke(&self, input: BuyInput) -> BuyOutput {
         match execute_buy(input).await {
             Ok(o) => o,
@@ -50,9 +52,11 @@ async fn execute_buy(input: BuyInput) -> AnyResult<BuyOutput> {
         .map_err(|_| anyhow::anyhow!("SUI_PRIVATE_KEY not set"))?;
     let rpc = std::env::var("SUI_RPC_URL")
         .unwrap_or_else(|_| "https://fullnode.testnet.sui.io".to_string());
+    let agent_key = std::env::var("AGENT_API_KEY").unwrap_or_default();
 
     let resp = reqwest::Client::new()
         .post(format!("{}/buy", bridge))
+        .header("x-agent-key", agent_key)
         .json(&serde_json::json!({
             "curveId": input.curve_id,
             "amountMist": (input.amount_sui * 1e9) as u64,
@@ -66,6 +70,7 @@ async fn execute_buy(input: BuyInput) -> AnyResult<BuyOutput> {
     if !resp.status().is_success() {
         return Ok(BuyOutput::Err { reason: resp.text().await? });
     }
+
     let r: serde_json::Value = resp.json().await?;
     Ok(BuyOutput::Ok {
         tx_digest: r["txDigest"].as_str().unwrap_or("").to_string(),
