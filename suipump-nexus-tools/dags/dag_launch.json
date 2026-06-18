@@ -1,0 +1,25 @@
+{
+  "entry_groups": [ { "name": "launch_only", "vertices": ["launch"] } ],
+  "vertices": [
+    {
+      "kind": { "variant": "off_chain", "tool_fqn": "xyz.suipump.launch@1" },
+      "name": "launch",
+      "entry_ports": [
+        { "name": "name" },
+        { "name": "symbol" },
+        { "name": "description" },
+        { "name": "icon_url" },
+        { "name": "dev_buy_sui" },
+        { "name": "graduation_target" },
+        { "name": "anti_bot_delay" }
+      ]
+    }
+  ],
+  "edges": [],
+  "outputs": [
+    { "vertex": "launch", "output_variant": "ok", "output_port": "tx_digest" },
+    { "vertex": "launch", "output_variant": "ok", "output_port": "curve_id" },
+    { "vertex": "launch", "output_variant": "ok", "output_port": "token_type" },
+    { "vertex": "launch", "output_variant": "err", "output_port": "reason" }
+  ]
+}
