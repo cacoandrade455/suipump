@@ -2,7 +2,7 @@
   "entry_groups": [ { "name": "sell_only", "vertices": ["sell"] } ],
   "vertices": [
     {
-      "kind": { "variant": "off_chain", "tool_fqn": "xyz.suipump.sell@1" },
+      "kind": { "variant": "off_chain", "tool_fqn": "xyz.suipump.sell@2" },
       "name": "sell",
       "entry_ports": [
         { "name": "curve_id" },

@@ -16,7 +16,7 @@ pub struct ClaimInput {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub enum ClaimOutput {
     Ok { tx_digest: String, sui_claimed: f64 },
-    Empty,
+    Empty {},
     Err { reason: String },
 }
 
@@ -26,7 +26,7 @@ impl NexusTool for ClaimTool {
     type Input  = ClaimInput;
     type Output = ClaimOutput;
     async fn new() -> Self { Self }
-    fn fqn() -> ToolFqn { fqn!("xyz.suipump.claim@1") }
+    fn fqn() -> ToolFqn { fqn!("xyz.suipump.claim@2") }
     fn path() -> &'static str { "claim" }
     fn description() -> &'static str { "Claim pending creator fees from a SuiPump curve. Returns Empty if no fees pending." }
     async fn health(&self) -> AnyResult<StatusCode> { Ok(StatusCode::OK) }
@@ -58,7 +58,7 @@ async fn execute_claim(input: ClaimInput) -> AnyResult<ClaimOutput> {
                 .or_else(|| v["creator_fees_pending"].as_f64())
                 .unwrap_or(0.0);
             if pending == 0.0 {
-                return Ok(ClaimOutput::Empty);
+                return Ok(ClaimOutput::Empty {});
             }
         }
     }

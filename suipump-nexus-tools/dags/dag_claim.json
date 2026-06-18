@@ -2,7 +2,7 @@
   "entry_groups": [ { "name": "claim_only", "vertices": ["claim"] } ],
   "vertices": [
     {
-      "kind": { "variant": "off_chain", "tool_fqn": "xyz.suipump.claim@1" },
+      "kind": { "variant": "off_chain", "tool_fqn": "xyz.suipump.claim@2" },
       "name": "claim",
       "entry_ports": [
         { "name": "curve_id" },

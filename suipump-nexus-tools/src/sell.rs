@@ -31,7 +31,7 @@ impl NexusTool for SellTool {
     type Input  = SellInput;
     type Output = SellOutput;
     async fn new() -> Self { Self }
-    fn fqn() -> ToolFqn { fqn!("xyz.suipump.sell@1") }
+    fn fqn() -> ToolFqn { fqn!("xyz.suipump.sell@2") }
     fn path() -> &'static str { "sell" }
     fn description() -> &'static str { "Sell tokens back to SUI on a SuiPump bonding curve." }
     async fn health(&self) -> AnyResult<StatusCode> { Ok(StatusCode::OK) }
