@@ -330,7 +330,7 @@ async function confirmLeaderSettlement(executionId) {
       lastDigest = digest;
       const sender = await txSender(digest);
       if (sender) {
-        const isLeader = inv ? sender.toLowerCase() !== inv : true;
+        const isLeader = inv ? sender.toLowerCase() !== inv : false;  // no known invoker -> never falsely claim leader-settled
         out.settlementDigest = digest;
         out.leaderSender = sender;
         if (isLeader) {
@@ -470,7 +470,7 @@ const server = http.createServer(async (req, res) => {
     if (!digest) return json(res, 200, { ok: true, endState: 'pending', settlementDigest: null, leaderSender: null });
     const sender = await txSender(digest);
     if (!sender) return json(res, 200, { ok: true, endState: 'pending', settlementDigest: digest, leaderSender: null });
-    const isLeader = inv ? sender.toLowerCase() !== inv : true;
+    const isLeader = inv ? sender.toLowerCase() !== inv : false;  // no known invoker -> never falsely claim leader-settled
     return json(res, 200, {
       ok: true,
       endState: isLeader ? 'Ok' : 'self',
@@ -596,4 +596,9 @@ server.listen(PORT, () => {
   console.log(`[runner] workflows: ${Object.keys(DAG_IDS).join(', ')}`);
   console.log(`[runner] endpoints: POST /run-dag, POST /schedule-task (scheduler tasks)`);
   console.log(`[runner] launch_and_buy -> ${DAG_IDS.launch_and_buy} (group ${ENTRY_GROUPS.launch_and_buy}, legacy=${LAUNCH_BUY_LEGACY})`);
+  if (!INVOKER_ADDRESS) {
+    console.warn(`[runner] WARNING: INVOKER_ADDRESS unset — leader-settlement confirm will NEVER report Ok (fail-safe). Set INVOKER_ADDRESS to enable the C2 leader-settled proof.`);
+  } else {
+    console.log(`[runner] INVOKER_ADDRESS set — leader-settlement confirm active.`);
+  }
 });
