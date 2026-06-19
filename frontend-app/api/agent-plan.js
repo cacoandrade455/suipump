@@ -26,10 +26,10 @@
 function extractSuiAmount(goal) {
   const g = String(goal).toLowerCase();
   // Prefer an amount tied to a buy verb: "buy 2 sui", "dev-buy 1.5 sui", "buy 2sui"
-  const buyCtx = g.match(/(?:dev[\s-]?buy|buy|ape|snipe)\s+(\d+(?:\.\d+)?)\s*sui/);
+  const buyCtx = g.match(/(?:dev[\s-]?buy|buy|ape|snipe)\s+(\d*\.?\d+)\s*sui/);
   if (buyCtx) return Number(buyCtx[1]);
   // Fallback: any "<number> sui" in the goal.
-  const anySui = g.match(/(\d+(?:\.\d+)?)\s*sui/);
+  const anySui = g.match(/(\d*\.?\d+)\s*sui/);
   if (anySui) return Number(anySui[1]);
   return null;
 }
