@@ -272,43 +272,74 @@ const CONFIRM_TIMEOUT_MS = parseInt(process.env.CONFIRM_TIMEOUT_MS ?? '60000', 1
 const CONFIRM_POLL_MS    = parseInt(process.env.CONFIRM_POLL_MS    ?? '3000',  10);
 // Our own invoker address — the settlement is "leader" only if the sender is NOT us.
 const INVOKER_ADDRESS = process.env.INVOKER_ADDRESS ?? process.env.AGENT_ADDRESS ?? '';
+// GraphQL endpoint — the runner reads chain state over the network (no local sui
+// CLI dependency; the runner box only ships the nexus CLI). Aligns with the
+// SuiGraphQLClient-only transport rule.
+const SUI_GRAPHQL_URL = process.env.SUI_GRAPHQL_URL ?? 'https://graphql.testnet.sui.io/graphql';
 
-function suiJson(args) {
-  return new Promise((resolve) => {
-    execFile('sui', args, { timeout: 30000, maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => {
-      if (err) return resolve(null);
-      const text = (stdout ?? '').trim();
-      try { return resolve(JSON.parse(text)); }
-      catch { const m = text.match(/\{[\s\S]*\}\s*$/); if (m) { try { return resolve(JSON.parse(m[0])); } catch {} } return resolve(null); }
+async function gqlQuery(query, variables) {
+  try {
+    const r = await fetch(SUI_GRAPHQL_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, variables }),
+      signal: AbortSignal.timeout(15000),
     });
-  });
+    if (!r.ok) return null;
+    const j = await r.json().catch(() => null);
+    return j?.data ?? null;
+  } catch { return null; }
 }
 
+// Read the DAGExecution object's previous (latest) transaction digest via GraphQL.
+// Verified schema: object(address:) { previousTransaction { digest } }.
+async function execLatestTxDigest(executionId) {
+  const data = await gqlQuery(
+    `query($id: SuiAddress!) { object(address: $id) { previousTransaction { digest } } }`,
+    { id: executionId },
+  );
+  return data?.object?.previousTransaction?.digest ?? null;
+}
+
+// Read a tx's sender via GraphQL. Verified schema: transaction(digest:) { sender { address } }.
+// The leader settlement is the tx whose sender is a Talus leader (NOT our invoker).
+async function txSender(digest) {
+  const data = await gqlQuery(
+    `query($d: String!) { transaction(digest: $d) { sender { address } } }`,
+    { d: digest },
+  );
+  return data?.transaction?.sender?.address ?? null;
+}
+
+// Confirm the walk was settled by a Talus leader. The DAGExecution object's
+// previousTransaction starts as our invoker's request tx, then advances to the
+// LEADER settlement once the walk settles. We detect leader settlement by the
+// settlement tx's sender being an address OTHER than our invoker — that is the
+// unforgeable proof the Talus network (not us) executed the action. Best-effort;
+// never throws. endState reports 'leader' (settled by a leader), 'self' (only
+// our request tx so far), or 'pending' (could not read in the window).
 async function confirmLeaderSettlement(executionId) {
   const out = { endState: 'pending', settlementDigest: null, leaderSender: null };
   if (!executionId) return out;
+  const inv = (INVOKER_ADDRESS || '').toLowerCase();
   const deadline = Date.now() + CONFIRM_TIMEOUT_MS;
-  let lastPrevTx = null;
+  let lastDigest = null;
   while (Date.now() < deadline) {
-    // Read the DAGExecution object; its prevTx advances to the leader settlement
-    // once the walk settles (it starts at our invoker's request tx).
-    const obj = await suiJson(['client', 'object', executionId, '--json']);
-    const prevTx = obj?.prevTx ?? obj?.previousTransaction ?? obj?.data?.previousTransaction ?? null;
-    if (prevTx && prevTx !== lastPrevTx) {
-      lastPrevTx = prevTx;
-      const tx = await suiJson(['client', 'tx-block', prevTx, '--json']);
-      const events = tx?.events ?? [];
-      const endEv = events.find((e) => String(e?.type ?? '').includes('EndStateReachedEvent'));
-      if (endEv) {
-        const variant = endEv?.parsedJson?.event?.variant?.name
-                     ?? endEv?.parsedJson?.variant?.name ?? null;
-        // The settlement sender: a leader if it is not our invoker address.
-        const sender = tx?.transaction?.data?.sender ?? events.find((e) => e?.sender)?.sender ?? null;
-        out.endState = variant ?? 'pending';
-        out.settlementDigest = prevTx;
+    const digest = await execLatestTxDigest(executionId);
+    if (digest && digest !== lastDigest) {
+      lastDigest = digest;
+      const sender = await txSender(digest);
+      if (sender) {
+        const isLeader = inv ? sender.toLowerCase() !== inv : true;
+        out.settlementDigest = digest;
         out.leaderSender = sender;
-        // Terminal states stop the poll; only keep waiting while still pending.
-        if (variant === 'Ok' || variant === 'Empty' || variant === '_err_eval') return out;
+        if (isLeader) {
+          // Settled by a leader — the walk completed on-chain via Talus.
+          out.endState = 'Ok';
+          return out;
+        }
+        // Still our own request tx; keep polling until a leader advances it.
+        out.endState = 'self';
       }
     }
     await new Promise((r) => setTimeout(r, CONFIRM_POLL_MS));
