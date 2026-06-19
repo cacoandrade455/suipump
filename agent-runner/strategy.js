@@ -36,6 +36,13 @@ const STRATEGY_API_KEY  = process.env.STRATEGY_API_KEY ?? '';
 // must present this header or those endpoints now 401. Lives in the brain's env
 // only (same value as the bridge's and runner's AGENT_API_KEY).
 const AGENT_API_KEY     = process.env.AGENT_API_KEY ?? '';
+// C2 DEMO MODE: when on, demo'd actions (buy/sell) are executed SOLELY through
+// the Talus leader path — emit the Nexus walk with confirm:true, and if the
+// leader settles it (EndState Ok/Empty, sender = a leader), skip the bridge
+// settle so the leader is the one, provable executor. If the leader path does
+// not confirm in time, we fall back to the bridge so a demo never hangs.
+// Production (DEMO_MODE off) keeps the proven dual-path byte-for-byte.
+const DEMO_MODE         = (process.env.DEMO_MODE ?? '') === '1';
 const ORDERS_REFRESH_MS = parseInt(process.env.STRATEGY_ORDERS_REFRESH_MS ?? '15000', 10);
 const RECONNECT_MS      = parseInt(process.env.STRATEGY_RECONNECT_MS ?? '3000', 10);
 const ERROR_COOLDOWN_MS = parseInt(process.env.STRATEGY_ERROR_COOLDOWN_MS ?? '60000', 10);
@@ -394,24 +401,48 @@ async function fireSell(curveId, tokenWhole, minSuiOut, sellAll = false) {
 
   // ── 1. Emit the Nexus DAG request (non-blocking) ───────────────────────────
   let nexusDigest = null, nexusExecutionId = null;
+  let leaderSettlement = null, leaderEndState = null, leaderSender = null;
   try {
     const rr = await fetch(`${RUNNER_URL}/run-dag`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(AGENT_API_KEY ? { 'x-agent-key': AGENT_API_KEY } : {}) },
-      body: JSON.stringify({ workflow: 'sell', sell: { curveId, tokenAmount: emitTokenAmount, minSuiOut: minSuiOut ?? 0 } }),
+      body: JSON.stringify({ workflow: 'sell', sell: { curveId, tokenAmount: emitTokenAmount, minSuiOut: minSuiOut ?? 0 }, ...(DEMO_MODE ? { confirm: true } : {}) }),
       signal: AbortSignal.timeout(190000),
     });
     const rd = await rr.json().catch(() => ({}));
     if (rr.ok && rd.ok) {
       nexusDigest      = rd.digest ?? null;
       nexusExecutionId = rd.executionId ?? null;
-      log(`sell: Nexus DAG emitted execution=${nexusExecutionId} digest=${nexusDigest}`);
+      leaderSettlement = rd.settlementDigest ?? null;
+      leaderEndState   = rd.endState ?? null;
+      leaderSender     = rd.leaderSender ?? null;
+      log(`sell: Nexus DAG emitted execution=${nexusExecutionId} digest=${nexusDigest}` +
+          (DEMO_MODE ? ` endState=${leaderEndState} settlement=${leaderSettlement}` : ''));
     } else {
       err(`sell: Nexus DAG emit returned ${rd.error ?? rr.status} (continuing to settle)`);
     }
   } catch (e) {
     err(`sell: Nexus DAG emit failed: ${e.message} (continuing to settle)`);
   }
+
+  // ── DEMO MODE: if the leader settled the walk on-chain (Ok/Empty), the leader
+  // path already executed the sell (the Nexus sell tool calls the same bridge
+  // endpoint). Return the LEADER settlement as the proof and skip the redundant
+  // bridge-direct settle, so the leader is the sole, provable executor.
+  if (DEMO_MODE && (leaderEndState === 'Ok' || leaderEndState === 'Empty') && leaderSettlement) {
+    log(`sell: DEMO leader-settled endState=${leaderEndState} leader=${leaderSender} digest=${leaderSettlement} (skipping bridge)`);
+    return {
+      ok: true,
+      txDigest: leaderSettlement,   // surface the LEADER settlement as the trade proof
+      leaderSettled: true,
+      endState: leaderEndState,
+      leaderSender,
+      nexusDigest, nexusExecutionId,
+    };
+  }
+  // DEMO MODE fallback note: if we reach here in demo mode, the leader path did
+  // not confirm in time — we fall through to the bridge settle below so the demo
+  // still completes. (Logged as a normal settle.)
 
   // ── 2. Settle the swap via the bridge (the path that moves tokens) ─────────
   // Whole tokens; the bridge converts to base units itself. 3-try retry for the
@@ -482,6 +513,36 @@ async function fireScheduleTask(workflow, payload, schedule) {
   throw lastErr;
 }
 
+// ── C2 DEMO: buy via the Talus leader path (sole executor), bridge fallback ────
+// Emits the buy walk with confirm:true. If a leader settles it (EndState Ok,
+// sender = a leader), the leader path already executed the buy (the Nexus buy
+// tool calls the same bridge endpoint) — we return the LEADER settlement digest
+// as the proof and do NOT call the bridge directly. If the leader path does not
+// confirm in time, we fall back to fireBridgeBuy so the demo always completes.
+// Returns { settleDigest, leaderSettled, nexusExecutionId } shaped like the
+// sniper/dca call sites expect (they read the digest).
+async function fireNexusBuy(curveId, amountSui) {
+  try {
+    const rr = await fetch(`${RUNNER_URL}/run-dag`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(AGENT_API_KEY ? { 'x-agent-key': AGENT_API_KEY } : {}) },
+      body: JSON.stringify({ workflow: 'buy', buy: { curveId, amountSui }, confirm: true }),
+      signal: AbortSignal.timeout(190000),
+    });
+    const rd = await rr.json().catch(() => ({}));
+    if (rr.ok && rd.ok && (rd.endState === 'Ok' || rd.endState === 'Empty') && rd.settlementDigest) {
+      log(`buy: DEMO leader-settled endState=${rd.endState} leader=${rd.leaderSender} digest=${rd.settlementDigest} (skipping bridge)`);
+      return { settleDigest: rd.settlementDigest, leaderSettled: true, nexusExecutionId: rd.executionId ?? null };
+    }
+    err(`buy: DEMO leader path did not confirm (endState=${rd.endState ?? rd.error ?? rr.status}); falling back to bridge`);
+  } catch (e) {
+    err(`buy: DEMO leader emit failed: ${e.message}; falling back to bridge`);
+  }
+  // Fallback: the proven bridge buy.
+  const settleDigest = await fireBridgeBuyRaw(curveId, amountSui);
+  return { settleDigest, leaderSettled: false, nexusExecutionId: null };
+}
+
 // ── Settle a BUY through the bridge (the path that actually moves tokens) ──────
 // The scheduler task (fireScheduleTask above) emits the on-chain agentic-decision
 // PROOF, but on testnet no Talus leader consumes the occurrence, so the task
@@ -491,7 +552,20 @@ async function fireScheduleTask(workflow, payload, schedule) {
 // settlement txDigest. 3-try retry for the stale-object coin-version race, same
 // as fireSell. The task emit stays best-effort PROOF; this is the money path and
 // must NEVER be gated behind the emit.
+// Demo-aware buy dispatcher used by all call sites. Returns a settlement digest
+// STRING in both modes (call sites read it directly). In DEMO_MODE it routes
+// through the Talus leader path (fireNexusBuy) and returns the LEADER settlement
+// digest when the leader settles; otherwise it returns the bridge digest. In
+// production (DEMO_MODE off) it is the raw bridge buy, unchanged.
 async function fireBridgeBuy(curveId, amountSui) {
+  if (DEMO_MODE) {
+    const r = await fireNexusBuy(curveId, amountSui);
+    return r.settleDigest;
+  }
+  return fireBridgeBuyRaw(curveId, amountSui);
+}
+
+async function fireBridgeBuyRaw(curveId, amountSui) {
   const body = { curveId, suiAmount: amountSui };
   // A snipe fires seconds after launch; the fresh curve's object version / coin
   // state can still be settling, so the first simulate may fail transiently

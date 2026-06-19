@@ -257,6 +257,65 @@ function runDag(dagId, entryGroup, inputObj) {
   });
 }
 
+// ── Leader-settlement confirm (C2 demo path) ─────────────────────────────────
+// After runDag returns a DAGExecution id, the leader settles the walk on a
+// SEPARATE tx (sender = a Talus leader address, not our invoker). This confirms
+// the leader reached an Ok/Empty EndState and returns that leader settlement
+// digest — the unforgeable proof the Talus network executed the action, distinct
+// from the bridge self-signed path. Best-effort: polls the DAGExecution object's
+// prevTx (which advances to the leader settlement once the walk settles) for up
+// to CONFIRM_TIMEOUT_MS, reading EndStateReachedEvent.variant.
+//
+// Returns { endState: 'Ok'|'Empty'|'_err_eval'|'pending', settlementDigest, leaderSender }.
+// Never throws — a confirm failure must not break the /run-dag response.
+const CONFIRM_TIMEOUT_MS = parseInt(process.env.CONFIRM_TIMEOUT_MS ?? '60000', 10);
+const CONFIRM_POLL_MS    = parseInt(process.env.CONFIRM_POLL_MS    ?? '3000',  10);
+// Our own invoker address — the settlement is "leader" only if the sender is NOT us.
+const INVOKER_ADDRESS = process.env.INVOKER_ADDRESS ?? process.env.AGENT_ADDRESS ?? '';
+
+function suiJson(args) {
+  return new Promise((resolve) => {
+    execFile('sui', args, { timeout: 30000, maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => {
+      if (err) return resolve(null);
+      const text = (stdout ?? '').trim();
+      try { return resolve(JSON.parse(text)); }
+      catch { const m = text.match(/\{[\s\S]*\}\s*$/); if (m) { try { return resolve(JSON.parse(m[0])); } catch {} } return resolve(null); }
+    });
+  });
+}
+
+async function confirmLeaderSettlement(executionId) {
+  const out = { endState: 'pending', settlementDigest: null, leaderSender: null };
+  if (!executionId) return out;
+  const deadline = Date.now() + CONFIRM_TIMEOUT_MS;
+  let lastPrevTx = null;
+  while (Date.now() < deadline) {
+    // Read the DAGExecution object; its prevTx advances to the leader settlement
+    // once the walk settles (it starts at our invoker's request tx).
+    const obj = await suiJson(['client', 'object', executionId, '--json']);
+    const prevTx = obj?.prevTx ?? obj?.previousTransaction ?? obj?.data?.previousTransaction ?? null;
+    if (prevTx && prevTx !== lastPrevTx) {
+      lastPrevTx = prevTx;
+      const tx = await suiJson(['client', 'tx-block', prevTx, '--json']);
+      const events = tx?.events ?? [];
+      const endEv = events.find((e) => String(e?.type ?? '').includes('EndStateReachedEvent'));
+      if (endEv) {
+        const variant = endEv?.parsedJson?.event?.variant?.name
+                     ?? endEv?.parsedJson?.variant?.name ?? null;
+        // The settlement sender: a leader if it is not our invoker address.
+        const sender = tx?.transaction?.data?.sender ?? events.find((e) => e?.sender)?.sender ?? null;
+        out.endState = variant ?? 'pending';
+        out.settlementDigest = prevTx;
+        out.leaderSender = sender;
+        // Terminal states stop the poll; only keep waiting while still pending.
+        if (variant === 'Ok' || variant === 'Empty' || variant === '_err_eval') return out;
+      }
+    }
+    await new Promise((r) => setTimeout(r, CONFIRM_POLL_MS));
+  }
+  return out;
+}
+
 // ── Scheduler path (additive; sits beside runDag) ────────────────────────────
 // Creates an on-chain Nexus scheduler Task bound to a published DAG + entry
 // group, then (for queue tasks) the create call also schedules the initial
@@ -397,14 +456,26 @@ const server = http.createServer(async (req, res) => {
       const receipt = await runDag(dagId, entryGroup, input);
       const executionId = receipt.execution_id ?? receipt.executionId ?? receipt.dag_execution_id ?? null;
       console.log(`[runner] execution_id=${executionId} digest=${receipt.digest}`);
-      return json(res, 200, {
+      const resp = {
         ok: true,
         workflow,
         dagId,
         executionId,
         digest:     receipt.digest ?? receipt.tx_digest ?? null,
         checkpoint: receipt.tx_checkpoint ?? receipt.checkpoint ?? null,
-      });
+      };
+      // C2 demo path: when the caller asks to confirm, poll the DAGExecution for
+      // the leader settlement (sender = a Talus leader, EndState Ok/Empty) and
+      // surface it. This makes the leader path the sole, provable executor for
+      // demo'd actions. Best-effort: a confirm timeout still returns the emit.
+      if (body?.confirm === true) {
+        const c = await confirmLeaderSettlement(executionId);
+        resp.endState         = c.endState;
+        resp.settlementDigest = c.settlementDigest;
+        resp.leaderSender     = c.leaderSender;
+        console.log(`[runner] confirm endState=${c.endState} settlement=${c.settlementDigest} leader=${c.leaderSender}`);
+      }
+      return json(res, 200, resp);
     } catch (e) {
       console.error('[runner] /run-dag error:', e.message);
       return json(res, 500, { ok: false, workflow, dagId, error: e.message });
