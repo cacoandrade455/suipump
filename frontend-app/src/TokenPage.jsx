@@ -1829,7 +1829,27 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
         if (!coinObjs.length) throw new Error('No token balance');
         if (coinObjs.length === 1) { [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(tokInAtomic)]); }
         else { tx.mergeCoins(coinObjs[0], coinObjs.slice(1)); [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(tokInAtomic)]); }
-        const sq = sellQuote(reserveMist, tokensRemaining, tokInAtomic, vSui, vTok);
+
+        // ── Fresh reserve fetch — avoid stale-state slippage aborts ──────────
+        // Same hazard as the buy branch: curveState can be seconds old, so a
+        // large sell on an active curve fails with E_SLIPPAGE_EXCEEDED (abort 3)
+        // if the reserve moved since the last SSE update. Fetch fresh stats right
+        // before quoting. token_reserve is whole tokens -> scale * 1e6 to atomic.
+        let freshReserveMist = reserveMist;
+        let freshTokensRemaining = tokensRemaining;
+        try {
+          const IURL = import.meta.env.VITE_INDEXER_URL || '';
+          if (IURL) {
+            const fr = await fetch(`${IURL}/token/${curveId}/stats`, { signal: AbortSignal.timeout(3000) });
+            if (fr.ok) {
+              const fs = await fr.json();
+              if (fs.reserve_sui != null) freshReserveMist = BigInt(Math.round(fs.reserve_sui * 1e9));
+              if (fs.token_reserve != null) freshTokensRemaining = BigInt(Math.round(fs.token_reserve * 1e6));
+            }
+          }
+        } catch { /* fallback to cached state */ }
+
+        const sq = sellQuote(freshReserveMist, freshTokensRemaining, tokInAtomic, vSui, vTok);
         const effectiveSlippage = resolveSlippagePct(slippage, sq?.priceImpact ?? 0);
         const minOut = sq?.suiOut != null ? BigInt(Math.floor(Number(sq.suiOut) * (1 - effectiveSlippage / 100))) : 0n;
         const sellArgs = isV7OrLater(pkgId)
