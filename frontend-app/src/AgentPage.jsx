@@ -1174,15 +1174,13 @@ export default function AgentPage({ onBack }) {
       // BEST-EFFORT: the on-chain walk request is the orchestration paper trail,
       // not the settlement path. A slow/failed /run-dag must NEVER block the trade
       // from settling. We capture whatever the runner returns and move on.
-      // C2 DEMO MODE (?demo=1): request leader confirmation so the leader path
-      // can be the sole, provable executor — see STEP 2.
       const DEMO_MODE = new URLSearchParams(window.location.search).get('demo') === '1';
       let data = {};
       try {
         const res = await fetch(`/api/agent-run`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(DEMO_MODE ? { ...payload, confirm: true } : payload),
+          body: JSON.stringify(payload),   // C2 async: no inline confirm — never hang the request
         });
         data = await res.json().catch(() => ({}));
         if (!res.ok || data.ok === false) {
@@ -1196,25 +1194,55 @@ export default function AgentPage({ onBack }) {
       }
       clearAnim();
 
-      // C2 DEMO MODE: if the leader settled the walk on-chain (EndState Ok/Empty,
-      // sender = a Talus leader), the leader path already executed the action —
-      // surface the LEADER settlement as the proof and SKIP the bridge settle, so
-      // the leader is the one, provable executor. (Production / non-demo always
-      // settles via the bridge below.)
-      if (DEMO_MODE && (data.endState === 'Ok' || data.endState === 'Empty') && data.settlementDigest) {
+      // C2 DEMO MODE (?demo=1), ASYNC leader-as-sole-executor:
+      // Show the card IMMEDIATELY in an "executing via Talus leader" state (no
+      // hang), then poll /api/agent-confirm every 2s. When a leader settles the
+      // walk on-chain (endState Ok, sender = a Talus leader), update the card live
+      // to show the leader settlement — the leader is the sole, provable executor.
+      // FALLBACK: if no leader settles within DEMO_FALLBACK_MS, settle via the
+      // bridge so the trade always completes on stage (never a dangling action).
+      if (DEMO_MODE && data.executionId) {
+        const DEMO_FALLBACK_MS = 25000;
+        const POLL_MS = 2000;
         setNodeState(Object.fromEntries(nodes.map(n => [n.id, 'done'])));
         setResult({
-          workflow:         data.workflow ?? plan.workflow,
-          executionId:      data.executionId ?? null,
-          digest:           data.digest ?? null,
-          checkpoint:       data.checkpoint ?? null,
-          dagId:            data.dagId ?? null,
-          leaderSettled:    true,
-          endState:         data.endState,
-          settlementDigest: data.settlementDigest,
+          workflow:      data.workflow ?? plan.workflow,
+          executionId:   data.executionId ?? null,
+          digest:        data.digest ?? null,
+          checkpoint:    data.checkpoint ?? null,
+          dagId:         data.dagId ?? null,
+          leaderPending: true,        // card shows "executing via Talus leader…"
         });
         setPhase('done');
-        return;
+
+        const execId = data.executionId;
+        let done = false;
+        const started = Date.now();
+        const poll = setInterval(async () => {
+          if (done) return;
+          try {
+            const cr = await fetch(`/api/agent-confirm?executionId=${encodeURIComponent(execId)}`);
+            const cd = await cr.json().catch(() => ({}));
+            if (cd.endState === 'Ok' && cd.settlementDigest) {
+              done = true; clearInterval(poll);
+              setResult(prev => ({ ...prev, leaderPending: false, leaderSettled: true, endState: 'Ok', settlementDigest: cd.settlementDigest, leaderSender: cd.leaderSender ?? null }));
+              return;
+            }
+          } catch { /* keep polling */ }
+          // Fallback: leader did not settle in time — settle via the bridge so the
+          // demo trade still completes. (b) accepts the narrow double-execute window.
+          if (!done && Date.now() - started > DEMO_FALLBACK_MS) {
+            done = true; clearInterval(poll);
+            try {
+              const bd = await settleViaBridge(payload);
+              setResult(prev => ({ ...prev, leaderPending: false, leaderSettled: false, settleDigest: bd, fellBack: true }));
+            } catch (e) {
+              setResult(prev => ({ ...prev, leaderPending: false }));
+              setError(`Leader did not settle and bridge fallback failed: ${e.message}`);
+            }
+          }
+        }, POLL_MS);
+        return;   // async path owns the rest; do not run the synchronous bridge settle below
       }
 
       // STEP 2 — Settle the swap through the bridge so the tokens actually move.
@@ -1751,11 +1779,20 @@ export default function AgentPage({ onBack }) {
                 nexus request: {result.digest} <ExternalLink size={11} />
               </a>
             )}
+            {result.leaderPending && (
+              <div className="inline-flex items-center gap-1.5 text-violet-300/90">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-violet-400 animate-pulse" />
+                executing via Talus leader… (settling on-chain)
+              </div>
+            )}
             {result.leaderSettled && result.settlementDigest && (
               <a href={suiscanTx(result.settlementDigest)} target="_blank" rel="noreferrer"
                  className="inline-flex items-center gap-1.5 text-emerald-400 hover:text-emerald-300 break-all">
                 leader settled ({result.endState ?? 'Ok'}): {result.settlementDigest} <ExternalLink size={11} />
               </a>
+            )}
+            {result.fellBack && (
+              <div className="text-amber-300/70">leader slow — settled via bridge fallback</div>
             )}
             {result.settleDigest && (
               <a href={suiscanTx(result.settleDigest)} target="_blank" rel="noreferrer"

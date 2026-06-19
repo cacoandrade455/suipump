@@ -453,6 +453,32 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, { ok: true, ts: Date.now(), dags: DAG_IDS });
   }
 
+  // Single-shot leader-settlement check for FRONTEND POLLING (C2 demo, async).
+  // The page fires /run-dag WITHOUT confirm (instant executionId), then polls
+  // this endpoint every couple seconds and updates the card live when a leader
+  // settles. Unlike the inline confirm in /run-dag, this does ONE GraphQL read
+  // and returns immediately — the client owns the polling cadence, so no request
+  // ever hangs. Read-only (executionId is already public on-chain); left open
+  // like /health. Returns { ok, endState:'Ok'|'self'|'pending', settlementDigest,
+  // leaderSender }.
+  if (req.method === 'GET' && req.url.startsWith('/confirm')) {
+    const q = new URL(req.url, 'http://localhost').searchParams;
+    const executionId = q.get('executionId') ?? '';
+    if (!executionId) return json(res, 400, { ok: false, error: 'executionId required' });
+    const inv = (INVOKER_ADDRESS || '').toLowerCase();
+    const digest = await execLatestTxDigest(executionId);
+    if (!digest) return json(res, 200, { ok: true, endState: 'pending', settlementDigest: null, leaderSender: null });
+    const sender = await txSender(digest);
+    if (!sender) return json(res, 200, { ok: true, endState: 'pending', settlementDigest: digest, leaderSender: null });
+    const isLeader = inv ? sender.toLowerCase() !== inv : true;
+    return json(res, 200, {
+      ok: true,
+      endState: isLeader ? 'Ok' : 'self',
+      settlementDigest: digest,
+      leaderSender: sender,
+    });
+  }
+
   // Auth gate: /run-dag and /schedule-task emit on-chain walks and must only be
   // reachable by our server-side callers (Vercel proxy, brain). Shared secret via
   // x-agent-key. Reads (GET /health above) are open. Unset key = open (dev) with
