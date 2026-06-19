@@ -620,6 +620,54 @@ export default function AgentPage({ onBack }) {
     return () => clearInterval(t);
   }, [loadOrders]);
 
+  // ── Agent action history (persistent, survives refresh) ─────────────────────
+  // Backed by the indexer's agent_actions table via the /api/agent-actions proxy.
+  // Manual fires record a row here (POST pending -> PATCH on settle/fallback);
+  // autonomous fires are recorded by the strategy brain (strategy.js recordFire).
+  const [history, setHistory]       = useState([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
+
+  const loadHistory = useCallback(async () => {
+    try {
+      const r = await fetch(`/api/agent-actions?limit=50`, { signal: AbortSignal.timeout(8000) });
+      if (!r.ok) return;
+      const d = await r.json();
+      setHistory(Array.isArray(d) ? d : []);
+    } catch { /* non-fatal */ }
+  }, []);
+
+  useEffect(() => {
+    loadHistory();
+    const t = setInterval(loadHistory, 15000);
+    return () => clearInterval(t);
+  }, [loadHistory]);
+
+  // Record a manual fire (returns the row id, or null on failure). Best-effort —
+  // history must never block or fail a trade.
+  const recordAction = useCallback(async (action) => {
+    try {
+      const r = await fetch(`/api/agent-actions`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(action),
+      });
+      const d = await r.json().catch(() => ({}));
+      loadHistory();
+      return d?.id ?? null;
+    } catch { return null; }
+  }, [loadHistory]);
+
+  // Update a manual fire row (e.g. pending -> settled with the leader digest).
+  const patchAction = useCallback(async (id, updates) => {
+    if (!id) return;
+    try {
+      await fetch(`/api/agent-actions?id=${encodeURIComponent(id)}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates),
+      });
+      loadHistory();
+    } catch { /* non-fatal */ }
+  }, [loadHistory]);
+
   const cancelOrder = useCallback(async (id) => {
     setCancelingId(id);
     try {
@@ -1215,6 +1263,21 @@ export default function AgentPage({ onBack }) {
         });
         setPhase('done');
 
+        // Record a pending history row for this manual fire; PATCH it when the
+        // leader settles (or on bridge fallback). Best-effort; never blocks.
+        const wf = data.workflow ?? plan.workflow;
+        let actionId = null;
+        recordAction({
+          kind:               wf,
+          source:             'manual',
+          curveId:            payload?.buy?.curveId ?? payload?.sell?.curveId ?? null,
+          tokenType:          payload?.sell?.tokenType ?? null,
+          summary:            plan?.summary ?? wf,
+          executionId:        data.executionId ?? null,
+          nexusRequestDigest: data.digest ?? null,
+          status:             'pending',
+        }).then(id => { actionId = id; });
+
         const execId = data.executionId;
         let done = false;
         const started = Date.now();
@@ -1226,6 +1289,7 @@ export default function AgentPage({ onBack }) {
             if (cd.endState === 'Ok' && cd.settlementDigest) {
               done = true; clearInterval(poll);
               setResult(prev => ({ ...prev, leaderPending: false, leaderSettled: true, endState: 'Ok', settlementDigest: cd.settlementDigest, leaderSender: cd.leaderSender ?? null }));
+              patchAction(actionId, { status: 'settled', settledVia: 'leader', leaderSettlementDigest: cd.settlementDigest, leaderSender: cd.leaderSender ?? null });
               return;
             }
           } catch { /* keep polling */ }
@@ -1236,9 +1300,11 @@ export default function AgentPage({ onBack }) {
             try {
               const bd = await settleViaBridge(payload);
               setResult(prev => ({ ...prev, leaderPending: false, leaderSettled: false, settleDigest: bd, fellBack: true }));
+              patchAction(actionId, { status: 'fallback', settledVia: 'bridge', settleDigest: bd });
             } catch (e) {
               setResult(prev => ({ ...prev, leaderPending: false }));
               setError(`Leader did not settle and bridge fallback failed: ${e.message}`);
+              patchAction(actionId, { status: 'failed' });
             }
           }
         }, POLL_MS);
@@ -1277,6 +1343,19 @@ export default function AgentPage({ onBack }) {
         settleDigest,
       });
       setPhase('done');
+      // Record the manual fire (production path — bridge settled). Best-effort.
+      recordAction({
+        kind:               data.workflow ?? plan.workflow,
+        source:             'manual',
+        curveId:            payload?.buy?.curveId ?? payload?.sell?.curveId ?? null,
+        tokenType:          payload?.sell?.tokenType ?? null,
+        summary:            plan?.summary ?? (data.workflow ?? plan.workflow),
+        executionId:        data.executionId ?? null,
+        nexusRequestDigest: data.digest ?? null,
+        settleDigest,
+        settledVia:         'bridge',
+        status:             'settled',
+      });
     } catch (err) {
       clearAnim();
       setNodeState(s => {
@@ -1926,6 +2005,57 @@ export default function AgentPage({ onBack }) {
               );
             })}
           </div>
+        )}
+      </div>
+
+      {/* ── Agent action history (persistent) ─────────────────────────────── */}
+      <div className="mt-10 pt-6 border-t border-white/10">
+        <button
+          onClick={() => setHistoryOpen(o => !o)}
+          className="w-full flex items-center justify-between mb-4"
+        >
+          <div className="text-[10px] font-mono text-violet-400/70 tracking-widest">
+            AGENT HISTORY{history.length ? ` · ${history.length}` : ''}
+          </div>
+          <ChevronDown size={14} className={`text-white/30 transition-transform ${historyOpen ? 'rotate-180' : ''}`} />
+        </button>
+
+        {historyOpen && (
+          history.length === 0 ? (
+            <div className="border border-white/10 rounded-xl p-4 text-[11px] font-mono text-white/30">
+              No actions yet. Fired trades (manual and autonomous) appear here.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {history.map((a) => {
+                const proof = a.leaderSettlementDigest || a.settleDigest || a.nexusRequestDigest;
+                const via   = a.settledVia === 'leader' ? 'leader' : a.settledVia === 'bridge' ? 'bridge' : null;
+                const when  = a.createdAt ? new Date(a.createdAt).toLocaleString() : '';
+                return (
+                  <div key={a.id} className="border border-white/10 rounded-xl p-3 text-[10px] font-mono">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className={`shrink-0 px-1.5 py-0.5 rounded text-[8px] tracking-widest ${a.source === 'autonomous' ? 'bg-violet-400/15 text-violet-300/90' : 'bg-emerald-400/15 text-emerald-300/90'}`}>
+                          {a.source === 'autonomous' ? 'AUTO' : 'MANUAL'}
+                        </span>
+                        <span className="text-white/70 truncate">{a.summary || a.kind}</span>
+                      </div>
+                      <span className={`shrink-0 text-[9px] tracking-widest ${a.status === 'settled' ? 'text-emerald-400/80' : a.status === 'pending' ? 'text-violet-300/70' : a.status === 'fallback' ? 'text-amber-300/70' : 'text-red-400/70'}`}>
+                        {a.status}{via ? ` · ${via}` : ''}
+                      </span>
+                    </div>
+                    {when && <div className="text-white/30 mt-1">{when}</div>}
+                    {proof && (
+                      <a href={suiscanTx(proof)} target="_blank" rel="noreferrer"
+                         className="inline-flex items-center gap-1.5 mt-1 text-violet-400 hover:text-violet-300 break-all">
+                        {a.leaderSettlementDigest ? 'leader settled' : a.settleDigest ? 'settled' : 'nexus request'}: {proof} <ExternalLink size={10} />
+                      </a>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )
         )}
       </div>
     </div>

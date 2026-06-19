@@ -169,6 +169,34 @@ async function recordFire(order, fire) {
     settle:      fire.settle ?? null,      // bridge settle digest (the money path)
   };
   await persistParams(order);
+  // Persist a row in the agent_actions history (autonomous fire). Best-effort:
+  // a history-write failure must NEVER affect the fire or the order state.
+  recordAgentAction({
+    kind:                 fire.kind ?? order.type ?? 'buy',
+    source:               'autonomous',
+    curveId:              fire.curveId ?? order.curveId ?? null,
+    tokenType:            order.tokenType ?? null,
+    summary:              `${(fire.kind ?? order.type ?? 'fire')} via ${order.type ?? 'strategy'} (order ${order.id})`,
+    executionId:          fire.nexusExec ?? null,
+    nexusRequestDigest:   fire.nexusDigest ?? fire.nexusTask ?? null,
+    settleDigest:         fire.settle ?? null,
+    settledVia:           fire.settle ? 'bridge' : null,
+    status:               fire.settle ? 'settled' : 'pending',
+    wallet:               INVOKER_ADDRESS,
+  }).catch(() => {});
+}
+
+// recordAgentAction — POST a row to the indexer's agent_actions history. Used by
+// recordFire (autonomous). Best-effort, never throws. Mirrors persistParams's
+// key/guard handling (x-strategy-key when STRATEGY_API_KEY is set).
+async function recordAgentAction(action) {
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (STRATEGY_API_KEY) headers['x-strategy-key'] = STRATEGY_API_KEY;
+    await fetch(`${INDEXER_URL}/agent-actions`, {
+      method: 'POST', headers, body: JSON.stringify(action), signal: AbortSignal.timeout(8000),
+    });
+  } catch (e) { err(`recordAgentAction error: ${e.message}`); }
 }
 
 // notifyBell — push a TP/SL fire to the indexer notification store so it surfaces

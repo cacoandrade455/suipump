@@ -7,6 +7,7 @@ import {
   getAllCurves, pool,
 } from './db.js';
 import { mountOrders } from './orders.js';
+import { mountAgentActions } from './agent_actions.js';
 
 const PORT = parseInt(process.env.PORT || '3001');
 const app  = express();
@@ -16,6 +17,10 @@ app.use(express.json());
 // Strategy order store — self-contained module, owns its own strategy_orders
 // table; does not touch db.js. Adds GET/POST/PATCH/DELETE /orders.
 mountOrders(app);
+
+// Agent action history — self-contained module, owns its own agent_actions
+// table; does not touch db.js. Adds GET/POST/PATCH /agent-actions.
+mountAgentActions(app);
 
 // ── Virtual reserves per package — must match frontend constants.js ─────────
 const MIST = 1_000_000_000;
