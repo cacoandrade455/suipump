@@ -230,7 +230,7 @@ function parseStrategyGoal(text) {
   //   "buy 500 sui of 0x… , take profit at +20% sell all"
   // The buy settles immediately via the bridge; the TP/SL is then armed at the
   // post-buy fill price so "+20%" is measured from what we actually paid.
-  const buyMatch = lower.match(/buy\s+(\d+(?:\.\d+)?)\s*sui/);
+  const buyMatch = lower.match(/buy\s+(\d*\.?\d+)\s*sui/);
   if (buyMatch) {
     const amountSui = Number(buyMatch[1]);
     if (amountSui > 0) {
@@ -278,7 +278,7 @@ function parseSniperGoal(text) {
 
   // amount: "snipe N sui" / "buy N sui" / "N sui"; default 0.1.
   let amountSui = 0.1;
-  const amt = lower.match(/(?:dev[\s-]?buy|buy|ape|snipe)\s+(\d+(?:\.\d+)?)\s*sui/) || lower.match(/(\d+(?:\.\d+)?)\s*sui/);
+  const amt = lower.match(/(?:dev[\s-]?buy|buy|ape|snipe)\s+(\d*\.?\d+)\s*sui/) || lower.match(/(\d*\.?\d+)\s*sui/);
   if (amt) amountSui = Number(amt[1]);
 
   // symbols: "symbol: PEPE" / "ticker PEPE".
@@ -396,8 +396,8 @@ function parseDcaGoal(text) {
   // Per-buy SUI. Your phrasing can carry TWO sizes: an anchor ("buy 5 sui …")
   // and a per-dip rung ("…buy 10 more each -10%"). Capture both; the rung size is
   // the one tied to "more". If only one amount, it is both anchor and rung.
-  const allAmts = [...lower.matchAll(/(\d+(?:\.\d+)?)\s*sui/g)].map(m => Number(m[1]));
-  const moreMatch = lower.match(/(\d+(?:\.\d+)?)\s*(?:sui\s+)?more/);
+  const allAmts = [...lower.matchAll(/(\d*\.?\d+)\s*sui/g)].map(m => Number(m[1]));
+  const moreMatch = lower.match(/(\d*\.?\d+)\s*(?:sui\s+)?more/);
   let anchorSui = allAmts.length ? allAmts[0] : null;
   let rungSui   = moreMatch ? Number(moreMatch[1]) : (allAmts.length ? allAmts[allAmts.length - 1] : null);
   // If there are two distinct amounts and no explicit "more", treat first as
@@ -515,9 +515,9 @@ function parseCopytradeGoal(text) {
   // Per-trade SUI size: "5 sui per trade" / "buy 5 sui" / "5 sui each" / "5 sui".
   let suiPerTrade = null;
   const amt =
-    lower.match(/(\d+(?:\.\d+)?)\s*sui\s*(?:per\s*(?:trade|buy)|each|a\s*trade)/) ||
-    lower.match(/(?:buy|at|with|use)\s+(\d+(?:\.\d+)?)\s*sui/) ||
-    lower.match(/(\d+(?:\.\d+)?)\s*sui/);
+    lower.match(/(\d*\.?\d+)\s*sui\s*(?:per\s*(?:trade|buy)|each|a\s*trade)/) ||
+    lower.match(/(?:buy|at|with|use)\s+(\d*\.?\d+)\s*sui/) ||
+    lower.match(/(\d*\.?\d+)\s*sui/);
   if (amt) suiPerTrade = Number(amt[1]);
   if (!(suiPerTrade > 0)) return null;
 
