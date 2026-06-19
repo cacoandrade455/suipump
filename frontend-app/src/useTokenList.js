@@ -38,9 +38,13 @@ export function useTokenList() {
       return []; // RPC fallback removed (CORS blocked on browser)
     }
 
-    async function load() {
+    // `initial` is true only for the first load. Background refreshes (the 15s
+    // interval) must NOT flip `loading` — doing so unmounts the homepage grid to
+    // its loading state and remounts it every 15s, which is the visible flicker.
+    // Refreshes update `tokens` silently; only the first load shows the spinner.
+    async function load(initial = false) {
       try {
-        setLoading(true);
+        if (initial) setLoading(true);
         setError(null);
         let enriched;
         if (INDEXER_URL) {
@@ -58,12 +62,12 @@ export function useTokenList() {
       } catch (err) {
         if (!cancelled) setError(err.message || String(err));
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled && initial) setLoading(false);
       }
     }
 
-    load();
-    const interval = setInterval(load, 15_000);
+    load(true);
+    const interval = setInterval(() => load(false), 15_000);
     return () => { cancelled = true; clearInterval(interval); };
   }, []);
 
