@@ -31,3 +31,38 @@ suipump-nexus-tools/nexus_toolkit_config.json
 
 # Force-include compiled template bytecode (needed by agent bridge on Render)
 !coin-template/build/coin_template/bytecode_modules/template.mv
+agent-runner/orders.json 
+
+# Scratch / debug JSON (never commit - monorepo root noise)
+buyinput.json
+nexusreq.json
+nx.json
+nxsettle.json
+sellsettle.json
+claimexec.json
+claimsettle.json
+lbexec.json
+curve.json
+chk.json
+chk2.json
+rb.json
+allowed_leaders_current.json
+
+# On-chain DAG scratch dumps
+dag_*_onchain.json
+
+# Scratch scripts / simulators
+simulate_trades.js
+frontend-app/simulate_trades.js
+scripts/sim_wallets.json
+
+# Generated ABI + extra contract build dirs
+nexus_abi/
+contracts-v*/build/
+
+# Stray Sui CLI binary copied into the repo root
+/sui
+
+# Shell-accident files (literal brace/quote names from bad redirects)
+\{
+\'
