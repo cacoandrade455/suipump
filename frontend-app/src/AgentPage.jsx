@@ -204,7 +204,7 @@ function parseStrategyGoal(text) {
 
   // Take-profit: a "+N%" near a take-profit / dump / sell intent.
   const tp = [];
-  const tpPct = lower.match(/(?:take\s*profit|tp|dump\s+all|profit)[^+\-]*\+?\s*(\d+(?:\.\d+)?)\s*%/);
+  const tpPct = lower.match(/(?:take\s*profit|tp|dump\s+all|profit)\s*(?:at|@|of|by)?\s*\+?\s*(\d+(?:\.\d+)?)\s*%/);
   if (tpPct) {
     const pct = Number(tpPct[1]);
     // sell size: "sell 50%" / "dump all" / "100%"; default 100.
@@ -217,7 +217,7 @@ function parseStrategyGoal(text) {
 
   // Stop-loss: a "-N%" near a stop-loss intent.
   let stopLoss = null;
-  const slPct = lower.match(/(?:stop\s*loss|sl)[^+\-]*-\s*(\d+(?:\.\d+)?)\s*%/);
+  const slPct = lower.match(/(?:stop\s*loss|sl)\s*(?:at|@|of|by)?\s*-?\s*(\d+(?:\.\d+)?)\s*%/);
   if (slPct) {
     const pct = Number(slPct[1]);
     if (pct > 0 && pct < 100) stopLoss = { multiple: 1 - pct / 100 };
@@ -321,7 +321,7 @@ function parseSniperGoal(text) {
   let then = null;
   {
     const tp = [];
-    const tpPct = lower.match(/(?:take\s*profit|tp|dump\s+all|dump|profit)[^+\-]*\+?\s*(\d+(?:\.\d+)?)\s*%/);
+    const tpPct = lower.match(/(?:take\s*profit|tp|dump\s+all|dump|profit)\s*(?:at|@|of|by)?\s*\+?\s*(\d+(?:\.\d+)?)\s*%/);
     if (tpPct) {
       const pct = Number(tpPct[1]);
       let sellPct = 100;
@@ -331,7 +331,7 @@ function parseSniperGoal(text) {
       if (pct > 0) tp.push({ multiple: 1 + pct / 100, sellPct });
     }
     let stopLoss = null;
-    const slPct = lower.match(/(?:stop\s*loss|sl)[^+\-]*-\s*(\d+(?:\.\d+)?)\s*%/);
+    const slPct = lower.match(/(?:stop\s*loss|sl)\s*(?:at|@|of|by)?\s*-?\s*(\d+(?:\.\d+)?)\s*%/);
     if (slPct) {
       const pct = Number(slPct[1]);
       if (pct > 0 && pct < 100) stopLoss = { multiple: 1 - pct / 100 };
