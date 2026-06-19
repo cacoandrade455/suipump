@@ -1785,7 +1785,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
             if (fr.ok) {
               const fs = await fr.json();
               if (fs.reserve_sui != null) freshReserveMist = BigInt(Math.round(fs.reserve_sui * 1e9));
-              if (fs.token_reserve != null) freshTokensRemaining = BigInt(Math.round(fs.token_reserve));
+              if (fs.token_reserve != null) freshTokensRemaining = BigInt(Math.round(fs.token_reserve * 1e6));
             }
           }
         } catch { /* fallback to cached state */ }
