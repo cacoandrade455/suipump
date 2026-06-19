@@ -9,14 +9,19 @@
       "entry_ports": [
         { "name": "name" },
         { "name": "symbol" },
-        { "name": "description" }
+        { "name": "description" },
+        { "name": "dev_buy_sui" },
+        { "name": "graduation_target" },
+        { "name": "anti_bot_delay" }
       ]
     },
     {
       "kind": { "variant": "off_chain", "tool_fqn": "xyz.suipump.buy@2" },
       "name": "buy",
       "entry_ports": [
-        { "name": "amount_sui" }
+        { "name": "amount_sui" },
+        { "name": "slippage_bps" },
+        { "name": "referrer" }
       ]
     }
   ],

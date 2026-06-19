@@ -55,9 +55,17 @@ const RUN_TIMEOUT_MS = parseInt(process.env.RUN_TIMEOUT_MS ?? '180000', 10);
 const AGENT_API_KEY  = process.env.AGENT_API_KEY ?? '';
 
 // Published DAG ids (testnet). Override any via env if re-published.
-// launch_and_buy defaults to the PROVEN combined DAG 0xfd88 (verified Ok/Ok).
+// launch_and_buy now points at the reworked combo DAG
+// 0x42a18814429c433e141c82a02a68100e254f598fc0aedfb0262581a15c32bc0d
+// (launch@1 + buy@2, curve_id edge, named entry group "launch_and_buy"). The
+// legacy 0xfd88 DAG wired buy to the DEAD buy@1 FQN: launch settled Ok and the
+// curve_id edge propagated, but the buy walk was scheduled against buy@1 which
+// can no longer respond, so no trade ever landed. The new DAG uses the live
+// buy@2 tool. To revert to legacy in one restart, set both:
+//   DAG_LAUNCH_BUY=0xfd88d4d2f60340c268e77409b24fb129696d230a50fb21667de313531eb24c3b
+//   GROUP_LAUNCH_BUY=_default_group  and  DAG_LAUNCH_BUY_LEGACY=1
 const DAG_IDS = {
-  launch_and_buy: process.env.DAG_LAUNCH_BUY ?? '0xfd88d4d2f60340c268e77409b24fb129696d230a50fb21667de313531eb24c3b',
+  launch_and_buy: process.env.DAG_LAUNCH_BUY ?? '0x42a18814429c433e141c82a02a68100e254f598fc0aedfb0262581a15c32bc0d',
   buy:            process.env.DAG_BUY        ?? '0xf59d689bc1697ddc03e8ca3363ed93eb71c8c3ada1011b6a23eb83c0bef22831',
   sell:           process.env.DAG_SELL       ?? '0x73db18930ab13894e46279fbf8ef2700dd8772aac566021abf5214df9fa43d68',
   claim:          process.env.DAG_CLAIM      ?? '0xc6c0936d01740a967e1cbeb146026bd519ec6681400eadc7405441d4d3f38eb0',
@@ -68,18 +76,21 @@ const DAG_IDS = {
 // "_default_group". The 0xfd88 combined DAG uses _default_group; the newer
 // single-workflow DAGs use named groups (buy_only, etc.).
 const ENTRY_GROUPS = {
-  launch_and_buy: process.env.GROUP_LAUNCH_BUY ?? '_default_group',
+  launch_and_buy: process.env.GROUP_LAUNCH_BUY ?? 'launch_and_buy',
   buy:            process.env.GROUP_BUY        ?? 'buy_only',
   sell:           process.env.GROUP_SELL       ?? 'sell_only',
   claim:          process.env.GROUP_CLAIM      ?? 'claim_only',
   alerts:         process.env.GROUP_ALERTS     ?? 'alerts_only',
 };
 
-// Set DAG_LAUNCH_BUY_LEGACY=0 (env) to use the new 0xb385 launch_and_buy DAG
-// once its entry group is re-published to include the buy vertex. When legacy
-// (default), launch_and_buy emits the minimal 0xfd88 input shape; when not,
-// it emits the full new-DAG input shape (graduation_target/dev_buy_sui/etc.).
-const LAUNCH_BUY_LEGACY = (process.env.DAG_LAUNCH_BUY_LEGACY ?? '1') !== '0';
+// Set DAG_LAUNCH_BUY_LEGACY=1 (env) to fall back to the legacy 0xfd88 combo DAG
+// (also requires DAG_LAUNCH_BUY + GROUP_LAUNCH_BUY env overrides, see above).
+// Default (0) uses the reworked combo DAG: launch emits full ports
+// (name/symbol/description/dev_buy_sui/graduation_target/anti_bot_delay) and the
+// buy vertex gets curve_id via the on-chain edge plus amount_sui/slippage_bps/
+// referrer from input. launch's internal dev_buy is set to 0 so the SINGLE buy
+// is performed by the buy@2 vertex with the real amount.
+const LAUNCH_BUY_LEGACY = (process.env.DAG_LAUNCH_BUY_LEGACY ?? '0') !== '0';
 
 // Alerts entry-port defaults (env-overridable). Tool: xyz.suipump.alerts@1.
 //   graduation_warning_sui — warn when curve is within this many SUI of graduation
@@ -155,19 +166,33 @@ function buildInput(workflow, body) {
         };
       }
 
-      // New 0xb385 DAG shape (only valid once its entry group includes buy).
+      // Reworked combo DAG (0x42a1...): launch@1 + buy@2, curve_id via on-chain
+      // edge. The launch vertex declares name/symbol/description/dev_buy_sui/
+      // graduation_target/anti_bot_delay; the buy vertex declares amount_sui/
+      // slippage_bps/referrer (curve_id arrives via the edge, NOT as input).
+      // Strict entry-group matching requires EVERY declared non-edge port, so we
+      // supply all of them.
+      //
+      // dev_buy_sui is forced to 0 on launch: the SINGLE buy is performed by the
+      // buy@2 vertex with the real amount below. (Putting a dev-buy on launch too
+      // would double-buy.) The requested dev-buy amount becomes the buy vertex's
+      // amount_sui, floored to 0.1 so the buy is never 0 — the legacy bug was
+      // launch dev_buy=0 AND a dead buy@1 vertex, so nothing bought at all.
       const grad = GRAD_MAP[L.graduationTarget] ?? 'turbos';
+      const buyAmount = num(B.amountSui, num(L.devBuySui, 0)) || 0.1;
       return {
         launch: {
           name,
           symbol,
           description: str(L.description || `${name} via SuiPump agent`, 200),
+          dev_buy_sui: 0,
           graduation_target: grad,
-          dev_buy_sui: num(L.devBuySui, 0),
           anti_bot_delay: num(L.antiBotDelay, 0),
         },
         buy: {
-          amount_sui: num(B.amountSui, num(L.devBuySui, 0)),
+          amount_sui:   buyAmount,
+          slippage_bps: num(B.slippageBps, 500),
+          referrer:     B.referrer ? str(B.referrer, 66) : null,
         },
       };
     }
