@@ -27,3 +27,15 @@ package = "nexus-sdk"
 git = "https://github.com/Talus-Network/nexus-sdk.git"
 tag = "v1.0.0"
 package = "nexus-toolkit"
+
+# Fast-compile release profile. These tools are I/O-bound HTTP forwarders (they
+# POST to the bridge over the network), so heavy LLVM optimization buys nothing
+# at runtime while costing minutes per build. opt-level=1 keeps codegen light,
+# lto=false skips link-time optimization, and a high codegen-units maximizes
+# parallelism across cores — cutting compile time with no meaningful runtime hit.
+[profile.release]
+opt-level = 1
+lto = false
+codegen-units = 256
+debug = false
+incremental = true
