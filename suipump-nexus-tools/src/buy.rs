@@ -72,9 +72,24 @@ async fn execute_buy(input: BuyInput) -> AnyResult<BuyOutput> {
     }
 
     let r: serde_json::Value = resp.json().await?;
+
+    // The bridge returns tokensReceived / suiSpent as STRINGS (e.g. "123.456789"
+    // from .toFixed()), or "unknown" when a balance change can't be read. serde's
+    // .as_f64() returns None for a JSON string, so a bare .as_f64().unwrap_or(0.0)
+    // silently zeroed tokens_received. Mirror sell.rs: try number first, then
+    // string-parse, then default. sui_spent keeps amount_sui as its final fallback.
+    let tokens_received = r["tokensReceived"]
+        .as_f64()
+        .or_else(|| r["tokensReceived"].as_str().and_then(|s| s.parse::<f64>().ok()))
+        .unwrap_or(0.0);
+    let sui_spent = r["suiSpent"]
+        .as_f64()
+        .or_else(|| r["suiSpent"].as_str().and_then(|s| s.parse::<f64>().ok()))
+        .unwrap_or(input.amount_sui);
+
     Ok(BuyOutput::Ok {
         tx_digest: r["txDigest"].as_str().unwrap_or("").to_string(),
-        tokens_received: r["tokensReceived"].as_f64().unwrap_or(0.0),
-        sui_spent: r["suiSpent"].as_f64().unwrap_or(input.amount_sui),
+        tokens_received,
+        sui_spent,
     })
 }

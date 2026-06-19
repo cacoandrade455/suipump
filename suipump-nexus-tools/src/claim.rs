@@ -78,8 +78,18 @@ async fn execute_claim(input: ClaimInput) -> AnyResult<ClaimOutput> {
         return Ok(ClaimOutput::Err { reason: resp.text().await? });
     }
     let r: serde_json::Value = resp.json().await?;
+
+    // The bridge returns suiClaimed as a STRING (e.g. "1.234500") from .toFixed().
+    // serde's .as_f64() returns None for a JSON string, so a bare
+    // .as_f64().unwrap_or(0.0) silently zeroed sui_claimed. Mirror sell.rs: try
+    // number first, then string-parse, then default 0.0.
+    let sui_claimed = r["suiClaimed"]
+        .as_f64()
+        .or_else(|| r["suiClaimed"].as_str().and_then(|s| s.parse::<f64>().ok()))
+        .unwrap_or(0.0);
+
     Ok(ClaimOutput::Ok {
         tx_digest:   r["txDigest"].as_str().unwrap_or("").to_string(),
-        sui_claimed: r["suiClaimed"].as_f64().unwrap_or(0.0),
+        sui_claimed,
     })
 }
