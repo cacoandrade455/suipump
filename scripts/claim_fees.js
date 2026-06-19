@@ -24,6 +24,14 @@ const ALL_PACKAGES = [
   { ver:'V9',   id:'0x719698e5138582d78ee95317271e8bce05769569a4f58c940a7f1b424d90ffe2', adminCap:'0x2e0989604424ffa96f58618795285dac09d8eaf2fd0d35f4a7e9bbc22bea2bf7' },
 ];
 const V7_PLUS = new Set(ALL_PACKAGES.slice(3).map(p => p.id));
+// V9 changed the claim signature: claim_protocol_fees / claim_airdrop_fees no
+// longer RETURN the Coin<SUI> — they transfer it to the tx sender internally
+// (transfer::public_transfer(coin, sender)). So for V9 we must NOT collect or
+// transfer their result (it has no return value); calling moveCall is enough.
+// V4–V8 return the coin, so we still collect + transferObjects those.
+const V9_SELF_TRANSFER = new Set([
+  '0x719698e5138582d78ee95317271e8bce05769569a4f58c940a7f1b424d90ffe2', // V9
+]);
 function fmtSui(mist) { return (Number(mist)/1e9).toFixed(4)+' SUI'; }
 
 function loadKeypair() {
@@ -48,30 +56,51 @@ async function fetchJson(url) {
   return r.json();
 }
 
-// Get on-chain fees directly via raw GQL fetch (bypasses SDK wrapper)
+// Get on-chain fees directly via raw GQL fetch (bypasses SDK wrapper).
+// NOTE: the Sui GraphQL schema moved `type` under asMoveObject.contents and
+// changed the Object shape — the old query (`type { repr }` + `owner` on the
+// Object) now fails validation, returning data:null, which silently zeroed every
+// fee. This query only uses fields the live schema actually exposes.
 async function fetchOnChainFees(curveId) {
-  const query = `{ object(address: "${curveId}") { type { repr } owner { ... on Shared { initialSharedVersion } } asMoveObject { contents { json } } } }`;
+  const query = `{ object(address: "${curveId}") { asMoveObject { contents { type { repr } json } } } }`;
   const r = await fetch(GRAPHQL_URL, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ query }), signal: AbortSignal.timeout(10000),
   });
   const result = await r.json();
-  const obj = result?.data?.object;
-  if (!obj) return null;
-  const json = obj.asMoveObject?.contents?.json ?? {};
-  // Parse token type from on-chain type string — always accurate
-  const typeRepr = obj.type?.repr ?? '';
+  if (result?.errors?.length) {
+    // Surface the schema error instead of silently returning zeroes.
+    throw new Error(`GraphQL: ${result.errors[0]?.message ?? 'query failed'}`);
+  }
+  const mo = result?.data?.object?.asMoveObject?.contents;
+  if (!mo) return null;
+  const json = mo.json ?? {};
+  // Token type from the on-chain type repr — always accurate.
+  const typeRepr = mo.type?.repr ?? '';
   const onChainTokenType = typeRepr.match(/Curve<(.+)>$/)?.[1] ?? null;
-  const onChainIsv = obj.owner?.initialSharedVersion ?? null;
   return {
     protocolFees:     BigInt(json.protocol_fees ?? 0),
     airdropFees:      BigInt(json.airdrop_fees  ?? 0),
     name:             json.name   ?? '?',
     symbol:           json.symbol ?? '?',
     onChainTokenType,
-    onChainIsv,
     onChainTypeRepr:  typeRepr,
   };
+}
+
+// Fetch the curve's initialSharedVersion via a separate, schema-safe query.
+// (Kept separate so a change to the owner shape can never null the fee read.)
+async function fetchSharedVersion(curveId) {
+  try {
+    const query = `{ object(address: "${curveId}") { owner { __typename ... on Shared { initialSharedVersion } } } }`;
+    const r = await fetch(GRAPHQL_URL, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query }), signal: AbortSignal.timeout(10000),
+    });
+    const result = await r.json();
+    if (result?.errors?.length) return null;
+    return result?.data?.object?.owner?.initialSharedVersion ?? null;
+  } catch { return null; }
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -116,7 +145,8 @@ for (const token of tokens) {
 
     const { protocolFees, airdropFees } = fees;
     const resolvedTokenType = fees.onChainTokenType ?? tokenType;
-    const resolvedIsv       = fees.onChainIsv       ?? isv;
+    // isv: prefer the indexer's value (already fetched), else a dedicated GQL read.
+    const resolvedIsv = isv ?? await fetchSharedVersion(curveId);
     const pkg = resolvePackage(fees.onChainTypeRepr) ?? resolvePackage2(packageId);
     const claimAmt = protocolFees + (V7_PLUS.has(pkg.id) ? airdropFees : 0n);
 
@@ -131,12 +161,21 @@ for (const token of tokens) {
       ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: Number(resolvedIsv), mutable: true })
       : tx.object(curveId);
 
+    const isV9 = V9_SELF_TRANSFER.has(pkg.id);
     const coins = [];
-    if (protocolFees > 0n)
-      coins.push(tx.moveCall({ target:`${pkg.id}::bonding_curve::claim_protocol_fees`, typeArguments:[resolvedTokenType], arguments:[tx.object(pkg.adminCap), curveRef] }));
-    if (V7_PLUS.has(pkg.id) && airdropFees > 0n)
-      coins.push(tx.moveCall({ target:`${pkg.id}::bonding_curve::claim_airdrop_fees`,  typeArguments:[resolvedTokenType], arguments:[tx.object(pkg.adminCap), curveRef] }));
-    tx.transferObjects(coins, address);
+
+    if (protocolFees > 0n) {
+      const r = tx.moveCall({ target:`${pkg.id}::bonding_curve::claim_protocol_fees`, typeArguments:[resolvedTokenType], arguments:[tx.object(pkg.adminCap), curveRef] });
+      // V9 transfers internally (no return); only collect for V4–V8 which return the coin.
+      if (!isV9) coins.push(r);
+    }
+    if (V7_PLUS.has(pkg.id) && airdropFees > 0n) {
+      const r = tx.moveCall({ target:`${pkg.id}::bonding_curve::claim_airdrop_fees`,  typeArguments:[resolvedTokenType], arguments:[tx.object(pkg.adminCap), curveRef] });
+      if (!isV9) coins.push(r);
+    }
+    // Only transfer the returned coins (V4–V8). For V9 the contract already sent
+    // the fees to the signer, so there is nothing to transfer here.
+    if (coins.length > 0) tx.transferObjects(coins, address);
 
     tx.setSender(address);
     const builtTx = await tx.build({ client });
