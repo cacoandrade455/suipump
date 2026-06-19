@@ -55,21 +55,21 @@ const OPERATE_GUIDE = [
         examples: ['Launch a dog token called MoonCat, symbol MCAT, dev-buy 1 SUI'],
       },
       {
-        key: 'buy', title: 'Buy', fqn: 'xyz.suipump.buy@1',
+        key: 'buy', title: 'Buy', fqn: 'xyz.suipump.buy@2',
         tagline: 'Spend SUI to buy a token on its curve',
         body: 'Buys tokens on a bonding curve for a set amount of SUI, with a slippage tolerance (default 2%). Optionally credits a referrer.',
         inputs: ['A token CA', 'An amount of SUI to spend', 'Optional: slippage tolerance', 'Optional: referrer address'],
         examples: ['Buy 2 SUI of 0xCURVE'],
       },
       {
-        key: 'sell', title: 'Sell', fqn: 'xyz.suipump.sell@1',
+        key: 'sell', title: 'Sell', fqn: 'xyz.suipump.sell@2',
         tagline: 'Sell tokens back to SUI',
         body: 'Sells tokens back to SUI on a curve. You can set a minimum-SUI-out as a slippage guard. Sell a specific amount or your whole position.',
         inputs: ['A token CA', 'How many tokens (or all)', 'Optional: minimum SUI out (slippage guard)'],
         examples: ['Sell all tokens of 0xCURVE'],
       },
       {
-        key: 'claim', title: 'Claim', fqn: 'xyz.suipump.claim@1',
+        key: 'claim', title: 'Claim', fqn: 'xyz.suipump.claim@2',
         tagline: 'Collect pending creator fees',
         body: 'Claims the creator fees that have accrued on a curve you launched. Does nothing if there are no fees pending. You can claim one curve by pasting its CA, or claim every curve you created at once — say "claim all" with no CA and the agent enumerates your curves and claims each one through Nexus.',
         inputs: ['A token CA you created — or "claim all" for every curve at once'],
@@ -163,19 +163,19 @@ function TokenIcon({ url, symbol, size = 28 }) {
 const WORKFLOW_NODES = {
   launch_and_buy: [
     { id: 'launch', tool: 'xyz.suipump.launch@1', label: 'Launch',  desc: 'Create token on bonding curve' },
-    { id: 'buy',    tool: 'xyz.suipump.buy@1',    label: 'Dev-buy', desc: 'Agent makes the first buy' },
+    { id: 'buy',    tool: 'xyz.suipump.buy@2',    label: 'Dev-buy', desc: 'Agent makes the first buy' },
   ],
-  buy:    [{ id: 'buy',    tool: 'xyz.suipump.buy@1',    label: 'Buy',    desc: 'Buy tokens on the curve' }],
-  sell:   [{ id: 'sell',   tool: 'xyz.suipump.sell@1',   label: 'Sell',   desc: 'Sell tokens back to SUI' }],
-  claim:  [{ id: 'claim',  tool: 'xyz.suipump.claim@1',  label: 'Claim',  desc: 'Claim creator fees' }],
-  claim_all: [{ id: 'claim', tool: 'xyz.suipump.claim@1', label: 'Claim all', desc: 'Claim creator fees from every curve you created' }],
+  buy:    [{ id: 'buy',    tool: 'xyz.suipump.buy@2',    label: 'Buy',    desc: 'Buy tokens on the curve' }],
+  sell:   [{ id: 'sell',   tool: 'xyz.suipump.sell@2',   label: 'Sell',   desc: 'Sell tokens back to SUI' }],
+  claim:  [{ id: 'claim',  tool: 'xyz.suipump.claim@2',  label: 'Claim',  desc: 'Claim creator fees' }],
+  claim_all: [{ id: 'claim', tool: 'xyz.suipump.claim@2', label: 'Claim all', desc: 'Claim creator fees from every curve you created' }],
   alerts: [{ id: 'alerts', tool: 'xyz.suipump.alerts@1', label: 'Monitor', desc: 'Watch graduation / price' }],
   tpsl:   [{ id: 'arm',    tool: 'strategy.tpsl@1',      label: 'Arm strategy', desc: 'Standing TP/SL order the agent watches' }],
   sniper: [{ id: 'arm',    tool: 'strategy.sniper@1',    label: 'Arm sniper',   desc: 'Standing buy that fires on every matching launch' }],
   dca:    [{ id: 'arm',    tool: 'strategy.dca@1',       label: 'Arm DCA',      desc: 'Standing accumulation: buys on a schedule or on each dip' }],
   copytrade: [{ id: 'arm', tool: 'strategy.copytrade@1', label: 'Arm copy-trade', desc: 'Mirror a target wallet: buy when it buys, sell when it sells' }],
   buy_then_tpsl: [
-    { id: 'buy', tool: 'xyz.suipump.buy@1', label: 'Buy',          desc: 'Buy the position now' },
+    { id: 'buy', tool: 'xyz.suipump.buy@2', label: 'Buy',          desc: 'Buy the position now' },
     { id: 'arm', tool: 'strategy.tpsl@1',   label: 'Arm strategy', desc: 'Then watch price and auto-sell at the target' },
   ],
 };
@@ -1174,12 +1174,15 @@ export default function AgentPage({ onBack }) {
       // BEST-EFFORT: the on-chain walk request is the orchestration paper trail,
       // not the settlement path. A slow/failed /run-dag must NEVER block the trade
       // from settling. We capture whatever the runner returns and move on.
+      // C2 DEMO MODE (?demo=1): request leader confirmation so the leader path
+      // can be the sole, provable executor — see STEP 2.
+      const DEMO_MODE = new URLSearchParams(window.location.search).get('demo') === '1';
       let data = {};
       try {
         const res = await fetch(`/api/agent-run`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
+          body: JSON.stringify(DEMO_MODE ? { ...payload, confirm: true } : payload),
         });
         data = await res.json().catch(() => ({}));
         if (!res.ok || data.ok === false) {
@@ -1192,6 +1195,27 @@ export default function AgentPage({ onBack }) {
         data = {};
       }
       clearAnim();
+
+      // C2 DEMO MODE: if the leader settled the walk on-chain (EndState Ok/Empty,
+      // sender = a Talus leader), the leader path already executed the action —
+      // surface the LEADER settlement as the proof and SKIP the bridge settle, so
+      // the leader is the one, provable executor. (Production / non-demo always
+      // settles via the bridge below.)
+      if (DEMO_MODE && (data.endState === 'Ok' || data.endState === 'Empty') && data.settlementDigest) {
+        setNodeState(Object.fromEntries(nodes.map(n => [n.id, 'done'])));
+        setResult({
+          workflow:         data.workflow ?? plan.workflow,
+          executionId:      data.executionId ?? null,
+          digest:           data.digest ?? null,
+          checkpoint:       data.checkpoint ?? null,
+          dagId:            data.dagId ?? null,
+          leaderSettled:    true,
+          endState:         data.endState,
+          settlementDigest: data.settlementDigest,
+        });
+        setPhase('done');
+        return;
+      }
 
       // STEP 2 — Settle the swap through the bridge so the tokens actually move.
       // This is the money path and runs REGARDLESS of whether the Nexus emit
@@ -1725,6 +1749,12 @@ export default function AgentPage({ onBack }) {
               <a href={suiscanTx(result.digest)} target="_blank" rel="noreferrer"
                  className="inline-flex items-center gap-1.5 text-violet-400 hover:text-violet-300 break-all">
                 nexus request: {result.digest} <ExternalLink size={11} />
+              </a>
+            )}
+            {result.leaderSettled && result.settlementDigest && (
+              <a href={suiscanTx(result.settlementDigest)} target="_blank" rel="noreferrer"
+                 className="inline-flex items-center gap-1.5 text-emerald-400 hover:text-emerald-300 break-all">
+                leader settled ({result.endState ?? 'Ok'}): {result.settlementDigest} <ExternalLink size={11} />
               </a>
             )}
             {result.settleDigest && (
