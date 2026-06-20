@@ -567,7 +567,7 @@ async function fireNexusBuy(curveId, amountSui) {
     const rd = await rr.json().catch(() => ({}));
     if (rr.ok && rd.ok && (rd.endState === 'Ok' || rd.endState === 'Empty') && rd.settlementDigest) {
       log(`buy: DEMO leader-settled endState=${rd.endState} leader=${rd.leaderSender} digest=${rd.settlementDigest} (skipping bridge)`);
-      return { settleDigest: rd.settlementDigest, leaderSettled: true, nexusExecutionId: rd.executionId ?? null };
+      return { settleDigest: rd.settlementDigest, leaderSettled: true, leaderSender: rd.leaderSender ?? null, nexusExecutionId: rd.executionId ?? null };
     }
     err(`buy: DEMO leader path did not confirm (endState=${rd.endState ?? rd.error ?? rr.status}); falling back to bridge`);
   } catch (e) {
@@ -575,7 +575,7 @@ async function fireNexusBuy(curveId, amountSui) {
   }
   // Fallback: the proven bridge buy.
   const settleDigest = await fireBridgeBuyRaw(curveId, amountSui);
-  return { settleDigest, leaderSettled: false, nexusExecutionId: null };
+  return { settleDigest, leaderSettled: false, leaderSender: null, nexusExecutionId: null };
 }
 
 // ── Settle a BUY through the bridge (the path that actually moves tokens) ──────
@@ -592,12 +592,18 @@ async function fireNexusBuy(curveId, amountSui) {
 // through the Talus leader path (fireNexusBuy) and returns the LEADER settlement
 // digest when the leader settles; otherwise it returns the bridge digest. In
 // production (DEMO_MODE off) it is the raw bridge buy, unchanged.
+// Demo-aware buy dispatcher used by all call sites. Returns an OBJECT
+// { settleDigest, leaderSettled, leaderSender, nexusExecutionId } so call sites
+// can label the fire truthfully (leader vs bridge). In DEMO_MODE it routes
+// through the Talus leader path (fireNexusBuy) and reports leaderSettled=true
+// when the leader settles; otherwise it returns the bridge digest with
+// leaderSettled=false. In production (DEMO_MODE off) it is the raw bridge buy.
 async function fireBridgeBuy(curveId, amountSui) {
   if (DEMO_MODE) {
-    const r = await fireNexusBuy(curveId, amountSui);
-    return r.settleDigest;
+    return await fireNexusBuy(curveId, amountSui);
   }
-  return fireBridgeBuyRaw(curveId, amountSui);
+  const settleDigest = await fireBridgeBuyRaw(curveId, amountSui);
+  return { settleDigest, leaderSettled: false, leaderSender: null, nexusExecutionId: null };
 }
 
 async function fireBridgeBuyRaw(curveId, amountSui) {
@@ -1008,8 +1014,9 @@ const HANDLERS = {
 
         // 2) SETTLE the buy through the bridge — the path that actually moves
         //    tokens. THIS is what makes the snipe real; the task above is proof.
-        const settleDigest = await fireBridgeBuy(curveId, amountSui);
-        log(`${order.id}: sniper settled buy digest=${settleDigest}`);
+        const buyResult = await fireBridgeBuy(curveId, amountSui);
+        const settleDigest = buyResult.settleDigest;
+        log(`${order.id}: sniper settled buy digest=${settleDigest} via=${buyResult.leaderSettled ? 'leader' : 'bridge'}`);
 
         // COMPOSE: if this sniper carries a `then` block, arm the child strategy
         // (e.g. TP/SL) on the curve we just bought, seeded at the REAL post-buy
@@ -1022,7 +1029,7 @@ const HANDLERS = {
         order.params = p;
         if (p.maxSnipes > 0 && p.fired >= p.maxSnipes) order.done = true;
         await persistParams(order);
-        await recordFire(order, { kind: 'buy', curveId, nexusTask: taskId, settle: settleDigest });
+        await recordFire(order, { kind: 'buy', curveId, nexusTask: taskId, nexusExec: buyResult.nexusExecutionId ?? null, settle: settleDigest, leaderSettled: buyResult.leaderSettled === true, leaderSender: buyResult.leaderSender ?? null });
         log(`${order.id}: SNIPE COMPLETE ${curveId.slice(0, 10)}… task=${taskId ?? 'n/a'} settle=${settleDigest} fired=${p.fired}${p.maxSnipes > 0 ? `/${p.maxSnipes}` : ''}${order.done ? ' — cap reached, closing' : ''}`);
       } catch (e) {
         // Settlement failed — release the claim so a genuine retry can re-attempt
@@ -1122,9 +1129,10 @@ const HANDLERS = {
         err(`${order.id}: dca emit failed: ${e.message} (continuing to settle)`);
       }
 
-      let settleDigest;
+      let settleDigest, dcaBuyResult;
       try {
-        settleDigest = await fireBridgeBuy(curveId, thisBuySui);
+        dcaBuyResult = await fireBridgeBuy(curveId, thisBuySui);
+        settleDigest = dcaBuyResult.settleDigest;
       } catch (e) {
         err(`${order.id}: dca settle failed: ${e.message}`);
         return; // do not count a fill that didn't settle
@@ -1166,7 +1174,7 @@ const HANDLERS = {
       order.params    = p;
       if (p.done >= buys) order.done = true;
       await persistParams(order);
-      await recordFire(order, { kind: 'buy', curveId, nexusTask: taskId, settle: settleDigest });
+      await recordFire(order, { kind: 'buy', curveId, nexusTask: taskId, nexusExec: dcaBuyResult.nexusExecutionId ?? null, settle: settleDigest, leaderSettled: dcaBuyResult.leaderSettled === true, leaderSender: dcaBuyResult.leaderSender ?? null });
 
       log(`${order.id}: DCA buy ${p.done}/${buys} ${thisBuySui} SUI @ ${price.toExponential(3)} (avg ${p.avgPriceSui.toExponential(3)}) task=${taskId ?? 'n/a'} settle=${settleDigest}${order.done ? ' — complete' : ''}`);
 
@@ -1240,9 +1248,10 @@ const HANDLERS = {
           taskId = d?.taskId ?? null;
         } catch (e) { err(`${order.id}: copytrade buy emit failed: ${e.message} (continuing to settle)`); }
         try {
-          const settle = await fireBridgeBuy(curveId, suiPerTrade);
-          log(`${order.id}: copytrade BUY settled ${suiPerTrade} SUI on ${curveId.slice(0, 10)}… task=${taskId ?? 'n/a'} settle=${settle}`);
-          await recordFire(order, { kind: 'buy', curveId, nexusTask: taskId, settle });
+          const cpBuy = await fireBridgeBuy(curveId, suiPerTrade);
+          const settle = cpBuy.settleDigest;
+          log(`${order.id}: copytrade BUY settled ${suiPerTrade} SUI on ${curveId.slice(0, 10)}… task=${taskId ?? 'n/a'} settle=${settle} via=${cpBuy.leaderSettled ? 'leader' : 'bridge'}`);
+          await recordFire(order, { kind: 'buy', curveId, nexusTask: taskId, nexusExec: cpBuy.nexusExecutionId ?? null, settle, leaderSettled: cpBuy.leaderSettled === true, leaderSender: cpBuy.leaderSender ?? null });
         } catch (e) { err(`${order.id}: copytrade buy settle failed: ${e.message}`); }
         return;
       }
