@@ -181,19 +181,48 @@ const WORKFLOW_NODES = {
   ],
 };
 
+// extractTakeProfitRungs — pull EVERY take-profit rung from a goal, in order.
+// Splits the goal into clauses on connectors (commas, "and", "then", ";") and
+// parses each clause independently: a "+N%" trigger plus the sell-size in that
+// SAME clause ("sell 50%" / "sell all" / "dump all"), defaulting to 100%. Clause
+// splitting means a later "sell all" can never be attributed to an earlier
+// "+10%" rung, so "sell 50% at +10% and sell all at +20%" yields TWO rungs.
+// Only "+N%" is a take-profit trigger; "-N%" (stop-loss) is handled separately.
+export function extractTakeProfitRungs(lower) {
+  const rungs = [];
+  const seen = new Set();
+  const clauses = String(lower || '').split(/\s*(?:,|;|\band\b|\bthen\b)\s*/);
+  for (const clause of clauses) {
+    const pm = clause.match(/\+\s*(\d+(?:\.\d+)?)\s*%/);
+    if (!pm) continue;
+    const pct = Number(pm[1]);
+    if (!(pct > 0)) continue;
+    let sellPct = 100;
+    const sizeM = clause.match(/sell\s+(\d+(?:\.\d+)?)\s*%/);
+    if (sizeM) sellPct = Number(sizeM[1]);
+    else if (/sell\s+all|dump\s+all|sell\s+the\s+rest|sell\s+rest|sell\s+everything/.test(clause)) sellPct = 100;
+    const key = `${pct}:${sellPct}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rungs.push({ multiple: 1 + pct / 100, sellPct });
+  }
+  return rungs;
+}
+
 // Client-side strategy intent parser. The LLM planner only emits one-shot
 // workflows (buy/sell/claim/alerts/launch); a take-profit / stop-loss is a
 // STANDING order, so we recognize it here and build a `tpsl` plan that creates
 // an order in the strategy store. Returns a plan object or null (not a strategy).
 //
 // Recognized shapes (case-insensitive):
-//   "take profit ... at +20%"          -> TP rung at 1.20x, sell 100%
-//   "take profit ... at +20% sell 50%" -> TP rung at 1.20x, sell 50%
-//   "dump all ... at +20%"             -> TP rung at 1.20x, sell 100%
-//   "sell 50% ... at +30%"             -> TP rung at 1.30x, sell 50%
-//   "stop loss ... at -15%"            -> SL at 0.85x
-// A curve 0x... must be present. TP and SL can appear together.
-function parseStrategyGoal(text) {
+//   "take profit ... at +20%"               -> ONE TP rung at 1.20x, sell 100%
+//   "take profit ... at +20% sell 50%"       -> ONE TP rung at 1.20x, sell 50%
+//   "dump all ... at +20%"                   -> ONE TP rung at 1.20x, sell 100%
+//   "sell 50% ... at +30%"                   -> ONE TP rung at 1.30x, sell 50%
+//   "sell 50% at +10% and sell all at +20%"  -> TWO TP rungs (tiered exit)
+//   "stop loss ... at -15%"                  -> SL at 0.85x
+// A curve 0x... must be present. TP (one or more rungs) and SL can appear together.
+export function parseStrategyGoal(text) {
   const g = String(text || '');
   const curveMatch = g.match(/0x[0-9a-fA-F]{4,}/);
   if (!curveMatch) return null;
@@ -209,22 +238,9 @@ function parseStrategyGoal(text) {
   const hasStrategyWord = /\b(take[\s-]*profit|tp|stop[\s-]*loss|sl|dump\s+all)\b/.test(lower) || sellAtPlus;
   if (!hasStrategyWord) return null;
 
-  // Take-profit: a "+N%" near a take-profit / dump / sell intent. The keyword
-  // accepts a hyphen ("take-profit"), space, or no separator, and "at/@/of/by"
-  // is optional so "take-profit +5%" parses the same as "take profit at +5%".
-  // The "sell ... +N%" form (sellAtPlus) also supplies the +N% directly.
-  const tp = [];
-  let tpPct = lower.match(/(?:take[\s-]*profit|tp|dump\s+all|profit)\s*(?:at|@|of|by)?\s*\+?\s*(\d+(?:\.\d+)?)\s*%/);
-  if (!tpPct && sellAtPlus) tpPct = lower.match(/sell\s+(?:\d+(?:\.\d+)?\s*%|all)[\s\S]*?(?:at|@|of|by)?\s*\+\s*(\d+(?:\.\d+)?)\s*%/);
-  if (tpPct) {
-    const pct = Number(tpPct[1]);
-    // sell size: "sell 50%" / "dump all" / "100%"; default 100.
-    let sellPct = 100;
-    const sellMatch = lower.match(/sell\s+(\d+(?:\.\d+)?)\s*%/);
-    if (sellMatch) sellPct = Number(sellMatch[1]);
-    else if (/dump\s+all|sell\s+all/.test(lower)) sellPct = 100;
-    if (pct > 0) tp.push({ multiple: 1 + pct / 100, sellPct });
-  }
+  // Take-profit: collect ALL rungs (tiered exits supported). Each "+N%" trigger
+  // is paired with the sell-size in its own clause; bare "+N%" defaults to 100%.
+  const tp = extractTakeProfitRungs(lower);
 
   // Stop-loss: a "-N%" near a stop-loss intent.
   let stopLoss = null;
