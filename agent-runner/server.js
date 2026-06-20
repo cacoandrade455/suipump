@@ -65,8 +65,9 @@ const AGENT_API_KEY  = process.env.AGENT_API_KEY ?? '';
 //   DAG_LAUNCH_BUY=0xfd88d4d2f60340c268e77409b24fb129696d230a50fb21667de313531eb24c3b
 //   GROUP_LAUNCH_BUY=_default_group  and  DAG_LAUNCH_BUY_LEGACY=1
 const DAG_IDS = {
+  launch:         process.env.DAG_LAUNCH     ?? '0x7af3c02275ef1902bce0706d2645311faa291a95ad719ed6603ce96442952237',
   launch_and_buy: process.env.DAG_LAUNCH_BUY ?? '0x42a18814429c433e141c82a02a68100e254f598fc0aedfb0262581a15c32bc0d',
-  buy:            process.env.DAG_BUY        ?? '0xf59d689bc1697ddc03e8ca3363ed93eb71c8c3ada1011b6a23eb83c0bef22831',
+  buy:            process.env.DAG_BUY        ?? '0x594d3f1404fbc69667354fefd68b1a8a234775641d1c2911c02ddf616ea16e56',
   sell:           process.env.DAG_SELL       ?? '0x73db18930ab13894e46279fbf8ef2700dd8772aac566021abf5214df9fa43d68',
   claim:          process.env.DAG_CLAIM      ?? '0xc6c0936d01740a967e1cbeb146026bd519ec6681400eadc7405441d4d3f38eb0',
   alerts:         process.env.DAG_ALERTS     ?? '0x9c189902c9f53cc13b6a66459fd8bbe56b4da51c872c73f8eec5a3b0a7859dbc',
@@ -76,6 +77,7 @@ const DAG_IDS = {
 // "_default_group". The 0xfd88 combined DAG uses _default_group; the newer
 // single-workflow DAGs use named groups (buy_only, etc.).
 const ENTRY_GROUPS = {
+  launch:         process.env.GROUP_LAUNCH      ?? 'launch_only',
   launch_and_buy: process.env.GROUP_LAUNCH_BUY ?? 'launch_and_buy',
   buy:            process.env.GROUP_BUY        ?? 'buy_only',
   sell:           process.env.GROUP_SELL       ?? 'sell_only',
@@ -140,6 +142,31 @@ const str = (v, max = 200) => String(v ?? '').slice(0, max);
 // matching the published DAG vertices.
 function buildInput(workflow, body) {
   switch (workflow) {
+    case 'launch': {
+      // Standalone launch DAG (launch_only). The launch vertex declares exactly
+      // seven entry ports: name, symbol, description, icon_url, dev_buy_sui,
+      // graduation_target, anti_bot_delay. Strict entry-group matching requires
+      // ALL of them or begin_execution_of_entry_group_ aborts, so we supply all
+      // seven. icon_url is Option<String> -> null = none; dev_buy_sui defaults 0
+      // (no dev-buy on a bare launch); graduation_target maps from the UI index.
+      const L = body.launch ?? {};
+      const name   = str(L.name, 64);
+      const symbol = str(L.symbol, 6).toUpperCase();
+      if (!name)   throw new Error('launch.name required');
+      if (!symbol) throw new Error('launch.symbol required');
+      const grad = GRAD_MAP[L.graduationTarget] ?? 'turbos';
+      return {
+        launch: {
+          name,
+          symbol,
+          description:       str(L.description || `${name} via SuiPump agent`, 200),
+          icon_url:          L.iconUrl ? str(L.iconUrl, 256) : null,
+          dev_buy_sui:       num(L.devBuySui, 0),
+          graduation_target: grad,
+          anti_bot_delay:    num(L.antiBotDelay, 0),
+        },
+      };
+    }
     case 'launch_and_buy': {
       const L = body.launch ?? {};
       const B = body.buy ?? {};
@@ -620,6 +647,7 @@ server.listen(PORT, () => {
   console.log(`[runner] SuiPump agent-runner on ${PORT}`);
   console.log(`[runner] workflows: ${Object.keys(DAG_IDS).join(', ')}`);
   console.log(`[runner] endpoints: POST /run-dag, POST /schedule-task (scheduler tasks)`);
+  console.log(`[runner] launch -> ${DAG_IDS.launch} (group ${ENTRY_GROUPS.launch})`);
   console.log(`[runner] launch_and_buy -> ${DAG_IDS.launch_and_buy} (group ${ENTRY_GROUPS.launch_and_buy}, legacy=${LAUNCH_BUY_LEGACY})`);
   if (!INVOKER_ADDRESS) {
     console.warn(`[runner] WARNING: INVOKER_ADDRESS unset — leader-settlement confirm will NEVER report Ok (fail-safe). Set INVOKER_ADDRESS to enable the C2 leader-settled proof.`);
