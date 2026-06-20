@@ -662,7 +662,9 @@ export default function AgentPage({ onBack }) {
 
   // When the history panel is open, resolve tickers for rows that have a curveId
   // but no token_type (so they render $TICKER instead of a raw curve id). Each
-  // curve is fetched at most once (cached by curveId). Best-effort, non-blocking.
+  // curve is fetched at most once (cached by curveId). Reads the indexer's
+  // `symbol` directly (the same field the rest of the page uses), falling back to
+  // a token_type-derived ticker. Best-effort, non-blocking, never throws.
   useEffect(() => {
     if (!historyOpen) return;
     const need = Array.from(new Set(
@@ -677,9 +679,13 @@ export default function AgentPage({ onBack }) {
         // mark in-flight as null so we don't refetch the same curve repeatedly
         setTickerByCurve(prev => (prev[cid] === undefined ? { ...prev, [cid]: null } : prev));
         try {
-          const { tokenType } = await fetchCurveMeta(cid);
+          const r = await fetch(`${INDEXER_URL}/token/${cid}`, { signal: AbortSignal.timeout(6000) });
+          if (!r.ok) continue;
+          const d = await r.json();
+          const sym = d.symbol
+            ?? ((d.token_type ?? d.tokenType) ? shortType(d.token_type ?? d.tokenType) : null);
           if (cancelled) return;
-          setTickerByCurve(prev => ({ ...prev, [cid]: shortType(tokenType) }));
+          if (sym) setTickerByCurve(prev => ({ ...prev, [cid]: sym }));
         } catch { /* leave as null -> row falls back to short curve id */ }
       }
     })();
