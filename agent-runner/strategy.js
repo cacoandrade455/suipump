@@ -159,6 +159,10 @@ async function persistParams(order) {
 // keeps params raw, so it survives). curveId lets the UI link the right curve.
 async function recordFire(order, fire) {
   if (!order.params || typeof order.params !== 'object') order.params = {};
+  // A fire is leader-settled when the leader path returned the settlement (the
+  // settle digest IS the leader's on-chain walk settlement, not a bridge tx).
+  // The handler passes fire.leaderSettled + fire.leaderSender in that case.
+  const leaderSettled = fire.leaderSettled === true;
   order.params._lastFire = {
     at:          Date.now(),
     kind:        fire.kind ?? null,        // 'buy' | 'sell'
@@ -166,7 +170,9 @@ async function recordFire(order, fire) {
     nexusTask:   fire.nexusTask ?? null,   // scheduler task id
     nexusExec:   fire.nexusExec ?? null,   // DAG execution id (sells)
     nexusDigest: fire.nexusDigest ?? null, // on-chain Nexus emit digest
-    settle:      fire.settle ?? null,      // bridge settle digest (the money path)
+    settle:      fire.settle ?? null,      // settlement digest (leader or bridge)
+    settledVia:  fire.settle ? (leaderSettled ? 'leader' : 'bridge') : null,
+    leaderSender: leaderSettled ? (fire.leaderSender ?? null) : null,
   };
   await persistParams(order);
   // Persist a row in the agent_actions history (autonomous fire). Best-effort:
@@ -180,7 +186,8 @@ async function recordFire(order, fire) {
     executionId:          fire.nexusExec ?? null,
     nexusRequestDigest:   fire.nexusDigest ?? fire.nexusTask ?? null,
     settleDigest:         fire.settle ?? null,
-    settledVia:           fire.settle ? 'bridge' : null,
+    settledVia:           fire.settle ? (leaderSettled ? 'leader' : 'bridge') : null,
+    leaderSender:         leaderSettled ? (fire.leaderSender ?? null) : null,
     status:               fire.settle ? 'settled' : 'pending',
     wallet:               INVOKER_ADDRESS,
   }).catch(() => {});
@@ -745,7 +752,7 @@ async function processOrder(order) {
       if (allTpFired && (!order.stopLoss || nothingLeft)) order.done = true;
     }
     await persistOrder(order); // persist immediately so a restart resumes correctly
-    await recordFire(order, { kind: 'sell', curveId: order.curveId, nexusExec: receipt.nexusExecutionId ?? null, nexusDigest: receipt.nexusDigest ?? null, settle: receipt.txDigest ?? null });
+    await recordFire(order, { kind: 'sell', curveId: order.curveId, nexusExec: receipt.nexusExecutionId ?? null, nexusDigest: receipt.nexusDigest ?? null, settle: receipt.txDigest ?? null, leaderSettled: receipt.leaderSettled === true, leaderSender: receipt.leaderSender ?? null });
     // Surface the fire in the notification bell, labelled by WHY it fired
     // (TP vs SL) — only known here. tokens = confirmed on-chain amount moved.
     await notifyBell({
@@ -1262,7 +1269,7 @@ const HANDLERS = {
       try {
         const receipt = await fireSell(curveId, sellWhole, 0, sellAll);
         log(`${order.id}: copytrade SELL settled on ${curveId.slice(0, 10)}… settle=${receipt?.txDigest ?? '?'} nexus=${receipt?.nexusDigest ?? '?'}`);
-        await recordFire(order, { kind: 'sell', curveId, nexusExec: receipt?.nexusExecutionId ?? null, nexusDigest: receipt?.nexusDigest ?? null, settle: receipt?.txDigest ?? null });
+        await recordFire(order, { kind: 'sell', curveId, nexusExec: receipt?.nexusExecutionId ?? null, nexusDigest: receipt?.nexusDigest ?? null, settle: receipt?.txDigest ?? null, leaderSettled: receipt?.leaderSettled === true, leaderSender: receipt?.leaderSender ?? null });
       } catch (e) { err(`${order.id}: copytrade sell settle failed: ${e.message}`); }
     },
   },
