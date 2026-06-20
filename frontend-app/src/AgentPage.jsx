@@ -2099,7 +2099,7 @@ export default function AgentPage({ onBack }) {
                         className="inline-flex items-center gap-1.5 mt-1 text-violet-400 hover:text-violet-300 break-all"
                         title="Open token page"
                       >
-                        token: {shortId(a.curveId)} <ExternalLink size={10} />
+                        token: {a.tokenType ? `$${shortType(a.tokenType)}` : shortId(a.curveId)} <ExternalLink size={10} />
                       </button>
                     )}
                     {a.wallet && (
