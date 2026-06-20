@@ -662,35 +662,36 @@ export default function AgentPage({ onBack }) {
 
   // When the history panel is open, resolve tickers for rows that have a curveId
   // but no token_type (so they render $TICKER instead of a raw curve id). Each
-  // curve is fetched at most once (cached by curveId). Reads the indexer's
-  // `symbol` directly (the same field the rest of the page uses), falling back to
-  // a token_type-derived ticker. Best-effort, non-blocking, never throws.
+  // curve is fetched at most once. Reads the indexer's `symbol` field. The
+  // in-flight set is a ref (NOT state) and tickerByCurve is intentionally NOT a
+  // dependency, so marking a fetch in-flight does not retrigger this effect or
+  // cancel the fetch before it resolves. Best-effort, non-blocking, never throws.
+  const tickerFetching = useRef(new Set());
   useEffect(() => {
     if (!historyOpen) return;
     const need = Array.from(new Set(
       history
-        .filter(a => a.curveId && !a.tokenType && tickerByCurve[a.curveId] === undefined)
+        .filter(a => a.curveId && !a.tokenType
+          && tickerByCurve[a.curveId] === undefined
+          && !tickerFetching.current.has(a.curveId))
         .map(a => a.curveId)
     ));
     if (!need.length) return;
-    let cancelled = false;
+    need.forEach(cid => tickerFetching.current.add(cid));
     (async () => {
       for (const cid of need) {
-        // mark in-flight as null so we don't refetch the same curve repeatedly
-        setTickerByCurve(prev => (prev[cid] === undefined ? { ...prev, [cid]: null } : prev));
         try {
           const r = await fetch(`${INDEXER_URL}/token/${cid}`, { signal: AbortSignal.timeout(6000) });
-          if (!r.ok) continue;
+          if (!r.ok) { tickerFetching.current.delete(cid); continue; }
           const d = await r.json();
           const sym = d.symbol
             ?? ((d.token_type ?? d.tokenType) ? shortType(d.token_type ?? d.tokenType) : null);
-          if (cancelled) return;
           if (sym) setTickerByCurve(prev => ({ ...prev, [cid]: sym }));
-        } catch { /* leave as null -> row falls back to short curve id */ }
+        } catch { /* leave unresolved -> row falls back to short curve id */ }
+        finally { tickerFetching.current.delete(cid); }
       }
     })();
-    return () => { cancelled = true; };
-  }, [historyOpen, history, tickerByCurve]);
+  }, [historyOpen, history]);  // tickerByCurve intentionally omitted (see note above)
 
   // Record a manual fire (returns the row id, or null on failure). Best-effort —
   // history must never block or fail a trade.
