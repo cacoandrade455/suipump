@@ -13,6 +13,7 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { ArrowLeft, Sparkles, Play, Check, X, Loader, ExternalLink, Bot, ChevronDown } from 'lucide-react';
 import { useCurrentAccount } from '@mysten/dapp-kit-react';
+import { useNavigate } from 'react-router-dom';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 
 const RUNNER_URL  = import.meta.env.VITE_AGENT_RUNNER_URL || 'https://suipump-agent-runner.onrender.com';
@@ -581,6 +582,7 @@ function describeOrder(o) {
 
 export default function AgentPage({ onBack }) {
   const account = useCurrentAccount();
+  const navigate = useNavigate();
 
   const [goal, setGoal]         = useState('');
   const [guideOpen, setGuideOpen]     = useState(false);  // tutorial collapsed by default — page loads compact
@@ -1318,6 +1320,7 @@ export default function AgentPage({ onBack }) {
           summary:            plan?.summary ?? wf,
           executionId:        data.executionId ?? null,
           nexusRequestDigest: data.digest ?? null,
+          wallet:             account?.address ?? null,
           status:             'pending',
         }).then(id => { actionId = id; });
 
@@ -1397,6 +1400,7 @@ export default function AgentPage({ onBack }) {
         nexusRequestDigest: data.digest ?? null,
         settleDigest,
         settledVia:         'bridge',
+        wallet:             account?.address ?? null,
         status:             'settled',
       });
     } catch (err) {
@@ -1979,14 +1983,14 @@ export default function AgentPage({ onBack }) {
                       {describeOrder(o)}
                     </div>
                     {o.curveId && (
-                      <a
-                        href={suiscanObject(o.curveId)}
-                        target="_blank"
-                        rel="noreferrer"
+                      <button
+                        type="button"
+                        onClick={() => navigate(`/token/${o.curveId}`)}
                         className="inline-flex items-center gap-1 text-[9px] font-mono text-white/25 hover:text-violet-400/80 mt-1"
+                        title="Open token page"
                       >
                         {shortId(o.curveId)} <ExternalLink size={9} />
-                      </a>
+                      </button>
                     )}
                     {o.params?._lastFire && (o.params._lastFire.settle || o.params._lastFire.nexusDigest) && (
                       <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[9px] font-mono">
@@ -2088,6 +2092,19 @@ export default function AgentPage({ onBack }) {
                       </span>
                     </div>
                     {when && <div className="text-white/30 mt-1">{when}</div>}
+                    {a.curveId && (
+                      <button
+                        type="button"
+                        onClick={() => navigate(`/token/${a.curveId}`)}
+                        className="inline-flex items-center gap-1.5 mt-1 text-violet-400 hover:text-violet-300 break-all"
+                        title="Open token page"
+                      >
+                        token: {shortId(a.curveId)} <ExternalLink size={10} />
+                      </button>
+                    )}
+                    {a.wallet && (
+                      <div className="text-white/30 mt-1 break-all">wallet: {shortId(a.wallet)}</div>
+                    )}
                     {proof && (
                       <a href={suiscanTx(proof)} target="_blank" rel="noreferrer"
                          className="inline-flex items-center gap-1.5 mt-1 text-violet-400 hover:text-violet-300 break-all">
