@@ -199,12 +199,22 @@ function parseStrategyGoal(text) {
   const curveId = curveMatch[0];
 
   const lower = g.toLowerCase();
-  const hasStrategyWord = /\b(take\s*profit|tp|stop\s*loss|sl|dump\s+all)\b/.test(lower);
+  // A "sell N% ... +M%" or "sell all ... +M%" phrasing is a take-profit intent
+  // (tiered exit), even without the literal words "take profit". Detect it so
+  // documented phrasings like "sell 50% of 0x… at +30%" arm an exit rather than
+  // dropping it. Requires BOTH a sell-size and a +percent to avoid matching a
+  // plain "sell" command.
+  const sellAtPlus = /sell\s+(?:\d+(?:\.\d+)?\s*%|all)[\s\S]*?\+\s*\d/.test(lower);
+  const hasStrategyWord = /\b(take[\s-]*profit|tp|stop[\s-]*loss|sl|dump\s+all)\b/.test(lower) || sellAtPlus;
   if (!hasStrategyWord) return null;
 
-  // Take-profit: a "+N%" near a take-profit / dump / sell intent.
+  // Take-profit: a "+N%" near a take-profit / dump / sell intent. The keyword
+  // accepts a hyphen ("take-profit"), space, or no separator, and "at/@/of/by"
+  // is optional so "take-profit +5%" parses the same as "take profit at +5%".
+  // The "sell ... +N%" form (sellAtPlus) also supplies the +N% directly.
   const tp = [];
-  const tpPct = lower.match(/(?:take\s*profit|tp|dump\s+all|profit)\s*(?:at|@|of|by)?\s*\+?\s*(\d+(?:\.\d+)?)\s*%/);
+  let tpPct = lower.match(/(?:take[\s-]*profit|tp|dump\s+all|profit)\s*(?:at|@|of|by)?\s*\+?\s*(\d+(?:\.\d+)?)\s*%/);
+  if (!tpPct && sellAtPlus) tpPct = lower.match(/sell\s+(?:\d+(?:\.\d+)?\s*%|all)[\s\S]*?(?:at|@|of|by)?\s*\+\s*(\d+(?:\.\d+)?)\s*%/);
   if (tpPct) {
     const pct = Number(tpPct[1]);
     // sell size: "sell 50%" / "dump all" / "100%"; default 100.
@@ -217,7 +227,7 @@ function parseStrategyGoal(text) {
 
   // Stop-loss: a "-N%" near a stop-loss intent.
   let stopLoss = null;
-  const slPct = lower.match(/(?:stop\s*loss|sl)\s*(?:at|@|of|by)?\s*-?\s*(\d+(?:\.\d+)?)\s*%/);
+  const slPct = lower.match(/(?:stop[\s-]*loss|sl)\s*(?:at|@|of|by)?\s*-?\s*(\d+(?:\.\d+)?)\s*%/);
   if (slPct) {
     const pct = Number(slPct[1]);
     if (pct > 0 && pct < 100) stopLoss = { multiple: 1 - pct / 100 };
@@ -321,7 +331,7 @@ function parseSniperGoal(text) {
   let then = null;
   {
     const tp = [];
-    const tpPct = lower.match(/(?:take\s*profit|tp|dump\s+all|dump|profit)\s*(?:at|@|of|by)?\s*\+?\s*(\d+(?:\.\d+)?)\s*%/);
+    const tpPct = lower.match(/(?:take[\s-]*profit|tp|dump\s+all|dump|profit)\s*(?:at|@|of|by)?\s*\+?\s*(\d+(?:\.\d+)?)\s*%/);
     if (tpPct) {
       const pct = Number(tpPct[1]);
       let sellPct = 100;
@@ -331,7 +341,7 @@ function parseSniperGoal(text) {
       if (pct > 0) tp.push({ multiple: 1 + pct / 100, sellPct });
     }
     let stopLoss = null;
-    const slPct = lower.match(/(?:stop\s*loss|sl)\s*(?:at|@|of|by)?\s*-?\s*(\d+(?:\.\d+)?)\s*%/);
+    const slPct = lower.match(/(?:stop[\s-]*loss|sl)\s*(?:at|@|of|by)?\s*-?\s*(\d+(?:\.\d+)?)\s*%/);
     if (slPct) {
       const pct = Number(slPct[1]);
       if (pct > 0 && pct < 100) stopLoss = { multiple: 1 - pct / 100 };
@@ -459,7 +469,7 @@ function parseDcaGoal(text) {
   let then = null;
   {
     const tp = [];
-    const tpPct = lower.match(/(?:take\s*profit|tp|profit|exit)\s*(?:at|@|of|by)?\s*\+?\s*(\d+(?:\.\d+)?)\s*%/);
+    const tpPct = lower.match(/(?:take[\s-]*profit|tp|profit|exit)\s*(?:at|@|of|by)?\s*\+?\s*(\d+(?:\.\d+)?)\s*%/);
     if (tpPct) {
       const pct = Number(tpPct[1]);
       let sellPct = 100;
@@ -468,7 +478,7 @@ function parseDcaGoal(text) {
       if (pct > 0) tp.push({ multiple: 1 + pct / 100, sellPct });
     }
     let stopLoss = null;
-    const slPct = lower.match(/(?:stop\s*loss|sl)\s*(?:at|@|of|by)?\s*-?\s*(\d+(?:\.\d+)?)\s*%/);
+    const slPct = lower.match(/(?:stop[\s-]*loss|sl)\s*(?:at|@|of|by)?\s*-?\s*(\d+(?:\.\d+)?)\s*%/);
     if (slPct) {
       const pct = Number(slPct[1]);
       if (pct > 0 && pct < 100) stopLoss = { multiple: 1 - pct / 100 };
