@@ -638,6 +638,12 @@ export default function AgentPage({ onBack }) {
   // autonomous fires are recorded by the strategy brain (strategy.js recordFire).
   const [history, setHistory]       = useState([]);
   const [historyOpen, setHistoryOpen] = useState(false);
+  // Read-time ticker resolution: some history rows (e.g. sniper/copytrade fires)
+  // were written with no token_type, so they would show a raw curve id. When the
+  // panel is open we resolve the ticker per curve from the indexer and cache it
+  // by curveId so each curve is fetched once. Best-effort: a failure just leaves
+  // the row showing the short curve id (the existing fallback).
+  const [tickerByCurve, setTickerByCurve] = useState({});
 
   const loadHistory = useCallback(async () => {
     try {
@@ -653,6 +659,32 @@ export default function AgentPage({ onBack }) {
     const t = setInterval(loadHistory, 15000);
     return () => clearInterval(t);
   }, [loadHistory]);
+
+  // When the history panel is open, resolve tickers for rows that have a curveId
+  // but no token_type (so they render $TICKER instead of a raw curve id). Each
+  // curve is fetched at most once (cached by curveId). Best-effort, non-blocking.
+  useEffect(() => {
+    if (!historyOpen) return;
+    const need = Array.from(new Set(
+      history
+        .filter(a => a.curveId && !a.tokenType && tickerByCurve[a.curveId] === undefined)
+        .map(a => a.curveId)
+    ));
+    if (!need.length) return;
+    let cancelled = false;
+    (async () => {
+      for (const cid of need) {
+        // mark in-flight as null so we don't refetch the same curve repeatedly
+        setTickerByCurve(prev => (prev[cid] === undefined ? { ...prev, [cid]: null } : prev));
+        try {
+          const { tokenType } = await fetchCurveMeta(cid);
+          if (cancelled) return;
+          setTickerByCurve(prev => ({ ...prev, [cid]: shortType(tokenType) }));
+        } catch { /* leave as null -> row falls back to short curve id */ }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [historyOpen, history, tickerByCurve]);
 
   // Record a manual fire (returns the row id, or null on failure). Best-effort —
   // history must never block or fail a trade.
@@ -2099,7 +2131,7 @@ export default function AgentPage({ onBack }) {
                         className="inline-flex items-center gap-1.5 mt-1 text-violet-400 hover:text-violet-300 break-all"
                         title="Open token page"
                       >
-                        token: {a.tokenType ? `$${shortType(a.tokenType)}` : shortId(a.curveId)} <ExternalLink size={10} />
+                        token: {a.tokenType ? `$${shortType(a.tokenType)}` : tickerByCurve[a.curveId] ? `$${tickerByCurve[a.curveId]}` : shortId(a.curveId)} <ExternalLink size={10} />
                       </button>
                     )}
                     {a.wallet && (
