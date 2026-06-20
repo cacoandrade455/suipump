@@ -853,9 +853,33 @@ export default function AgentPage({ onBack }) {
   // Build the { workflow, ... } payload the runner expects.
   async function buildPayload(p) {
     switch (p.workflow) {
-      case 'launch_and_buy':
+      case 'launch_and_buy': {
+        const launchFields = {
+          name: p.launch.name,
+          symbol: p.launch.symbol,
+          description: p.launch.description || p.summary || `${p.launch.name} via SuiPump agent`,
+          graduationTarget: p.launch.graduationTarget,
+          devBuySui: p.launch.devBuySui,
+          antiBotDelay: p.launch.antiBotDelay ?? 0,
+        };
+        const buyAmount = Number(p.buy?.amountSui ?? p.launch.devBuySui ?? 0);
+        // A launch with no dev-buy is, to the user, just a launch. Route it to the
+        // standalone "launch" workflow (launch_only DAG), NOT the launch_and_buy
+        // combo — the combo's curve_id edge cannot carry off-chain output, so its
+        // buy vertex consumes and the walk never completes. launch_only settles
+        // cleanly on its own. With a real dev-buy, keep launch_and_buy.
+        if (!(buyAmount > 0)) {
+          return { workflow: 'launch', launch: launchFields };
+        }
         return {
           workflow: 'launch_and_buy',
+          launch: launchFields,
+          buy: { amountSui: buyAmount },
+        };
+      }
+      case 'launch':
+        return {
+          workflow: 'launch',
           launch: {
             name: p.launch.name,
             symbol: p.launch.symbol,
@@ -864,7 +888,6 @@ export default function AgentPage({ onBack }) {
             devBuySui: p.launch.devBuySui,
             antiBotDelay: p.launch.antiBotDelay ?? 0,
           },
-          buy: { amountSui: p.buy?.amountSui ?? p.launch.devBuySui ?? 0 },
         };
       case 'buy':
         if (!p.buy?.curveId) throw new Error('No curve id for buy — paste the token CA in your goal');
@@ -974,6 +997,16 @@ export default function AgentPage({ onBack }) {
         graduationTarget: payload.launch.graduationTarget,
         antiBotDelay: payload.launch.antiBotDelay,
         devBuySui: payload.buy?.amountSui ?? payload.launch.devBuySui ?? 0,
+      };
+    } else if (wf === 'launch') {
+      path = '/launch';
+      body = {
+        name: payload.launch.name,
+        symbol: payload.launch.symbol,
+        description: payload.launch.description,
+        graduationTarget: payload.launch.graduationTarget,
+        antiBotDelay: payload.launch.antiBotDelay,
+        devBuySui: 0,
       };
     } else {
       return null; // claim / alerts: no bridge settlement
