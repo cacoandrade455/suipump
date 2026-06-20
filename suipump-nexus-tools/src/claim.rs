@@ -45,23 +45,15 @@ async fn execute_claim(input: ClaimInput) -> AnyResult<ClaimOutput> {
         .map_err(|_| anyhow::anyhow!("SUI_PRIVATE_KEY not set"))?;
     let rpc = std::env::var("SUI_RPC_URL")
         .unwrap_or_else(|_| "https://fullnode.testnet.sui.io".to_string());
-    let indexer = std::env::var("SUIPUMP_INDEXER_URL")
-        .unwrap_or_else(|_| "https://suipump-62s2.onrender.com".to_string());
     let agent_key = std::env::var("AGENT_API_KEY").unwrap_or_default();
 
-    // Check pending fees first
-    let stats = reqwest::get(format!("{}/token/{}/stats", indexer, input.curve_id))
-        .await.ok();
-    if let Some(r) = stats {
-        if let Ok(v) = r.json::<serde_json::Value>().await {
-            let pending = v["creatorFeesPending"].as_f64()
-                .or_else(|| v["creator_fees_pending"].as_f64())
-                .unwrap_or(0.0);
-            if pending == 0.0 {
-                return Ok(ClaimOutput::Empty {});
-            }
-        }
-    }
+    // NOTE: we intentionally do NOT gate the claim on the indexer's stats. The
+    // indexer's creator_fees figure can lag the chain (observed: indexer reported
+    // 0.204 SUI while the on-chain curve held 0.398 SUI pending), so trusting it
+    // to decide "nothing to claim" risks returning Empty on a curve that actually
+    // has fees. The bridge reads the real on-chain creator_fees and is the source
+    // of truth. We always call it, and decide Ok vs Empty from what it actually
+    // claimed.
 
     let resp = reqwest::Client::new()
         .post(format!("{}/claim", bridge))
@@ -88,8 +80,14 @@ async fn execute_claim(input: ClaimInput) -> AnyResult<ClaimOutput> {
         .or_else(|| r["suiClaimed"].as_str().and_then(|s| s.parse::<f64>().ok()))
         .unwrap_or(0.0);
 
-    Ok(ClaimOutput::Ok {
-        tx_digest:   r["txDigest"].as_str().unwrap_or("").to_string(),
-        sui_claimed,
-    })
+    // The bridge succeeded. If it actually moved fees, report Ok with the amount;
+    // if there were genuinely no fees to claim (bridge claimed 0), report Empty.
+    if sui_claimed > 0.0 {
+        Ok(ClaimOutput::Ok {
+            tx_digest: r["txDigest"].as_str().unwrap_or("").to_string(),
+            sui_claimed,
+        })
+    } else {
+        Ok(ClaimOutput::Empty {})
+    }
 }
