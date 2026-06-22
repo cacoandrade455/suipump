@@ -38,6 +38,8 @@ const GROUND_Y = GAME_H - 60;
 // ── Player tunables ───────────────────────────────────────────────────────────
 const PLAYER_SPEED = 240;
 const JUMP_VELOCITY = -560;
+const DOUBLE_JUMP_VELOCITY = -500;   // air jump, slightly weaker
+const MAX_JUMPS = 2;                  // ground jump + 1 air jump
 const GRAVITY_Y = 1500;
 
 const PLAYER_MAX_HP = 100;
@@ -45,7 +47,11 @@ const MINION_TOUCH_DMG = 10;
 const BOSS_TOUCH_DMG = 18;
 const PROJECTILE_DMG = 16;
 const ATTACK_DMG_MINION = 34;
-const ATTACK_DMG_BOSS = 12;
+const ATTACK_DMG_BOSS = 14;
+const FIREBALL_SPEED = 560;
+const FIREBALL_LIFETIME_MS = 1400;
+const PARRY_REFLECT_DMG = 60;     // reflected boss shot hits hard
+const PARRY_STAGGER_MS = 1400;    // boss frozen + open to damage
 
 const STAMINA_MAX = 100;
 const STAMINA_REGEN = 28;
@@ -178,6 +184,43 @@ function makeCapsuleTexture(scene, key, opts = {}) {
   return key;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Procedural fireball — a radial bloom: white-hot core, lime mid, orange edge,
+// with a few jagged flame tongues. Looks like a charged Hadouken in the brand
+// palette. Returns the texture key.
+// ─────────────────────────────────────────────────────────────────────────────
+function makeFireballTexture(scene, key, size = 48) {
+  const g = scene.add.graphics();
+  const cx = size / 2, cy = size / 2;
+  const r = size * 0.42;
+
+  // outer orange glow
+  g.fillStyle(0xff7a18, 0.35); g.fillCircle(cx, cy, r * 1.15);
+  // flame tongues (orange) radiating out
+  g.fillStyle(0xff6a00, 0.9);
+  const tongues = 8;
+  for (let i = 0; i < tongues; i++) {
+    const a = (i / tongues) * Math.PI * 2;
+    const tx = cx + Math.cos(a) * r * 1.25;
+    const ty = cy + Math.sin(a) * r * 1.25;
+    const pax = cx + Math.cos(a + 0.25) * r * 0.7;
+    const pay = cy + Math.sin(a + 0.25) * r * 0.7;
+    const pbx = cx + Math.cos(a - 0.25) * r * 0.7;
+    const pby = cy + Math.sin(a - 0.25) * r * 0.7;
+    g.beginPath(); g.moveTo(pax, pay); g.lineTo(tx, ty); g.lineTo(pbx, pby); g.closePath(); g.fillPath();
+  }
+  // orange body
+  g.fillStyle(0xff8c1a, 1); g.fillCircle(cx, cy, r);
+  // lime mid ring
+  g.fillStyle(0x84cc16, 1); g.fillCircle(cx, cy, r * 0.66);
+  // white-hot core
+  g.fillStyle(0xfdfde8, 1); g.fillCircle(cx, cy, r * 0.32);
+
+  g.generateTexture(key, size, size);
+  g.destroy();
+  return key;
+}
+
 // ── The single Phaser scene ───────────────────────────────────────────────────
 class ArenaScene extends Phaser.Scene {
   constructor() { super('arena'); }
@@ -197,6 +240,7 @@ class ArenaScene extends Phaser.Scene {
     makeCapsuleTexture(this, 'minion', { w: 64, h: 64, boss: false });
     makeCapsuleTexture(this, 'bossCap', { w: 200, h: 200, boss: true });
     makeCapsuleTexture(this, 'shard', { w: 28, h: 28, boss: false });
+    makeFireballTexture(this, 'fireball', 48);
 
     this.cameras.main.setBackgroundColor('#080808');
     const g = this.add.graphics();
@@ -219,9 +263,9 @@ class ArenaScene extends Phaser.Scene {
       const r = this.add.rectangle(x, y, w, 14, 0x84cc16, 0.18).setStrokeStyle(1, 0x84cc16, 0.5);
       this.platforms.add(r); return r;
     };
-    mkPlat(200, GROUND_Y - 120, 160);
-    mkPlat(W - 200, GROUND_Y - 120, 160);
-    mkPlat(W / 2, GROUND_Y - 230, 180);
+    mkPlat(200, GROUND_Y - 100, 160);
+    mkPlat(W - 200, GROUND_Y - 100, 160);
+    mkPlat(W / 2, GROUND_Y - 180, 180);
 
     this.player = this.physics.add.image(90, GROUND_Y - 80, 'player');
     this.player.setDisplaySize(56, 56).setCollideWorldBounds(true);
@@ -232,7 +276,8 @@ class ArenaScene extends Phaser.Scene {
     this.physics.add.collider(this.player, this.platforms);
 
     this.minions = this.physics.add.group();
-    this.projectiles = this.physics.add.group();
+    this.projectiles = this.physics.add.group();   // boss shots
+    this.fireballs = this.physics.add.group();      // player shots
 
     for (let i = 0; i < MINION_COUNT; i++) {
       const mx = Phaser.Math.Between(W * 0.45, W - 60);
@@ -261,6 +306,7 @@ class ArenaScene extends Phaser.Scene {
     this.dodgingUntil = 0;
     this.parryUntil = 0;
     this.canAttackAt = 0;
+    this.jumpsLeft = MAX_JUMPS;
     this.dead = false;
     this.won = false;
     this.runStartMs = this.time.now;
@@ -278,12 +324,9 @@ class ArenaScene extends Phaser.Scene {
     this.physics.add.overlap(this.player, this.projectiles, this.onProjectileHit, undefined, this);
     this.physics.add.overlap(this.player, this.boss, this.onBossTouch, undefined, this);
 
-    this.attackZone = this.add.zone(0, 0, 64, 60);
-    this.physics.add.existing(this.attackZone);
-    this.attackZone.body.setAllowGravity(false);
-    this.attackZone.body.enable = false;
-    this.physics.add.overlap(this.attackZone, this.minions, this.onAttackMinion, undefined, this);
-    this.physics.add.overlap(this.attackZone, this.boss, this.onAttackBoss, undefined, this);
+    // player fireballs hit enemies
+    this.physics.add.overlap(this.fireballs, this.minions, this.onFireballMinion, undefined, this);
+    this.physics.add.overlap(this.fireballs, this.boss, this.onFireballBoss, undefined, this);
 
     this.pushState();
   }
@@ -322,9 +365,32 @@ class ArenaScene extends Phaser.Scene {
 
   onProjectileHit(player, proj) {
     if (this.dead || this.won) return;
+    if (this.time.now < this.invulnUntil) { proj.destroy(); return; }
+    // PARRY: within the window, reflect the shot back as a player fireball AND
+    // stagger the boss wide open. This is the high-skill, high-reward play.
+    if (this.time.now < this.parryUntil) {
+      const vx = proj.body ? proj.body.velocity.x : 0;
+      const vy = proj.body ? proj.body.velocity.y : 0;
+      proj.destroy();
+      // spawn a reflected fireball heading back toward the boss
+      const fb = this.fireballs.create(this.player.x, this.player.y, 'fireball');
+      fb.setDisplaySize(40, 40);
+      fb.body.setAllowGravity(false);
+      fb.setData('dmg', PARRY_REFLECT_DMG);
+      fb.setData('reflected', true);
+      // send it back the way it came (reversed), biased toward the boss
+      const back = this.boss && this.boss.active
+        ? new Phaser.Math.Vector2(this.boss.x - this.player.x, this.boss.y - this.player.y).normalize().scale(FIREBALL_SPEED)
+        : new Phaser.Math.Vector2(-vx, -vy);
+      fb.setVelocity(back.x, back.y);
+      fb.setTint(0x66ddff);
+      fb.setAngularVelocity(720);
+      this.time.delayedCall(FIREBALL_LIFETIME_MS, () => { if (fb && fb.active) fb.destroy(); });
+      this.cameras.main.flash(120, 100, 220, 255);
+      this.staggerBoss();
+      return;
+    }
     proj.destroy();
-    if (this.time.now < this.invulnUntil) return;
-    if (this.time.now < this.parryUntil) { this.staggerBoss(); return; }
     this.damagePlayer(PROJECTILE_DMG);
   }
 
@@ -366,37 +432,43 @@ class ArenaScene extends Phaser.Scene {
     if (this.time.now < this.canAttackAt) return;
     this.canAttackAt = this.time.now + ATTACK_COOLDOWN_MS;
     const facing = this.player.getData('facing');
-    this.attackZone.setPosition(this.player.x + facing * 46, this.player.y);
-    this.attackZone.body.enable = true;
-    this._attackHitThisSwing = new Set();
-    this.player.setVelocityX(facing * 120);
-    const slash = this.add.rectangle(this.player.x + facing * 46, this.player.y, 50, 56, 0x84cc16, 0.25);
-    this.time.delayedCall(90, () => slash.destroy());
-    this.time.delayedCall(120, () => { this.attackZone.body.enable = false; });
+    const fb = this.fireballs.create(this.player.x + facing * 30, this.player.y, 'fireball');
+    fb.setDisplaySize(40, 40);
+    fb.body.setAllowGravity(false);
+    fb.setData('dmg', null);          // null => use per-target default dmg
+    fb.setData('reflected', false);
+    fb.setVelocity(facing * FIREBALL_SPEED, 0);
+    fb.setAngularVelocity(540);
+    this.time.delayedCall(FIREBALL_LIFETIME_MS, () => { if (fb && fb.active) fb.destroy(); });
+    // tiny recoil + muzzle flash
+    this.player.setVelocityX(-facing * 60);
+    const flash = this.add.circle(this.player.x + facing * 34, this.player.y, 10, 0x84cc16, 0.5);
+    this.time.delayedCall(80, () => flash.destroy());
   }
 
-  onAttackMinion(zone, m) {
-    if (!this.attackZone.body.enable) return;
-    if (this._attackHitThisSwing && this._attackHitThisSwing.has(m)) return;
-    this._attackHitThisSwing && this._attackHitThisSwing.add(m);
-    const hp = m.getData('hp') - ATTACK_DMG_MINION;
+  onFireballMinion(fb, m) {
+    if (!fb.active || !m.active) return;
+    const dmg = fb.getData('dmg') != null ? fb.getData('dmg') : ATTACK_DMG_MINION;
+    const reflected = fb.getData('reflected');
+    fb.destroy();
+    const hp = m.getData('hp') - dmg;
     m.setData('hp', hp);
     m.setTint(0xffffff);
     this.time.delayedCall(60, () => { if (m.active) m.clearTint(); });
     if (hp <= 0) {
-      const burst = this.add.circle(m.x, m.y, 6, 0xff2a2a, 0.7);
-      this.tweens.add({ targets: burst, radius: 30, alpha: 0, duration: 260, onComplete: () => burst.destroy() });
+      const burst = this.add.circle(m.x, m.y, 6, 0xff7a18, 0.8);
+      this.tweens.add({ targets: burst, radius: 32, alpha: 0, duration: 260, onComplete: () => burst.destroy() });
       m.destroy();
       this.checkSwarmCleared();
     }
     this.pushState();
   }
 
-  onAttackBoss() {
-    if (!this.attackZone.body.enable || !this.bossAwake || this.bossDead) return;
-    if (this._attackHitThisSwing && this._attackHitThisSwing.has(this.boss)) return;
-    this._attackHitThisSwing && this._attackHitThisSwing.add(this.boss);
-    this.damageBoss(ATTACK_DMG_BOSS);
+  onFireballBoss(fb, boss) {
+    if (!fb.active || !this.bossAwake || this.bossDead) return;
+    const dmg = fb.getData('dmg') != null ? fb.getData('dmg') : ATTACK_DMG_BOSS;
+    fb.destroy();
+    this.damageBoss(dmg);
   }
 
   doDodge() {
@@ -437,12 +509,16 @@ class ArenaScene extends Phaser.Scene {
   }
 
   staggerBoss() {
-    if (!this.bossAwake) return;
-    this.boss.setTint(0x84cc16);
-    this.time.delayedCall(220, () => { if (!this.bossDead) this.boss.clearTint(); });
-    this.damageBoss(ATTACK_DMG_BOSS);
+    if (!this.bossAwake || this.bossDead) return;
+    this.boss.setTint(0x66ddff);
+    this.boss.setVelocity(0, 0);
+    // freeze boss attacks for the stagger duration — wide open to fireballs
     if (this.bossTimer) this.bossTimer.paused = true;
-    this.time.delayedCall(700, () => { if (this.bossTimer) this.bossTimer.paused = false; });
+    this.cameras.main.shake(200, 0.006);
+    this.time.delayedCall(PARRY_STAGGER_MS, () => {
+      if (!this.bossDead) this.boss.clearTint();
+      if (this.bossTimer) this.bossTimer.paused = false;
+    });
   }
 
   bossAct() {
@@ -513,6 +589,9 @@ class ArenaScene extends Phaser.Scene {
     const onGround = this.player.body.blocked.down || this.player.body.touching.down;
     const dodging = time < this.dodgingUntil;
 
+    // reset air jumps the moment we're grounded
+    if (onGround) this.jumpsLeft = MAX_JUMPS;
+
     if (!dodging) {
       let vx = 0;
       if (this.cursors.left.isDown || this.keys.a.isDown) { vx = -PLAYER_SPEED; this.player.setData('facing', -1); }
@@ -521,10 +600,18 @@ class ArenaScene extends Phaser.Scene {
       this.player.setFlipX(this.player.getData('facing') < 0);
     }
 
-    if ((Phaser.Input.Keyboard.JustDown(this.cursors.up) ||
-         Phaser.Input.Keyboard.JustDown(this.keys.w) ||
-         Phaser.Input.Keyboard.JustDown(this.keys.space)) && onGround) {
-      this.player.setVelocityY(JUMP_VELOCITY);
+    const jumpPressed = Phaser.Input.Keyboard.JustDown(this.cursors.up) ||
+                        Phaser.Input.Keyboard.JustDown(this.keys.w) ||
+                        Phaser.Input.Keyboard.JustDown(this.keys.space);
+    if (jumpPressed && this.jumpsLeft > 0) {
+      const isAirJump = !onGround;
+      this.player.setVelocityY(isAirJump ? DOUBLE_JUMP_VELOCITY : JUMP_VELOCITY);
+      this.jumpsLeft -= 1;
+      if (isAirJump) {
+        // little lime puff on the air jump for feedback
+        const puff = this.add.circle(this.player.x, this.player.y + 24, 8, 0x84cc16, 0.4);
+        this.tweens.add({ targets: puff, radius: 22, alpha: 0, duration: 220, onComplete: () => puff.destroy() });
+      }
     }
 
     if (Phaser.Input.Keyboard.JustDown(this.keys.shift)) this.doDodge();
@@ -693,10 +780,10 @@ export default function GamePage({ onBack, lang = 'en' }) {
         <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4 flex flex-col md:flex-row md:items-center justify-between gap-3">
           <div className="text-[11px] font-mono text-white/45 leading-relaxed">
             <span className="text-white/70">Move</span> A/D ·
-            <span className="text-white/70"> Jump</span> W/Space ·
+            <span className="text-white/70"> Jump / Double Jump</span> W/Space ·
             <span className="text-white/70"> Dodge</span> Shift ·
-            <span className="text-white/70"> Attack</span> J ·
-            <span className="text-white/70"> Parry</span> K
+            <span className="text-white/70"> Fireball</span> J ·
+            <span className="text-white/70"> Parry</span> K (reflects + stuns)
           </div>
           <div className="flex items-center gap-2">
             <button onClick={restart} className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-white/10 text-[11px] font-mono text-white/50 hover:text-white hover:border-white/25 transition-colors">
