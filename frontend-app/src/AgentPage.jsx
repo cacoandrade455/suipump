@@ -201,10 +201,14 @@ export function extractTakeProfitRungs(lower) {
   const clauses = String(lower || '').split(/\s*(?:,|;|\band\b|\bthen\b)\s*/);
   const SL_KW = /\b(stop[\s-]*loss|sl|stop)\b/;
   for (const clause of clauses) {
-    // A clause that names a stop-loss is never a take-profit rung.
-    if (SL_KW.test(clause)) continue;
-    // An explicit negative percentage is a stop-loss, not a take-profit.
-    if (/-\s*\d+(?:\.\d+)?\s*%/.test(clause)) continue;
+    const hasPlus = /\+\s*\d+(?:\.\d+)?\s*%/.test(clause);
+    // A clause that names a stop-loss is not a take-profit rung UNLESS it also
+    // carries an explicit "+N%" (e.g. "take profit +15% stop loss -10%" in one
+    // breath — the +15% is the TP, the -10% is the SL handled separately).
+    if (SL_KW.test(clause) && !hasPlus) continue;
+    // An explicit negative percentage is a stop-loss, not a take-profit. (Only
+    // strip the clause when there is no competing explicit "+N%".)
+    if (!hasPlus && /-\s*\d+(?:\.\d+)?\s*%/.test(clause)) continue;
 
     // Determine the sell-size first so we can exclude it from trigger matching.
     let sellPct = 100;
