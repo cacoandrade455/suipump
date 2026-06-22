@@ -531,7 +531,7 @@ class ArenaScene extends Phaser.Scene {
     if (Phaser.Input.Keyboard.JustDown(this.keys.j)) this.doAttack();
     if (Phaser.Input.Keyboard.JustDown(this.keys.k)) this.doParry();
 
-    this.minions.children.iterate((m) => {
+    this.minions.getChildren().forEach((m) => {
       if (!m || !m.active) return;
       const dirx = Math.sign(this.player.x - m.x) || 1;
       m.setVelocityX(dirx * MINION_SPEED);
