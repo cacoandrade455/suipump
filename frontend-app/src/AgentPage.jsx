@@ -183,24 +183,51 @@ const WORKFLOW_NODES = {
 
 // extractTakeProfitRungs — pull EVERY take-profit rung from a goal, in order.
 // Splits the goal into clauses on connectors (commas, "and", "then", ";") and
-// parses each clause independently: a "+N%" trigger plus the sell-size in that
-// SAME clause ("sell 50%" / "sell all" / "dump all"), defaulting to 100%. Clause
-// splitting means a later "sell all" can never be attributed to an earlier
-// "+10%" rung, so "sell 50% at +10% and sell all at +20%" yields TWO rungs.
-// Only "+N%" is a take-profit trigger; "-N%" (stop-loss) is handled separately.
+// parses each clause independently: a take-profit trigger plus the sell-size in
+// that SAME clause ("sell 50%" / "sell all" / "dump all"), defaulting to 100%.
+// Clause splitting means a later "sell all" can never be attributed to an earlier
+// rung, so "sell 50% at +10% and sell all at +20%" yields TWO rungs.
+//
+// A take-profit trigger is recognized as either:
+//   • an explicit "+N%"  (e.g. "+20%"), OR
+//   • a bare "to/at N%" / standalone "N%" WITHOUT any stop-loss keyword in the
+//     clause (e.g. "to 5% sell all", "sell all at 5%"). Bare percentages default
+//     to take-profit; stop-loss only ever arms on an explicit keyword (handled in
+//     parseStrategyGoal), so a bare percentage is never a stop-loss.
+// The sell-size percentage ("sell 50%") is NEVER mistaken for the trigger.
 export function extractTakeProfitRungs(lower) {
   const rungs = [];
   const seen = new Set();
   const clauses = String(lower || '').split(/\s*(?:,|;|\band\b|\bthen\b)\s*/);
+  const SL_KW = /\b(stop[\s-]*loss|sl|stop)\b/;
   for (const clause of clauses) {
-    const pm = clause.match(/\+\s*(\d+(?:\.\d+)?)\s*%/);
-    if (!pm) continue;
-    const pct = Number(pm[1]);
-    if (!(pct > 0)) continue;
+    // A clause that names a stop-loss is never a take-profit rung.
+    if (SL_KW.test(clause)) continue;
+    // An explicit negative percentage is a stop-loss, not a take-profit.
+    if (/-\s*\d+(?:\.\d+)?\s*%/.test(clause)) continue;
+
+    // Determine the sell-size first so we can exclude it from trigger matching.
     let sellPct = 100;
     const sizeM = clause.match(/sell\s+(\d+(?:\.\d+)?)\s*%/);
     if (sizeM) sellPct = Number(sizeM[1]);
     else if (/sell\s+all|dump\s+all|sell\s+the\s+rest|sell\s+rest|sell\s+everything/.test(clause)) sellPct = 100;
+
+    // Trigger: prefer an explicit "+N%". Otherwise accept a bare "to/at N%" or a
+    // standalone "N%" that is NOT the "sell N%" size. We blank out the sell-size
+    // token before scanning so "sell 50% at 10%" reads the 10% as the trigger.
+    let pct = null;
+    const plus = clause.match(/\+\s*(\d+(?:\.\d+)?)\s*%/);
+    if (plus) {
+      pct = Number(plus[1]);
+    } else {
+      const scan = clause.replace(/sell\s+\d+(?:\.\d+)?\s*%/g, ' '); // drop the size token
+      // Prefer an explicit "to/at/@ N%"; fall back to any remaining "N%".
+      const at = scan.match(/(?:to|at|@)\s*\+?\s*(\d+(?:\.\d+)?)\s*%/);
+      const bare = at || scan.match(/(\d+(?:\.\d+)?)\s*%/);
+      if (bare) pct = Number(bare[1]);
+    }
+    if (pct == null || !(pct > 0)) continue;
+
     const key = `${pct}:${sellPct}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -229,22 +256,29 @@ export function parseStrategyGoal(text) {
   const curveId = curveMatch[0];
 
   const lower = g.toLowerCase();
-  // A "sell N% ... +M%" or "sell all ... +M%" phrasing is a take-profit intent
-  // (tiered exit), even without the literal words "take profit". Detect it so
-  // documented phrasings like "sell 50% of 0x… at +30%" arm an exit rather than
-  // dropping it. Requires BOTH a sell-size and a +percent to avoid matching a
-  // plain "sell" command.
-  const sellAtPlus = /sell\s+(?:\d+(?:\.\d+)?\s*%|all)[\s\S]*?\+\s*\d/.test(lower);
-  const hasStrategyWord = /\b(take[\s-]*profit|tp|stop[\s-]*loss|sl|dump\s+all)\b/.test(lower) || sellAtPlus;
+  // A "sell ... at/to M%" phrasing is a take-profit intent (tiered exit), even
+  // without the literal words "take profit" and even without a "+" sign. Detect
+  // it so phrasings like "sell all at 5%", "to 5% sell all", or "sell 50% at +30%"
+  // arm an exit rather than dropping it. Requires a sell intent (sell N% / sell
+  // all / dump all) together with a percentage that is NOT a stop-loss (stop-loss
+  // requires an explicit keyword). This keeps a plain "sell all" (no %) from
+  // matching, and keeps a bare percentage from hijacking non-sell goals.
+  const sellIntent = /sell\s+(?:\d+(?:\.\d+)?\s*%|all|the\s+rest|rest|everything)|dump\s+all/.test(lower);
+  const hasPct = /\d+(?:\.\d+)?\s*%/.test(lower);
+  const sellAtPct = sellIntent && hasPct;
+  const hasStrategyWord = /\b(take[\s-]*profit|tp|stop[\s-]*loss|sl|stop|dump\s+all)\b/.test(lower) || sellAtPct;
   if (!hasStrategyWord) return null;
 
-  // Take-profit: collect ALL rungs (tiered exits supported). Each "+N%" trigger
-  // is paired with the sell-size in its own clause; bare "+N%" defaults to 100%.
+  // Take-profit: collect ALL rungs (tiered exits supported). Each trigger ("+N%"
+  // or a bare "to/at N%") is paired with the sell-size in its own clause; a clause
+  // with no sell-size defaults to 100%. Stop-loss clauses are excluded.
   const tp = extractTakeProfitRungs(lower);
 
-  // Stop-loss: a "-N%" near a stop-loss intent.
+  // Stop-loss: ONLY arms on an explicit keyword (stop loss / stop-loss / sl /
+  // stop). A bare percentage is never a stop-loss (it is a take-profit). Accepts
+  // "to / at / @ / of / by" and an optional minus sign before the number.
   let stopLoss = null;
-  const slPct = lower.match(/(?:stop[\s-]*loss|sl)\s*(?:at|@|of|by)?\s*-?\s*(\d+(?:\.\d+)?)\s*%/);
+  const slPct = lower.match(/\b(?:stop[\s-]*loss|sl|stop)\b\s*(?:to|at|@|of|by)?\s*-?\s*(\d+(?:\.\d+)?)\s*%/);
   if (slPct) {
     const pct = Number(slPct[1]);
     if (pct > 0 && pct < 100) stopLoss = { multiple: 1 - pct / 100 };
