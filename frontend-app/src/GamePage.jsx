@@ -455,7 +455,7 @@ class ArenaScene extends Phaser.Scene {
     fb.destroy();
     const hp = m.getData('hp') - dmg;
     m.setData('hp', hp);
-    m.setTint(0xffffff);
+    m.setTint(0xff6666);
     this.time.delayedCall(60, () => { if (m.active) m.clearTint(); });
     if (hp <= 0) {
       const burst = this.add.circle(m.x, m.y, 6, 0xff7a18, 0.8);
@@ -504,9 +504,15 @@ class ArenaScene extends Phaser.Scene {
   wakeBoss() {
     this.bossAwake = true;
     this.boss.setVisible(true).setActive(true);
+    this.boss.clearTint();
+    this.boss.setAlpha(1);
+    // Capture the display scale set by setDisplaySize and lock it in. We do NOT
+    // animate scale here, because a hit landing during the entrance tween would
+    // call killTweensOf(boss) and freeze it mid-shrink, leaving the boss tiny or
+    // invisible. A flash + shake is enough drama without that fragility.
+    this._bossScale = this.boss.scaleX;
     this.cameras.main.flash(260, 80, 0, 0);
     this.cameras.main.shake(400, 0.01);
-    this.tweens.add({ targets: this.boss, scale: { from: 0.6, to: this.boss.scale }, duration: 500, ease: 'Back.easeOut' });
     this.bossTimer = this.time.addEvent({ delay: 1500, loop: true, callback: this.bossAct, callbackScope: this });
     this.pushState();
   }
@@ -570,8 +576,11 @@ class ArenaScene extends Phaser.Scene {
     if (this.bossDead) return;
     const hp = this.boss.getData('hp') - amount;
     this.boss.setData('hp', hp);
-    this.boss.setTint(0xffffff);
-    this.time.delayedCall(70, () => { if (!this.bossDead) this.boss.clearTint(); });
+    // Red hit-flash. NOTE: do NOT use setTint(0xffffff) here — pure-white tint on
+    // a generateTexture sprite can render transparent on some WebGL drivers,
+    // which made the boss "vanish on first hit". Red always renders.
+    this.boss.setTint(0xff6666);
+    this.time.delayedCall(80, () => { if (!this.bossDead && this.boss && this.boss.active) this.boss.clearTint(); });
     if (hp <= 0) this.winFight();
     this.pushState();
   }
@@ -588,7 +597,7 @@ class ArenaScene extends Phaser.Scene {
     this.tweens.killTweensOf(this.boss);
     if (this.boss.body) this.boss.setVelocity(0, 0);
     this.tweens.add({
-      targets: this.boss, alpha: 0, angle: 220, scale: this.boss.scale * 1.3, duration: 1000,
+      targets: this.boss, alpha: 0, angle: 220, scale: (this._bossScale || this.boss.scaleX) * 1.3, duration: 1000,
       onComplete: () => { if (this.boss && this.boss.active) this.boss.setVisible(false); },
     });
     this.bestTimeMs = Math.max(0, Math.round(this.time.now - this.runStartMs));
