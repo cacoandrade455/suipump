@@ -513,19 +513,23 @@ class ArenaScene extends Phaser.Scene {
 
   staggerBoss() {
     if (!this.bossAwake || this.bossDead) return;
+    // cancel any in-flight lunge tween so its onComplete can't fire mid-stagger
+    this.tweens.killTweensOf(this.boss);
     this.boss.setTint(0x66ddff);
-    this.boss.setVelocity(0, 0);
+    if (this.boss.body) this.boss.setVelocity(0, 0);
     // freeze boss attacks for the stagger duration — wide open to fireballs
     if (this.bossTimer) this.bossTimer.paused = true;
     this.cameras.main.shake(200, 0.006);
     this.time.delayedCall(PARRY_STAGGER_MS, () => {
-      if (!this.bossDead) this.boss.clearTint();
+      if (this.bossDead) return;
+      this.boss.clearTint();
       if (this.bossTimer) this.bossTimer.paused = false;
     });
   }
 
   bossAct() {
     if (this.dead || this.won || this.bossDead || !this.bossAwake) return;
+    if (!this.boss || !this.boss.active || !this.boss.body) return;
     const dir = this.player.x < this.boss.x ? -1 : 1;
     this.boss.setFlipX(dir < 0);
     const roll = Phaser.Math.Between(0, 2);
@@ -533,7 +537,8 @@ class ArenaScene extends Phaser.Scene {
     if (roll === 0) {
       this.tweens.add({
         targets: this.boss, x: Phaser.Math.Clamp(this.player.x, 100, GAME_W - 100),
-        duration: 420, ease: 'Quad.easeIn', onComplete: () => this.boss.setVelocity(0, 0),
+        duration: 420, ease: 'Quad.easeIn',
+        onComplete: () => { if (this.boss && this.boss.active && this.boss.body && !this.bossDead) this.boss.setVelocity(0, 0); },
       });
     } else if (roll === 1) {
       for (let i = -2; i <= 2; i++) {
@@ -547,7 +552,7 @@ class ArenaScene extends Phaser.Scene {
     } else {
       this.boss.setTint(0xffee44);
       this.time.delayedCall(440, () => {
-        if (this.bossDead) return;
+        if (this.bossDead || !this.boss || !this.boss.active || !this.boss.body) return;
         this.boss.clearTint();
         [-1, 1].forEach(s => {
           const p = this.projectiles.create(this.boss.x, GROUND_Y - 24, 'shard');
@@ -577,8 +582,15 @@ class ArenaScene extends Phaser.Scene {
     this.bossDead = true;
     this.phase = 2;
     if (this.bossTimer) this.bossTimer.remove();
-    this.boss.setVelocity(0, 0);
-    this.tweens.add({ targets: this.boss, alpha: 0, angle: 220, scale: this.boss.scale * 1.3, duration: 1000, onComplete: () => this.boss.setVisible(false) });
+    // Kill any in-flight boss tweens (e.g. a lunge) BEFORE we start the death
+    // tween — otherwise their onComplete fires on a boss whose body is gone and
+    // crashes the game. This was the freeze-on-kill bug.
+    this.tweens.killTweensOf(this.boss);
+    if (this.boss.body) this.boss.setVelocity(0, 0);
+    this.tweens.add({
+      targets: this.boss, alpha: 0, angle: 220, scale: this.boss.scale * 1.3, duration: 1000,
+      onComplete: () => { if (this.boss && this.boss.active) this.boss.setVisible(false); },
+    });
     this.bestTimeMs = Math.max(0, Math.round(this.time.now - this.runStartMs));
     this.pushState();
   }
