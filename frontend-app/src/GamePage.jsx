@@ -365,12 +365,13 @@ class ArenaScene extends Phaser.Scene {
 
   onProjectileHit(player, proj) {
     if (this.dead || this.won) return;
-    if (this.time.now < this.invulnUntil) { proj.destroy(); return; }
+    if (this.time.now < this.invulnUntil) { if (proj.body) proj.body.enable = false; proj.destroy(); return; }
     // PARRY: within the window, reflect the shot back as a player fireball AND
     // stagger the boss wide open. This is the high-skill, high-reward play.
     if (this.time.now < this.parryUntil) {
       const vx = proj.body ? proj.body.velocity.x : 0;
       const vy = proj.body ? proj.body.velocity.y : 0;
+      if (proj.body) proj.body.enable = false;
       proj.destroy();
       // spawn a reflected fireball heading back toward the boss
       const fb = this.fireballs.create(this.player.x, this.player.y, 'fireball');
@@ -384,12 +385,13 @@ class ArenaScene extends Phaser.Scene {
         : new Phaser.Math.Vector2(-vx, -vy);
       fb.setVelocity(back.x, back.y);
       fb.setTint(0x66ddff);
-      fb.setAngularVelocity(720);
+      fb.setData("spin", 9);
       this.time.delayedCall(FIREBALL_LIFETIME_MS, () => { if (fb && fb.active) fb.destroy(); });
       this.cameras.main.flash(120, 100, 220, 255);
       this.staggerBoss();
       return;
     }
+    if (proj.body) proj.body.enable = false;
     proj.destroy();
     this.damagePlayer(PROJECTILE_DMG);
   }
@@ -438,7 +440,7 @@ class ArenaScene extends Phaser.Scene {
     fb.setData('dmg', null);          // null => use per-target default dmg
     fb.setData('reflected', false);
     fb.setVelocity(facing * FIREBALL_SPEED, 0);
-    fb.setAngularVelocity(540);
+    fb.setData("spin", 7);
     this.time.delayedCall(FIREBALL_LIFETIME_MS, () => { if (fb && fb.active) fb.destroy(); });
     // tiny recoil + muzzle flash
     this.player.setVelocityX(-facing * 60);
@@ -449,7 +451,7 @@ class ArenaScene extends Phaser.Scene {
   onFireballMinion(fb, m) {
     if (!fb.active || !m.active) return;
     const dmg = fb.getData('dmg') != null ? fb.getData('dmg') : ATTACK_DMG_MINION;
-    const reflected = fb.getData('reflected');
+    if (fb.body) fb.body.enable = false;
     fb.destroy();
     const hp = m.getData('hp') - dmg;
     m.setData('hp', hp);
@@ -467,6 +469,7 @@ class ArenaScene extends Phaser.Scene {
   onFireballBoss(fb, boss) {
     if (!fb.active || !this.bossAwake || this.bossDead) return;
     const dmg = fb.getData('dmg') != null ? fb.getData('dmg') : ATTACK_DMG_BOSS;
+    if (fb.body) fb.body.enable = false;
     fb.destroy();
     this.damageBoss(dmg);
   }
@@ -538,7 +541,7 @@ class ArenaScene extends Phaser.Scene {
         p.setDisplaySize(24, 24);
         p.body.setAllowGravity(false);
         p.setVelocity(dir * 300, i * 90);
-        p.setAngularVelocity(360);
+        p.setData("spin", 5);
         this.time.delayedCall(3000, () => { if (p && p.active) p.destroy(); });
       }
     } else {
@@ -551,7 +554,7 @@ class ArenaScene extends Phaser.Scene {
           p.setDisplaySize(30, 22).setTint(0xff3344);
           p.body.setAllowGravity(false);
           p.setVelocity(s * 440, 0);
-          p.setAngularVelocity(720);
+          p.setData("spin", 9);
           this.time.delayedCall(2500, () => { if (p && p.active) p.destroy(); });
         });
       });
@@ -629,6 +632,17 @@ class ArenaScene extends Phaser.Scene {
       m.setFlipX(dirx < 0);
       m.rotation = Math.sin(bob) * 0.12;
     });
+
+    // Visual-only rotation for fireballs and boss shards. We rotate the SPRITE
+    // (obj.rotation), never the physics body — Arcade Physics bodies are
+    // axis-aligned and rotating a body corrupts overlap checks (was the crash).
+    const spin = (obj) => {
+      if (!obj || !obj.active) return;
+      const s = obj.getData('spin');
+      if (s) obj.rotation += s * dt;
+    };
+    this.fireballs.getChildren().forEach(spin);
+    this.projectiles.getChildren().forEach(spin);
 
     if (!this._lastPush || time - this._lastPush > 100) {
       this._lastPush = time;
