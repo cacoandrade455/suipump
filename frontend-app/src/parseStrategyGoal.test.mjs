@@ -177,6 +177,24 @@ check(`buy 5 sui of ${CURVE} to 5% sell all`,         { workflow: 'buy_then_tpsl
 // -- NEW: bare minus with NO stop-loss keyword arms neither (keyword required) --
 check(`${CURVE} sell all at -5%`,                     null);
 
+// -- NEW: TP and SL in ONE breath (no connector between them) --
+check(`buy 10 sui of ${CURVE} and set tp of 5% sell 100% sl of -5% sell 100%`,
+      { workflow: 'buy_then_tpsl', tp: [{ multiple: 1.05, sellPct: 100 }], sl: { multiple: 0.95 } });
+check(`${CURVE} tp 5% sell 100% sl -5% sell 100%`,
+      { workflow: 'tpsl', tp: [{ multiple: 1.05, sellPct: 100 }], sl: { multiple: 0.95 } });
+check(`${CURVE} tp of 10% sell 50% sl of 5%`,
+      { workflow: 'tpsl', tp: [{ multiple: 1.10, sellPct: 50 }], sl: { multiple: 0.95 } });
+
+// -- NEW: fat-finger percent typos repaired ("!00%" -> 100%) --
+check(`${CURVE} tp of 5% sell !00%`,
+      { workflow: 'tpsl', tp: [{ multiple: 1.05, sellPct: 100 }], sl: null });
+check(`buy 10 sui of ${CURVE} and set tp of 5% sell !00% sl of -5% sell 100%`,
+      { workflow: 'buy_then_tpsl', tp: [{ multiple: 1.05, sellPct: 100 }], sl: { multiple: 0.95 } });
+
+// -- multi-rung TP coexisting with SL --
+check(`${CURVE} sell 50% at +10% and sell all at +20% stop loss -8%`,
+      { workflow: 'tpsl', tp: [{ multiple: 1.10, sellPct: 50 }, { multiple: 1.20, sellPct: 100 }], sl: { multiple: 0.92 } });
+
 // -- extractTakeProfitRungs pure unit checks --
 checkRungs('to 5% sell all',                          [{ multiple: 1.05, sellPct: 100 }]);
 checkRungs('sell 50% at 10% and sell all at 20%',     [{ multiple: 1.10, sellPct: 50 }, { multiple: 1.20, sellPct: 100 }]);

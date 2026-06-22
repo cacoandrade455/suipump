@@ -195,19 +195,36 @@ const WORKFLOW_NODES = {
 //     to take-profit; stop-loss only ever arms on an explicit keyword (handled in
 //     parseStrategyGoal), so a bare percentage is never a stop-loss.
 // The sell-size percentage ("sell 50%") is NEVER mistaken for the trigger.
+// sanitizePercents — repair common fat-finger typos INSIDE numeric percent
+// tokens so "sell !00%" reads as "sell 100%" and "5O%" as "50%". Only digits
+// adjacent to a % are touched; the rest of the goal is left alone. ! -> 1
+// (shift+1 slip), O/o -> 0, l/I -> 1 when wedged among digits before a %.
+export function sanitizePercents(s) {
+  return String(s || '').replace(/[\d!OolI]{1,4}\s*%/g, (tok) =>
+    tok.replace(/!/g, '1').replace(/[Oo]/g, '0').replace(/[lI]/g, '1'));
+}
+
+// extractTakeProfitRungs — pull EVERY take-profit rung from a goal, in order.
+// Splits the goal into clauses on connectors (commas, "and", "then", ";"), then
+// within each clause keeps ONLY the portion BEFORE any stop-loss keyword (so a
+// single breath like "tp 5% sell 100% sl -5% sell 100%" contributes the +5% TP
+// and leaves the -5% to the stop-loss parser). Each take-profit trigger ("+N%"
+// or a bare "to/at N%") is paired with the sell-size in its own clause,
+// defaulting to 100%. Multi-rung tiered exits are supported.
 export function extractTakeProfitRungs(lower) {
   const rungs = [];
   const seen = new Set();
-  const clauses = String(lower || '').split(/\s*(?:,|;|\band\b|\bthen\b)\s*/);
   const SL_KW = /\b(stop[\s-]*loss|sl|stop)\b/;
-  for (const clause of clauses) {
+  const clauses = sanitizePercents(lower).split(/\s*(?:,|;|\band\b|\bthen\b)\s*/);
+  for (let clause of clauses) {
+    // If a stop-loss keyword appears mid-clause, the take-profit is whatever
+    // comes BEFORE it. Slice the clause at the first SL keyword.
+    const slIdx = clause.search(SL_KW);
+    if (slIdx >= 0) clause = clause.slice(0, slIdx);
+    if (!clause.trim()) continue;
+
     const hasPlus = /\+\s*\d+(?:\.\d+)?\s*%/.test(clause);
-    // A clause that names a stop-loss is not a take-profit rung UNLESS it also
-    // carries an explicit "+N%" (e.g. "take profit +15% stop loss -10%" in one
-    // breath — the +15% is the TP, the -10% is the SL handled separately).
-    if (SL_KW.test(clause) && !hasPlus) continue;
-    // An explicit negative percentage is a stop-loss, not a take-profit. (Only
-    // strip the clause when there is no competing explicit "+N%".)
+    // An explicit negative percentage in the TP portion is not a take-profit.
     if (!hasPlus && /-\s*\d+(?:\.\d+)?\s*%/.test(clause)) continue;
 
     // Determine the sell-size first so we can exclude it from trigger matching.
@@ -225,8 +242,7 @@ export function extractTakeProfitRungs(lower) {
       pct = Number(plus[1]);
     } else {
       const scan = clause.replace(/sell\s+\d+(?:\.\d+)?\s*%/g, ' '); // drop the size token
-      // Prefer an explicit "to/at/@ N%"; fall back to any remaining "N%".
-      const at = scan.match(/(?:to|at|@)\s*\+?\s*(\d+(?:\.\d+)?)\s*%/);
+      const at = scan.match(/(?:to|at|@|of)\s*\+?\s*(\d+(?:\.\d+)?)\s*%/);
       const bare = at || scan.match(/(\d+(?:\.\d+)?)\s*%/);
       if (bare) pct = Number(bare[1]);
     }
@@ -259,7 +275,7 @@ export function parseStrategyGoal(text) {
   if (!curveMatch) return null;
   const curveId = curveMatch[0];
 
-  const lower = g.toLowerCase();
+  const lower = sanitizePercents(g.toLowerCase());
   // A "sell ... at/to M%" phrasing is a take-profit intent (tiered exit), even
   // without the literal words "take profit" and even without a "+" sign. Detect
   // it so phrasings like "sell all at 5%", "to 5% sell all", or "sell 50% at +30%"
