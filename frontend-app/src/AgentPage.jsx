@@ -768,43 +768,126 @@ export default function AgentPage({ onBack }) {
     setCandidates(null); setResolvedNote(null);
     setNodeState({}); setPhase('idle'); clearAnim();
     try {
+      // ── A2: resolve a $ticker to a real curve id BEFORE the deterministic parsers
+      // run. The parsers (parseStrategyGoal / sniper / dca) key on a 0x curve
+      // address and bail on a bare "$TICKER", which previously let a goal like
+      // "buy 5 sui of $Overflow and tp at 5%" fall through to the LLM, which then
+      // hallucinated a launch_and_buy. By resolving the ticker up front and
+      // injecting the 0x id into the goal text, the deterministic buy_then_tpsl
+      // path fires correctly. parseStrategyGoal stays pure (no signature change).
+      let workGoal = goal.trim();
+      const alreadyHasCurve = /0x[0-9a-fA-F]{4,}/.test(workGoal);
+      if (!alreadyHasCurve) {
+        const tk = preResolveTicker(workGoal);
+        if (tk) {
+          const resolved = await resolveTickerToCurve(tk);
+          if (resolved === 'MULTI') {
+            // 2+ matches: candidates are set; user picks, which re-triggers makePlan
+            // with the chosen id injected (see chooseAndReplan). Stop here.
+            setPlanning(false);
+            return;
+          }
+          if (resolved) {
+            // Inject the resolved 0x id right after the ticker so the parsers see it.
+            workGoal = injectCurveId(workGoal, tk, resolved.curveId);
+            setResolvedNote(resolved); // b-soft: show what got resolved
+          }
+          // 0 matches: leave workGoal as-is; LLM/guardrail handles it below.
+        }
+      }
+
       // Strategy goals (take-profit / stop-loss) are standing orders, not one-shot
       // workflows. Recognize them client-side so the LLM can't collapse them into
       // a plain immediate sell. If it's not a strategy, fall through to the planner.
-      // Standing-order goals are recognized client-side so the LLM can't collapse
-      // them into a one-shot trade (and so 64-hex addresses aren't LLM-mangled).
       // Sniper is checked first: it is the most specific standing intent.
-      const snipe = parseSniperGoal(goal.trim());
+      const snipe = parseSniperGoal(workGoal);
       if (snipe) { setPlan(snipe); setPlanning(false); return; }
 
-      const dca = parseDcaGoal(goal.trim());
+      const dca = parseDcaGoal(workGoal);
       if (dca) { setPlan(dca); setPlanning(false); return; }
 
-      const copy = parseCopytradeGoal(goal.trim());
+      const copy = parseCopytradeGoal(workGoal);
       if (copy) { setPlan(copy); setPlanning(false); return; }
 
-      const strat = parseStrategyGoal(goal.trim());
+      const strat = parseStrategyGoal(workGoal);
       if (strat) { setPlan(strat); setPlanning(false); return; }
 
       const res = await fetch('/api/agent-plan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ goal: goal.trim() }),
+        body: JSON.stringify({ goal: workGoal }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Planning failed');
-      setPlan(data.plan);
+
+      // ── Guardrail: the LLM must NEVER turn a buy/sell intent into a launch. If
+      // the goal has no explicit launch verb but the planner returned a launch
+      // (it hallucinates "launch <unknown token>" when it can't resolve a ticker),
+      // rewrite it to a buy so ticker resolution can run. A real launch requires
+      // the user to actually say launch/create/deploy/mint a (new) token.
+      let plan = data.plan;
+      const hasLaunchVerb = /\b(launch|create|deploy|mint|make)\b[\s\S]*\b(token|coin|memecoin)\b/i.test(goal)
+        || /\blaunch\b/i.test(goal);
+      const hasBuyVerb = /\bbuy\b/i.test(goal);
+      if ((plan?.workflow === 'launch_and_buy' || plan?.workflow === 'launch') && !hasLaunchVerb) {
+        const amt = Number(plan.buy?.amountSui ?? plan.launch?.devBuySui ?? 0);
+        if (hasBuyVerb && amt > 0) {
+          // Reinterpret as a buy of the named token; ticker resolution fills curveId.
+          plan = { workflow: 'buy', summary: `Buy ${amt} SUI`, buy: { curveId: null, amountSui: amt } };
+        }
+      }
+      setPlan(plan);
       // If this is an existing-curve action with no curve id, the user named the
       // token by ticker. Resolve it via the indexer: 1 match -> auto-fill + show
       // a confirmation note (b-soft); 2+ -> open the picker; 0 -> leave as-is so
       // the existing "paste the CA" error fires on execute.
-      await maybeResolveTicker(data.plan);
+      await maybeResolveTicker(plan);
     } catch (err) {
       setError(err.message);
     } finally {
       setPlanning(false);
     }
   }, [goal, clearAnim]);
+
+  // Ref mirror of makePlan so earlier-defined handlers (choosePick) can re-trigger
+  // planning after a picker selection without a forward-reference.
+  const makePlanRef = useRef(null);
+  useEffect(() => { makePlanRef.current = makePlan; }, [makePlan]);
+  // Pull a bare ticker from a goal ("$Overflow", "symbol: PEPE"). Same shape as
+  // extractTickerFromGoal but usable before the plan exists.
+  function preResolveTicker(g) {
+    if (!g) return null;
+    const dollar = g.match(/\$([a-z0-9]{1,12})\b/i);
+    if (dollar) return dollar[1];
+    const marked = g.match(/(?:symbol|ticker)\s*[:\-]?\s*([a-z0-9]{1,12})/i);
+    if (marked) return marked[1];
+    return null;
+  }
+
+  // Resolve a ticker to a single { curveId, ...stats } via the indexer.
+  // Returns the match object for 1 hit, 'MULTI' (and sets candidates) for 2+,
+  // or null for 0 / error (caller leaves the goal unresolved).
+  async function resolveTickerToCurve(ticker) {
+    try {
+      const r = await fetch(`${INDEXER_URL}/search/by-symbol/${encodeURIComponent(ticker)}`, { signal: AbortSignal.timeout(6000) });
+      if (!r.ok) return null;
+      const matches = await r.json();
+      if (!Array.isArray(matches) || matches.length === 0) return null;
+      if (matches.length === 1) return matches[0];
+      matches.sort((a, b) => (b.marketCapSui - a.marketCapSui) || (b.volumeSui - a.volumeSui));
+      setCandidates(matches);
+      return 'MULTI';
+    } catch { return null; }
+  }
+
+  // Inject a resolved 0x curve id into the goal text right after the ticker token
+  // so the deterministic parsers (which key on 0x) can see it. Falls back to
+  // appending the id if the ticker can't be located.
+  function injectCurveId(g, ticker, curveId) {
+    const re = new RegExp(`\\$?${ticker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+    if (re.test(g)) return g.replace(re, `${curveId}`);
+    return `${g} ${curveId}`;
+  }
 
   // A real curve id is a 0x + 64 hex address. Anything else (a "$ticker", a bare
   // word the LLM hallucinated into the slot, null) counts as UNRESOLVED.
@@ -884,9 +967,23 @@ export default function AgentPage({ onBack }) {
 
   // User picked a candidate from the disambiguation list.
   function choosePick(c) {
-    applyCurveToPlan(c.curveId);
-    setResolvedNote(c);
     setCandidates(null);
+    setResolvedNote(c);
+    // A2 case: the picker fired BEFORE a plan existed (ticker resolved up front,
+    // multiple matches). There is no plan to patch yet, so inject the chosen id
+    // into the goal and re-run planning so the deterministic parsers see a 0x id.
+    if (!plan) {
+      const tk = preResolveTicker(goal.trim());
+      if (tk) {
+        const injected = injectCurveId(goal.trim(), tk, c.curveId);
+        if (injected !== goal) { setGoal(injected); /* makePlan re-run below */ }
+        // Re-plan against the injected goal on the next tick (state set is async).
+        setTimeout(() => { makePlanRef.current && makePlanRef.current(); }, 0);
+        return;
+      }
+    }
+    // Legacy case: a plan already exists (LLM planned, then ticker disambiguated).
+    applyCurveToPlan(c.curveId);
   }
 
   // ── Runtime resolvers (browser supplies what the planner can't) ───────────
@@ -925,7 +1022,7 @@ export default function AgentPage({ onBack }) {
           name: p.launch.name,
           symbol: p.launch.symbol,
           description: p.launch.description || p.summary || `${p.launch.name} via SuiPump agent`,
-          graduationTarget: p.launch.graduationTarget,
+          graduationTarget: p.launch.graduationTarget ?? 0, // default Cetus (0)
           devBuySui: p.launch.devBuySui,
           antiBotDelay: p.launch.antiBotDelay ?? 0,
         };
@@ -951,7 +1048,7 @@ export default function AgentPage({ onBack }) {
             name: p.launch.name,
             symbol: p.launch.symbol,
             description: p.launch.description || p.summary || `${p.launch.name} via SuiPump agent`,
-            graduationTarget: p.launch.graduationTarget,
+            graduationTarget: p.launch.graduationTarget ?? 0, // default Cetus (0)
             devBuySui: p.launch.devBuySui,
             antiBotDelay: p.launch.antiBotDelay ?? 0,
           },
@@ -1061,7 +1158,7 @@ export default function AgentPage({ onBack }) {
         name: payload.launch.name,
         symbol: payload.launch.symbol,
         description: payload.launch.description,
-        graduationTarget: payload.launch.graduationTarget,
+        graduationTarget: payload.launch.graduationTarget ?? 0, // default Cetus (0) when unspecified
         antiBotDelay: payload.launch.antiBotDelay,
         devBuySui: payload.buy?.amountSui ?? payload.launch.devBuySui ?? 0,
       };
@@ -1071,7 +1168,7 @@ export default function AgentPage({ onBack }) {
         name: payload.launch.name,
         symbol: payload.launch.symbol,
         description: payload.launch.description,
-        graduationTarget: payload.launch.graduationTarget,
+        graduationTarget: payload.launch.graduationTarget ?? 0, // default Cetus (0) when unspecified
         antiBotDelay: payload.launch.antiBotDelay,
         devBuySui: 0,
       };
@@ -1322,7 +1419,11 @@ export default function AgentPage({ onBack }) {
       // BEST-EFFORT: the on-chain walk request is the orchestration paper trail,
       // not the settlement path. A slow/failed /run-dag must NEVER block the trade
       // from settling. We capture whatever the runner returns and move on.
-      const DEMO_MODE = new URLSearchParams(window.location.search).get('demo') === '1';
+      // Demo/leader-priority path is the DEFAULT on /agent: settlement is owned by
+      // the Talus leader (we poll for the leader to settle the walk on-chain), with
+      // the bridge kept only as a last-resort safety net so a stage demo never
+      // dangles. Pass ?demo=0 to force the legacy synchronous bridge-settle path.
+      const DEMO_MODE = new URLSearchParams(window.location.search).get('demo') !== '0';
       let data = {};
       try {
         const res = await fetch(`/api/agent-run`, {
@@ -1350,7 +1451,7 @@ export default function AgentPage({ onBack }) {
       // FALLBACK: if no leader settles within DEMO_FALLBACK_MS, settle via the
       // bridge so the trade always completes on stage (never a dangling action).
       if (DEMO_MODE && data.executionId) {
-        const DEMO_FALLBACK_MS = 25000;
+        const DEMO_FALLBACK_MS = 45000;  // leader gets full priority; bridge only as last resort
         const POLL_MS = 2000;
         setNodeState(Object.fromEntries(nodes.map(n => [n.id, 'done'])));
         setResult({
@@ -1506,7 +1607,7 @@ export default function AgentPage({ onBack }) {
           ['workflow', p.workflow],
           ['token', `${p.launch.name} ($${p.launch.symbol})`],
           ['dev-buy', `${p.buy?.amountSui ?? p.launch.devBuySui ?? 0} SUI`],
-          ['graduates to', GRAD[p.launch.graduationTarget] ?? 'Turbos'],
+          ['graduates to', GRAD[p.launch.graduationTarget] ?? 'Cetus'],
         ];
       case 'buy':
         return [
