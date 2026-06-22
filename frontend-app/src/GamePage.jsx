@@ -504,17 +504,22 @@ class ArenaScene extends Phaser.Scene {
 
   wakeBoss() {
     this.bossAwake = true;
+    // Re-anchor the boss to a guaranteed on-screen spot every time it wakes, in
+    // case anything nudged it while inactive. Center-right, mid-height.
+    this.boss.setPosition(GAME_W - 180, GROUND_Y - 140);
+    if (this.boss.body) this.boss.setVelocity(0, 0);
     this.boss.setVisible(true).setActive(true);
     this.boss.clearTint();
     this.boss.setAlpha(1);
-    // Capture the display scale set by setDisplaySize and lock it in. We do NOT
-    // animate scale here, because a hit landing during the entrance tween would
-    // call killTweensOf(boss) and freeze it mid-shrink, leaving the boss tiny or
-    // invisible. A flash + shake is enough drama without that fragility.
     this._bossScale = this.boss.scaleX;
     this.cameras.main.flash(260, 80, 0, 0);
     this.cameras.main.shake(400, 0.01);
     this.bossTimer = this.time.addEvent({ delay: 1500, loop: true, callback: this.bossAct, callbackScope: this });
+    // DIAGNOSTIC — copy any [PUMPRUN] lines from console
+    console.log('[PUMPRUN] wakeBoss x=%s y=%s scaleX=%s visible=%s alpha=%s active=%s tex=%s displayW=%s',
+      this.boss.x, this.boss.y, this.boss.scaleX, this.boss.visible, this.boss.alpha,
+      this.boss.active, this.boss.texture && this.boss.texture.key, this.boss.displayWidth);
+    this._bossLogAt = 0;
     this.pushState();
   }
 
@@ -581,6 +586,9 @@ class ArenaScene extends Phaser.Scene {
     if (this.bossDead) return;
     const hp = this.boss.getData('hp') - amount;
     this.boss.setData('hp', hp);
+    // DIAGNOSTIC — state at the moment of a hit
+    console.log('[PUMPRUN] damageBoss -%s -> hp=%s x=%s y=%s visible=%s alpha=%s',
+      amount, hp, Math.round(this.boss.x), Math.round(this.boss.y), this.boss.visible, this.boss.alpha.toFixed(2));
     // Red hit-flash. NOTE: do NOT use setTint(0xffffff) here — pure-white tint on
     // a generateTexture sprite can render transparent on some WebGL drivers,
     // which made the boss "vanish on first hit". Red always renders.
@@ -669,6 +677,15 @@ class ArenaScene extends Phaser.Scene {
     };
     this.fireballs.getChildren().forEach(spin);
     this.projectiles.getChildren().forEach(spin);
+
+    // DIAGNOSTIC — once per second while boss is awake, report its on-screen state
+    if (this.bossAwake && !this.bossDead && (!this._bossLogAt || time - this._bossLogAt > 1000)) {
+      this._bossLogAt = time;
+      const onScreen = this.boss.x > -50 && this.boss.x < GAME_W + 50 && this.boss.y > -50 && this.boss.y < GAME_H + 50;
+      console.log('[PUMPRUN] boss tick x=%s y=%s visible=%s alpha=%s onScreen=%s hp=%s',
+        Math.round(this.boss.x), Math.round(this.boss.y), this.boss.visible,
+        this.boss.alpha.toFixed(2), onScreen, this.boss.getData('hp'));
+    }
 
     if (!this._lastPush || time - this._lastPush > 100) {
       this._lastPush = time;
