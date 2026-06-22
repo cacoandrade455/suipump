@@ -294,6 +294,7 @@ class ArenaScene extends Phaser.Scene {
     this.boss.setDisplaySize(150, 150);
     this.boss.body.setSize(110, 120).setOffset(20, 15);
     this.boss.body.setAllowGravity(false);
+    this.boss.setCollideWorldBounds(true);
     this.boss.setData('hp', BOSS_MAX_HP);
     this.boss.setVisible(false).setActive(false);
     this.bossAwake = false;
@@ -541,10 +542,14 @@ class ArenaScene extends Phaser.Scene {
     const roll = Phaser.Math.Between(0, 2);
 
     if (roll === 0) {
-      this.tweens.add({
-        targets: this.boss, x: Phaser.Math.Clamp(this.player.x, 100, GAME_W - 100),
-        duration: 420, ease: 'Quad.easeIn',
-        onComplete: () => { if (this.boss && this.boss.active && this.boss.body && !this.bossDead) this.boss.setVelocity(0, 0); },
+      // LUNGE via velocity — NEVER tween .x on an Arcade body; the tween and the
+      // physics body fight over position and teleport the boss off-screen. Set a
+      // velocity toward the player, then stop after a short burst.
+      const targetX = Phaser.Math.Clamp(this.player.x, 100, GAME_W - 100);
+      const lungeDir = targetX < this.boss.x ? -1 : 1;
+      this.boss.setVelocityX(lungeDir * 520);
+      this.time.delayedCall(360, () => {
+        if (this.boss && this.boss.active && this.boss.body && !this.bossDead) this.boss.setVelocityX(0);
       });
     } else if (roll === 1) {
       for (let i = -2; i <= 2; i++) {
