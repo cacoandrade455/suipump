@@ -8,6 +8,7 @@ import {
 } from './db.js';
 import { mountOrders } from './orders.js';
 import { mountAgentActions } from './agent_actions.js';
+import { mountGameProgress } from './game_progress.js';
 
 const PORT = parseInt(process.env.PORT || '3001');
 const app  = express();
@@ -21,6 +22,11 @@ mountOrders(app);
 // Agent action history — self-contained module, owns its own agent_actions
 // table; does not touch db.js. Adds GET/POST/PATCH /agent-actions.
 mountAgentActions(app);
+
+// Game progress store — self-contained module, owns its own game_progress
+// table; does not touch db.js. Adds GET/POST /game-progress. Wallet is used
+// purely as an identity key; never moves funds or signs a tx.
+mountGameProgress(app);
 
 // ── Virtual reserves per package — must match frontend constants.js ─────────
 const MIST = 1_000_000_000;

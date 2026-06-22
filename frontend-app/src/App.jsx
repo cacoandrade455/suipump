@@ -17,6 +17,7 @@ import PortfolioPage from './PortfolioPage.jsx';
 import RoadmapPage from './RoadmapPage.jsx';
 import StatsPage from './StatsPage.jsx';
 import AgentPage from './AgentPage.jsx';
+import GamePage from './GamePage.jsx';
 import { LANGUAGES, translations, t } from './i18n.js';
 import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8, ALL_PACKAGE_IDS, DRAIN_SUI_APPROX, DRAIN_SUI_V4, DRAIN_SUI_V5, DRAIN_SUI_V6, DRAIN_SUI_V7, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_SUI_V6, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, VIRTUAL_TOKENS_V6, TOKEN_DECIMALS, isNewCurve, isV7OrLater, curveShapeFor } from './constants.js';
 import { mistToSui, priceMistPerToken } from './curve.js';
@@ -1434,6 +1435,7 @@ export default function App() {
           <Route path="/portfolio/:walletAddress" element={<PortfolioPage onBack={() => navigate(-1)} lang={lang} tradeKeypair={tradeKey.isReady ? tradeKey.keypair : null} />} />
           <Route path="/roadmap" element={<RoadmapPage onBack={() => navigate('/')} lang={lang} />} />
           <Route path="/agent" element={<AgentPage onBack={() => navigate('/')} />} />
+          <Route path="/play" element={<GamePage onBack={() => navigate('/')} lang={lang} />} />
           <Route path="*" element={<NotFoundPage onBack={() => navigate('/')} />} />
         </Routes>
       </main>
