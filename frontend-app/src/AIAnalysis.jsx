@@ -60,7 +60,73 @@ function computeStage({ graduated, progress }) {
 //   `locked`/`liquid`/`isCreator` may be absent on older indexer deploys — in
 //   that case we degrade gracefully: treat full balance as liquid and the
 //   creator axis as contextual (never a false flag).
-function computeFlags({ holders, creator, buys, sells, distinctBuyers }) {
+// computeTradeSignals — derive trader-grade signals from the raw trade rows the
+// page already fetches. All amounts come straight off the indexer event `data`:
+//   buys:  data.sui_in (MIST), data.tokens_out (atomic ×1e6), data.buyer
+//   sells: data.sui_out (MIST), data.tokens_in (atomic ×1e6), data.seller
+//   every row: timestamp_ms (epoch ms string)
+// Returns raw metrics; computeFlags turns them into flags/positives so the
+// thresholds live in one place.
+function computeTradeSignals({ buyRows, sellRows, creator }) {
+  const MIST = 1e9;
+  const num = (v) => Number(v || 0);
+
+  // ── Net SUI flow (accumulation vs bleed) ──────────────────────────────────
+  const buyVol  = buyRows.reduce((a, r) => a + num(r.data?.sui_in)  / MIST, 0);
+  const sellVol = sellRows.reduce((a, r) => a + num(r.data?.sui_out) / MIST, 0);
+  const netFlowSui = buyVol - sellVol;
+  const totalVol = buyVol + sellVol;
+  const sellShare = totalVol > 0 ? sellVol / totalVol : 0;
+
+  // ── Creator sold? (compare creator sells vs creator buys, by tokens) ──────
+  let creatorSoldSui = 0, creatorBoughtTokens = 0, creatorSoldTokens = 0;
+  if (creator) {
+    for (const r of sellRows) {
+      if (r.data?.seller === creator) {
+        creatorSoldSui    += num(r.data?.sui_out) / MIST;
+        creatorSoldTokens += num(r.data?.tokens_in);
+      }
+    }
+    for (const r of buyRows) {
+      if (r.data?.buyer === creator) creatorBoughtTokens += num(r.data?.tokens_out);
+    }
+  }
+  // Fraction of the creator's acquired position that has been sold. If they never
+  // bought on-curve but still sold (a pre-allocation), treat any sell as material.
+  const creatorSoldFrac = creatorBoughtTokens > 0
+    ? creatorSoldTokens / creatorBoughtTokens
+    : (creatorSoldTokens > 0 ? 1 : 0);
+
+  // ── Early-buyer / sniper concentration (first 5 buyers' share of all tokens) ─
+  const buysByTime = [...buyRows].sort((a, b) => num(a.timestamp_ms) - num(b.timestamp_ms));
+  const totalTokensBought = buyRows.reduce((a, r) => a + num(r.data?.tokens_out), 0);
+  const first5Tokens = buysByTime.slice(0, 5).reduce((a, r) => a + num(r.data?.tokens_out), 0);
+  const earlyBuyerPct = totalTokensBought > 0 ? (first5Tokens / totalTokensBought) * 100 : 0;
+  const enoughForSniper = buyRows.length >= 5; // need a real sample
+
+  // ── Momentum / fade (volume in first 10 min vs whether it's gone quiet) ───
+  const allByTime = [...buyRows, ...sellRows].sort((a, b) => num(a.timestamp_ms) - num(b.timestamp_ms));
+  let earlyVolShare = 0, minsSinceLast = null;
+  if (allByTime.length >= 4) {
+    const t0 = num(allByTime[0].timestamp_ms);
+    const tLast = num(allByTime[allByTime.length - 1].timestamp_ms);
+    const tenMin = 10 * 60 * 1000;
+    const volOf = (r) => (r.data?.sui_in ? num(r.data.sui_in) : num(r.data?.sui_out)) / MIST;
+    const earlyVol = allByTime.filter(r => num(r.timestamp_ms) - t0 <= tenMin).reduce((a, r) => a + volOf(r), 0);
+    earlyVolShare = totalVol > 0 ? earlyVol / totalVol : 0;
+    minsSinceLast = (Date.now() - tLast) / 60000;
+  }
+
+  return {
+    buyVol, sellVol, netFlowSui, sellShare,
+    creatorSoldSui, creatorSoldFrac, creatorSold: creatorSoldTokens > 0,
+    earlyBuyerPct, enoughForSniper,
+    earlyVolShare, minsSinceLast,
+    tradeCount: buyRows.length + sellRows.length,
+  };
+}
+
+function computeFlags({ holders, creator, buys, sells, distinctBuyers, signals }) {
   const flags = [];      // [{ level: 'strong'|'moderate', text }]
   const positives = [];  // ['…']
 
@@ -128,6 +194,39 @@ function computeFlags({ holders, creator, buys, sells, distinctBuyers }) {
     flags.push({ level: 'moderate', text: `Trades concentrated in ${distinctBuyers} wallet${distinctBuyers === 1 ? '' : 's'} — possible wash volume` });
   }
 
+  // ── Trader signals (from raw trade rows) ──────────────────────────────────
+  if (signals) {
+    // 1) Early-buyer / sniper concentration — highest-signal pre-buy check.
+    if (signals.enoughForSniper) {
+      if (signals.earlyBuyerPct > 50) {
+        flags.push({ level: 'strong', text: `First 5 buyers captured ${fmt(signals.earlyBuyerPct, 0)}% of all tokens bought — snipers hold the float` });
+      } else if (signals.earlyBuyerPct >= 35) {
+        flags.push({ level: 'moderate', text: `First 5 buyers captured ${fmt(signals.earlyBuyerPct, 0)}% of tokens bought — early-buyer heavy` });
+      }
+    }
+
+    // 2) Creator sold — the other half of the insider-dump picture.
+    if (signals.creatorSold) {
+      if (signals.creatorSoldFrac >= 0.25) {
+        flags.push({ level: 'strong', text: `Creator has sold ${fmt(signals.creatorSoldFrac * 100, 0)}% of their position (${fmt(signals.creatorSoldSui, 1)} SUI) — creator is exiting` });
+      } else {
+        flags.push({ level: 'moderate', text: `Creator has sold part of their position (${fmt(signals.creatorSoldSui, 1)} SUI)` });
+      }
+    }
+
+    // 3) Net SUI flow — flag sustained outflow, not a single sell.
+    if (signals.netFlowSui < 0 && signals.sellShare > 0.40) {
+      flags.push({ level: 'moderate', text: `More SUI leaving than entering — net outflow ${fmt(Math.abs(signals.netFlowSui), 1)} SUI, sells are ${fmt(signals.sellShare * 100, 0)}% of volume` });
+    } else if (signals.netFlowSui > 0 && signals.sellShare < 0.25 && signals.buyVol > 0) {
+      positives.push(`Net SUI inflow (+${fmt(signals.netFlowSui, 1)} SUI) with light selling — accumulation, not distribution`);
+    }
+
+    // 4) Momentum / fade — early spike then silence.
+    if (signals.earlyVolShare > 0.60 && signals.minsSinceLast != null && signals.minsSinceLast > 60) {
+      flags.push({ level: 'moderate', text: `${fmt(signals.earlyVolShare * 100, 0)}% of volume hit in the first 10 minutes and it has been quiet for ${fmt(signals.minsSinceLast / 60, 1)}h — early spike, gone quiet` });
+    }
+  }
+
   return { flags, positives, hasLockData, totalLocked };
 }
 
@@ -144,6 +243,7 @@ export default function AIAnalysis({ curveId, tokenType, name, symbol, progress,
   async function fetchAndCompute() {
     let holders = [];
     let buys = 0, sells = 0, volumeSui = 0, distinctBuyers = null;
+    let buyRows = [], sellRows = [];
 
     if (INDEXER_URL && curveId) {
       // Holders (with liquid/locked/isCreator when available)
@@ -157,8 +257,8 @@ export default function AIAnalysis({ curveId, tokenType, name, symbol, progress,
         const tr = await fetch(`${INDEXER_URL}/token/${curveId}/trades?limit=500`, { signal: AbortSignal.timeout(5000) });
         if (tr.ok) {
           const rows = await tr.json();
-          const buyRows  = rows.filter(r => r.event_type.includes('TokensPurchased') || r.event_type.includes('TokensBought'));
-          const sellRows = rows.filter(r => r.event_type.includes('TokensSold'));
+          buyRows  = rows.filter(r => r.event_type.includes('TokensPurchased') || r.event_type.includes('TokensBought'));
+          sellRows = rows.filter(r => r.event_type.includes('TokensSold'));
           buys  = buyRows.length;
           sells = sellRows.length;
           volumeSui =
@@ -169,14 +269,29 @@ export default function AIAnalysis({ curveId, tokenType, name, symbol, progress,
       } catch {}
     }
 
+    // Trader signals from the raw rows (net flow, creator-sold, sniper, momentum).
+    const signals = computeTradeSignals({ buyRows, sellRows, creator });
+
     const stage = computeStage({ graduated, progress });
     const { flags, positives, hasLockData, totalLocked } =
-      computeFlags({ holders, creator, buys, sells, distinctBuyers });
+      computeFlags({ holders, creator, buys, sells, distinctBuyers, signals });
+
+    // Graduation proximity is a near-term CATALYST (timing), never a risk. Surface
+    // it as a positive-note style line for the trader to watch.
+    const nearGraduation = !graduated && Number(progress) >= 85;
 
     const stats = {
       holderCount: holders.length,
       buys, sells, totalTrades: buys + sells, volumeSui,
       distinctBuyers, totalLocked, hasLockData,
+      netFlowSui: signals.netFlowSui,
+      buyVol: signals.buyVol, sellVol: signals.sellVol,
+      sellSharePct: signals.sellShare * 100,
+      earlyBuyerPct: signals.enoughForSniper ? signals.earlyBuyerPct : null,
+      creatorSold: signals.creatorSold,
+      creatorSoldSui: signals.creatorSoldSui,
+      minsSinceLast: signals.minsSinceLast,
+      nearGraduation,
     };
     return { stage, flags, positives, stats };
   }
@@ -209,14 +324,21 @@ Framing rules (strict):
 - Locked/vested supply is a POSITIVE signal (reduces sell pressure / dump risk), not a concern. Never describe locked tokens as a dump risk.
 - An early token with little activity is "too early to assess," NOT "well distributed" and NOT inherently dangerous. Never present an absence of data as either a positive or a red flag.
 - Creator fee earnings are normal protocol revenue — never a risk.
+- Net SUI outflow and a creator selling their position are genuine sell-pressure signals — weight them. Net inflow with light selling is accumulation, describe it as such without calling the token "safe."
+- Early-buyer (sniper) concentration is a key pre-buy risk: if the first few buyers hold most of the float, say so plainly.
+- "Near graduation" is a TIMING catalyst (a liquidity-migration volatility event is coming), not a safety judgment. Mention it as something to watch, never as reassurance.
 
 Token: ${name} ($${symbol})
 Stage: ${stage.label} — ${stage.note}
 Curve progress: ${fmt(progress, 1)}% (${fmt(reserveSui, 1)} SUI raised)
 Holders: ${stats.holderCount}
 Trades: ${stats.totalTrades} (${stats.buys} buys / ${stats.sells} sells), ${stats.distinctBuyers ?? '?'} distinct buyers
-Volume: ${fmt(stats.volumeSui, 2)} SUI
+Volume: ${fmt(stats.volumeSui, 2)} SUI (buys ${fmt(stats.buyVol, 1)} / sells ${fmt(stats.sellVol, 1)})
+Net SUI flow: ${stats.netFlowSui >= 0 ? '+' : ''}${fmt(stats.netFlowSui, 1)} SUI (sells are ${fmt(stats.sellSharePct, 0)}% of volume)
+Early-buyer concentration: ${stats.earlyBuyerPct == null ? 'n/a (too few trades)' : fmt(stats.earlyBuyerPct, 0) + '% of tokens taken by first 5 buyers'}
+Creator selling: ${stats.creatorSold ? `yes — ${fmt(stats.creatorSoldSui, 1)} SUI sold` : 'none detected'}
 Creator fees earned: ${fmt(creatorFeesSui, 3)} SUI (normal revenue, not a risk)
+Near graduation: ${stats.nearGraduation ? 'yes — within 15% of graduating; a liquidity-migration volatility event is near' : 'no'}
 Lock data available: ${stats.hasLockData ? 'yes' : 'no'}
 
 Detected flags:
