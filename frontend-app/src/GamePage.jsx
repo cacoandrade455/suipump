@@ -604,13 +604,12 @@ class ArenaScene extends Phaser.Scene {
 
   winFight() {
     if (this.won) return;
+    console.warn('[PUMPRUN] winFight CALLED — hp=%s', this.boss.getData('hp'));
+    console.trace('[PUMPRUN] winFight stack');
     this.won = true;
     this.bossDead = true;
     this.phase = 2;
     if (this.bossTimer) this.bossTimer.remove();
-    // Kill any in-flight boss tweens (e.g. a lunge) BEFORE we start the death
-    // tween — otherwise their onComplete fires on a boss whose body is gone and
-    // crashes the game. This was the freeze-on-kill bug.
     this.tweens.killTweensOf(this.boss);
     if (this.boss.body) this.boss.setVelocity(0, 0);
     this.tweens.add({
@@ -689,6 +688,11 @@ class ArenaScene extends Phaser.Scene {
       console.log('[PUMPRUN] boss tick x=%s y=%s visible=%s alpha=%s onScreen=%s hp=%s',
         Math.round(this.boss.x), Math.round(this.boss.y), this.boss.visible,
         this.boss.alpha.toFixed(2), onScreen, this.boss.getData('hp'));
+    }
+    // SAFETY NET — while the boss is alive and awake it must be visible. If any
+    // stray code path flipped visibility, restore it here every frame.
+    if (this.bossAwake && !this.bossDead && this.boss && this.boss.active && !this.boss.visible) {
+      this.boss.setVisible(true);
     }
 
     if (!this._lastPush || time - this._lastPush > 100) {
