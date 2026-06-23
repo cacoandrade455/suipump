@@ -258,19 +258,27 @@ class ArenaScene extends Phaser.Scene {
     const groundRect = this.add.rectangle(W / 2, GROUND_Y + (H - GROUND_Y) / 2, W, H - GROUND_Y, 0x000000, 0);
     this.ground.add(groundRect);
 
+    // Platform texture: a lime bar. Using a generated texture + staticImage
+    // means the visual and the physics body are the SAME object — they can never
+    // desync (the rectangle + static-group approach split them, putting the
+    // collision body half a body-height above the green bar, so you stood on an
+    // invisible ledge).
+    {
+      const pg = this.add.graphics();
+      pg.fillStyle(0x84cc16, 0.18);
+      pg.fillRect(0, 0, 200, 14);
+      pg.lineStyle(1, 0x84cc16, 0.6);
+      pg.strokeRect(0.5, 0.5, 199, 13);
+      pg.generateTexture('platform', 200, 14);
+      pg.destroy();
+    }
     this.platforms = this.physics.add.staticGroup();
     const mkPlat = (x, y, w) => {
-      const r = this.add.rectangle(x, y, w, 14, 0x84cc16, 0.18).setStrokeStyle(1, 0x84cc16, 0.5);
-      this.platforms.add(r);
-      // CRITICAL: a static-group body does NOT follow the rectangle's position
-      // automatically. Without this, the green visual sits at (x,y) but the
-      // collision body stays where the body was first created — so you land on
-      // invisible ledges. Refresh the body so physics matches the drawing.
-      if (r.body) {
-        r.body.setSize(w, 14);
-        r.body.updateFromGameObject();
-      }
-      return r;
+      // staticImage centered at (x, y); scale the 200px texture to width w.
+      const p = this.platforms.create(x, y, 'platform');
+      p.setDisplaySize(w, 14);
+      p.refreshBody();   // body now matches the displayed image exactly
+      return p;
     };
     mkPlat(200, GROUND_Y - 100, 160);
     mkPlat(W - 200, GROUND_Y - 100, 160);
