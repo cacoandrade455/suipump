@@ -261,7 +261,16 @@ class ArenaScene extends Phaser.Scene {
     this.platforms = this.physics.add.staticGroup();
     const mkPlat = (x, y, w) => {
       const r = this.add.rectangle(x, y, w, 14, 0x84cc16, 0.18).setStrokeStyle(1, 0x84cc16, 0.5);
-      this.platforms.add(r); return r;
+      this.platforms.add(r);
+      // CRITICAL: a static-group body does NOT follow the rectangle's position
+      // automatically. Without this, the green visual sits at (x,y) but the
+      // collision body stays where the body was first created — so you land on
+      // invisible ledges. Refresh the body so physics matches the drawing.
+      if (r.body) {
+        r.body.setSize(w, 14);
+        r.body.updateFromGameObject();
+      }
+      return r;
     };
     mkPlat(200, GROUND_Y - 100, 160);
     mkPlat(W - 200, GROUND_Y - 100, 160);
