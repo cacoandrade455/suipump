@@ -451,7 +451,8 @@ class ArenaScene extends Phaser.Scene {
 
   onFireballMinion(fb, m) {
     if (!fb.active || !m.active) return;
-    const dmg = fb.getData('dmg') != null ? fb.getData('dmg') : ATTACK_DMG_MINION;
+    const raw = fb.getData('dmg');
+    const dmg = Number.isFinite(raw) ? raw : ATTACK_DMG_MINION;
     if (fb.body) fb.body.enable = false;
     fb.destroy();
     const hp = m.getData('hp') - dmg;
@@ -469,7 +470,8 @@ class ArenaScene extends Phaser.Scene {
 
   onFireballBoss(fb, boss) {
     if (!fb.active || !this.bossAwake || this.bossDead) return;
-    const dmg = fb.getData('dmg') != null ? fb.getData('dmg') : ATTACK_DMG_BOSS;
+    const raw = fb.getData('dmg');
+    const dmg = Number.isFinite(raw) ? raw : ATTACK_DMG_BOSS;
     if (fb.body) fb.body.enable = false;
     fb.destroy();
     this.damageBoss(dmg);
@@ -584,7 +586,9 @@ class ArenaScene extends Phaser.Scene {
 
   damageBoss(amount) {
     if (this.bossDead) return;
-    const hp = this.boss.getData('hp') - amount;
+    const dmg = Number.isFinite(amount) ? amount : ATTACK_DMG_BOSS;
+    const cur = Number.isFinite(this.boss.getData('hp')) ? this.boss.getData('hp') : BOSS_MAX_HP;
+    const hp = cur - dmg;
     this.boss.setData('hp', hp);
     // DIAGNOSTIC — state at the moment of a hit
     console.log('[PUMPRUN] damageBoss -%s -> hp=%s x=%s y=%s visible=%s alpha=%s',
