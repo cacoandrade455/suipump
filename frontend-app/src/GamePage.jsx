@@ -477,8 +477,14 @@ class ArenaScene extends Phaser.Scene {
     this.pushState();
   }
 
-  onFireballBoss(fb, boss) {
-    if (!fb.active || !this.bossAwake || this.bossDead) return;
+  onFireballBoss(a, b) {
+    // Phaser does NOT guarantee argument order when one collider is a group and
+    // the other is a single sprite. Identify which is the fireball (in the
+    // fireballs group) and which is the boss — never assume positions. Calling
+    // destroy() on the wrong object was destroying the BOSS on first hit.
+    const fb = (a === this.boss) ? b : a;
+    const boss = (a === this.boss) ? a : b;
+    if (!fb || !fb.active || !this.bossAwake || this.bossDead) return;
     const raw = fb.getData('dmg');
     const dmg = Number.isFinite(raw) ? raw : ATTACK_DMG_BOSS;
     if (fb.body) fb.body.enable = false;
@@ -526,11 +532,6 @@ class ArenaScene extends Phaser.Scene {
     this.cameras.main.flash(260, 80, 0, 0);
     this.cameras.main.shake(400, 0.01);
     this.bossTimer = this.time.addEvent({ delay: 1500, loop: true, callback: this.bossAct, callbackScope: this });
-    // DIAGNOSTIC — copy any [PUMPRUN] lines from console
-    console.log('[PUMPRUN] wakeBoss x=%s y=%s scaleX=%s visible=%s alpha=%s active=%s tex=%s displayW=%s',
-      this.boss.x, this.boss.y, this.boss.scaleX, this.boss.visible, this.boss.alpha,
-      this.boss.active, this.boss.texture && this.boss.texture.key, this.boss.displayWidth);
-    this._bossLogAt = 0;
     this.pushState();
   }
 
@@ -599,12 +600,8 @@ class ArenaScene extends Phaser.Scene {
     const cur = Number.isFinite(this.boss.getData('hp')) ? this.boss.getData('hp') : BOSS_MAX_HP;
     const hp = cur - dmg;
     this.boss.setData('hp', hp);
-    // DIAGNOSTIC — state at the moment of a hit
-    console.log('[PUMPRUN] damageBoss -%s -> hp=%s x=%s y=%s visible=%s alpha=%s',
-      amount, hp, Math.round(this.boss.x), Math.round(this.boss.y), this.boss.visible, this.boss.alpha.toFixed(2));
-    // Red hit-flash. NOTE: do NOT use setTint(0xffffff) here — pure-white tint on
-    // a generateTexture sprite can render transparent on some WebGL drivers,
-    // which made the boss "vanish on first hit". Red always renders.
+    // Red hit-flash. Red always renders on a generateTexture sprite (white tint
+    // can render transparent on some WebGL drivers).
     this.boss.setTint(0xff6666);
     this.time.delayedCall(80, () => { if (!this.bossDead && this.boss && this.boss.active) this.boss.clearTint(); });
     if (hp <= 0) this.winFight();
@@ -613,8 +610,6 @@ class ArenaScene extends Phaser.Scene {
 
   winFight() {
     if (this.won) return;
-    console.warn('[PUMPRUN] winFight CALLED — hp=%s', this.boss.getData('hp'));
-    console.trace('[PUMPRUN] winFight stack');
     this.won = true;
     this.bossDead = true;
     this.phase = 2;
@@ -689,20 +684,6 @@ class ArenaScene extends Phaser.Scene {
     };
     this.fireballs.getChildren().forEach(spin);
     this.projectiles.getChildren().forEach(spin);
-
-    // DIAGNOSTIC — once per second while boss is awake, report its on-screen state
-    if (this.bossAwake && !this.bossDead && (!this._bossLogAt || time - this._bossLogAt > 1000)) {
-      this._bossLogAt = time;
-      const onScreen = this.boss.x > -50 && this.boss.x < GAME_W + 50 && this.boss.y > -50 && this.boss.y < GAME_H + 50;
-      console.log('[PUMPRUN] boss tick x=%s y=%s visible=%s alpha=%s onScreen=%s hp=%s',
-        Math.round(this.boss.x), Math.round(this.boss.y), this.boss.visible,
-        this.boss.alpha.toFixed(2), onScreen, this.boss.getData('hp'));
-    }
-    // SAFETY NET — while the boss is alive and awake it must be visible. If any
-    // stray code path flipped visibility, restore it here every frame.
-    if (this.bossAwake && !this.bossDead && this.boss && this.boss.active && !this.boss.visible) {
-      this.boss.setVisible(true);
-    }
 
     if (!this._lastPush || time - this._lastPush > 100) {
       this._lastPush = time;
