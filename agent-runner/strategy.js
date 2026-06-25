@@ -134,6 +134,48 @@ async function persistOrder(order) {
   } catch (e) { err(`${order.id}: persist error ${e.message}`); }
 }
 
+// pruneParentEntered — when an AUTOPILOT TP/SL child fully closes (100% exit),
+// remove its curve from the parent autopilot's `entered[]` so the panel stops
+// showing a position that no longer exists. Child ids are `ord_<parent>_tp_<hex>`;
+// we recover the parent id, GET it, drop this child's full curveId from
+// params.entered, and PATCH the params back. Best-effort: a failure just leaves
+// the (now-closed) position lingering in the list until the next prune — never
+// throws, never blocks the sell flow.
+async function pruneParentEntered(childOrder) {
+  try {
+    const m = typeof childOrder.id === 'string' && childOrder.id.match(/^(ord_\d+_[a-z0-9]+)_tp_[0-9a-f]+$/i);
+    if (!m) return;                          // not an autopilot child
+    const parentId = m[1];
+    const curveId = childOrder.curveId;
+    if (!curveId) return;
+
+    // GET the parent order to read its current entered[]/spentSui.
+    const gr = await fetch(`${INDEXER_URL}/orders/${parentId}`, { signal: AbortSignal.timeout(8000) });
+    if (!gr.ok) return;                      // parent gone or store hiccup
+    const parent = await gr.json().catch(() => null);
+    if (!parent || parent.type !== 'autopilot') return;
+
+    const params = parent.params || {};
+    const entered = Array.isArray(params.entered) ? params.entered : [];
+    if (!entered.includes(curveId)) return;  // already pruned
+
+    const nextEntered = entered.filter((c) => c !== curveId);
+    const nextParams = { ...params, entered: nextEntered };
+
+    const headers = { 'Content-Type': 'application/json' };
+    if (STRATEGY_API_KEY) headers['x-strategy-key'] = STRATEGY_API_KEY;
+    const pr = await fetch(`${INDEXER_URL}/orders/${parentId}`, {
+      method: 'PATCH', headers, body: JSON.stringify({ params: nextParams }), signal: AbortSignal.timeout(8000),
+    });
+    if (pr.ok) {
+      log(`${childOrder.id}: position closed — pruned ${curveId.slice(0, 10)}\u2026 from autopilot ${parentId} entered[] (${nextEntered.length} open)`);
+    } else {
+      const d = await pr.json().catch(() => ({}));
+      err(`${childOrder.id}: prune parent ${parentId} ${pr.status} ${d.error ?? ''}`);
+    }
+  } catch (e) { err(`${childOrder.id}: prune parent error ${e.message}`); }
+}
+
 // persistParams — PATCH back the params object (and status) for the param-driven
 // strategies (sniper, dca, …) so counters like sniper's `fired` survive a brain
 // restart. persistOrder above only carries tpsl ladder state; this is its
@@ -702,6 +744,7 @@ async function processOrder(order) {
       if (action.kind === 'SL') order.done = true;
       else { action.rung._fired = true; if (order.takeProfit.every(r => r._fired)) order.done = true; }
       await persistOrder(order);
+      if (order.done) await pruneParentEntered(order); // autopilot: drop dust-closed position from parent entered[]
       continue;
     }
 
@@ -758,6 +801,7 @@ async function processOrder(order) {
       if (allTpFired && (!order.stopLoss || nothingLeft)) order.done = true;
     }
     await persistOrder(order); // persist immediately so a restart resumes correctly
+    if (order.done) await pruneParentEntered(order); // autopilot: drop fully-closed position from parent entered[]
     await recordFire(order, { kind: 'sell', curveId: order.curveId, nexusExec: receipt.nexusExecutionId ?? null, nexusDigest: receipt.nexusDigest ?? null, settle: receipt.txDigest ?? null, leaderSettled: receipt.leaderSettled === true, leaderSender: receipt.leaderSender ?? null });
     // Surface the fire in the notification bell, labelled by WHY it fired
     // (TP vs SL) — only known here. tokens = confirmed on-chain amount moved.
