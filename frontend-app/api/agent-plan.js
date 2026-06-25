@@ -218,18 +218,20 @@ Workflows:
 - "sell": sell tokens of an EXISTING token by curve id. Use when the user wants to sell/dump. Fields: sell{curveId, tokenAmount}. tokenAmount can be the string "ALL" to sell the whole balance.
 - "claim": claim creator fees on an existing curve. Fields: claim{curveId}.
 - "alerts": monitor existing curves for graduation/price. Fields: alerts{curveIds:[...]}.
+- "autopilot": run an autonomous trading mandate that scans trending curves and enters the best ones on its own, within a spend cap, arming a TP/SL exit on each entry. Use when the user wants the agent to trade/ape/farm trending tokens automatically without naming a specific curve. Fields: autopilot{spendCapSui, perEntrySui, maxOpenPositions, minMomentum, maxConcentrationPct, cooldownMs, then{tpsl{takeProfit:[{multiple,sellPct}], stopLoss{multiple}}}}.
 
 The user's goal: "${goal}"
 ${pastedCurveId ? `Detected curve id in goal: ${pastedCurveId} (use it as curveId).` : ''}
 
 Return ONLY a JSON object, no prose, no markdown fences:
 {
-  "workflow": "launch_and_buy" | "buy" | "sell" | "claim" | "alerts",
+  "workflow": "launch_and_buy" | "buy" | "sell" | "claim" | "alerts" | "autopilot",
   "launch": { "name": string, "symbol": string (<=6 upper), "description": string, "graduationTarget": 0|1|2, "devBuySui": number, "antiBotDelay": 0 },
   "buy":    { "curveId": string|null, "amountSui": number },
   "sell":   { "curveId": string|null, "tokenAmount": number|"ALL" },
   "claim":  { "curveId": string|null },
   "alerts": { "curveIds": string[] },
+  "autopilot": { "spendCapSui": number, "perEntrySui": number, "maxOpenPositions": number, "minMomentum": number, "maxConcentrationPct": number, "cooldownMs": number, "then": { "tpsl": { "takeProfit": [{ "multiple": number, "sellPct": number }], "stopLoss": { "multiple": number } } } },
   "summary": string (one sentence)
 }
 
@@ -241,6 +243,7 @@ Rules:
 - graduationTarget: 0=Cetus, 1=DeepBook, 2=Turbos. Use what the user asks; default 2 only if launching and unspecified.
 - For sell, if the user says "all"/"everything", set tokenAmount to "ALL".
 - Never put launch fields (devBuySui, graduationTarget) on a sell/buy/claim/alerts plan.
+- For "autopilot": the user does NOT name a curve — the agent discovers curves itself. Map the goal's numbers: "0.5 sui per entry/trade/position" -> perEntrySui; "3 sui total/cap/budget" -> spendCapSui; "max N positions/at once" -> maxOpenPositions. If the goal adds "sell at 1.5x / take profit 50%" or "stop loss 0.7x / -30%", put them in then.tpsl exactly like a TP/SL exit (multiple is a price multiple: 1.5x->1.5, +50%->1.5, -30%->0.7). Defaults when unspecified: perEntrySui=0.5, spendCapSui=3, maxOpenPositions=6, minMomentum=0, maxConcentrationPct=90, cooldownMs=60000. Only emit then.tpsl if the user asked for an exit; otherwise omit it.
 - Output strictly valid JSON. No trailing commas. No commentary.`;
 
   try {
@@ -264,7 +267,7 @@ Rules:
     catch { return res.status(502).json({ error: 'Model returned unparseable plan', raw }); }
 
     // ---- Normalize per workflow (only keep what the chosen workflow needs) ----
-    const valid = ['launch_and_buy', 'buy', 'sell', 'claim', 'alerts'];
+    const valid = ['launch_and_buy', 'buy', 'sell', 'claim', 'alerts', 'autopilot'];
     let wf = valid.includes(plan.workflow) ? plan.workflow : null;
 
     // Safety: if a curve id was pasted and the model still picked launch, it's
@@ -319,6 +322,38 @@ Rules:
       const ids = Array.isArray(A.curveIds) ? A.curveIds.filter(Boolean) : [];
       if (pastedCurveId && !ids.includes(pastedCurveId)) ids.push(pastedCurveId);
       out.alerts = { curveIds: ids };
+    } else if (wf === 'autopilot') {
+      // autopilot is curve-less: the agent discovers curves at runtime. Clamp the
+      // mandate params to safe bounds and only attach a TP/SL exit if the goal
+      // actually asked for one. Mirrors the indexer sanitizeParams autopilot branch.
+      const A = plan.autopilot ?? {};
+      const num = (v, d) => { const n = Number(v); return Number.isFinite(n) && n >= 0 ? n : d; };
+      const perEntry = num(A.perEntrySui, 0.5) || 0.5;
+      let cap = num(A.spendCapSui, 3) || 3;
+      if (cap < perEntry) cap = perEntry; // cap must cover at least one entry
+      const ap = {
+        spendCapSui:        cap,
+        perEntrySui:        perEntry,
+        maxOpenPositions:   Math.max(1, Math.floor(num(A.maxOpenPositions, 6) || 6)),
+        minMomentum:        num(A.minMomentum, 0),
+        maxConcentrationPct: Math.min(100, num(A.maxConcentrationPct, 90) || 90),
+        cooldownMs:         Math.max(0, Math.floor(num(A.cooldownMs, 60000))),
+      };
+      // Optional exit: only keep a well-formed then.tpsl.
+      const t = A.then?.tpsl;
+      if (t && (Array.isArray(t.takeProfit) || t.stopLoss)) {
+        const tp = Array.isArray(t.takeProfit)
+          ? t.takeProfit
+              .map((r) => ({ multiple: Number(r?.multiple), sellPct: Number(r?.sellPct) }))
+              .filter((r) => Number.isFinite(r.multiple) && r.multiple > 0 && Number.isFinite(r.sellPct) && r.sellPct > 0)
+          : [];
+        const slMult = Number(t.stopLoss?.multiple);
+        const tpsl = {};
+        if (tp.length) tpsl.takeProfit = tp;
+        if (Number.isFinite(slMult) && slMult > 0) tpsl.stopLoss = { multiple: slMult };
+        if (tpsl.takeProfit || tpsl.stopLoss) ap.then = { tpsl };
+      }
+      out.autopilot = ap;
     }
 
     out.summary = String(plan.summary ?? 'Execute the requested workflow.').slice(0, 200);
