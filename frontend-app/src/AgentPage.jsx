@@ -1263,6 +1263,16 @@ export default function AgentPage({ onBack }) {
         // No curve to resolve — the target's curves are discovered at runtime.
         return { workflow: 'copytrade', copytrade: c };
       }
+      case 'autopilot': {
+        // Curve-less autonomous mandate: the brain discovers curves at runtime.
+        // Validate the spend amounts and pass the params straight to the store
+        // (same shape parseAutopilotGoal / the LLM planner produce).
+        const a = p.autopilot ?? {};
+        if (!(Number(a.perEntrySui) > 0)) throw new Error('Autopilot needs a per-entry SUI amount (e.g. "0.5 sui per entry")');
+        if (!(Number(a.spendCapSui) > 0)) throw new Error('Autopilot needs a total spend cap (e.g. "3 sui total")');
+        if (Number(a.spendCapSui) < Number(a.perEntrySui)) throw new Error('Autopilot spend cap must be at least one entry');
+        return { workflow: 'autopilot', autopilot: a };
+      }
       default:
         throw new Error(`Unknown workflow: ${p.workflow}`);
     }
