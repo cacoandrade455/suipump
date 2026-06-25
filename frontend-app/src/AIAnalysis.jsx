@@ -117,12 +117,55 @@ function computeTradeSignals({ buyRows, sellRows, creator }) {
     minsSinceLast = (Date.now() - tLast) / 60000;
   }
 
+  // ── NEW: buy-size distribution (organic crowd vs whale-driven) ────────────
+  // Average buy size and the share of buy volume from the single largest buy.
+  // Many small buys = organic; a few large buys = whale-driven (different token).
+  const buySizes = buyRows.map(r => num(r.data?.sui_in) / MIST).filter(v => v > 0).sort((a, b) => b - a);
+  const avgBuySui = buySizes.length ? buyVol / buySizes.length : 0;
+  const largestBuySui = buySizes[0] ?? 0;
+  const largestBuyShare = buyVol > 0 ? largestBuySui / buyVol : 0;       // 0..1
+  // Top-3 buys' share of all buy volume — a concentration-of-demand read.
+  const top3BuyShare = buyVol > 0 ? (buySizes.slice(0, 3).reduce((a, b) => a + b, 0) / buyVol) : 0;
+
+  // ── NEW: wash / same-wallet churn ─────────────────────────────────────────
+  // Distinct buyers vs total buys. A low ratio (many buys, few wallets) suggests
+  // wash trading or a small group cycling — inflates apparent activity.
+  const distinctBuyersN = new Set(buyRows.map(r => r.data?.buyer).filter(Boolean)).size;
+  const buyerChurnRatio = buyRows.length > 0 ? distinctBuyersN / buyRows.length : null; // ~1 organic, low = churn
+  // Wallets that BOTH bought and sold (round-trippers) — flips, not holders.
+  const buyerSet = new Set(buyRows.map(r => r.data?.buyer).filter(Boolean));
+  const sellerSet = new Set(sellRows.map(r => r.data?.seller).filter(Boolean));
+  let roundTrippers = 0;
+  for (const w of sellerSet) if (buyerSet.has(w)) roundTrippers++;
+
+  // ── NEW: holder/trade acceleration (last 15 min vs prior hour) ────────────
+  // Momentum read from timestamps already on the rows. Compares recent trade
+  // count to the preceding window to detect acceleration vs stall.
+  let recent15 = 0, prior45 = 0, accel = null;
+  {
+    const now = Date.now();
+    for (const r of [...buyRows, ...sellRows]) {
+      const age = now - num(r.timestamp_ms);
+      if (age <= 15 * 60000) recent15++;
+      else if (age <= 60 * 60000) prior45++;
+    }
+    // Normalize to per-minute rates (15m vs 45m windows) for a fair ratio.
+    const recentRate = recent15 / 15;
+    const priorRate = prior45 / 45;
+    if (priorRate > 0) accel = recentRate / priorRate;       // >1 accelerating, <1 cooling
+    else if (recent15 > 0) accel = Infinity;                  // fresh activity, no prior baseline
+  }
+
   return {
     buyVol, sellVol, netFlowSui, sellShare,
     creatorSoldSui, creatorSoldFrac, creatorSold: creatorSoldTokens > 0,
     earlyBuyerPct, enoughForSniper,
     earlyVolShare, minsSinceLast,
     tradeCount: buyRows.length + sellRows.length,
+    // new:
+    avgBuySui, largestBuySui, largestBuyShare, top3BuyShare,
+    buyerChurnRatio, roundTrippers, distinctBuyersN,
+    recent15, prior45, accel,
   };
 }
 
@@ -292,6 +335,14 @@ export default function AIAnalysis({ curveId, tokenType, name, symbol, progress,
       creatorSoldSui: signals.creatorSoldSui,
       minsSinceLast: signals.minsSinceLast,
       nearGraduation,
+      // new signals:
+      avgBuySui: signals.avgBuySui,
+      largestBuyShare: signals.largestBuyShare,
+      top3BuyShare: signals.top3BuyShare,
+      buyerChurnRatio: signals.buyerChurnRatio,
+      roundTrippers: signals.roundTrippers,
+      accel: signals.accel,
+      recent15: signals.recent15,
     };
     return { stage, flags, positives, stats };
   }
@@ -316,7 +367,7 @@ export default function AIAnalysis({ curveId, tokenType, name, symbol, progress,
 
       const prompt = `You are a DeFi token analyst on SuiPump, a bonding-curve memecoin launchpad on Sui.
 
-Detectable signals have ALREADY been computed deterministically. Do NOT invent a risk rating, do NOT contradict these, and do NOT output any "Risk:" line. Write exactly 3 short, direct sentences that explain these findings to a trader: (1) what the concentration/flags mean, (2) the trading picture, (3) one specific thing to watch next. No intro, no fluff.
+Detectable signals have ALREADY been computed deterministically. Do NOT invent a risk rating, do NOT contradict these, and do NOT output any "Risk:" line. Write 2 to 4 short, direct sentences for a trader — scale the length to how much there is to say: use 2 sentences when the token is too early to assess (little data), 3 for a normal read, and up to 4 only when there are real flags AND a clear trading picture to explain. Cover, in order: (1) what the concentration/flags mean, (2) the trading picture (flow, buy-size shape, churn, momentum), (3) one specific thing to watch next. No intro, no fluff, no restating the numbers verbatim — interpret them.
 
 Framing rules (strict):
 - This is a memecoin launchpad; ALL tokens here are speculative by default. Never imply a token is "safe" or "low risk."
@@ -327,6 +378,9 @@ Framing rules (strict):
 - Net SUI outflow and a creator selling their position are genuine sell-pressure signals — weight them. Net inflow with light selling is accumulation, describe it as such without calling the token "safe."
 - Early-buyer (sniper) concentration is a key pre-buy risk: if the first few buyers hold most of the float, say so plainly.
 - "Near graduation" is a TIMING catalyst (a liquidity-migration volatility event is coming), not a safety judgment. Mention it as something to watch, never as reassurance.
+- Buy-size shape matters: many small buys spread across wallets reads as organic demand; a few large buys (one buy = most of the volume) is whale-driven and fragile — say which it is when the data is clear.
+- Buyer churn: if there are many buys but few distinct buyers, or many wallets that both bought and sold (round-trippers), the activity is likely flips/wash, not accumulation — discount it, do not call it strong demand.
+- Momentum acceleration: trades speeding up vs the prior window is a live catalyst; cooling off after an early spike is a fade. Weight recent activity over stale totals.
 
 Token: ${name} ($${symbol})
 Stage: ${stage.label} — ${stage.note}
@@ -335,6 +389,9 @@ Holders: ${stats.holderCount}
 Trades: ${stats.totalTrades} (${stats.buys} buys / ${stats.sells} sells), ${stats.distinctBuyers ?? '?'} distinct buyers
 Volume: ${fmt(stats.volumeSui, 2)} SUI (buys ${fmt(stats.buyVol, 1)} / sells ${fmt(stats.sellVol, 1)})
 Net SUI flow: ${stats.netFlowSui >= 0 ? '+' : ''}${fmt(stats.netFlowSui, 1)} SUI (sells are ${fmt(stats.sellSharePct, 0)}% of volume)
+Buy-size shape: avg buy ${fmt(stats.avgBuySui, 2)} SUI; largest single buy is ${fmt(stats.largestBuyShare * 100, 0)}% of buy volume; top 3 buys are ${fmt(stats.top3BuyShare * 100, 0)}%
+Buyer churn: ${stats.buyerChurnRatio == null ? 'n/a' : fmt(stats.buyerChurnRatio, 2) + ' distinct-buyers-per-buy (1.0 = all unique)'}; ${stats.roundTrippers} wallet(s) both bought and sold
+Momentum: ${stats.accel == null ? 'n/a (no baseline)' : (stats.accel === Infinity ? 'fresh activity, no prior baseline' : fmt(stats.accel, 1) + 'x vs prior window')} (${stats.recent15} trades in last 15 min)
 Early-buyer concentration: ${stats.earlyBuyerPct == null ? 'n/a (too few trades)' : fmt(stats.earlyBuyerPct, 0) + '% of tokens taken by first 5 buyers'}
 Creator selling: ${stats.creatorSold ? `yes — ${fmt(stats.creatorSoldSui, 1)} SUI sold` : 'none detected'}
 Creator fees earned: ${fmt(creatorFeesSui, 3)} SUI (normal revenue, not a risk)

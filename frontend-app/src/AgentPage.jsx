@@ -11,6 +11,7 @@
 //
 // The LLM plans OFF-CHAIN; the DAG does the on-chain work. Violet identity.
 import React, { useState, useCallback, useRef, useEffect } from 'react';
+import { normalizeGoalText, extractPerEntrySui, extractSpendCapSui, isAutopilotIntent } from './agentVocab.js';
 import { ArrowLeft, Sparkles, Play, Check, X, Loader, ExternalLink, Bot, ChevronDown } from 'lucide-react';
 import { useCurrentAccount } from '@mysten/dapp-kit-react';
 import { useNavigate } from 'react-router-dom';
@@ -616,28 +617,21 @@ function parseCopytradeGoal(text) {
 // Returns an autopilot plan or null.
 function parseAutopilotGoal(text) {
   const g = String(text || '');
-  const lower = g.toLowerCase();
+  // Normalize spoken amounts (half a sui, point five, 1.5k, a couple) into digits
+  // via the SHARED vocabulary so the parser and the LLM planner read goals the
+  // same way. All matching below runs on the normalized text.
+  const lower = normalizeGoalText(g);
 
-  const isAutopilot =
-    /\bautopilot\b/.test(lower) ||
-    /\bauto[-\s]?trade\b/.test(lower) ||
-    /\btrade for me\b/.test(lower) ||
-    /\b(run|put)\b[\s\S]*\b(agent|bot)\b[\s\S]*\b(autopilot|loose|to work)\b/.test(lower) ||
-    /\b(trade|buy)\b[\s\S]*\b(trending|the market|best tokens|for me)\b/.test(lower);
-  if (!isAutopilot) return null;
+  // Autopilot is the curve-less autonomous intent. isAutopilotIntent() returns
+  // false when a 0x curve id is present (that's a targeted buy/strategy, not
+  // autopilot) — this is the fix for the autopilot<->buy ambiguity.
+  if (!isAutopilotIntent(lower)) return null;
 
   const numAfter = (re, d) => { const m = lower.match(re); return m ? Number(m[1]) : d; };
 
-  const spendCapSui =
-    numAfter(/(\d+(?:\.\d+)?)\s*sui\s*(?:budget|cap|total|max|to (?:deploy|spend|trade))/, null) ??
-    numAfter(/(?:budget|cap|total|deploy|spend)\s*(?:of\s*)?(\d+(?:\.\d+)?)\s*sui/, null) ??
-    numAfter(/\bwith\s*(\d+(?:\.\d+)?)\s*sui/, null) ??
-    numAfter(/(\d+(?:\.\d+)?)\s*sui\b/, 10);
-
-  const perEntrySui =
-    numAfter(/(\d+(?:\.\d+)?)\s*sui\s*(?:per|each|\/)\s*(?:trade|entry|buy|position)/, null) ??
-    numAfter(/(?:per|each)\s*(?:trade|entry|buy|position)?\s*(\d+(?:\.\d+)?)\s*sui/, null) ??
-    0.5;
+  // Shared extractors: same logic the LLM planner's normalizer mirrors.
+  const spendCapSui = extractSpendCapSui(lower, 10);
+  const perEntrySui = extractPerEntrySui(lower, 0.5);
 
   const maxOpenPositions =
     Math.trunc(numAfter(/max\s*(\d+)\s*(?:positions|tokens|holdings|trades|open)/, null) ??
@@ -910,6 +904,10 @@ export default function AgentPage({ onBack }) {
       // injecting the 0x id into the goal text, the deterministic buy_then_tpsl
       // path fires correctly. parseStrategyGoal stays pure (no signature change).
       let workGoal = goal.trim();
+      // Shared normalization: expand spoken amounts (half a sui, point five,
+      // 1.5k, a couple) BEFORE any parser runs, so all parsers + the LLM read
+      // the same digits. Pure text rewrite; intent is never changed.
+      workGoal = normalizeGoalText(workGoal);
       const alreadyHasCurve = /0x[0-9a-fA-F]{4,}/.test(workGoal);
       if (!alreadyHasCurve) {
         const tk = preResolveTicker(workGoal);

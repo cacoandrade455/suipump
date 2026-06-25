@@ -220,6 +220,16 @@ Workflows:
 - "alerts": monitor existing curves for graduation/price. Fields: alerts{curveIds:[...]}.
 - "autopilot": run an autonomous trading mandate that scans trending curves and enters the best ones on its own, within a spend cap, arming a TP/SL exit on each entry. Use when the user wants the agent to trade/ape/farm trending tokens automatically without naming a specific curve. Fields: autopilot{spendCapSui, perEntrySui, maxOpenPositions, minMomentum, maxConcentrationPct, cooldownMs, then{tpsl{takeProfit:[{multiple,sellPct}], stopLoss{multiple}}}}.
 
+Classification examples (match the WORKFLOW, then extract fields):
+- "ape into trending memecoins for me, half a sui each, 5 sui bankroll" -> autopilot (perEntrySui 0.5, spendCapSui 5)
+- "let the bot loose on trending coins with 10 sui, point five each" -> autopilot (perEntrySui 0.5, spendCapSui 10)
+- "trade the market automatically, 1 sui per position, max 4, sell at 2x" -> autopilot (perEntrySui 1, maxOpenPositions 4, then.tpsl.takeProfit [{multiple:2,sellPct:100}])
+- "buy 5 sui of 0xABC..." -> buy (NOT autopilot: a curve id is named)
+- "snipe 1 sui of every new launch" -> sniper
+- "copy wallet 0xWALLET at 2 sui each" -> copytrade
+- "dca 2 sui into 0xCURVE hourly" -> (handled client-side; if seen, it is a standing strategy, not buy)
+CRITICAL: "autopilot" means the agent discovers curves ITSELF — it is chosen ONLY when NO specific curve id (0x...) is named. If a 0x curve id is present, it is buy/sell/claim/alerts, never autopilot.
+
 The user's goal: "${goal}"
 ${pastedCurveId ? `Detected curve id in goal: ${pastedCurveId} (use it as curveId).` : ''}
 
