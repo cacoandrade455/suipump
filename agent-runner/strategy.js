@@ -1282,6 +1282,185 @@ const HANDLERS = {
       } catch (e) { err(`${order.id}: copytrade sell settle failed: ${e.message}`); }
     },
   },
+
+  // AUTOPILOT — the Analyzer-armed standing strategy ("a personal agent for every
+  // user"). Where sniper fires on launch events and copytrade mirrors a wallet,
+  // autopilot SCANS THE MARKET on the timer tick, scores candidates off the
+  // indexer's existing /trending momentum engine, vetoes the dangerous ones with
+  // deterministic on-chain signals (top-holder concentration + holder count +
+  // graduation), and enters the best survivor each tick — strictly inside the
+  // user's mandate (spend cap + per-entry size + max open positions). Each entry
+  // optionally arms a TP/SL exit on the real fill price via the shared armThen.
+  //
+  // This is the decision-policy node: it turns /trending signals into INTENTS,
+  // then settles them through the SAME path the proven strategies use (Nexus emit
+  // = agentic proof, bridge = the money path). Execution never routes around Nexus.
+  //
+  // wakesOn 'timer' => dcaTick already schedules it every tick; runs 24/7 with the
+  // dispatcher. The spend cap is enforced here off-chain today; the on-chain
+  // AgentAuthority box will harden it later (same control surface).
+  //
+  // params: {
+  //   spendCapSui, perEntrySui, minMomentum, maxConcentrationPct, maxOpenPositions,
+  //   minHolders, scanTopN, cooldownMs, then?,
+  //   // runtime, persisted: spentSui, entered[], fired, done, lastFireMs, _lastSettleDigest
+  // }
+  autopilot: {
+    label: 'autopilot',
+    wakesOn: 'timer',
+    normalize: scaffoldNormalize,
+    summarize: (o) => {
+      const p = o.params || {};
+      const spent = num2(p.spentSui, 0), cap = num2(p.spendCapSui, 0);
+      const open = Array.isArray(p.entered) ? p.entered.length : 0;
+      return `${o.id} autopilot ${num2(p.perEntrySui, 0.5)} SUI/entry · ${spent.toFixed(2)}/${cap} SUI deployed · ${open}/${num2(p.maxOpenPositions, 5)} open · momentum>${num2(p.minMomentum, 0)}`;
+    },
+    process: async (order) => {
+      const p = order.params || {};
+
+      // ── Mandate gate (off-chain cap; AgentAuthority hardens this later) ──────
+      const spendCapSui = num2(p.spendCapSui, 0);
+      const perEntrySui = num2(p.perEntrySui, 0.5);
+      const spentSui    = num2(p.spentSui, 0);
+      if (!(spendCapSui > 0) || !(perEntrySui > 0)) {
+        if (!order._warned) { err(`${order.id}: autopilot needs spendCapSui & perEntrySui`); order._warned = true; }
+        return;
+      }
+      if (spentSui + perEntrySui > spendCapSui + 1e-9) {
+        log(`${order.id}: autopilot spend cap reached (${spentSui.toFixed(2)}/${spendCapSui} SUI) — closing`);
+        order.done = true; await persistParams(order); return;
+      }
+
+      // Per-order spacing so we never enter in the settle-shadow of the last buy.
+      const cooldownMs = num2(p.cooldownMs, 60000);
+      const now = Date.now();
+      if (num2(p.lastFireMs, 0) > 0 && now - num2(p.lastFireMs, 0) < cooldownMs) return;
+
+      const entered = Array.isArray(p.entered) ? p.entered : [];
+      const maxOpen = Math.trunc(num2(p.maxOpenPositions, 5));
+      if (maxOpen > 0 && entered.length >= maxOpen) return; // holding max; wait for exits
+
+      // ── Scan: pull trending candidates ──────────────────────────────────────
+      const scanTopN            = Math.trunc(num2(p.scanTopN, 10));
+      const minMomentum         = num2(p.minMomentum, 0);
+      const maxConcentrationPct = num2(p.maxConcentrationPct, 35);
+      const minHolders          = Math.trunc(num2(p.minHolders, 3));
+
+      let candidates;
+      try {
+        const r = await fetch(`${INDEXER_URL}/trending?limit=${scanTopN}`, { signal: AbortSignal.timeout(8000) });
+        if (!r.ok) throw new Error(`trending ${r.status}`);
+        candidates = await r.json();
+      } catch (e) {
+        err(`${order.id}: autopilot trending read failed (${e.message}); skipping tick`);
+        return;
+      }
+      if (!Array.isArray(candidates) || !candidates.length) return;
+
+      // Concentration veto: top NON-creator holder's LIQUID share of 1B total.
+      // GET /token/:curveId/holders -> [{ address, balance, locked, liquid, isCreator }].
+      // Mirrors AIAnalysis.jsx's concentration logic (liquid, non-creator, vs 1B).
+      const TOTAL_SUPPLY_WHOLE = 1_000_000_000;
+      const concentrationOf = async (curveId) => {
+        try {
+          const r = await fetch(`${INDEXER_URL}/token/${curveId}/holders`, { signal: AbortSignal.timeout(8000) });
+          if (!r.ok) return null;
+          const holders = await r.json();
+          if (!Array.isArray(holders) || !holders.length) return null;
+          let topLiquid = 0;
+          for (const h of holders) {
+            if (h.isCreator) continue;
+            const liquid = Number(h.liquid ?? h.balance ?? 0);
+            if (liquid > topLiquid) topLiquid = liquid;
+          }
+          return { pct: (topLiquid / TOTAL_SUPPLY_WHOLE) * 100, holderCount: holders.length };
+        } catch { return null; }
+      };
+
+      // ── Decide: first survivor of the policy filter wins this tick ──────────
+      let pick = null;
+      for (const c of candidates) {
+        const curveId = c.curve_id ?? c.curveId;
+        if (!curveId) continue;
+        if (entered.includes(curveId)) continue;          // never re-enter
+        if (c.graduated) continue;                         // can't curve-trade graduated
+        const momentum = Number(c.momentum_score ?? 0);
+        if (!(momentum > minMomentum)) continue;          // below the user's floor
+
+        const conc = await concentrationOf(curveId);
+        if (conc) {
+          if (minHolders > 0 && conc.holderCount < minHolders) {
+            log(`${order.id}: autopilot skip ${curveId.slice(0, 10)}… — only ${conc.holderCount} holders (< ${minHolders})`);
+            continue;
+          }
+          if (conc.pct > maxConcentrationPct) {
+            log(`${order.id}: autopilot skip ${curveId.slice(0, 10)}… — top holder ${conc.pct.toFixed(1)}% liquid (> ${maxConcentrationPct}%)`);
+            continue;
+          }
+        }
+
+        try {
+          const st = await getCurveState(curveId);
+          if (st.graduated) continue;
+          pick = { curveId, momentum };
+          break;
+        } catch (e) {
+          err(`${order.id}: autopilot curve read failed for ${curveId.slice(0, 10)}… (${e.message}); next candidate`);
+          continue;
+        }
+      }
+
+      if (!pick) return; // nothing cleared the policy this tick
+
+      // ── Act: enter exactly like dca (Nexus proof + bridge settle) ───────────
+      if (onCooldown(order)) return;
+      const { curveId } = pick;
+
+      let taskId = null;
+      try {
+        const d = await fireScheduleTask('buy', { buy: { curveId, amountSui: perEntrySui } }, { generator: 'queue' });
+        taskId = d?.taskId ?? null;
+      } catch (e) {
+        err(`${order.id}: autopilot emit failed: ${e.message} (continuing to settle)`);
+      }
+
+      let settleDigest, buyResult;
+      try {
+        buyResult = await fireBridgeBuy(curveId, perEntrySui);
+        settleDigest = buyResult.settleDigest;
+      } catch (e) {
+        err(`${order.id}: autopilot settle failed on ${curveId.slice(0, 10)}…: ${e.message}`);
+        return; // do not count an entry that didn't settle
+      }
+
+      // DRY-BUY GUARD: a real entry must produce a NEW on-chain digest.
+      if (!settleDigest || settleDigest === p._lastSettleDigest) {
+        err(`${order.id}: autopilot dry-buy (digest=${settleDigest ?? 'null'}) — not counting, backing off`);
+        order._cooldownUntil = Date.now() + cooldownMs;
+        return;
+      }
+
+      // Settled. Advance the mandate, record, optionally arm the exit.
+      entered.push(curveId);
+      p.entered           = entered;
+      p.spentSui          = spentSui + perEntrySui;
+      p.fired             = num2(p.fired, 0) + 1;
+      p.lastFireMs        = Date.now();
+      p._lastSettleDigest = settleDigest;
+      order.params        = p;
+
+      if (p.then) await armThen(order.id, curveId, p.then);
+
+      if (p.spentSui + perEntrySui > spendCapSui + 1e-9) {
+        order.done = true;
+        log(`${order.id}: autopilot cap exhausted after entry — closing`);
+      }
+
+      await persistParams(order);
+      await recordFire(order, { kind: 'buy', curveId, nexusTask: taskId, nexusExec: buyResult.nexusExecutionId ?? null, settle: settleDigest, leaderSettled: buyResult.leaderSettled === true, leaderSender: buyResult.leaderSender ?? null });
+      log(`${order.id}: AUTOPILOT ENTRY ${curveId.slice(0, 10)}… momentum=${pick.momentum.toFixed(1)} size=${perEntrySui} SUI task=${taskId ?? 'n/a'} settle=${settleDigest} via=${buyResult.leaderSettled ? 'leader' : 'bridge'} deployed=${p.spentSui.toFixed(2)}/${spendCapSui}${order.done ? ' — cap reached, closing' : ''}`);
+    },
+  },
 };
 
 // DCA tick — wakes timer-driven orders. A3 will honor each order's interval; for

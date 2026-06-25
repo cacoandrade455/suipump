@@ -175,6 +175,7 @@ const WORKFLOW_NODES = {
   sniper: [{ id: 'arm',    tool: 'strategy.sniper@1',    label: 'Arm sniper',   desc: 'Standing buy that fires on every matching launch' }],
   dca:    [{ id: 'arm',    tool: 'strategy.dca@1',       label: 'Arm DCA',      desc: 'Standing accumulation: buys on a schedule or on each dip' }],
   copytrade: [{ id: 'arm', tool: 'strategy.copytrade@1', label: 'Arm copy-trade', desc: 'Mirror a target wallet: buy when it buys, sell when it sells' }],
+  autopilot: [{ id: 'arm', tool: 'strategy.autopilot@1', label: 'Arm autopilot', desc: 'Standing autonomous trader: scans the market and enters within your spend cap' }],
   buy_then_tpsl: [
     { id: 'buy', tool: 'xyz.suipump.buy@2', label: 'Buy',          desc: 'Buy the position now' },
     { id: 'arm', tool: 'strategy.tpsl@1',   label: 'Arm strategy', desc: 'Then watch price and auto-sell at the target' },
@@ -609,6 +610,85 @@ function parseCopytradeGoal(text) {
   return { workflow: 'copytrade', summary, copytrade };
 }
 
+// parseAutopilotGoal — the AUTOPILOT strategy: a hands-off, 24/7 autonomous trader.
+// Runs AFTER sniper/dca/copytrade in the parse chain (those need a specific curve);
+// autopilot is the "no specific token — you pick" catch-all for autonomous goals.
+// Returns an autopilot plan or null.
+function parseAutopilotGoal(text) {
+  const g = String(text || '');
+  const lower = g.toLowerCase();
+
+  const isAutopilot =
+    /\bautopilot\b/.test(lower) ||
+    /\bauto[-\s]?trade\b/.test(lower) ||
+    /\btrade for me\b/.test(lower) ||
+    /\b(run|put)\b[\s\S]*\b(agent|bot)\b[\s\S]*\b(autopilot|loose|to work)\b/.test(lower) ||
+    /\b(trade|buy)\b[\s\S]*\b(trending|the market|best tokens|for me)\b/.test(lower);
+  if (!isAutopilot) return null;
+
+  const numAfter = (re, d) => { const m = lower.match(re); return m ? Number(m[1]) : d; };
+
+  const spendCapSui =
+    numAfter(/(\d+(?:\.\d+)?)\s*sui\s*(?:budget|cap|total|max|to (?:deploy|spend|trade))/, null) ??
+    numAfter(/(?:budget|cap|total|deploy|spend)\s*(?:of\s*)?(\d+(?:\.\d+)?)\s*sui/, null) ??
+    numAfter(/\bwith\s*(\d+(?:\.\d+)?)\s*sui/, null) ??
+    numAfter(/(\d+(?:\.\d+)?)\s*sui\b/, 10);
+
+  const perEntrySui =
+    numAfter(/(\d+(?:\.\d+)?)\s*sui\s*(?:per|each|\/)\s*(?:trade|entry|buy|position)/, null) ??
+    numAfter(/(?:per|each)\s*(?:trade|entry|buy|position)?\s*(\d+(?:\.\d+)?)\s*sui/, null) ??
+    0.5;
+
+  const maxOpenPositions =
+    Math.trunc(numAfter(/max\s*(\d+)\s*(?:positions|tokens|holdings|trades|open)/, null) ??
+               numAfter(/(\d+)\s*positions?\s*max/, null) ??
+               5);
+
+  let minMomentum = numAfter(/momentum\s*(?:>|over|above)?\s*(\d+(?:\.\d+)?)/, null);
+  if (minMomentum == null) minMomentum = /high\s*momentum|strong\s*momentum|only\s*the\s*best/.test(lower) ? 50 : 0;
+
+  const maxConcentrationPct =
+    numAfter(/(?:concentration|whale|top holder)\s*(?:<|under|below|max)?\s*(\d+(?:\.\d+)?)\s*%/, null) ?? 35;
+
+  let then = null;
+  {
+    const tp = [];
+    const tpPct = lower.match(/(?:take\s*profit|tp|profit)[^+\-]*\+?\s*(\d+(?:\.\d+)?)\s*%/);
+    if (tpPct) {
+      const pct = Number(tpPct[1]);
+      let sellPct = 100;
+      const sellMatch = lower.match(/sell\s+(\d+(?:\.\d+)?)\s*%/);
+      if (sellMatch) sellPct = Number(sellMatch[1]);
+      else if (/dump\s+all|sell\s+all/.test(lower)) sellPct = 100;
+      if (pct > 0) tp.push({ multiple: 1 + pct / 100, sellPct });
+    }
+    let stopLoss = null;
+    const slPct = lower.match(/(?:stop\s*loss|sl)[^+\-]*-\s*(\d+(?:\.\d+)?)\s*%/);
+    if (slPct) {
+      const pct = Number(slPct[1]);
+      if (pct > 0 && pct < 100) stopLoss = { multiple: 1 - pct / 100 };
+    }
+    if (tp.length || stopLoss) then = { tpsl: { takeProfit: tp, stopLoss } };
+  }
+
+  const autopilot = {
+    spendCapSui, perEntrySui, minMomentum, maxConcentrationPct,
+    maxOpenPositions, minHolders: 3, scanTopN: 10, cooldownMs: 60000,
+  };
+  if (then) autopilot.then = then;
+
+  const thenDesc = then
+    ? `, then arm ${[
+        then.tpsl.takeProfit.length ? `take-profit ${then.tpsl.takeProfit.map(r => `+${Math.round((r.multiple - 1) * 100)}% (sell ${r.sellPct}%)`).join(', ')}` : '',
+        then.tpsl.stopLoss ? `stop-loss -${Math.round((1 - then.tpsl.stopLoss.multiple) * 100)}%` : '',
+      ].filter(Boolean).join(' \u00b7 ')} on each entry`
+    : '';
+
+  const summary = `Arm autopilot: deploy up to ${spendCapSui} SUI, ${perEntrySui} SUI per entry, into trending tokens with momentum over ${minMomentum} and top-holder concentration under ${maxConcentrationPct}%, max ${maxOpenPositions} open positions${thenDesc}. The agent scans the market on its own 24/7, enters the best candidate that clears the filters, and never exceeds the spend cap. Revocable anytime.`;
+
+  return { workflow: 'autopilot', summary, autopilot, then };
+}
+
 // ── Active-strategies helpers ─────────────────────────────────────────────────
 const ORDER_LABEL = { tpsl: 'TP / SL', sniper: 'Sniper', dca: 'DCA', copytrade: 'Copy-trade' };
 const shortId  = (s) => (typeof s === 'string' && s.startsWith('0x') && s.length > 14) ? `${s.slice(0, 8)}…${s.slice(-4)}` : s;
@@ -862,6 +942,9 @@ export default function AgentPage({ onBack }) {
 
       const copy = parseCopytradeGoal(workGoal);
       if (copy) { setPlan(copy); setPlanning(false); return; }
+
+      const auto = parseAutopilotGoal(workGoal);
+      if (auto) { setPlan(auto); setPlanning(false); return; }
 
       const strat = parseStrategyGoal(workGoal);
       if (strat) { setPlan(strat); setPlanning(false); return; }
@@ -1431,6 +1514,33 @@ export default function AgentPage({ onBack }) {
           clearAnim();
           setNodeState({ arm: 'error' });
           setError(`Could not arm copy-trade: ${e.message}`);
+          setPhase('failed');
+        }
+        return;
+      }
+
+      // STRATEGY (autopilot): standing autonomous trader. Creates a store order;
+      // the brain scans /trending each tick, enters the best candidate within the
+      // spend cap (Nexus emit + bridge settle), and arms a TP/SL exit per entry.
+      // Nothing settles now. Revocable by cancelling the order.
+      if (payload.workflow === 'autopilot') {
+        try {
+          const r = await fetch(`/api/create-order`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: 'autopilot', params: payload.autopilot }),
+          });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(d.error || `order create failed (${r.status})`);
+          clearAnim();
+          setNodeState({ arm: 'done' });
+          setResult({ workflow: 'autopilot', orderId: d.id ?? null, order: d });
+          loadOrders();
+          setPhase('done');
+        } catch (e) {
+          clearAnim();
+          setNodeState({ arm: 'error' });
+          setError(`Could not arm autopilot: ${e.message}`);
           setPhase('failed');
         }
         return;
