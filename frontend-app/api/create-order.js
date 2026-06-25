@@ -30,7 +30,9 @@ export default async function handler(req, res) {
   if (typeof body === 'string') { try { body = JSON.parse(body); } catch { body = {}; } }
   body = body ?? {};
 
-  if (!body.curveId && body.type !== 'sniper' && body.type !== 'copytrade') {
+  // sniper / copytrade / autopilot are curve-less — they discover their target
+  // (or, for autopilot, the trending curve) at runtime, so no curveId is required.
+  if (!body.curveId && body.type !== 'sniper' && body.type !== 'copytrade' && body.type !== 'autopilot') {
     return res.status(400).json({ error: 'Missing curveId' });
   }
 
