@@ -644,24 +644,46 @@ function parseAutopilotGoal(text) {
   const maxConcentrationPct =
     numAfter(/(?:concentration|whale|top holder)\s*(?:<|under|below|max)?\s*(\d+(?:\.\d+)?)\s*%/, null) ?? 35;
 
+  // Exit (TP/SL) on each entry. Use the SAME robust extraction the standalone
+  // TP/SL parser uses so autopilot understands every exit phrasing:
+  //   percentage-form: "take profit 50%", "+50%", "sell 50% at +30%", tiered
+  //   multiple-form:   "sell at 2x", "tp 1.5x", "2x" (1.5x -> multiple 1.5)
+  // Previously the inline block only caught "tp/profit ... N%", so "sell at 2x"
+  // silently dropped and autopilot entered positions with NO exit armed.
   let then = null;
   {
-    const tp = [];
-    const tpPct = lower.match(/(?:take\s*profit|tp|profit)[^+\-]*\+?\s*(\d+(?:\.\d+)?)\s*%/);
-    if (tpPct) {
-      const pct = Number(tpPct[1]);
-      let sellPct = 100;
-      const sellMatch = lower.match(/sell\s+(\d+(?:\.\d+)?)\s*%/);
-      if (sellMatch) sellPct = Number(sellMatch[1]);
-      else if (/dump\s+all|sell\s+all/.test(lower)) sellPct = 100;
-      if (pct > 0) tp.push({ multiple: 1 + pct / 100, sellPct });
+    // 1) Percentage-form take-profit rungs (tiered) via the shared extractor.
+    const tp = extractTakeProfitRungs(lower);
+
+    // 2) Multiple-form take-profit: "Nx" (optionally after tp/profit/sell/at).
+    //    Each distinct multiple > 1 becomes a rung; sell-size defaults to 100%
+    //    unless a "sell M%" appears in the same goal.
+    const seenMult = new Set(tp.map(r => r.multiple));
+    let defaultSell = 100;
+    const sellSize = lower.match(/sell\s+(\d+(?:\.\d+)?)\s*%/);
+    if (sellSize) defaultSell = Number(sellSize[1]);
+    const multRe = /(?:take\s*profit|tp|profit|sell|at|@)?\s*(\d+(?:\.\d+)?)\s*x\b/g;
+    let mm;
+    while ((mm = multRe.exec(lower)) !== null) {
+      const mult = Number(mm[1]);
+      if (mult > 1 && !seenMult.has(mult)) { seenMult.add(mult); tp.push({ multiple: mult, sellPct: defaultSell }); }
     }
+    // Keep rungs ordered by trigger so tiered exits read low->high.
+    tp.sort((a, b) => a.multiple - b.multiple);
+
+    // 3) Stop-loss: percentage-form ("-30%", "stop loss 30%") OR multiple-form
+    //    ("0.7x", "sl at 0.8x"). Multiple < 1 is a stop.
     let stopLoss = null;
-    const slPct = lower.match(/(?:stop\s*loss|sl)[^+\-]*-\s*(\d+(?:\.\d+)?)\s*%/);
+    const slPct = lower.match(/(?:stop\s*loss|sl|stop)[^+\-x]*-?\s*(\d+(?:\.\d+)?)\s*%/);
     if (slPct) {
       const pct = Number(slPct[1]);
       if (pct > 0 && pct < 100) stopLoss = { multiple: 1 - pct / 100 };
     }
+    if (!stopLoss) {
+      const slMult = lower.match(/(?:stop\s*loss|sl|stop)[^x]*?(\d*\.\d+)\s*x\b/);
+      if (slMult) { const m = Number(slMult[1]); if (m > 0 && m < 1) stopLoss = { multiple: m }; }
+    }
+
     if (tp.length || stopLoss) then = { tpsl: { takeProfit: tp, stopLoss } };
   }
 
@@ -773,7 +795,15 @@ export default function AgentPage({ onBack }) {
       const r = await fetch(`${INDEXER_URL}/orders?status=active`, { signal: AbortSignal.timeout(8000) });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const d = await r.json();
-      setOrders(Array.isArray(d) ? d : []);
+      const all = Array.isArray(d) ? d : [];
+      // Ids of autopilot mandates in this batch -> hide their _tp_ children.
+      const autopilotIds = new Set(all.filter(o => o.type === 'autopilot').map(o => o.id));
+      const visible = all.filter((o) => {
+        const m = typeof o.id === 'string' && o.id.match(/^(ord_\d+_[a-z0-9]+)_tp_[0-9a-f]+$/i);
+        if (m && autopilotIds.has(m[1])) return false; // autopilot child exit — folded into the autopilot row
+        return true;
+      });
+      setOrders(visible);
     } catch (e) {
       setOrdersError(e.message || 'could not load strategies');
     } finally {
@@ -786,6 +816,34 @@ export default function AgentPage({ onBack }) {
     const t = setInterval(loadOrders, 15000); // light refresh; SSE not needed here
     return () => clearInterval(t);
   }, [loadOrders]);
+
+  // Resolve tickers for autopilot ENTERED positions so the panel can show which
+  // tokens were bought (curve ids -> $SYMBOL), reusing the shared tickerByCurve
+  // cache. Best-effort: a failure leaves the short curve id as the fallback.
+  useEffect(() => {
+    const curves = [];
+    for (const o of orders) {
+      if (o.type === 'autopilot' && Array.isArray(o.params?.entered)) {
+        for (const cid of o.params.entered) {
+          if (typeof cid === 'string' && cid.startsWith('0x') && tickerByCurve[cid] === undefined) curves.push(cid);
+        }
+      }
+    }
+    if (!curves.length) return;
+    let cancelled = false;
+    (async () => {
+      for (const cid of Array.from(new Set(curves))) {
+        try {
+          const r = await fetch(`${INDEXER_URL}/token/${cid}`, { signal: AbortSignal.timeout(6000) });
+          if (!r.ok) continue;
+          const d = await r.json();
+          const sym = d?.symbol ?? d?.ticker ?? null;
+          if (!cancelled && sym) setTickerByCurve(prev => ({ ...prev, [cid]: sym }));
+        } catch {}
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [orders]);  // tickerByCurve intentionally omitted (read-time cache; same pattern as history)
 
   // ── Agent action history (persistent, survives refresh) ─────────────────────
   // Backed by the indexer's agent_actions table via the /api/agent-actions proxy.
@@ -2321,6 +2379,22 @@ export default function AgentPage({ onBack }) {
                     <div className="text-[11px] font-mono text-white/70 leading-relaxed break-words">
                       {describeOrder(o)}
                     </div>
+                    {o.type === 'autopilot' && Array.isArray(o.params?.entered) && o.params.entered.length > 0 && (
+                      <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                        <span className="text-[9px] font-mono text-white/30 tracking-wider mr-0.5">POSITIONS</span>
+                        {o.params.entered.map((cid) => (
+                          <button
+                            key={cid}
+                            type="button"
+                            onClick={() => navigate(`/token/${cid}`)}
+                            className="inline-flex items-center gap-1 text-[9px] font-mono text-emerald-300/70 hover:text-emerald-300 bg-emerald-400/5 border border-emerald-400/15 rounded px-1.5 py-0.5"
+                            title={cid}
+                          >
+                            {tickerByCurve[cid] ? `$${tickerByCurve[cid]}` : shortId(cid)} <ExternalLink size={8} />
+                          </button>
+                        ))}
+                      </div>
+                    )}
                     {o.curveId && (
                       <button
                         type="button"
