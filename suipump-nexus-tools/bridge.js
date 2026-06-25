@@ -408,13 +408,17 @@ async function executeBuy(body) {
     });
     tx.transferObjects([tokens, refund], address);
   } else {
-    // V4: buy returns a single result tuple — transfer directly
-    const results = tx.moveCall({
+    // V4: buy(curve, payment, min_out) returns (Coin<T>, Coin<SUI>) — TWO values,
+    // same as V5+/V9 (verified on-chain via sui_getNormalizedMoveFunction). The
+    // earlier code passed the whole result as a single object to transferObjects,
+    // which Sui rejects with "expected a single result but found multiple".
+    // Destructure both and transfer both, exactly like the V5+/V9 branch.
+    const [tokens, refund] = tx.moveCall({
       target: `${pkgId}::bonding_curve::buy`,
       typeArguments: [tokenType],
       arguments: buyArgs,
     });
-    tx.transferObjects([results], address);
+    tx.transferObjects([tokens, refund], address);
   }
 
   const result = await (async () => {
