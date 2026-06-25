@@ -11,7 +11,7 @@
 //
 // The LLM plans OFF-CHAIN; the DAG does the on-chain work. Violet identity.
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { normalizeGoalText, extractPerEntrySui, extractSpendCapSui, isAutopilotIntent } from './agentVocab.js';
+import { normalizeGoalText, extractPerEntrySui, extractSpendCapSui, isAutopilotIntent, isTrendingDiscovery } from './agentVocab.js';
 import { ArrowLeft, Sparkles, Play, Check, X, Loader, ExternalLink, Bot, ChevronDown } from 'lucide-react';
 import { useCurrentAccount } from '@mysten/dapp-kit-react';
 import { useNavigate } from 'react-router-dom';
@@ -354,6 +354,16 @@ function parseSniperGoal(text) {
     /\b(?:buy|ape|grab|get)\b[\s\S]*\b(?:every|all)\b[\s\S]*\b(?:token|launch|coin)/.test(lower) ||
     /\b(?:every|all)\b[\s\S]*\b(?:token|launch|coin)s?\b[\s\S]*\b(?:launched\s+)?by\b/.test(lower);
   if (!isSnipe) return null;
+
+  // Yield to AUTOPILOT when the goal is trending-DISCOVERY rather than launch-
+  // sniping. "ape into every token that's trending" matches sniper's
+  // "every ... token" net, but the word "trending" (with no launch word) means
+  // the user wants the agent to discover already-trending tokens — that is
+  // autopilot, which runs next in the chain. An EXPLICIT "snipe/sniper" keyword
+  // overrides (the user literally asked to snipe), so this only yields for the
+  // generic "ape/buy every token" phrasings.
+  const explicitSnipe = /\bsnipe\b|\bsniper\b/.test(lower);
+  if (!explicitSnipe && isTrendingDiscovery(lower)) return null;
 
   // All 64-hex ids -> creator filters (a creator is a wallet; same shape as a CA).
   const hexes = g.match(/0x[a-fA-F0-9]{60,66}/g);

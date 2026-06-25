@@ -37,6 +37,8 @@ const FRACTION_PHRASES = [
 // mutates intent, only rewrites quantities into digits the regexes already expect.
 export function normalizeGoalText(raw) {
   let s = String(raw || '').toLowerCase();
+  // Leading-dot decimals: ".5 sui" -> "0.5 sui" so the numeric regexes match.
+  s = s.replace(/(^|[^\d.])\.(\d)/g, '$10.$2');
 
   // "1.5k sui" -> "1500 sui"; "2m" -> "2000000". Only when followed by a
   // space/sui/token so we don't mangle hex or addresses.
@@ -79,8 +81,8 @@ export function extractPerEntrySui(lower, fallback = 0.5) {
 // Total spend cap / budget / bankroll: the ceiling across all actions.
 export function extractSpendCapSui(lower, fallback = null) {
   const pats = [
+    new RegExp(`(?:max|budget|cap|total|bankroll|up\\s*to|deploy|spend|risk)\\s*(?:of\\s*)?${SUI_NUM}\\s*sui`),
     new RegExp(`${SUI_NUM}\\s*sui\\s*(?:budget|cap|total|max|bankroll|to\\s*(?:deploy|spend|trade|play\\s*with|risk))`),
-    new RegExp(`(?:budget|cap|total|deploy|spend|bankroll|risk)\\s*(?:of\\s*|up\\s*to\\s*)?${SUI_NUM}\\s*sui`),
     new RegExp(`(?:with|up\\s*to)\\s*(?:a\\s*)?${SUI_NUM}\\s*sui`),
     new RegExp(`${SUI_NUM}\\s*sui\\b`), // last-resort: any bare "N sui"
   ];
@@ -164,6 +166,22 @@ export function isAutopilotIntent(lower) {
   const hasCurve = /0x[0-9a-fA-F]{60,66}/.test(lower);
   if (hasCurve) return false;
   return INTENT.autopilot.triggers.some((re) => re.test(lower));
+}
+
+// isTrendingDiscovery — true when the goal is about discovering tokens that are
+// ALREADY trending/pumping/hot (autopilot's domain), as opposed to sniping NEW
+// launches (sniper's domain). The disambiguator between "ape into every token
+// that's trending" (autopilot) and "snipe every new launch" (sniper): a
+// discovery word is present AND there is NO launch-time word. Sniper uses this
+// to YIELD so a trending goal routes to autopilot even though both match
+// "every ... token".
+export function isTrendingDiscovery(lower) {
+  const discovery = /\b(trending|pumping|hot\b|the\s+market|best\s+(?:tokens?|coins?)|memecoins?|whatever(?:'?s)?\s+(?:pumping|hot|trending))\b/.test(lower);
+  if (!discovery) return false;
+  // A launch-time goal is sniper territory even if it says "hot" — require the
+  // ABSENCE of launch words for this to count as trending-discovery.
+  const launchWord = /\b(launch(?:ed|es|ing)?|new\s+(?:token|coin|launch)|on\s+launch|at\s+launch|the\s+(?:second|moment|instant)\s+(?:it|a)\s+launch)/.test(lower);
+  return !launchWord;
 }
 
 // Build the vocabulary block the LLM planner embeds in its prompt, so the model
