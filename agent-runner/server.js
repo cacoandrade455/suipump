@@ -363,6 +363,45 @@ async function txSender(digest) {
   return data?.transaction?.sender?.address ?? null;
 }
 
+// Read the END-STATE VARIANT of a settlement tx's walk. Per Nexus Core docs, the
+// only place the end-state variant lives is EndStateReachedEvent.variant — the
+// DAGExecution object does NOT store it. ExecutionFinishedEvent.has_any_walk_
+// succeeded is TRUE whenever a walk halts at ANY end state (including the error
+// end state), so it MUST NOT be used to decide success. We must read the variant
+// itself: 'Ok'/'Empty' = the buy/sell tool reached its OK end state (tokens
+// moved); 'Err' = the tool reached its ERROR end state (NO state change — only a
+// gas refund). Returns the lowercased variant name, or null if not found.
+//
+// EventType matched: ...::dag::EndStateReachedEvent (wrapped in EventWrapper<>).
+// The parsed JSON exposes variant.name (e.g. "Ok" | "Err" | "Empty") and the
+// end-state vertex name (e.g. "buy"). We return { variant, vertex }.
+async function txEndStateVariant(digest) {
+  const data = await gqlQuery(
+    `query($d: String!) {
+       transactionBlock(digest: $d) {
+         events { nodes { type { repr } contents { json } } }
+       }
+     }`,
+    { d: digest },
+  );
+  const nodes = data?.transactionBlock?.events?.nodes;
+  if (!Array.isArray(nodes)) return { variant: null, vertex: null };
+  for (const ev of nodes) {
+    const repr = ev?.type?.repr ?? '';
+    if (!/EndStateReachedEvent/.test(repr)) continue;
+    const j = ev?.contents?.json ?? {};
+    // variant is an enum: { name: 'Ok'|'Err'|'Empty', ... }
+    const variant = (j?.variant?.name ?? j?.variant ?? null);
+    // vertex is { @variant:'Plain', vertex:{ name:'buy' } } or similar
+    const vertex  = (j?.vertex?.vertex?.name ?? j?.vertex?.name ?? null);
+    return {
+      variant: typeof variant === 'string' ? variant.toLowerCase() : null,
+      vertex:  typeof vertex  === 'string' ? vertex  : null,
+    };
+  }
+  return { variant: null, vertex: null };
+}
+
 // Confirm the walk was settled by a Talus leader. The DAGExecution object's
 // previousTransaction starts as our invoker's request tx, then advances to the
 // LEADER settlement once the walk settles. We detect leader settlement by the
@@ -386,12 +425,33 @@ async function confirmLeaderSettlement(executionId) {
         out.settlementDigest = digest;
         out.leaderSender = sender;
         if (isLeader) {
-          // Settled by a leader — the walk completed on-chain via Talus.
-          out.endState = 'Ok';
-          return out;
+          // A leader advanced the execution. But "settled by a leader" is NOT the
+          // same as "the tool succeeded": a walk that halts on the ERROR end state
+          // is still settled by a leader. We MUST read the end-state variant to
+          // know whether the buy/sell actually executed. (Per Nexus docs, this is
+          // the ONLY source of the variant.)
+          const { variant, vertex } = await txEndStateVariant(digest);
+          if (variant === 'err' || variant === 'failed') {
+            // The tool reached its ERROR end state — NO state change on-chain
+            // (only a gas refund). Report the failure so callers fall back to the
+            // bridge (or fail loudly) instead of recording a phantom settle.
+            out.endState = '_err_eval';
+            out.endStateVertex = vertex ?? null;
+            return out;
+          }
+          if (variant === 'ok' || variant === 'empty') {
+            out.endState = 'Ok';
+            return out;
+          }
+          // Variant unreadable (event not yet indexed / schema miss). Do NOT
+          // assume success — keep polling within the window; if it never resolves
+          // we return 'pending' and the caller falls back to the bridge.
+          out.endState = 'pending';
+          out.endStateVertex = vertex ?? null;
+        } else {
+          // Still our own request tx; keep polling until a leader advances it.
+          out.endState = 'self';
         }
-        // Still our own request tx; keep polling until a leader advances it.
-        out.endState = 'self';
       }
     }
     await new Promise((r) => setTimeout(r, CONFIRM_POLL_MS));
