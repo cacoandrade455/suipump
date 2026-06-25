@@ -684,7 +684,7 @@ function parseAutopilotGoal(text) {
 }
 
 // ── Active-strategies helpers ─────────────────────────────────────────────────
-const ORDER_LABEL = { tpsl: 'TP / SL', sniper: 'Sniper', dca: 'DCA', copytrade: 'Copy-trade' };
+const ORDER_LABEL = { tpsl: 'TP / SL', sniper: 'Sniper', dca: 'DCA', copytrade: 'Copy-trade', autopilot: 'Autopilot' };
 const shortId  = (s) => (typeof s === 'string' && s.startsWith('0x') && s.length > 14) ? `${s.slice(0, 8)}…${s.slice(-4)}` : s;
 const shortType = (t) => {
   if (typeof t !== 'string') return '';
@@ -715,6 +715,17 @@ function describeOrder(o) {
     const then = p.then?.tpsl ? ' → then TP/SL' : '';
     return `Mirror ${shortId(p.targetWallet)} at ${size}${then}`;
   }
+  if (o.type === 'autopilot') {
+    const p = o.params || {};
+    const deployed = Number(p.spentSui ?? 0);
+    const cap = Number(p.spendCapSui ?? 0);
+    const open = Array.isArray(p.entered) ? p.entered.length : (Number(p.openCount ?? 0) || 0);
+    const per = Number(p.perEntrySui ?? 0);
+    const maxOpen = Number(p.maxOpenPositions ?? 0);
+    const then = p.then?.tpsl ? ' → TP/SL per entry' : '';
+    return `Autopilot · ${per} SUI/entry · ${deployed.toFixed(2)}/${cap} SUI deployed · ${open}${maxOpen ? `/${maxOpen}` : ''} open${then}`;
+  }
+
   // tpsl
   const tp = Array.isArray(o.takeProfit) ? o.takeProfit : [];
   const tpStr = tp.length
