@@ -363,45 +363,6 @@ async function txSender(digest) {
   return data?.transaction?.sender?.address ?? null;
 }
 
-// Read the END-STATE VARIANT of a settlement tx's walk. Per Nexus Core docs, the
-// only place the end-state variant lives is EndStateReachedEvent.variant — the
-// DAGExecution object does NOT store it. ExecutionFinishedEvent.has_any_walk_
-// succeeded is TRUE whenever a walk halts at ANY end state (including the error
-// end state), so it MUST NOT be used to decide success. We must read the variant
-// itself: 'Ok'/'Empty' = the buy/sell tool reached its OK end state (tokens
-// moved); 'Err' = the tool reached its ERROR end state (NO state change — only a
-// gas refund). Returns the lowercased variant name, or null if not found.
-//
-// EventType matched: ...::dag::EndStateReachedEvent (wrapped in EventWrapper<>).
-// The parsed JSON exposes variant.name (e.g. "Ok" | "Err" | "Empty") and the
-// end-state vertex name (e.g. "buy"). We return { variant, vertex }.
-async function txEndStateVariant(digest) {
-  const data = await gqlQuery(
-    `query($d: String!) {
-       transactionBlock(digest: $d) {
-         events { nodes { type { repr } contents { json } } }
-       }
-     }`,
-    { d: digest },
-  );
-  const nodes = data?.transactionBlock?.events?.nodes;
-  if (!Array.isArray(nodes)) return { variant: null, vertex: null };
-  for (const ev of nodes) {
-    const repr = ev?.type?.repr ?? '';
-    if (!/EndStateReachedEvent/.test(repr)) continue;
-    const j = ev?.contents?.json ?? {};
-    // variant is an enum: { name: 'Ok'|'Err'|'Empty', ... }
-    const variant = (j?.variant?.name ?? j?.variant ?? null);
-    // vertex is { @variant:'Plain', vertex:{ name:'buy' } } or similar
-    const vertex  = (j?.vertex?.vertex?.name ?? j?.vertex?.name ?? null);
-    return {
-      variant: typeof variant === 'string' ? variant.toLowerCase() : null,
-      vertex:  typeof vertex  === 'string' ? vertex  : null,
-    };
-  }
-  return { variant: null, vertex: null };
-}
-
 // Confirm the walk was settled by a Talus leader. The DAGExecution object's
 // previousTransaction starts as our invoker's request tx, then advances to the
 // LEADER settlement once the walk settles. We detect leader settlement by the
@@ -409,54 +370,77 @@ async function txEndStateVariant(digest) {
 // unforgeable proof the Talus network (not us) executed the action. Best-effort;
 // never throws. endState reports 'leader' (settled by a leader), 'self' (only
 // our request tx so far), or 'pending' (could not read in the window).
-async function confirmLeaderSettlement(executionId) {
+// Read the AUTHORITATIVE end-state variant of a DAG execution via
+// `nexus dag inspect-execution`. This is the same call that returns
+//   [{ "end_state": true, "variant": "Ok", "vertex": { "Plain": { "vertex": { "name": "buy" } } } }]
+// i.e. the leader's final evaluation of the terminal vertex. Unlike the old
+// prevTx-sender heuristic, this reads the walk's actual settled variant, so a
+// leader settlement is detected directly and reliably (no GraphQL indexer lag,
+// no sender inference). Returns one of 'Ok' | 'Empty' | 'Err' | null (not yet
+// settled / unreadable). Best-effort: never throws.
+function inspectExecutionEndState(executionId, checkpoint) {
+  return new Promise((resolve) => {
+    if (!executionId || checkpoint == null) return resolve(null);
+    const args = [
+      'dag', 'inspect-execution',
+      '--dag-execution-id', String(executionId),
+      '--execution-checkpoint', String(checkpoint),
+      '--json',
+    ];
+    execFile('nexus', args, { timeout: RUN_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
+      if (err) return resolve(null);
+      const text = (stdout ?? '').trim();
+      let parsed = null;
+      try { parsed = JSON.parse(text); }
+      catch { const m = text.match(/\[[\s\S]*\]\s*$/); if (m) { try { parsed = JSON.parse(m[0]); } catch {} } }
+      if (!Array.isArray(parsed)) return resolve(null);
+      // Find the terminal (end_state) vertex evaluation and read its variant.
+      const end = parsed.find((e) => e && e.end_state === true) ?? parsed[parsed.length - 1];
+      const variant = end?.variant ?? null;
+      resolve(variant);  // 'Ok' | 'Empty' | 'Err' | null
+    });
+  });
+}
+
+async function confirmLeaderSettlement(executionId, checkpoint) {
+  // Returns { endState, settlementDigest, leaderSender }.
+  //   endState: 'Ok'    -> leader settled the walk to an Ok end state (Talus executed)
+  //             'Empty' -> leader settled to an Empty terminal variant (also success)
+  //             '_err_eval' -> leader settled to an Err end state (tool/eval failed)
+  //             'pending'   -> not settled within the window (caller falls back)
+  //
+  // The leader settles the walk on a SEPARATE tx a few seconds after dispatch, so
+  // we POLL. But we read the AUTHORITATIVE end-state variant directly via
+  // inspect-execution (proven to return variant:"Ok"), not the old prevTx-sender
+  // heuristic — that heuristic missed real leader settlements because the
+  // DAGExecution prevTx / GraphQL indexer lagged the poll window, causing a
+  // false 'pending' and an unnecessary bridge fallback even though the walk
+  // settled Ok on-chain.
   const out = { endState: 'pending', settlementDigest: null, leaderSender: null };
   if (!executionId) return out;
-  const inv = (INVOKER_ADDRESS || '').toLowerCase();
+  // We need a checkpoint for inspect-execution. The execute receipt carries it;
+  // if it's missing, surface pending (caller falls back) rather than guess.
+  if (checkpoint == null) {
+    console.warn('[runner] confirm: no checkpoint on receipt — cannot inspect-execution, reporting pending');
+    return out;
+  }
   const deadline = Date.now() + CONFIRM_TIMEOUT_MS;
-  let lastDigest = null;
   while (Date.now() < deadline) {
-    const digest = await execLatestTxDigest(executionId);
-    if (digest && digest !== lastDigest) {
-      lastDigest = digest;
-      const sender = await txSender(digest);
-      if (sender) {
-        const isLeader = inv ? sender.toLowerCase() !== inv : false;  // no known invoker -> never falsely claim leader-settled
-        out.settlementDigest = digest;
-        out.leaderSender = sender;
-        if (isLeader) {
-          // A leader advanced the execution. But "settled by a leader" is NOT the
-          // same as "the tool succeeded": a walk that halts on the ERROR end state
-          // is still settled by a leader. We MUST read the end-state variant to
-          // know whether the buy/sell actually executed. (Per Nexus docs, this is
-          // the ONLY source of the variant.)
-          const { variant, vertex } = await txEndStateVariant(digest);
-          if (variant === 'err' || variant === 'failed') {
-            // The tool reached its ERROR end state — NO state change on-chain
-            // (only a gas refund). Report the failure so callers fall back to the
-            // bridge (or fail loudly) instead of recording a phantom settle.
-            out.endState = '_err_eval';
-            out.endStateVertex = vertex ?? null;
-            return out;
-          }
-          if (variant === 'ok' || variant === 'empty') {
-            out.endState = 'Ok';
-            return out;
-          }
-          // Variant unreadable (event not yet indexed / schema miss). Do NOT
-          // assume success — keep polling within the window; if it never resolves
-          // we return 'pending' and the caller falls back to the bridge.
-          out.endState = 'pending';
-          out.endStateVertex = vertex ?? null;
-        } else {
-          // Still our own request tx; keep polling until a leader advances it.
-          out.endState = 'self';
-        }
-      }
+    const variant = await inspectExecutionEndState(executionId, checkpoint);
+    if (variant === 'Ok' || variant === 'Empty') {
+      out.endState = variant;            // leader settled successfully via Talus
+      out.settlementDigest = String(executionId);
+      return out;
     }
+    if (variant === 'Err') {
+      out.endState = '_err_eval';        // leader settled, but the walk errored
+      out.settlementDigest = String(executionId);
+      return out;
+    }
+    // variant === null -> not settled yet; keep polling.
     await new Promise((r) => setTimeout(r, CONFIRM_POLL_MS));
   }
-  return out;
+  return out;  // pending
 }
 
 // ── Scheduler path (additive; sits beside runDag) ────────────────────────────
@@ -638,7 +622,7 @@ const server = http.createServer(async (req, res) => {
       // surface it. This makes the leader path the sole, provable executor for
       // demo'd actions. Best-effort: a confirm timeout still returns the emit.
       if (body?.confirm === true) {
-        const c = await confirmLeaderSettlement(executionId);
+        const c = await confirmLeaderSettlement(executionId, resp.checkpoint);
         resp.endState         = c.endState;
         resp.settlementDigest = c.settlementDigest;
         resp.leaderSender     = c.leaderSender;
