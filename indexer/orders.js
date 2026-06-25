@@ -88,7 +88,7 @@ function sanitizeStop(sl) {
   return o;
 }
 
-const ORDER_TYPES = ['tpsl', 'sniper', 'dca', 'copytrade'];
+const ORDER_TYPES = ['tpsl', 'sniper', 'dca', 'copytrade', 'autopilot'];
 
 // sanitizeThen — validate an optional `then` chaining block. After a buy-strategy
 // (sniper/dca/copytrade) settles a buy, the brain arms whatever `then` specifies
@@ -231,6 +231,52 @@ function sanitizeParams(type, raw) {
     // Optional `then` chaining: arm a child (e.g. TP/SL) on each mirrored buy.
     const then = sanitizeThen(p.then);
     if (then) out.then = then;
+    if (slippage != null) out.slippageBps = slippage;
+    return out;
+  }
+
+  if (type === 'autopilot') {
+    // Standing autonomous trader. No curveId — the strategy brain DISCOVERS the
+    // curve at runtime by scanning /trending each tick (like sniper/copytrade
+    // discover their target), then enters the best candidate that clears the
+    // policy filters, strictly inside the user's mandate. The brain owns the loop
+    // (Nexus emit + bridge settle per entry) and PATCHes runtime tracking back so
+    // a restart resumes within the cap.
+    //   Mandate (required): spendCapSui > 0, perEntrySui > 0.
+    //   Policy (optional, defaulted in the handler): minMomentum, maxConcentrationPct,
+    //     maxOpenPositions, minHolders, scanTopN, cooldownMs.
+    //   Tracking (preserved across PATCH): spentSui, entered[], fired, lastFireMs,
+    //     _lastSettleDigest.
+    const spendCapSui = num(p.spendCapSui);
+    const perEntrySui = num(p.perEntrySui);
+    if (!(spendCapSui > 0)) return null;
+    if (!(perEntrySui > 0)) return null;
+    if (perEntrySui > spendCapSui) return null; // a single entry can't exceed the whole cap
+
+    const out = { spendCapSui, perEntrySui };
+
+    // Policy knobs — only carry through ones that were provided & valid; the
+    // brain defaults the rest.
+    const minMomentum = num(p.minMomentum);          if (minMomentum != null && minMomentum >= 0) out.minMomentum = minMomentum;
+    const maxConc     = num(p.maxConcentrationPct);  if (maxConc > 0)        out.maxConcentrationPct = maxConc;
+    const maxOpen     = num(p.maxOpenPositions);     if (maxOpen > 0)        out.maxOpenPositions = Math.trunc(maxOpen);
+    const minHolders  = num(p.minHolders);           if (minHolders >= 0)    out.minHolders = Math.trunc(minHolders);
+    const scanTopN    = num(p.scanTopN);             if (scanTopN > 0)       out.scanTopN = Math.trunc(scanTopN);
+    const cooldownMs  = num(p.cooldownMs);           if (cooldownMs >= 0)    out.cooldownMs = Math.trunc(cooldownMs);
+
+    // Preserve runtime tracking across re-create / PATCH (so a restart never
+    // re-buys an entered curve or blows past the cap).
+    const spent = num(p.spentSui);   if (spent > 0)            out.spentSui = spent;
+    if (Array.isArray(p.entered))                              out.entered = p.entered.filter(isHex);
+    const fired = num(p.fired);      out.fired = (fired != null && fired >= 0) ? Math.trunc(fired) : 0;
+    const last  = num(p.lastFireMs); if (last > 0)             out.lastFireMs = Math.trunc(last);
+    if (typeof p._lastSettleDigest === 'string')              out._lastSettleDigest = p._lastSettleDigest;
+
+    // Optional `then` chaining: arm a child (e.g. TP/SL) on each entry, seeded
+    // at the real post-buy fill price.
+    const then = sanitizeThen(p.then);
+    if (then) out.then = then;
+
     if (slippage != null) out.slippageBps = slippage;
     return out;
   }
