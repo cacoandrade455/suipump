@@ -1,0 +1,395 @@
+[
+  {
+    "category": "Background",
+    "name": "Lime void",
+    "weight": 18,
+    "file": "traits/01_background/lime-void.png"
+  },
+  {
+    "category": "Background",
+    "name": "Landscape",
+    "weight": 14,
+    "file": "traits/01_background/landscape.png"
+  },
+  {
+    "category": "Background",
+    "name": "Beach",
+    "weight": 14,
+    "file": "traits/01_background/beach.png"
+  },
+  {
+    "category": "Background",
+    "name": "City skyline",
+    "weight": 13,
+    "file": "traits/01_background/city_skyline.png"
+  },
+  {
+    "category": "Background",
+    "name": "Deep space",
+    "weight": 13,
+    "file": "traits/01_background/deep_space.png"
+  },
+  {
+    "category": "Background",
+    "name": "Office",
+    "weight": 12,
+    "file": "traits/01_background/office.png"
+  },
+  {
+    "category": "Background",
+    "name": "Castle",
+    "weight": 8,
+    "file": "traits/01_background/castle.png"
+  },
+  {
+    "category": "Background",
+    "name": "Moon",
+    "weight": 8,
+    "file": "traits/01_background/moon.png"
+  },
+  {
+    "category": "Base",
+    "name": "Standard",
+    "weight": 60,
+    "hue": 0,
+    "file": "traits/02_base/01_standard.png"
+  },
+  {
+    "category": "Base",
+    "name": "Toxic Cyan",
+    "weight": 22,
+    "hue": 150,
+    "file": "traits/02_base/02_toxic_cyan.png"
+  },
+  {
+    "category": "Base",
+    "name": "Void Violet",
+    "weight": 18,
+    "hue": 240,
+    "file": "traits/02_base/03_void_violet.png"
+  },
+  {
+    "category": "Tattoos",
+    "name": "none",
+    "weight": 50,
+    "file": null
+  },
+  {
+    "category": "Tattoos",
+    "name": "Sleeve",
+    "weight": 14,
+    "file": "traits/03_tattoos/sleeve.png"
+  },
+  {
+    "category": "Tattoos",
+    "name": "Chest piece",
+    "weight": 14,
+    "file": "traits/03_tattoos/chest_piece.png"
+  },
+  {
+    "category": "Tattoos",
+    "name": "Lightning glyph",
+    "weight": 12,
+    "file": "traits/03_tattoos/lightning_glyph.png"
+  },
+  {
+    "category": "Tattoos",
+    "name": "Tribal",
+    "weight": 10,
+    "file": "traits/03_tattoos/tribal.png"
+  },
+  {
+    "category": "Clothes",
+    "name": "none",
+    "weight": 14,
+    "file": null
+  },
+  {
+    "category": "Clothes",
+    "name": "Plain tee",
+    "weight": 22,
+    "file": "traits/04_clothes/plain_tee.png"
+  },
+  {
+    "category": "Clothes",
+    "name": "Hoodie",
+    "weight": 18,
+    "file": "traits/04_clothes/hoodie.png"
+  },
+  {
+    "category": "Clothes",
+    "name": "Graphic SuiPump tee",
+    "weight": 16,
+    "file": "traits/04_clothes/graphic_suipump_tee.png"
+  },
+  {
+    "category": "Clothes",
+    "name": "Tank WEN MAINNET",
+    "weight": 12,
+    "file": "traits/04_clothes/tank_wen_mainnet.png"
+  },
+  {
+    "category": "Clothes",
+    "name": "Collared shirt",
+    "weight": 10,
+    "file": "traits/04_clothes/collared_shirt.png"
+  },
+  {
+    "category": "Clothes",
+    "name": "Turtleneck",
+    "weight": 8,
+    "file": "traits/04_clothes/turtleneck.png"
+  },
+  {
+    "category": "Jacket",
+    "name": "none",
+    "weight": 52,
+    "file": null
+  },
+  {
+    "category": "Jacket",
+    "name": "Fur coat",
+    "weight": 5,
+    "file": "traits/05_jacket/fur_coat.png"
+  },
+  {
+    "category": "Jacket",
+    "name": "Suit",
+    "weight": 6,
+    "file": "traits/05_jacket/suit.png"
+  },
+  {
+    "category": "Jacket",
+    "name": "Bomber jacket",
+    "weight": 12,
+    "file": "traits/05_jacket/bomber_jacket.png"
+  },
+  {
+    "category": "Jacket",
+    "name": "Denim jacket",
+    "weight": 11,
+    "file": "traits/05_jacket/denim_jacket.png"
+  },
+  {
+    "category": "Jacket",
+    "name": "Trench coat",
+    "weight": 8,
+    "file": "traits/05_jacket/trench_coat.png"
+  },
+  {
+    "category": "Jacket",
+    "name": "Varsity jacket",
+    "weight": 6,
+    "file": "traits/05_jacket/varsity_jacket.png"
+  },
+  {
+    "category": "Earrings",
+    "name": "none",
+    "weight": 40,
+    "file": null
+  },
+  {
+    "category": "Earrings",
+    "name": "Gold hoop",
+    "weight": 12,
+    "file": "traits/06_earrings/gold_hoop.png"
+  },
+  {
+    "category": "Earrings",
+    "name": "Diamond stud",
+    "weight": 5,
+    "file": "traits/06_earrings/diamond_stud.png"
+  },
+  {
+    "category": "Earrings",
+    "name": "Lime stud",
+    "weight": 11,
+    "file": "traits/06_earrings/lime_stud.png"
+  },
+  {
+    "category": "Earrings",
+    "name": "Cross charm",
+    "weight": 9,
+    "file": "traits/06_earrings/cross_charm.png"
+  },
+  {
+    "category": "Earrings",
+    "name": "Sui droplet",
+    "weight": 9,
+    "file": "traits/06_earrings/sui_droplet.png"
+  },
+  {
+    "category": "Earrings",
+    "name": "Lightning bolt",
+    "weight": 8,
+    "file": "traits/06_earrings/lightning_bolt.png"
+  },
+  {
+    "category": "Earrings",
+    "name": "Skull",
+    "weight": 6,
+    "file": "traits/06_earrings/skull.png"
+  },
+  {
+    "category": "Eyewear",
+    "name": "none",
+    "weight": 40,
+    "file": null
+  },
+  {
+    "category": "Eyewear",
+    "name": "Black shades",
+    "weight": 14,
+    "file": "traits/07_eyewear/black_shades.png"
+  },
+  {
+    "category": "Eyewear",
+    "name": "Laser eyes",
+    "weight": 5,
+    "file": "traits/07_eyewear/laser_eyes.png"
+  },
+  {
+    "category": "Eyewear",
+    "name": "Pixel visor",
+    "weight": 10,
+    "file": "traits/07_eyewear/pixel_visor.png"
+  },
+  {
+    "category": "Eyewear",
+    "name": "Monocle",
+    "weight": 8,
+    "file": "traits/07_eyewear/monocle.png"
+  },
+  {
+    "category": "Eyewear",
+    "name": "3D glasses",
+    "weight": 8,
+    "file": "traits/07_eyewear/3d_glasses.png"
+  },
+  {
+    "category": "Eyewear",
+    "name": "VR headset",
+    "weight": 7,
+    "file": "traits/07_eyewear/vr_headset.png"
+  },
+  {
+    "category": "Eyewear",
+    "name": "Heart eyes",
+    "weight": 8,
+    "file": "traits/07_eyewear/heart_eyes.png"
+  },
+  {
+    "category": "Mouthpiece",
+    "name": "none",
+    "weight": 58,
+    "file": null
+  },
+  {
+    "category": "Mouthpiece",
+    "name": "Joint",
+    "weight": 10,
+    "file": "traits/08_mouthpiece/joint.png"
+  },
+  {
+    "category": "Mouthpiece",
+    "name": "Pipe",
+    "weight": 9,
+    "file": "traits/08_mouthpiece/pipe.png"
+  },
+  {
+    "category": "Mouthpiece",
+    "name": "Cigar",
+    "weight": 9,
+    "file": "traits/08_mouthpiece/cigar.png"
+  },
+  {
+    "category": "Mouthpiece",
+    "name": "Cigarette",
+    "weight": 9,
+    "file": "traits/08_mouthpiece/cigarette.png"
+  },
+  {
+    "category": "Mouthpiece",
+    "name": "Node (lime)",
+    "weight": 5,
+    "file": "traits/08_mouthpiece/node_lime.png"
+  },
+  {
+    "category": "Hat",
+    "name": "none",
+    "weight": 38,
+    "file": null
+  },
+  {
+    "category": "Hat",
+    "name": "Top hat",
+    "weight": 9,
+    "file": "traits/09_hat/top_hat.png"
+  },
+  {
+    "category": "Hat",
+    "name": "Crown",
+    "weight": 4,
+    "file": "traits/09_hat/crown.png"
+  },
+  {
+    "category": "Hat",
+    "name": "Cap",
+    "weight": 13,
+    "file": "traits/09_hat/cap.png"
+  },
+  {
+    "category": "Hat",
+    "name": "Beanie",
+    "weight": 12,
+    "file": "traits/09_hat/beanie.png"
+  },
+  {
+    "category": "Hat",
+    "name": "Halo",
+    "weight": 8,
+    "file": "traits/09_hat/halo.png"
+  },
+  {
+    "category": "Hat",
+    "name": "Cowboy",
+    "weight": 9,
+    "file": "traits/09_hat/cowboy.png"
+  },
+  {
+    "category": "Hat",
+    "name": "Headphones",
+    "weight": 7,
+    "file": "traits/09_hat/headphones.png"
+  },
+  {
+    "category": "Partner Logo",
+    "name": "none",
+    "weight": 55,
+    "file": null
+  },
+  {
+    "category": "Partner Logo",
+    "name": "Talus",
+    "weight": 5,
+    "file": "traits/10_partner_logo/talus.png"
+  },
+  {
+    "category": "Partner Logo",
+    "name": "Sui",
+    "weight": 16,
+    "file": "traits/10_partner_logo/sui.png"
+  },
+  {
+    "category": "Partner Logo",
+    "name": "SuiPump",
+    "weight": 16,
+    "file": "traits/10_partner_logo/suipump.png"
+  },
+  {
+    "category": "Partner Logo",
+    "name": "Combo",
+    "weight": 8,
+    "file": "traits/10_partner_logo/combo.png"
+  }
+]
