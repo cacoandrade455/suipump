@@ -154,6 +154,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
   const [epochSite,      setEpochSite]      = useState(null);   // verified site or null
   const [epochVerifying, setEpochVerifying] = useState(false);
   const [epochError,     setEpochError]     = useState('');
+  const [epochPending,   setEpochPending]   = useState(null);   // {name, nft, session} for manual retry
   const [epochOpen,      setEpochOpen]      = useState(false);  // inline name-picker revealed
 
   const symbolValid = /^[A-Z][A-Z0-9]{0,8}$/.test(form.symbol);
@@ -222,31 +223,38 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
   // surcharge. Direct getObject ownership check, with an owned-objects fallback.
   const verifyEpochOwnership = useCallback(async ({ name, nameCapId }) => {
     if (!account?.address) return null;
-    const owner = account.address;
-    // Fast path: direct object ownership.
-    if (nameCapId) {
+    const owner = account.address.toLowerCase();
+    if (!nameCapId) return null;
+
+    // Verify by OBJECT OWNERSHIP of the exact NameCap Epoch handed back. Epoch
+    // told us "this wallet registered, here's the NameCap id" — so confirming
+    // that object is owned by the launching wallet IS the proof. No StructType
+    // assumption (Epoch's struct name was never confirmed and is irrelevant here).
+    //
+    // Retry a few times: the register tx may not have propagated to the read
+    // node the instant the redirect lands, so a fresh NameCap can briefly read
+    // as not-found or not-yet-owned. Short backoff covers finalization lag.
+    for (let attempt = 0; attempt < 4; attempt++) {
+      if (attempt > 0) await new Promise(r => setTimeout(r, 1200));
       try {
         const obj = await client.getObject({ id: nameCapId, options: { showOwner: true } });
         const o = obj?.data?.owner;
-        const ownedBy = o?.AddressOwner ?? o?.ObjectOwner ?? null;
-        if (ownedBy && ownedBy.toLowerCase() === owner.toLowerCase()) {
+        // Owner can be a string or one of several shapes depending on SDK/RPC:
+        //   { AddressOwner }, { ObjectOwner }, { Shared }, or a bare string.
+        const ownedBy =
+          (typeof o === 'string' ? o : null) ??
+          o?.AddressOwner ?? o?.ObjectOwner ?? o?.address ?? null;
+        if (ownedBy && String(ownedBy).toLowerCase() === owner) {
           return { name, nameCap: nameCapId };
         }
-      } catch {}
+        // Object exists but owner didn't match yet — could still be propagating.
+        // eslint-disable-next-line no-console
+        console.log('[epoch] verify attempt', attempt, 'owner=', ownedBy, 'want=', owner);
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.log('[epoch] verify getObject error attempt', attempt, e?.message);
+      }
     }
-    // Fallback: enumerate owned NameCaps and match the name.
-    try {
-      const res = await client.getOwnedObjects({
-        owner,
-        filter: { StructType: `${EPOCH_PKG}::walrus_names::NameCap` },
-        options: { showContent: true },
-      });
-      const match = (res?.data ?? []).some(o => {
-        const f = o?.data?.content?.fields ?? {};
-        return String(f.name ?? '').toLowerCase() === String(name).toLowerCase();
-      });
-      if (match) return { name, nameCap: nameCapId ?? null };
-    } catch {}
     return null;
   }, [account, client]);
 
@@ -292,13 +300,17 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
 
         if (!name) { setEpochError('No registration found. Try creating the site again.'); return; }
 
+        // Stash for the manual retry button (the URL gets cleaned below).
+        setEpochPending({ name, nft, session });
+
         const verified = await verifyEpochOwnership({ name, nameCapId: nft });
         if (cancelled) return;
         if (verified) {
           setEpochSite({ name: verified.name, nameCap: verified.nameCap, sessionId: session });
           setEpochName(verified.name.replace(/\.epoch$/i, ''));
+          setEpochPending(null);
         } else {
-          setEpochError('Could not verify you own that name. Launch will proceed without a site.');
+          setEpochError('Could not verify your site yet — it may still be settling. Tap Verify to retry.');
         }
       } finally {
         if (!cancelled) {
@@ -314,6 +326,35 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
     })();
     return () => { cancelled = true; };
   }, [verifyEpochOwnership]);
+
+  // Manual "Verify" retry — if auto-verify missed (finalization lag, etc.), the
+  // creator can re-trigger it. Re-fetches the registration via recovery (in case
+  // the nft id needs refreshing) then re-runs the ownership check.
+  const retryEpochVerify = useCallback(async () => {
+    if (!epochPending) return;
+    setEpochVerifying(true);
+    setEpochError('');
+    try {
+      let { name, nft, session } = epochPending;
+      // Refresh from recovery in case we never had a good nft id.
+      if (session && !nft) {
+        try {
+          const r = await fetch(`${EPOCH_RECOVERY_PROXY}?session=${encodeURIComponent(session)}`, { signal: AbortSignal.timeout(8000) });
+          if (r.ok) { const d = await r.json(); name = d.name ?? name; nft = d.name_cap_id ?? d.nameCap ?? nft; }
+        } catch {}
+      }
+      const verified = await verifyEpochOwnership({ name, nameCapId: nft });
+      if (verified) {
+        setEpochSite({ name: verified.name, nameCap: verified.nameCap, sessionId: session });
+        setEpochName(verified.name.replace(/\.epoch$/i, ''));
+        setEpochPending(null);
+      } else {
+        setEpochError('Still settling — wait a few seconds and tap Verify again.');
+      }
+    } finally {
+      setEpochVerifying(false);
+    }
+  }, [epochPending, verifyEpochOwnership]);
 
   const updatePayout = (i, field, value) => {
     const next = [...payouts];
@@ -779,7 +820,22 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
                     </button>
                   )}
                 </div>
-                {epochError && <div className="text-[9px] font-mono text-red-400">{epochError}</div>}
+                {epochError && (
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-[9px] font-mono text-red-400">{epochError}</div>
+                    {epochPending && !epochSite && (
+                      <button
+                        type="button"
+                        onClick={retryEpochVerify}
+                        disabled={epochVerifying}
+                        className="shrink-0 px-3 py-1.5 rounded-lg text-[10px] font-mono font-bold whitespace-nowrap transition-colors disabled:opacity-40"
+                        style={{ background: 'rgba(59,130,246,0.15)', border: '1px solid rgba(59,130,246,0.5)', color: '#60a5fa' }}
+                      >
+                        {epochVerifying ? 'Verifying…' : 'Verify'}
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           )}
