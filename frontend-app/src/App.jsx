@@ -25,6 +25,7 @@ import { paginateEvents, paginateMultipleEvents } from './paginateEvents.js';
 import LiveFeedSidebar from './LiveFeedSidebar.jsx';
 import { useWatchlist } from './useWatchlist.js';
 import StrategiesModal from './StrategiesModal.jsx';
+import PointsCounter from './PointsCounter.jsx';
 import { useTradeKey } from './useTradeKey.js';
 import { useSniper } from './useSniper.js';
 import { useDCA } from './useDCA.js';
@@ -915,13 +916,7 @@ function Header({ onLaunch, lang, setLang, onToggleFeed, showFeed, onStrategies 
             </button>
           )}
           {account && (
-            <button
-              onClick={onStrategies}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-lime-400/30 text-lime-400 text-[10px] font-mono font-bold hover:bg-lime-400/10 transition-all"
-              title="Trading Strategies"
-            >
-              <Zap size={11} /> STRATEGIES
-            </button>
+            <PointsCounter lang={lang} />
           )}
           {account && (
             <Link
@@ -944,9 +939,7 @@ function Header({ onLaunch, lang, setLang, onToggleFeed, showFeed, onStrategies 
             </button>
           )}
           {account && (
-            <button onClick={onStrategies} className="p-1.5 rounded-lg border border-lime-400/30 text-lime-400 hover:bg-lime-400/10 transition-colors" title="Strategies">
-              <Zap size={14} />
-            </button>
+            <PointsCounter lang={lang} />
           )}
           {account && (
             <Link to="/agent" className="p-1.5 rounded-lg border border-violet-400/40 text-violet-400 hover:bg-violet-400/10 transition-colors" title="Autonomous Agent">

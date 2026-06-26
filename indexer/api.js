@@ -8,6 +8,7 @@ import {
 } from './db.js';
 import { mountOrders } from './orders.js';
 import { mountAgentActions } from './agent_actions.js';
+import { mountPoints } from './points.js';
 import { mountGameProgress } from './game_progress.js';
 
 const PORT = parseInt(process.env.PORT || '3001');
@@ -22,6 +23,11 @@ mountOrders(app);
 // Agent action history — self-contained module, owns its own agent_actions
 // table; does not touch db.js. Adds GET/POST/PATCH /agent-actions.
 mountAgentActions(app);
+
+// Airdrop points — self-contained module, owns NO table (points are computed
+// on read from the events table). Adds GET /points/:address and
+// GET /leaderboard/points.
+mountPoints(app);
 
 // Game progress store — self-contained module, owns its own game_progress
 // table; does not touch db.js. Adds GET/POST /game-progress. Wallet is used
