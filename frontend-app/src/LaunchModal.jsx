@@ -237,19 +237,21 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
     for (let attempt = 0; attempt < 4; attempt++) {
       if (attempt > 0) await new Promise(r => setTimeout(r, 1200));
       try {
-        const obj = await client.getObject({ id: nameCapId, options: { showOwner: true } });
-        const o = obj?.data?.owner;
-        // Owner can be a string or one of several shapes depending on SDK/RPC:
-        //   { AddressOwner }, { ObjectOwner }, { Shared }, or a bare string.
+        // v2 GraphQL client shape (same as bridge.js): objectId (NOT id), no
+        // options, result at obj.object.* (NOT obj.data.*). The JSON-RPC shape
+        // { id, options } throws "address is required but not provided".
+        const obj = await client.getObject({ objectId: nameCapId });
+        const ownerField = obj?.object?.owner;
+        // Address-owned objects: owner.AddressOwner. Also tolerate a bare string
+        // or an { address } shape across client versions.
         const ownedBy =
-          (typeof o === 'string' ? o : null) ??
-          o?.AddressOwner ?? o?.ObjectOwner ?? o?.address ?? null;
+          (typeof ownerField === 'string' ? ownerField : null) ??
+          ownerField?.AddressOwner ?? ownerField?.address ?? ownerField?.ObjectOwner ?? null;
         if (ownedBy && String(ownedBy).toLowerCase() === owner) {
           return { name, nameCap: nameCapId };
         }
-        // Object exists but owner didn't match yet — could still be propagating.
         // eslint-disable-next-line no-console
-        console.log('[epoch] verify attempt', attempt, 'owner=', ownedBy, 'want=', owner);
+        console.log('[epoch] verify attempt', attempt, 'owner=', ownedBy, 'want=', owner, 'raw=', ownerField);
       } catch (e) {
         // eslint-disable-next-line no-console
         console.log('[epoch] verify getObject error attempt', attempt, e?.message);
