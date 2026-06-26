@@ -150,12 +150,11 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
   // epochSite holds the VERIFIED site once the creator registered through our ref
   // and we confirmed they own the NameCap: { name: 'foo.epoch', nameCap, sessionId }.
   // The 5-SUI surcharge is only added to the launch PTB when epochSite is set.
-  const [epochName,      setEpochName]      = useState('');     // desired name, user-typed
-  const [epochCheck,     setEpochCheck]     = useState(null);   // { valid, available, reason?, fee_mist }
-  const [epochChecking,  setEpochChecking]  = useState(false);
+  const [epochName,      setEpochName]      = useState('');     // .epoch name once verified
   const [epochSite,      setEpochSite]      = useState(null);   // verified site or null
   const [epochVerifying, setEpochVerifying] = useState(false);
   const [epochError,     setEpochError]     = useState('');
+  const [epochOpen,      setEpochOpen]      = useState(false);  // inline name-picker revealed
 
   const symbolValid = /^[A-Z][A-Z0-9]{0,8}$/.test(form.symbol);
   const nameValid = form.name.trim().length >= 2 && form.name.trim().length <= 64;
@@ -174,36 +173,20 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
 
   // ── Epoch launch-with-site helpers ──────────────────────────────────────────
 
-  // Public name-availability check (no auth — browser calls Epoch directly).
-  // Validates Epoch's on-chain rules + live registry before we hand off.
-  const checkEpochName = useCallback(async (raw) => {
-    const name = String(raw || '').trim().toLowerCase();
-    setEpochError('');
-    setEpochCheck(null);
-    if (!name) return;
-    setEpochChecking(true);
-    try {
-      const r = await fetch(`${EPOCH_CHECK_URL}?name=${encodeURIComponent(name)}&network=${EPOCH_NETWORK}`, { signal: AbortSignal.timeout(6000) });
-      if (!r.ok) throw new Error(`check ${r.status}`);
-      const d = await r.json();
-      setEpochCheck(d); // { name, valid, available, reason?, fee_mist }
-    } catch (e) {
-      setEpochError('Could not check name availability. Try again.');
-    } finally {
-      setEpochChecking(false);
-    }
-  }, []);
 
   // Handoff: authorize ONE comped registration server-side (proxy holds the
   // secret), then redirect the creator to Epoch's sign page carrying the session.
+  // No client-side name check — Epoch validates on its side (public /partner/check
+  // is enforced on their sign page) and the contract is the final guard. The
+  // desired .epoch name defaults to the token symbol (or name), lowercased and
+  // cleaned to Epoch's charset; the creator can change it on Epoch's sign page.
   const startEpochSite = useCallback(async () => {
     setEpochError('');
-    const name = epochName.trim().toLowerCase();
-    if (!name || !epochCheck?.valid || !epochCheck?.available) {
-      setEpochError('Pick an available, valid name first.');
-      return;
-    }
     if (!account?.address) { setEpochError('Connect your wallet first.'); return; }
+    // Derive a sensible default name from what the creator already typed.
+    const raw = (form.symbol || form.name || '').toLowerCase();
+    const name = raw.replace(/[^a-z0-9-]/g, '').replace(/^-+|-+$/g, '').slice(0, 63);
+    if (!name) { setEpochError('Enter a token name or symbol first.'); return; }
     const sessionId = crypto.randomUUID();
     try { sessionStorage.setItem('epoch_session', sessionId); } catch {}
     try {
@@ -218,14 +201,14 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
         signal: AbortSignal.timeout(8000),
       });
       if (!r.ok) throw new Error(`session ${r.status}`);
-      // Redirect carries only name + partner + session (no return= — Epoch has it
-      // from the session call).
+      // Redirect carries name + partner + session (no return= — Epoch has it from
+      // the session call). The creator can adjust the name on Epoch's sign page.
       const url = `${EPOCH_SIGN_URL}?name=${encodeURIComponent(name)}&partner=suipump&session=${encodeURIComponent(sessionId)}`;
       window.location.href = url; // full redirect; we come back via ?epoch_return=1
     } catch (e) {
       setEpochError('Could not start the landing-page flow. Try again.');
     }
-  }, [epochName, epochCheck, account]);
+  }, [form.symbol, form.name, account]);
 
   // Verify the launching wallet owns the handed-back NameCap before honoring the
   // surcharge. Direct getObject ownership check, with an owned-objects fallback.
@@ -565,7 +548,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm px-4">
-      <div className="w-full max-w-2xl rounded-3xl border border-white/10 bg-[#0a0a0a] font-mono shadow-2xl shadow-black/50 overflow-hidden max-h-[90vh] overflow-y-auto">
+      <div className="w-full max-w-lg rounded-3xl border border-white/10 bg-[#0a0a0a] font-mono shadow-2xl shadow-black/50 overflow-hidden max-h-[90vh] overflow-y-auto">
 
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-white/5">
@@ -725,80 +708,52 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
                 </div>
               )}
 
-              {/* Web presence: social links left, Create Token Page hero right */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
-                {/* Left: social links */}
-                <div className="space-y-2">
-                  <div className="text-[9px] tracking-widest text-white/20">SOCIAL LINKS (OPTIONAL)</div>
-                  {[
-                    { key: 'twitter',  placeholder: 'https://x.com/yourtoken' },
-                    { key: 'telegram', placeholder: 'https://t.me/yourtoken' },
-                    { key: 'website',  placeholder: 'https://yourtoken.xyz' },
-                  ].map(({ key, placeholder }) => (
-                    <input
-                      key={key}
-                      value={form[key]}
-                      onChange={e => setForm({ ...form, [key]: e.target.value })}
-                      placeholder={placeholder}
-                      className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-lime-400/50 transition-colors"
-                    />
-                  ))}
-                </div>
-
-                {/* Right: Create Token Page hero (Epoch launch-with-site) */}
-                <div className="rounded-2xl border border-lime-400/25 bg-gradient-to-br from-lime-400/[0.06] to-transparent p-4 flex flex-col">
-                  <div className="flex items-start justify-between mb-1">
-                    <span className="text-sm font-bold text-lime-400" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
-                      Create Token Page
-                    </span>
-                    <span className="text-[10px] font-mono font-bold text-lime-400 bg-lime-400/10 border border-lime-400/30 rounded-lg px-2 py-0.5 shrink-0">+5 SUI</span>
-                  </div>
-                  <p className="text-[10px] font-mono text-white/40 leading-relaxed mb-3">
-                    Give your token a real <span className="text-white/70">.epoch</span> landing page. Pick a name, build it free through our partner, and it attaches to your launch.
-                  </p>
-
+              {/* Social links — website row pairs with Create Token Page side by side */}
+              <div className="space-y-2 pt-1">
+                <div className="text-[9px] tracking-widest text-white/20">SOCIAL LINKS (OPTIONAL)</div>
+                <input
+                  value={form.twitter}
+                  onChange={e => setForm({ ...form, twitter: e.target.value })}
+                  placeholder="https://x.com/yourtoken"
+                  className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-lime-400/50 transition-colors"
+                />
+                <input
+                  value={form.telegram}
+                  onChange={e => setForm({ ...form, telegram: e.target.value })}
+                  placeholder="https://t.me/yourtoken"
+                  className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-lime-400/50 transition-colors"
+                />
+                {/* Website + Create Token Page, side by side, same height */}
+                <div className="flex gap-2">
+                  <input
+                    value={form.website}
+                    onChange={e => setForm({ ...form, website: e.target.value })}
+                    placeholder="https://yourtoken.xyz"
+                    className="flex-1 min-w-0 bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-lime-400/50 transition-colors"
+                  />
                   {epochSite ? (
-                    <div className="mt-auto rounded-xl border border-lime-400/30 bg-lime-400/[0.06] px-3 py-2.5 text-[11px] font-mono text-lime-400">
-                      <div className="font-bold mb-0.5">{epochSite.name}</div>
-                      <div className="text-lime-400/70 text-[10px]">Attached · launch is 7 SUI</div>
-                      <button type="button" onClick={() => { setEpochSite(null); setEpochCheck(null); setEpochName(''); }}
-                        className="mt-1 text-white/30 hover:text-white/60 underline text-[10px]">remove</button>
-                    </div>
+                    <button
+                      type="button"
+                      onClick={() => { setEpochSite(null); setEpochName(''); }}
+                      title="Site attached — click to remove"
+                      className="shrink-0 px-4 py-2.5 rounded-xl text-[11px] font-mono font-bold whitespace-nowrap transition-colors"
+                      style={{ background: 'rgba(59,130,246,0.15)', border: '1px solid rgba(59,130,246,0.5)', color: '#60a5fa' }}
+                    >
+                      {epochSite.name} ✓
+                    </button>
                   ) : (
-                    <div className="mt-auto space-y-2">
-                      <div className="flex gap-2 items-center">
-                        <div className="flex-1 flex items-center bg-black/30 border border-white/10 rounded-xl px-3 focus-within:border-lime-400/50 transition-colors">
-                          <input
-                            value={epochName}
-                            onChange={(e) => { setEpochName(e.target.value); setEpochCheck(null); }}
-                            onBlur={() => checkEpochName(epochName)}
-                            placeholder="yourtoken"
-                            className="flex-1 bg-transparent py-2.5 text-white text-sm focus:outline-none min-w-0"
-                          />
-                          <span className="text-sm text-white/30 font-mono shrink-0">.epoch</span>
-                        </div>
-                        <button type="button" onClick={() => checkEpochName(epochName)} disabled={epochChecking || !epochName.trim()}
-                          className="px-3 py-2.5 rounded-xl text-[10px] font-mono font-bold border border-white/10 text-white/60 hover:text-white/90 disabled:opacity-40 transition-colors shrink-0">
-                          {epochChecking ? '…' : 'CHECK'}
-                        </button>
-                      </div>
-                      {epochCheck && (
-                        <div className={`text-[9px] font-mono leading-snug ${epochCheck.valid && epochCheck.available ? 'text-lime-400' : 'text-red-400'}`}>
-                          {epochCheck.valid && epochCheck.available
-                            ? `${epochName.trim().toLowerCase()}.epoch is available.`
-                            : (epochCheck.reason || (!epochCheck.available ? 'That name is taken.' : 'Invalid name.'))}
-                        </div>
-                      )}
-                      {epochVerifying && <div className="text-[9px] font-mono text-white/40">Verifying your site…</div>}
-                      {epochError && <div className="text-[9px] font-mono text-red-400 leading-snug">{epochError}</div>}
-                      <button type="button" onClick={startEpochSite}
-                        disabled={!epochCheck?.valid || !epochCheck?.available || epochVerifying}
-                        className="w-full py-2.5 rounded-xl text-[11px] font-mono font-bold bg-lime-400 text-black hover:bg-lime-300 disabled:opacity-30 disabled:bg-lime-400/20 disabled:text-lime-400 transition-colors">
-                        Create Token Page (+5 SUI)
-                      </button>
-                    </div>
+                    <button
+                      type="button"
+                      onClick={startEpochSite}
+                      disabled={epochVerifying}
+                      className="shrink-0 px-4 py-2.5 rounded-xl text-[11px] font-mono font-bold whitespace-nowrap transition-colors disabled:opacity-40"
+                      style={{ background: '#3b82f6', color: '#ffffff' }}
+                    >
+                      {epochVerifying ? 'Verifying…' : 'Create Token Page (+5 SUI)'}
+                    </button>
                   )}
                 </div>
+                {epochError && <div className="text-[9px] font-mono text-red-400">{epochError}</div>}
               </div>
             </div>
           )}
