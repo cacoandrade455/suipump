@@ -174,6 +174,14 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
 
   // ── Epoch launch-with-site helpers ──────────────────────────────────────────
 
+  // The live site URL is deterministic from the name: <name>.epoch always maps
+  // to https://<name>.epochsui.com/. Derive it from the verified name rather than
+  // trusting the callback's `site` param — so the site autofills reliably even if
+  // the redirect ever drops that param. Strips an optional trailing ".epoch".
+  const epochSiteUrl = useCallback((rawName) => {
+    const label = String(rawName || '').trim().toLowerCase().replace(/\.epoch$/i, '');
+    return label ? `https://${label}.epochsui.com/` : null;
+  }, []);
 
   // Handoff: authorize ONE comped registration server-side (proxy holds the
   // secret), then redirect the creator to Epoch's sign page carrying the session.
@@ -315,8 +323,11 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
         const verified = await verifyEpochOwnership({ name, nameCapId: nft });
         if (cancelled) return;
         if (verified) {
-          setEpochSite({ name: verified.name, nameCap: verified.nameCap, sessionId: session, blob, site, status });
+          const liveUrl = epochSiteUrl(verified.name) || site;
+          setEpochSite({ name: verified.name, nameCap: verified.nameCap, sessionId: session, blob, site: liveUrl, status });
           setEpochName(verified.name.replace(/\.epoch$/i, ''));
+          // Autofill the token's website with the live .epoch page.
+          if (liveUrl) setForm(f => ({ ...f, website: liveUrl }));
           setEpochPending(null);
         } else {
           setEpochError('Could not verify your site yet — it may still be settling. Tap Verify to retry.');
@@ -334,7 +345,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
       }
     })();
     return () => { cancelled = true; };
-  }, [verifyEpochOwnership]);
+  }, [verifyEpochOwnership, epochSiteUrl]);
 
   // Manual "Verify" retry — if auto-verify missed (finalization lag, etc.), the
   // creator can re-trigger it. Re-fetches the registration via recovery (in case
@@ -354,8 +365,10 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
       }
       const verified = await verifyEpochOwnership({ name, nameCapId: nft });
       if (verified) {
-        setEpochSite({ name: verified.name, nameCap: verified.nameCap, sessionId: session, blob, site, status });
+        const liveUrl = epochSiteUrl(verified.name) || site;
+        setEpochSite({ name: verified.name, nameCap: verified.nameCap, sessionId: session, blob, site: liveUrl, status });
         setEpochName(verified.name.replace(/\.epoch$/i, ''));
+        if (liveUrl) setForm(f => ({ ...f, website: liveUrl }));
         setEpochPending(null);
       } else {
         setEpochError('Still settling — wait a few seconds and tap Verify again.');
@@ -363,7 +376,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
     } finally {
       setEpochVerifying(false);
     }
-  }, [epochPending, verifyEpochOwnership]);
+  }, [epochPending, verifyEpochOwnership, epochSiteUrl]);
 
   const updatePayout = (i, field, value) => {
     const next = [...payouts];
