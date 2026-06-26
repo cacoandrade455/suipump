@@ -4,7 +4,7 @@ import { useCurrentAccount, useDAppKit, useCurrentClient } from '@mysten/dapp-ki
 import { Transaction } from '@mysten/sui/transactions';
 import { X, Plus, Trash2, Rocket, CheckCircle } from 'lucide-react';
 import wasmInit, * as bytecodeTemplate from '@mysten/move-bytecode-template';
-import { PACKAGE_ID, PACKAGE_ID_V5, PACKAGE_ID_V7, MIST_PER_SUI, ANTI_BOT_NONE, ANTI_BOT_15S, ANTI_BOT_30S, GRAD_TARGET_CETUS, GRAD_TARGET_DEEPBOOK, GRAD_TARGET_TURBOS, isV7OrLater, isV9OrLater, EPOCH_PKG, EPOCH_TREASURY, EPOCH_CUT_MIST, PROTOCOL_SURCHARGE_MIST, PROTOCOL_WALLET, EPOCH_SIGN_URL, EPOCH_CHECK_URL, EPOCH_SESSION_PROXY, EPOCH_RECOVERY_PROXY } from './constants.js';
+import { PACKAGE_ID, PACKAGE_ID_V5, PACKAGE_ID_V7, MIST_PER_SUI, ANTI_BOT_NONE, ANTI_BOT_15S, ANTI_BOT_30S, GRAD_TARGET_CETUS, GRAD_TARGET_DEEPBOOK, GRAD_TARGET_TURBOS, isV7OrLater, isV9OrLater, EPOCH_PKG, EPOCH_TREASURY, EPOCH_CUT_MIST, PROTOCOL_SURCHARGE_MIST, PROTOCOL_WALLET, EPOCH_SIGN_URL, EPOCH_CHECK_URL, EPOCH_SESSION_PROXY, EPOCH_RECOVERY_PROXY, EPOCH_NETWORK } from './constants.js';
 import { t } from './i18n.js';
 
 // Vesting modes / durations — must match bonding_curve.move v7
@@ -183,7 +183,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
     if (!name) return;
     setEpochChecking(true);
     try {
-      const r = await fetch(`${EPOCH_CHECK_URL}?name=${encodeURIComponent(name)}`, { signal: AbortSignal.timeout(6000) });
+      const r = await fetch(`${EPOCH_CHECK_URL}?name=${encodeURIComponent(name)}&network=${EPOCH_NETWORK}`, { signal: AbortSignal.timeout(6000) });
       if (!r.ok) throw new Error(`check ${r.status}`);
       const d = await r.json();
       setEpochCheck(d); // { name, valid, available, reason?, fee_mist }
@@ -207,16 +207,20 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
     const sessionId = crypto.randomUUID();
     try { sessionStorage.setItem('epoch_session', sessionId); } catch {}
     try {
+      // The return URL is sent in the SERVER-SIDE session call (not the browser
+      // redirect), so Epoch takes it from there — the browser can't spoof it.
+      const returnUrl = `${window.location.origin}${window.location.pathname}?epoch_return=1`;
       // Server-to-server auth — proxy injects the Bearer secret, never the browser.
       const r = await fetch(EPOCH_SESSION_PROXY, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session: sessionId }),
+        body: JSON.stringify({ session: sessionId, network: EPOCH_NETWORK, return_url: returnUrl }),
         signal: AbortSignal.timeout(8000),
       });
       if (!r.ok) throw new Error(`session ${r.status}`);
-      const returnUrl = `${window.location.origin}${window.location.pathname}?epoch_return=1`;
-      const url = `${EPOCH_SIGN_URL}?name=${encodeURIComponent(name)}&partner=suipump&session=${encodeURIComponent(sessionId)}&return=${encodeURIComponent(returnUrl)}`;
+      // Redirect carries only name + partner + session (no return= — Epoch has it
+      // from the session call).
+      const url = `${EPOCH_SIGN_URL}?name=${encodeURIComponent(name)}&partner=suipump&session=${encodeURIComponent(sessionId)}`;
       window.location.href = url; // full redirect; we come back via ?epoch_return=1
     } catch (e) {
       setEpochError('Could not start the landing-page flow. Try again.');
@@ -274,7 +278,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
         if ((!name || !nft) && session) {
           try {
             const r = await fetch(`${EPOCH_RECOVERY_PROXY}?session=${encodeURIComponent(session)}`, { signal: AbortSignal.timeout(8000) });
-            if (r.ok) { const d = await r.json(); name = d.name ?? name; wallet = d.wallet ?? wallet; nft = d.nameCap ?? nft; }
+            if (r.ok) { const d = await r.json(); name = d.name ?? name; wallet = d.wallet ?? wallet; nft = d.name_cap_id ?? d.nameCap ?? nft; }
           } catch {}
         }
 

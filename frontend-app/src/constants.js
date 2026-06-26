@@ -170,9 +170,16 @@ export const EPOCH_PKG =
 export const EPOCH_TREASURY =
   '0x3dd2336c4a789aa2e10125e916ac56447055223fd9384cb16feb8097a89959b3';
 
-// Epoch handoff + public name-availability check (no-auth, browser calls direct).
+// Epoch API base (Cloudflare worker, testnet) — serves /partner/check (public),
+// and behind our server-side proxies /partner/session + /partner/registration.
+export const EPOCH_API_BASE  = 'https://epoch-indexer.pupazzipunkapi.workers.dev';
+export const EPOCH_NETWORK   = 'testnet';
+
+// Public name-availability check (no auth — browser calls direct).
+export const EPOCH_CHECK_URL = `${EPOCH_API_BASE}/partner/check`;
+
+// Handoff / sign page (different host from the API base — Epoch's sign UI).
 export const EPOCH_SIGN_URL  = 'https://names.epochsui.com/sign/register';
-export const EPOCH_CHECK_URL = 'https://names.epochsui.com/partner/check';
 
 // Our server-side proxy routes (hold the shared secret; never the browser).
 export const EPOCH_SESSION_PROXY  = '/api/epoch-session';

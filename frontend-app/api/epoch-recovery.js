@@ -13,7 +13,7 @@
 //   EPOCH_API_BASE        e.g. https://names.epochsui.com
 //   EPOCH_SHARED_SECRET   the Bearer secret
 
-const EPOCH_API_BASE      = process.env.EPOCH_API_BASE || 'https://names.epochsui.com';
+const EPOCH_API_BASE      = process.env.EPOCH_API_BASE || 'https://epoch-indexer.pupazzipunkapi.workers.dev';
 const EPOCH_SHARED_SECRET = process.env.EPOCH_SHARED_SECRET || '';
 
 export default async function handler(req, res) {

@@ -16,7 +16,7 @@
 //   EPOCH_API_BASE   e.g. https://names.epochsui.com   (Steve sends the live base)
 //   EPOCH_SHARED_SECRET   the Bearer secret (Steve sends privately)
 
-const EPOCH_API_BASE     = process.env.EPOCH_API_BASE || 'https://names.epochsui.com';
+const EPOCH_API_BASE     = process.env.EPOCH_API_BASE || 'https://epoch-indexer.pupazzipunkapi.workers.dev';
 const EPOCH_SHARED_SECRET = process.env.EPOCH_SHARED_SECRET || '';
 
 export default async function handler(req, res) {
@@ -39,6 +39,15 @@ export default async function handler(req, res) {
     res.status(400).json({ error: 'session required' });
     return;
   }
+  // return_url is taken from THIS server-side call (not the browser URL), so the
+  // browser can't spoof where the post-registration redirect lands. The client
+  // passes the intended return_url through to us; we forward it to Epoch.
+  const returnUrl = body?.return_url;
+  if (!returnUrl || typeof returnUrl !== 'string') {
+    res.status(400).json({ error: 'return_url required' });
+    return;
+  }
+  const network = body?.network || 'testnet';
 
   try {
     const r = await fetch(`${EPOCH_API_BASE}/partner/session`, {
@@ -47,7 +56,7 @@ export default async function handler(req, res) {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${EPOCH_SHARED_SECRET}`,
       },
-      body: JSON.stringify({ partner: 'suipump', session }),
+      body: JSON.stringify({ partner: 'suipump', session, network, return_url: returnUrl }),
       signal: AbortSignal.timeout(8000),
     });
     const data = await r.json().catch(() => ({}));
