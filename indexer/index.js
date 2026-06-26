@@ -40,9 +40,19 @@ const GRAPHQL_URL = process.env.SUI_GRAPHQL_URL  ?? `https://graphql.${NETWORK}.
 
 const EVENT_NAMES = ['TokensPurchased', 'TokensSold', 'CurveCreated', 'Comment', 'Graduated', 'TokensLocked', 'VestedClaimed'];
 
-const TRACKED_EVENT_TYPES = new Set(
-  PACKAGE_IDS.flatMap(pkg => EVENT_NAMES.map(name => `${pkg}::bonding_curve::${name}`))
-);
+// ── Epoch launch-with-site (partner integration) ──────────────────────────────
+// Epoch's record_partner_launch emits PartnerLaunch on a DIFFERENT package +
+// module ({EPOCH_PKG}::walrus_names::PartnerLaunch), so it can't go through the
+// bonding_curve event-name template. Track it as an explicit extra event type.
+// Swap EPOCH_PKG for mainnet alongside the frontend constant.
+const EPOCH_PKG = process.env.EPOCH_PKG
+  ?? '0xdf5905144e2895c5ac08a673234d9688e4cae97e9d2750aa864e75a5dc53a282';
+const EPOCH_PARTNER_LAUNCH_TYPE = `${EPOCH_PKG}::walrus_names::PartnerLaunch`;
+
+const TRACKED_EVENT_TYPES = new Set([
+  ...PACKAGE_IDS.flatMap(pkg => EVENT_NAMES.map(name => `${pkg}::bonding_curve::${name}`)),
+  EPOCH_PARTNER_LAUNCH_TYPE,
+]);
 
 // ── Clients ───────────────────────────────────────────────────────────────────
 
@@ -134,6 +144,14 @@ async function graphqlBackfill() {
         console.error(`  backfill error ${eventName}:`, err.message);
       }
     }
+  }
+  // Epoch PartnerLaunch — different package/module, backfilled explicitly so a
+  // reconnect gap doesn't drop a site-attached launch.
+  try {
+    const count = await syncEventType(EPOCH_PARTNER_LAUNCH_TYPE, EPOCH_PKG);
+    if (count > 0) console.log(`  synced ${count} new: PartnerLaunch (epoch ${EPOCH_PKG.slice(0,10)}…)`);
+  } catch (err) {
+    console.error('  backfill error PartnerLaunch:', err.message);
   }
   console.log('  ✓ Backfill complete');
 }

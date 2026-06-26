@@ -158,3 +158,31 @@ export const ANTI_BOT_30S  = 30;
 // ── Clock ─────────────────────────────────────────────────────────────────────
 export const SUI_CLOCK_ID =
   '0x0000000000000000000000000000000000000000000000000000000000000006';
+
+// ── Epoch launch-with-site (testnet) ──────────────────────────────────────────
+// PTB-level integration (no SuiPump contract change). A creator can attach an
+// Epoch .epoch site to their launch; record_partner_launch routes the cut into
+// Epoch's shared Treasury and emits a PartnerLaunch event we index.
+// Swap EPOCH_PKG + EPOCH_TREASURY for mainnet when Steve sends them — call shape
+// is identical.
+export const EPOCH_PKG =
+  '0xdf5905144e2895c5ac08a673234d9688e4cae97e9d2750aa864e75a5dc53a282';
+export const EPOCH_TREASURY =
+  '0x3dd2336c4a789aa2e10125e916ac56447055223fd9384cb16feb8097a89959b3';
+
+// Epoch handoff + public name-availability check (no-auth, browser calls direct).
+export const EPOCH_SIGN_URL  = 'https://names.epochsui.com/sign/register';
+export const EPOCH_CHECK_URL = 'https://names.epochsui.com/partner/check';
+
+// Our server-side proxy routes (hold the shared secret; never the browser).
+export const EPOCH_SESSION_PROXY  = '/api/epoch-session';
+export const EPOCH_RECOVERY_PROXY = '/api/epoch-recovery';
+
+// Surcharge economics (MIST). Base launch fee stays LAUNCH_FEE_MIST = 2 SUI.
+// Epoch launch = 2 base + 5 surcharge = 7 total: 3 → Epoch, 2 → protocol wallet.
+export const EPOCH_CUT_MIST          = 3_000_000_000n; // → Epoch treasury
+export const PROTOCOL_SURCHARGE_MIST = 2_000_000_000n; // → protocol/main wallet
+
+// Destination for the +2 SUI protocol surcharge (main/control wallet).
+export const PROTOCOL_WALLET =
+  '0x0be9a8f56ba3b07f295e0c7526e7f47ca3a146649b9d864d2eb47bf3acd90c55';

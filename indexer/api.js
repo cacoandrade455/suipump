@@ -9,6 +9,7 @@ import {
 import { mountOrders } from './orders.js';
 import { mountAgentActions } from './agent_actions.js';
 import { mountPoints } from './points.js';
+import { mountPartnerLaunches } from './partner_launches.js';
 import { mountGameProgress } from './game_progress.js';
 
 const PORT = parseInt(process.env.PORT || '3001');
@@ -28,6 +29,10 @@ mountAgentActions(app);
 // on read from the events table). Adds GET /points/:address and
 // GET /leaderboard/points.
 mountPoints(app);
+
+// Epoch launch-with-site accounting — self-contained, owns NO table (reads the
+// PartnerLaunch event from the events table). Adds GET /partner-launches.
+mountPartnerLaunches(app);
 
 // Game progress store — self-contained module, owns its own game_progress
 // table; does not touch db.js. Adds GET/POST /game-progress. Wallet is used

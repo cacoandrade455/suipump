@@ -4,7 +4,7 @@ import { useCurrentAccount, useDAppKit, useCurrentClient } from '@mysten/dapp-ki
 import { Transaction } from '@mysten/sui/transactions';
 import { X, Plus, Trash2, Rocket, CheckCircle } from 'lucide-react';
 import wasmInit, * as bytecodeTemplate from '@mysten/move-bytecode-template';
-import { PACKAGE_ID, PACKAGE_ID_V5, PACKAGE_ID_V7, MIST_PER_SUI, ANTI_BOT_NONE, ANTI_BOT_15S, ANTI_BOT_30S, GRAD_TARGET_CETUS, GRAD_TARGET_DEEPBOOK, GRAD_TARGET_TURBOS, isV7OrLater, isV9OrLater } from './constants.js';
+import { PACKAGE_ID, PACKAGE_ID_V5, PACKAGE_ID_V7, MIST_PER_SUI, ANTI_BOT_NONE, ANTI_BOT_15S, ANTI_BOT_30S, GRAD_TARGET_CETUS, GRAD_TARGET_DEEPBOOK, GRAD_TARGET_TURBOS, isV7OrLater, isV9OrLater, EPOCH_PKG, EPOCH_TREASURY, EPOCH_CUT_MIST, PROTOCOL_SURCHARGE_MIST, PROTOCOL_WALLET, EPOCH_SIGN_URL, EPOCH_CHECK_URL, EPOCH_SESSION_PROXY, EPOCH_RECOVERY_PROXY } from './constants.js';
 import { t } from './i18n.js';
 
 // Vesting modes / durations — must match bonding_curve.move v7
@@ -146,6 +146,17 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
   const [error, setError] = useState(null);
   const [newCurveId, setNewCurveId] = useState(null);
 
+  // ── Epoch launch-with-site state ────────────────────────────────────────────
+  // epochSite holds the VERIFIED site once the creator registered through our ref
+  // and we confirmed they own the NameCap: { name: 'foo.epoch', nameCap, sessionId }.
+  // The 5-SUI surcharge is only added to the launch PTB when epochSite is set.
+  const [epochName,      setEpochName]      = useState('');     // desired name, user-typed
+  const [epochCheck,     setEpochCheck]     = useState(null);   // { valid, available, reason?, fee_mist }
+  const [epochChecking,  setEpochChecking]  = useState(false);
+  const [epochSite,      setEpochSite]      = useState(null);   // verified site or null
+  const [epochVerifying, setEpochVerifying] = useState(false);
+  const [epochError,     setEpochError]     = useState('');
+
   const symbolValid = /^[A-Z][A-Z0-9]{0,8}$/.test(form.symbol);
   const nameValid = form.name.trim().length >= 2 && form.name.trim().length <= 64;
   const payoutSum = payouts.reduce((s, p) => s + (parseInt(p.bps) || 0), 0);
@@ -160,6 +171,137 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
     setPayouts([...payouts, { address: '', bps: remaining }]);
   };
   const removePayout = (i) => { if (payouts.length > 1) setPayouts(payouts.filter((_, idx) => idx !== i)); };
+
+  // ── Epoch launch-with-site helpers ──────────────────────────────────────────
+
+  // Public name-availability check (no auth — browser calls Epoch directly).
+  // Validates Epoch's on-chain rules + live registry before we hand off.
+  const checkEpochName = useCallback(async (raw) => {
+    const name = String(raw || '').trim().toLowerCase();
+    setEpochError('');
+    setEpochCheck(null);
+    if (!name) return;
+    setEpochChecking(true);
+    try {
+      const r = await fetch(`${EPOCH_CHECK_URL}?name=${encodeURIComponent(name)}`, { signal: AbortSignal.timeout(6000) });
+      if (!r.ok) throw new Error(`check ${r.status}`);
+      const d = await r.json();
+      setEpochCheck(d); // { name, valid, available, reason?, fee_mist }
+    } catch (e) {
+      setEpochError('Could not check name availability. Try again.');
+    } finally {
+      setEpochChecking(false);
+    }
+  }, []);
+
+  // Handoff: authorize ONE comped registration server-side (proxy holds the
+  // secret), then redirect the creator to Epoch's sign page carrying the session.
+  const startEpochSite = useCallback(async () => {
+    setEpochError('');
+    const name = epochName.trim().toLowerCase();
+    if (!name || !epochCheck?.valid || !epochCheck?.available) {
+      setEpochError('Pick an available, valid name first.');
+      return;
+    }
+    if (!account?.address) { setEpochError('Connect your wallet first.'); return; }
+    const sessionId = crypto.randomUUID();
+    try { sessionStorage.setItem('epoch_session', sessionId); } catch {}
+    try {
+      // Server-to-server auth — proxy injects the Bearer secret, never the browser.
+      const r = await fetch(EPOCH_SESSION_PROXY, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session: sessionId }),
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!r.ok) throw new Error(`session ${r.status}`);
+      const returnUrl = `${window.location.origin}${window.location.pathname}?epoch_return=1`;
+      const url = `${EPOCH_SIGN_URL}?name=${encodeURIComponent(name)}&partner=suipump&session=${encodeURIComponent(sessionId)}&return=${encodeURIComponent(returnUrl)}`;
+      window.location.href = url; // full redirect; we come back via ?epoch_return=1
+    } catch (e) {
+      setEpochError('Could not start the landing-page flow. Try again.');
+    }
+  }, [epochName, epochCheck, account]);
+
+  // Verify the launching wallet owns the handed-back NameCap before honoring the
+  // surcharge. Direct getObject ownership check, with an owned-objects fallback.
+  const verifyEpochOwnership = useCallback(async ({ name, nameCapId }) => {
+    if (!account?.address) return null;
+    const owner = account.address;
+    // Fast path: direct object ownership.
+    if (nameCapId) {
+      try {
+        const obj = await client.getObject({ id: nameCapId, options: { showOwner: true } });
+        const o = obj?.data?.owner;
+        const ownedBy = o?.AddressOwner ?? o?.ObjectOwner ?? null;
+        if (ownedBy && ownedBy.toLowerCase() === owner.toLowerCase()) {
+          return { name, nameCap: nameCapId };
+        }
+      } catch {}
+    }
+    // Fallback: enumerate owned NameCaps and match the name.
+    try {
+      const res = await client.getOwnedObjects({
+        owner,
+        filter: { StructType: `${EPOCH_PKG}::walrus_names::NameCap` },
+        options: { showContent: true },
+      });
+      const match = (res?.data ?? []).some(o => {
+        const f = o?.data?.content?.fields ?? {};
+        return String(f.name ?? '').toLowerCase() === String(name).toLowerCase();
+      });
+      if (match) return { name, nameCap: nameCapId ?? null };
+    } catch {}
+    return null;
+  }, [account, client]);
+
+  // On return from Epoch (?epoch_return=1): read the redirect params, verify
+  // ownership, set epochSite. Recovery fallback if the redirect dropped its data.
+  React.useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('epoch_return') !== '1') return;
+    let cancelled = false;
+    (async () => {
+      setEpochVerifying(true);
+      setEpochError('');
+      try {
+        let name   = params.get('name');
+        let wallet = params.get('wallet');
+        let nft    = params.get('nft');
+        const session = params.get('session') || (() => { try { return sessionStorage.getItem('epoch_session'); } catch { return null; } })();
+
+        // Recovery: if the redirect didn't carry the registration, ask our proxy.
+        if ((!name || !nft) && session) {
+          try {
+            const r = await fetch(`${EPOCH_RECOVERY_PROXY}?session=${encodeURIComponent(session)}`, { signal: AbortSignal.timeout(8000) });
+            if (r.ok) { const d = await r.json(); name = d.name ?? name; wallet = d.wallet ?? wallet; nft = d.nameCap ?? nft; }
+          } catch {}
+        }
+
+        if (!name) { setEpochError('No registration found. Try creating the site again.'); return; }
+
+        const verified = await verifyEpochOwnership({ name, nameCapId: nft });
+        if (cancelled) return;
+        if (verified) {
+          setEpochSite({ name: verified.name, nameCap: verified.nameCap, sessionId: session });
+          setEpochName(verified.name.replace(/\.epoch$/i, ''));
+        } else {
+          setEpochError('Could not verify you own that name. Launch will proceed without a site.');
+        }
+      } finally {
+        if (!cancelled) {
+          setEpochVerifying(false);
+          // Clean the URL so a refresh doesn't re-run the return flow.
+          try {
+            const clean = window.location.origin + window.location.pathname;
+            window.history.replaceState({}, '', clean);
+          } catch {}
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [verifyEpochOwnership]);
+
   const updatePayout = (i, field, value) => {
     const next = [...payouts];
     next[i] = { ...next[i], [field]: field === 'bps' ? (parseInt(value) || 0) : value };
@@ -350,6 +492,27 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
         }
       }
 
+      // ── Epoch launch-with-site surcharge (only when a site is verified) ─────
+      // 5 SUI surcharge on top of the 2 SUI base, composed into THIS same tx2 so
+      // the user signs once and Epoch's cut is sent automatically inside their
+      // own transaction. 3 → Epoch treasury via record_partner_launch (deposits +
+      // emits PartnerLaunch), 2 → protocol wallet. SuiPump never custodies the 3.
+      // If record_partner_launch aborts, the whole launch reverts (atomic).
+      if (epochSite && epochSite.name) {
+        const [epochCut] = tx2.splitCoins(tx2.gas, [tx2.pure.u64(EPOCH_CUT_MIST)]);
+        tx2.moveCall({
+          target: `${EPOCH_PKG}::walrus_names::record_partner_launch`,
+          arguments: [
+            tx2.object(EPOCH_TREASURY),
+            tx2.pure.string('suipump'),
+            tx2.pure.string(epochSite.name), // e.g. "foo.epoch"
+            epochCut,
+          ],
+        });
+        const [protocolCut] = tx2.splitCoins(tx2.gas, [tx2.pure.u64(PROTOCOL_SURCHARGE_MIST)]);
+        tx2.transferObjects([protocolCut], PROTOCOL_WALLET);
+      }
+
       tx2.moveCall({ target: `${PACKAGE_ID}::bonding_curve::share_curve`, typeArguments: [newTokenType], arguments: [curve] });
       tx2.transferObjects([cap], account.address);
 
@@ -394,7 +557,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
     } finally {
       setLaunching(false);
     }
-  }, [form, payouts, devBuy, account, client, dAppKit, onLaunched]);
+  }, [form, payouts, devBuy, account, client, dAppKit, onLaunched, epochSite]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm px-4">
@@ -733,10 +896,60 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
                   )}
                 </div>
               )}
+
+              {/* ── Epoch launch-with-site ─────────────────────────────────── */}
+              <div className="rounded-2xl border border-lime-400/15 bg-lime-400/[0.03] p-4 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-mono font-bold text-lime-400 tracking-widest">LANDING PAGE</span>
+                  <span className="text-[9px] font-mono text-white/30">optional · +5 SUI</span>
+                </div>
+                {epochSite ? (
+                  <div className="text-[10px] font-mono text-lime-400">
+                    Site attached: <span className="font-bold">{epochSite.name}</span>. Launch is 7 SUI (3 to Epoch, 4 to protocol).
+                    <button type="button" onClick={() => { setEpochSite(null); setEpochCheck(null); setEpochName(''); }}
+                      className="ml-2 text-white/30 hover:text-white/60 underline">remove</button>
+                  </div>
+                ) : (
+                  <>
+                    <p className="text-[9px] font-mono text-white/30 leading-relaxed">
+                      Give your token a real .epoch landing page. Pick a name, build it free through our partner, and it attaches to your launch.
+                    </p>
+                    <div className="flex gap-2 items-center">
+                      <input
+                        value={epochName}
+                        onChange={(e) => { setEpochName(e.target.value); setEpochCheck(null); }}
+                        onBlur={() => checkEpochName(epochName)}
+                        placeholder="yourname"
+                        className="flex-1 bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-xs font-mono text-white focus:border-lime-400/40 outline-none"
+                      />
+                      <span className="text-[10px] font-mono text-white/30">.epoch</span>
+                      <button type="button" onClick={() => checkEpochName(epochName)} disabled={epochChecking || !epochName.trim()}
+                        className="px-3 py-2 rounded-lg text-[10px] font-mono font-bold border border-white/10 text-white/60 hover:text-white/90 disabled:opacity-40">
+                        {epochChecking ? '…' : 'CHECK'}
+                      </button>
+                    </div>
+                    {epochCheck && (
+                      <div className={`text-[9px] font-mono ${epochCheck.valid && epochCheck.available ? 'text-lime-400' : 'text-red-400'}`}>
+                        {epochCheck.valid && epochCheck.available
+                          ? `${epochName}.epoch is available — build it free through our partner.`
+                          : (epochCheck.reason || (!epochCheck.available ? 'That name is taken.' : 'Invalid name.'))}
+                      </div>
+                    )}
+                    {epochVerifying && <div className="text-[9px] font-mono text-white/40">Verifying your site…</div>}
+                    {epochError && <div className="text-[9px] font-mono text-red-400">{epochError}</div>}
+                    <button type="button" onClick={startEpochSite}
+                      disabled={!epochCheck?.valid || !epochCheck?.available || epochVerifying}
+                      className="w-full mt-1 py-2 rounded-lg text-[10px] font-mono font-bold bg-lime-400/10 border border-lime-400/30 text-lime-400 hover:bg-lime-400/20 disabled:opacity-40 transition-colors">
+                      Create a landing page
+                    </button>
+                  </>
+                )}
+              </div>
+
               <div className="rounded-2xl border border-white/5 bg-white/[0.02] p-4 space-y-2">
                 <div className="flex justify-between text-[10px] font-mono">
                   <span className="text-white/30">{t(lang, 'launchFee')}</span>
-                  <span className="text-white">2 SUI</span>
+                  <span className="text-white">{epochSite ? '7 SUI' : '2 SUI'}</span>
                 </div>
                 {parseFloat(devBuy) > 0 && (
                   <div className="flex justify-between text-[10px] font-mono">
