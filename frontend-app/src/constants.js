@@ -179,7 +179,7 @@ export const EPOCH_NETWORK   = 'testnet';
 export const EPOCH_CHECK_URL = `${EPOCH_API_BASE}/partner/check`;
 
 // Handoff / sign page (different host from the API base — Epoch's sign UI).
-export const EPOCH_SIGN_URL  = 'https://names.epochsui.com/sign/register';
+export const EPOCH_SIGN_URL  = 'https://names.epochsui.com/build';
 
 // Our server-side proxy routes (hold the shared secret; never the browser).
 export const EPOCH_SESSION_PROXY  = '/api/epoch-session';

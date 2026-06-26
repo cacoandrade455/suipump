@@ -290,6 +290,13 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
         let name   = params.get('name');
         let wallet = params.get('wallet');
         let nft    = params.get('nft');
+        // New builder flow (Steve, Jun 26): Publish registers the name AND sets
+        // the site in one tx, then redirects with status=published plus the live
+        // site URL and the Walrus blob id. Old register-only flow used
+        // status=registered with no blob/site. Accept both; capture extras.
+        const status = params.get('status');     // 'published' (new) | 'registered' (old)
+        const blob   = params.get('blob') || null; // Walrus blob id of the built site
+        const site   = params.get('site') || null; // live page URL, e.g. https://<name>.epochsui.com
         const session = params.get('session') || (() => { try { return sessionStorage.getItem('epoch_session'); } catch { return null; } })();
 
         // Recovery: if the redirect didn't carry the registration, ask our proxy.
@@ -300,15 +307,15 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
           } catch {}
         }
 
-        if (!name) { setEpochError('No registration found. Try creating the site again.'); return; }
+        if (!name) { setEpochError('No site found. Try building it again.'); return; }
 
         // Stash for the manual retry button (the URL gets cleaned below).
-        setEpochPending({ name, nft, session });
+        setEpochPending({ name, nft, session, blob, site, status });
 
         const verified = await verifyEpochOwnership({ name, nameCapId: nft });
         if (cancelled) return;
         if (verified) {
-          setEpochSite({ name: verified.name, nameCap: verified.nameCap, sessionId: session });
+          setEpochSite({ name: verified.name, nameCap: verified.nameCap, sessionId: session, blob, site, status });
           setEpochName(verified.name.replace(/\.epoch$/i, ''));
           setEpochPending(null);
         } else {
@@ -337,7 +344,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
     setEpochVerifying(true);
     setEpochError('');
     try {
-      let { name, nft, session } = epochPending;
+      let { name, nft, session, blob, site, status } = epochPending;
       // Refresh from recovery in case we never had a good nft id.
       if (session && !nft) {
         try {
@@ -347,7 +354,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
       }
       const verified = await verifyEpochOwnership({ name, nameCapId: nft });
       if (verified) {
-        setEpochSite({ name: verified.name, nameCap: verified.nameCap, sessionId: session });
+        setEpochSite({ name: verified.name, nameCap: verified.nameCap, sessionId: session, blob, site, status });
         setEpochName(verified.name.replace(/\.epoch$/i, ''));
         setEpochPending(null);
       } else {
@@ -1009,9 +1016,15 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
                     <span className="text-white">{parseFloat(devBuy).toFixed(2)} SUI</span>
                   </div>
                 )}
+                {epochSite && (
+                  <div className="flex justify-between text-[10px] font-mono">
+                    <span className="text-white/30">Token page ({epochSite.name})</span>
+                    <span className="text-white">5.00 SUI</span>
+                  </div>
+                )}
                 <div className="border-t border-white/5 pt-2 flex justify-between text-[10px] font-mono font-bold">
                   <span className="text-white/50">{t(lang, 'total')}</span>
-                  <span className="text-lime-400">{(2 + (parseFloat(devBuy) || 0)).toFixed(2)} SUI + gas</span>
+                  <span className="text-lime-400">{(2 + (parseFloat(devBuy) || 0) + (epochSite ? 5 : 0)).toFixed(2)} SUI + gas</span>
                 </div>
               </div>
               <div className="text-[9px] font-mono text-white/20 text-center">{t(lang, 'twoSignaturesRequired')}</div>
@@ -1051,9 +1064,15 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
                       <span className="text-white/30">Dev buy</span>
                       <span className="text-white">{parseFloat(devBuy) > 0 ? `${parseFloat(devBuy)} SUI` : 'none'}</span>
                     </div>
+                    {epochSite && (
+                      <div className="flex justify-between">
+                        <span className="text-white/30">Token page</span>
+                        <span className="text-white">{epochSite.name} · 5 SUI</span>
+                      </div>
+                    )}
                     <div className="border-t border-white/5 pt-2 flex justify-between font-bold">
                       <span className="text-white/50">{t(lang, 'total')}</span>
-                      <span className="text-lime-400">{(2 + (parseFloat(devBuy) || 0)).toFixed(2)} SUI + gas</span>
+                      <span className="text-lime-400">{(2 + (parseFloat(devBuy) || 0) + (epochSite ? 5 : 0)).toFixed(2)} SUI + gas</span>
                     </div>
                   </div>
                 </>
