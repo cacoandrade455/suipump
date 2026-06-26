@@ -47,21 +47,28 @@ export default function LeaderboardPage({ onBack, lang = 'en' }) {
   const { tokens } = useTokenList();
   const [tokenVolumes, setTokenVolumes] = useState([]);
   const [topTraders, setTopTraders] = useState([]);
+  const [pointsLeaders, setPointsLeaders] = useState([]);
+  const [pointsPerSui, setPointsPerSui] = useState(100);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState('tokens');
+  const [tab, setTab] = useState('points');
   const [traderSort, setTraderSort] = useState('volume'); // 'volume' | 'pnl'
 
   useEffect(() => {
     let cancelled = false;
 
     async function loadFromIndexer() {
-      const [tokRes, trdRes] = await Promise.all([
+      const [tokRes, trdRes, ptsRes] = await Promise.all([
         fetch(`${INDEXER_URL}/leaderboard/volume?limit=100`,  { signal: AbortSignal.timeout(5000) }),
         fetch(`${INDEXER_URL}/leaderboard/traders?limit=20`,  { signal: AbortSignal.timeout(5000) }),
+        fetch(`${INDEXER_URL}/leaderboard/points?limit=100`,  { signal: AbortSignal.timeout(5000) }),
       ]);
       if (!tokRes.ok || !trdRes.ok) throw new Error('indexer not ok');
       const tokRows = await tokRes.json();
       const trdRows = await trdRes.json();
+      // Points endpoint is newer — tolerate it being absent (older indexer) so
+      // the rest of the leaderboard still loads. Shape: { pointsPerSui, leaders:[...] }.
+      let ptsData = { pointsPerSui: 100, leaders: [] };
+      if (ptsRes.ok) { try { ptsData = await ptsRes.json(); } catch {} }
       return {
         sortedTokens:  tokRows.map(r => ({ curveId: r.curve_id, volume: Number(r.volume_sui ?? 0), trades: Number(r.trades ?? 0) })),
         // /leaderboard/traders returns { address, sui_spent, sui_received, buys, sells }
@@ -73,6 +80,16 @@ export default function LeaderboardPage({ onBack, lang = 'en' }) {
           trades: Number(r.buys ?? 0) + Number(r.sells ?? 0),
           pnl:    Number(r.realized_pnl ?? 0),
         })),
+        // /leaderboard/points returns { pointsPerSui, leaders:[{ rank, address,
+        // points, buyVolumeSui, buys, distinctTokens }] }.
+        pointsPerSui:  Number(ptsData.pointsPerSui ?? 100),
+        pointsLeaders: Array.isArray(ptsData.leaders) ? ptsData.leaders.map(r => ({
+          addr:           r.address,
+          points:         Number(r.points ?? 0),
+          buyVolumeSui:   Number(r.buyVolumeSui ?? 0),
+          buys:           Number(r.buys ?? 0),
+          distinctTokens: Number(r.distinctTokens ?? 0),
+        })) : [],
       };
     }
 
@@ -98,6 +115,8 @@ export default function LeaderboardPage({ onBack, lang = 'en' }) {
       return {
         sortedTokens:  Object.entries(volumeByCurve).map(([curveId, volume]) => ({ curveId, volume, trades: tradesByCurve[curveId] || 0 })).sort((a, b) => b.volume - a.volume),
         sortedTraders: Object.entries(volumeByTrader).map(([addr, volume]) => ({ addr, volume, trades: tradesByTrader[addr] || 0, pnl: null })).sort((a, b) => b.volume - a.volume).slice(0, 20),
+        pointsPerSui:  100,
+        pointsLeaders: [], // RPC fallback can't compute points (events come from indexer)
       };
     }
 
@@ -106,7 +125,13 @@ export default function LeaderboardPage({ onBack, lang = 'en' }) {
         let data;
         if (INDEXER_URL) { try { data = await loadFromIndexer(); } catch { data = await loadFromRpc(); } }
         else { data = await loadFromRpc(); }
-        if (!cancelled) { setTokenVolumes(data.sortedTokens); setTopTraders(data.sortedTraders); setLoading(false); }
+        if (!cancelled) {
+          setTokenVolumes(data.sortedTokens);
+          setTopTraders(data.sortedTraders);
+          setPointsLeaders(data.pointsLeaders ?? []);
+          setPointsPerSui(data.pointsPerSui ?? 100);
+          setLoading(false);
+        }
       } catch { if (!cancelled) setLoading(false); }
     }
     load();
@@ -129,15 +154,40 @@ export default function LeaderboardPage({ onBack, lang = 'en' }) {
         <h1 className="text-xl font-bold text-white font-mono">{t(lang, 'leaderboard')}</h1>
       </div>
       <div className="flex gap-2 mb-6">
-        {['tokens', 'traders'].map(tabId => (
+        {['points', 'tokens', 'traders'].map(tabId => (
           <button key={tabId} onClick={() => setTab(tabId)}
             className={`px-4 py-2 rounded-xl text-xs font-mono font-bold transition-colors ${tab === tabId ? 'bg-lime-400 text-black' : 'bg-white/5 text-white/40 hover:text-white/70'}`}>
-            {tabId === 'tokens' ? 'TOP TOKENS' : 'TOP TRADERS'}
+            {tabId === 'points' ? 'AIRDROP POINTS' : tabId === 'tokens' ? 'TOP TOKENS' : 'TOP TRADERS'}
           </button>
         ))}
       </div>
       {loading ? (
         <div className="text-center text-white/20 text-xs font-mono py-12">Loading…</div>
+      ) : tab === 'points' ? (
+        <div className="space-y-2">
+          <div className="text-[10px] font-mono text-white/30 pb-1">
+            Earn {pointsPerSui} points per SUI bought. Points are tracked from testnet and carry to the airdrop.
+          </div>
+          {pointsLeaders.length === 0 ? (
+            <div className="text-center text-white/20 text-xs font-mono py-12">No points yet — start trading to climb the board.</div>
+          ) : pointsLeaders.map((pl, i) => (
+            <button key={pl.addr} onClick={() => navigate(`/portfolio/${pl.addr}`)}
+              className="w-full flex items-center gap-3 bg-white/[0.03] border border-white/10 rounded-xl px-4 py-3 hover:border-lime-400/30 transition-colors text-left">
+              <RankBadge rank={i + 1} />
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <div className="text-xs font-mono text-white/70">{shortAddr(pl.addr)}</div>
+                  {myAddr && pl.addr === myAddr && <span className="text-[8px] font-mono text-violet-400 border border-violet-400/40 px-1 rounded">YOU</span>}
+                </div>
+                <div className="text-[10px] font-mono text-white/30">{pl.distinctTokens} token{pl.distinctTokens === 1 ? '' : 's'} · {pl.buys} buy{pl.buys === 1 ? '' : 's'}</div>
+              </div>
+              <div className="text-right">
+                <div className="text-xs font-mono font-bold text-lime-400">{fmt(pl.points, 0)} pts</div>
+                <div className="text-[10px] font-mono text-white/30">{fmt(pl.buyVolumeSui)} SUI bought</div>
+              </div>
+            </button>
+          ))}
+        </div>
       ) : tab === 'tokens' ? (
         <div className="space-y-2">
           {enrichedTokens.slice(0, 50).map((tk, i) => (
