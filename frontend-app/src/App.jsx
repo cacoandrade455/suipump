@@ -1388,6 +1388,17 @@ export default function App() {
   const [showFeed,       setShowFeed]       = useState(false);
   const [lang, setLang] = useState(() => localStorage.getItem('suipump_lang') || 'en');
 
+  // Returning from the Epoch landing-page flow (?epoch_return=1): reopen the
+  // launch modal so its return handler can restore the saved form, verify the
+  // site ownership, and attach it (which gates the +5 SUI surcharge). Without
+  // this the app loads with the modal closed and the return is silently lost.
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('epoch_return') === '1') setShowLaunch(true);
+    } catch {}
+  }, []);
+
   const handleLang     = (code) => { setLang(code); localStorage.setItem('suipump_lang', code); };
   const handleLaunched = ({ curveId }) => { setShowLaunch(false); navigate(`/token/${curveId}`); };
 

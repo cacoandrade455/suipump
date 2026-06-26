@@ -189,6 +189,14 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
     if (!name) { setEpochError('Enter a token name or symbol first.'); return; }
     const sessionId = crypto.randomUUID();
     try { sessionStorage.setItem('epoch_session', sessionId); } catch {}
+    // Persist the in-progress launch form so it survives the full-page redirect
+    // to Epoch and back. On return, App reopens the modal and we restore this.
+    try {
+      sessionStorage.setItem('epoch_launch_form', JSON.stringify({
+        form, payouts, devBuy, lockDevBuy, lockMode, lockDuration, step,
+        savedAt: Date.now(),
+      }));
+    } catch {}
     try {
       // The return URL is sent in the SERVER-SIDE session call (not the browser
       // redirect), so Epoch takes it from there — the browser can't spoof it.
@@ -208,7 +216,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
     } catch (e) {
       setEpochError('Could not start the landing-page flow. Try again.');
     }
-  }, [form.symbol, form.name, account]);
+  }, [form, payouts, devBuy, lockDevBuy, lockMode, lockDuration, step, account]);
 
   // Verify the launching wallet owns the handed-back NameCap before honoring the
   // surcharge. Direct getObject ownership check, with an owned-objects fallback.
@@ -248,6 +256,23 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
     const params = new URLSearchParams(window.location.search);
     if (params.get('epoch_return') !== '1') return;
     let cancelled = false;
+
+    // Restore the launch form persisted before the redirect, so the creator
+    // doesn't come back to an empty modal and lose everything they typed.
+    try {
+      const saved = sessionStorage.getItem('epoch_launch_form');
+      if (saved) {
+        const s = JSON.parse(saved);
+        if (s.form)         setForm(s.form);
+        if (s.payouts)      setPayouts(s.payouts);
+        if (s.devBuy != null)       setDevBuy(s.devBuy);
+        if (s.lockDevBuy != null)   setLockDevBuy(s.lockDevBuy);
+        if (s.lockMode != null)     setLockMode(s.lockMode);
+        if (s.lockDuration != null) setLockDuration(s.lockDuration);
+        if (s.step != null)         setStep(s.step);
+      }
+    } catch {}
+
     (async () => {
       setEpochVerifying(true);
       setEpochError('');
@@ -278,7 +303,8 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
       } finally {
         if (!cancelled) {
           setEpochVerifying(false);
-          // Clean the URL so a refresh doesn't re-run the return flow.
+          // Clear the persisted form + clean the URL so a refresh doesn't re-run.
+          try { sessionStorage.removeItem('epoch_launch_form'); } catch {}
           try {
             const clean = window.location.origin + window.location.pathname;
             window.history.replaceState({}, '', clean);
