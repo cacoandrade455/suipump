@@ -38,7 +38,15 @@ const NETWORK     = process.env.NETWORK          ?? 'testnet';
 const GRPC_URL    = (process.env.SUI_GRPC_URL    ?? `fullnode.${NETWORK}.sui.io:443`).replace(/^https?:\/\//, '');
 const GRAPHQL_URL = process.env.SUI_GRAPHQL_URL  ?? `https://graphql.${NETWORK}.sui.io/graphql`;
 
-const EVENT_NAMES = ['TokensPurchased', 'TokensSold', 'CurveCreated', 'Comment', 'Graduated', 'TokensLocked', 'VestedClaimed'];
+const EVENT_NAMES = [
+  'TokensPurchased', 'TokensSold', 'CurveCreated', 'Comment', 'Graduated',
+  'TokensLocked', 'VestedClaimed',
+  // V10 events (all carry curve_id, so they ride the existing curve-keyed
+  // insert + pg_notify pipeline). Older packages never emit these — harmless.
+  'BuybackConfigured', 'BuybackExecuted', 'CreatorHeartbeat',
+  'ProtocolSurchargeCollected',
+  'TakeoverProposed', 'TakeoverVoted', 'TakeoverSucceeded', 'TakeoverFailed',
+];
 
 // ── Epoch launch-with-site (partner integration) ──────────────────────────────
 // Epoch's record_partner_launch emits PartnerLaunch on a DIFFERENT package +
@@ -186,6 +194,12 @@ async function processEvent(eventType, evt, packageId) {
     eventType.includes('Comment')
   )) {
     await recomputeStats(curveId);
+  }
+
+  // V10: a successful community takeover swaps the active creator on-chain.
+  // Refresh the curve row so the new creator address is reflected in stats.
+  if (curveId && eventType.includes('TakeoverSucceeded')) {
+    try { await recomputeStats(curveId); } catch {}
   }
 
   if (curveId && (

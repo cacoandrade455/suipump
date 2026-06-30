@@ -13,9 +13,19 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { normalizeGoalText, extractPerEntrySui, extractSpendCapSui, isAutopilotIntent, isTrendingDiscovery } from './agentVocab.js';
 import { ArrowLeft, Sparkles, Play, Check, X, Loader, ExternalLink, Bot, ChevronDown } from 'lucide-react';
-import { useCurrentAccount } from '@mysten/dapp-kit-react';
+import { useCurrentAccount, useDAppKit, useCurrentClient } from '@mysten/dapp-kit-react';
+import { Transaction } from '@mysten/sui/transactions';
 import { useNavigate } from 'react-router-dom';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
+import { PACKAGE_ID, MIST_PER_SUI } from './constants.js';
+
+// The agent's execution wallet — the session_address authorized to trade the
+// escrow. buy_with_session/sell_with_session are signed by THIS wallet
+// server-side (the bridge), never the user. Opening a session deposits SUI the
+// agent may spend up to spend_cap, until expiry or revoke/close.
+const AGENT_SESSION_WALLET = import.meta.env.VITE_AGENT_SESSION_WALLET
+  || '0x877af0fae3fa4f8ea936943b59bcd66104f67cf1895302e97761a28b3c3a5906';
+const AGENT_SUI_CLOCK_ID = '0x6';
 
 const RUNNER_URL  = import.meta.env.VITE_AGENT_RUNNER_URL || 'https://suipump-agent-runner.onrender.com';
 const BRIDGE_URL  = import.meta.env.VITE_SUIPUMP_BRIDGE_URL || 'https://suipump-bridge.onrender.com';
@@ -765,6 +775,284 @@ function describeOrder(o) {
     : '';
   const sl = o.stopLoss ? `SL ${o.stopLoss.multiple ? `${o.stopLoss.multiple}×` : `${o.stopLoss.priceSui} SUI`}` : '';
   return [tpStr, sl].filter(Boolean).join(' · ') || 'TP/SL order';
+}
+
+// ── Agent session (escrow authorization) ──────────────────────────────────────
+// A user opens an AgentSession to let the agent's execution wallet trade on their
+// behalf without per-trade signing: deposit SUI into escrow, set a spend cap and
+// expiry, and the agent (session_address) spends up to the cap until expiry or
+// until the user revokes/closes. Funds never leave the user's control beyond the
+// escrow; close_session returns the unspent remainder. buy_with_session /
+// sell_with_session are signed server-side by the agent wallet, not here.
+const GQL_URL = 'https://graphql.testnet.sui.io/graphql';
+
+function fmtSui(mist) {
+  if (mist == null) return '—';
+  const n = Number(BigInt(mist)) / 1e9;
+  return n.toLocaleString(undefined, { maximumFractionDigits: 4 });
+}
+
+function AgentSessionPanel({ account }) {
+  const dAppKit = useDAppKit();
+  const client  = useCurrentClient();
+
+  const [session, setSession] = useState(null); // { id, sharedVersion, escrow, spent, spendCap, expiryMs, revoked }
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy]       = useState(false);
+  const [msg, setMsg]         = useState('');
+
+  // Open/top-up form
+  const [depositSui, setDepositSui] = useState('1');
+  const [capSui, setCapSui]         = useState('5');
+  const [days, setDays]             = useState('7');
+  const [now, setNow]               = useState(Date.now());
+
+  // Resolve the user's most-recent session object by reading SessionOpened
+  // events for this owner, then fetching that object's live state on-chain.
+  const loadSession = useCallback(async () => {
+    if (!account) { setSession(null); setLoading(false); return; }
+    setLoading(true);
+    try {
+      const evType = `${PACKAGE_ID}::agent_session::SessionOpened`;
+      const q = `{ events(filter: { type: "${evType}" }, last: 50) { nodes { contents { json } } } }`;
+      const r = await fetch(GQL_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: q }),
+        signal: AbortSignal.timeout(8000),
+      });
+      const d = await r.json();
+      const nodes = d?.data?.events?.nodes ?? [];
+      const mine = nodes
+        .map(n => n.contents?.json)
+        .filter(j => j && (j.owner ?? '').toLowerCase() === account.address.toLowerCase());
+      const latest = mine.length ? mine[mine.length - 1] : null;
+      if (!latest?.session_id) { setSession(null); setLoading(false); return; }
+
+      // Read the session object's current state (escrow may have changed).
+      const obj = await client.getObject({ objectId: latest.session_id, options: { showContent: true, showOwner: true } })
+        .catch(() => null);
+      const content = obj?.data?.content ?? obj?.object?.asMoveObject ?? null;
+      const fields = content?.fields ?? content?.contents?.json ?? {};
+      const ownerObj = obj?.data?.owner ?? obj?.object?.owner ?? null;
+      const sharedVersion = ownerObj?.Shared?.initial_shared_version
+        ?? ownerObj?.shared?.initialSharedVersion
+        ?? latest.__sharedVersion
+        ?? null;
+
+      const revoked = fields.revoked === true || fields.revoked === 'true';
+      const escrowVal = fields.escrow?.fields?.value ?? fields.escrow ?? null;
+
+      setSession({
+        id:            latest.session_id,
+        sharedVersion,
+        escrow:        escrowVal != null ? String(escrowVal) : null,
+        spent:         fields.spent != null ? String(fields.spent) : '0',
+        spendCap:      latest.spend_cap != null ? String(latest.spend_cap) : (fields.spend_cap ?? '0'),
+        expiryMs:      Number(latest.expiry_ms ?? fields.expiry_ms ?? 0),
+        revoked,
+      });
+    } catch (e) {
+      // Degrade to "no session" rather than blocking the open flow.
+      setSession(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [account, client]);
+
+  useEffect(() => { loadSession(); }, [loadSession]);
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
+
+  async function doOpen() {
+    if (busy || !account) return;
+    const dep = parseFloat(depositSui), cap = parseFloat(capSui), dd = parseFloat(days);
+    if (!(dep > 0)) { setMsg('Enter a deposit amount'); return; }
+    if (!(dd > 0)) { setMsg('Enter an expiry in days'); return; }
+    setBusy(true); setMsg('');
+    try {
+      const depMist = BigInt(Math.round(dep * 1e9));
+      const capMist = BigInt(Math.round((cap > 0 ? cap : 0) * 1e9)); // 0 = unbounded
+      const expiryMs = BigInt(Date.now() + Math.round(dd * 24 * 60 * 60 * 1000));
+      const tx = new Transaction();
+      const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(depMist)]);
+      tx.moveCall({
+        target: `${PACKAGE_ID}::agent_session::open_and_share`,
+        arguments: [
+          coin,
+          tx.pure.address(AGENT_SESSION_WALLET),
+          tx.pure.u64(capMist),
+          tx.pure.u64(expiryMs),
+        ],
+      });
+      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Open failed');
+      setMsg('Session opened — the agent can now trade your escrow.');
+      setTimeout(loadSession, 1500);
+    } catch (e) { setMsg(e.message || 'Open failed'); }
+    finally { setBusy(false); }
+  }
+
+  const sessionRef = (tx, mutable) => (session?.sharedVersion
+    ? tx.sharedObjectRef({ objectId: session.id, initialSharedVersion: String(session.sharedVersion), mutable })
+    : tx.object(session.id));
+
+  async function doTopUp() {
+    if (busy || !session) return;
+    const dep = parseFloat(depositSui);
+    if (!(dep > 0)) { setMsg('Enter a top-up amount'); return; }
+    setBusy(true); setMsg('');
+    try {
+      const depMist = BigInt(Math.round(dep * 1e9));
+      const tx = new Transaction();
+      const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(depMist)]);
+      tx.moveCall({
+        target: `${PACKAGE_ID}::agent_session::top_up_session`,
+        arguments: [sessionRef(tx, true), coin],
+      });
+      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Top-up failed');
+      setMsg('Escrow topped up.');
+      setTimeout(loadSession, 1500);
+    } catch (e) { setMsg(e.message || 'Top-up failed'); }
+    finally { setBusy(false); }
+  }
+
+  async function doRevoke() {
+    if (busy || !session) return;
+    setBusy(true); setMsg('');
+    try {
+      const tx = new Transaction();
+      tx.moveCall({
+        target: `${PACKAGE_ID}::agent_session::revoke_session`,
+        arguments: [sessionRef(tx, true)],
+      });
+      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Revoke failed');
+      setMsg('Session revoked — the agent can no longer spend. Close to withdraw escrow.');
+      setTimeout(loadSession, 1500);
+    } catch (e) { setMsg(e.message || 'Revoke failed'); }
+    finally { setBusy(false); }
+  }
+
+  async function doClose() {
+    if (busy || !session) return;
+    setBusy(true); setMsg('');
+    try {
+      const tx = new Transaction();
+      const [refund] = tx.moveCall({
+        target: `${PACKAGE_ID}::agent_session::close_session`,
+        arguments: [sessionRef(tx, true)],
+      });
+      tx.transferObjects([refund], account.address);
+      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Close failed');
+      setMsg('Session closed — unspent escrow returned to your wallet.');
+      setSession(null);
+      setTimeout(loadSession, 1500);
+    } catch (e) { setMsg(e.message || 'Close failed'); }
+    finally { setBusy(false); }
+  }
+
+  if (!account) return null;
+
+  const expired = session && session.expiryMs > 0 && now >= session.expiryMs;
+  const capLabel = session
+    ? (BigInt(session.spendCap || '0') === 0n ? 'unbounded' : `${fmtSui(session.spendCap)} SUI`)
+    : '';
+  const expiryLabel = (ms) => {
+    if (!ms) return '—';
+    const rem = ms - now;
+    if (rem <= 0) return 'expired';
+    const dys = Math.floor(rem / 86_400_000);
+    const hrs = Math.floor((rem % 86_400_000) / 3_600_000);
+    return dys > 0 ? `${dys}d ${hrs}h` : `${hrs}h`;
+  };
+
+  return (
+    <div className="border border-violet-400/20 rounded-xl bg-violet-500/[0.04] p-4 mb-4 space-y-3">
+      <div className="flex items-center gap-2">
+        <Bot size={13} className="text-violet-400" />
+        <span className="text-[10px] font-mono text-violet-300/80 tracking-widest">AGENT SESSION</span>
+        {session && !session.revoked && !expired && (
+          <span className="ml-auto text-[8px] font-mono text-lime-400 tracking-widest border border-lime-400/30 rounded-full px-2 py-0.5">ACTIVE</span>
+        )}
+        {session && (session.revoked || expired) && (
+          <span className="ml-auto text-[8px] font-mono text-white/40 tracking-widest border border-white/15 rounded-full px-2 py-0.5">{expired ? 'EXPIRED' : 'REVOKED'}</span>
+        )}
+      </div>
+
+      {loading ? (
+        <div className="py-3 text-center text-white/20 text-[10px] font-mono">Loading…</div>
+      ) : !session ? (
+        <>
+          <p className="text-[10px] font-mono text-white/35 leading-relaxed">
+            Authorize the agent to trade a SUI escrow on your behalf — no per-trade signing.
+            Set a spend cap and expiry; revoke or close anytime to reclaim unspent funds.
+          </p>
+          <div className="grid grid-cols-3 gap-2">
+            <label className="block">
+              <span className="text-[8px] font-mono text-white/30 tracking-widest">DEPOSIT (SUI)</span>
+              <input value={depositSui} onChange={e => setDepositSui(e.target.value)} inputMode="decimal"
+                className="mt-1 w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-violet-400/40" />
+            </label>
+            <label className="block">
+              <span className="text-[8px] font-mono text-white/30 tracking-widest">SPEND CAP</span>
+              <input value={capSui} onChange={e => setCapSui(e.target.value)} inputMode="decimal" placeholder="0 = ∞"
+                className="mt-1 w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-violet-400/40" />
+            </label>
+            <label className="block">
+              <span className="text-[8px] font-mono text-white/30 tracking-widest">EXPIRY (DAYS)</span>
+              <input value={days} onChange={e => setDays(e.target.value)} inputMode="decimal"
+                className="mt-1 w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-violet-400/40" />
+            </label>
+          </div>
+          <button onClick={doOpen} disabled={busy}
+            className={`w-full py-2 rounded-lg text-[11px] font-mono tracking-widest transition-colors ${busy ? 'bg-white/5 text-white/25' : 'bg-violet-500/80 hover:bg-violet-500 text-white'}`}>
+            {busy ? 'OPENING…' : 'OPEN SESSION'}
+          </button>
+        </>
+      ) : (
+        <>
+          <div className="grid grid-cols-3 gap-2 text-center">
+            <div className="rounded-lg bg-white/[0.03] border border-white/5 py-2">
+              <div className="text-[8px] font-mono text-white/30 tracking-widest">ESCROW</div>
+              <div className="text-sm font-mono text-lime-400 mt-0.5">{fmtSui(session.escrow)}</div>
+            </div>
+            <div className="rounded-lg bg-white/[0.03] border border-white/5 py-2">
+              <div className="text-[8px] font-mono text-white/30 tracking-widest">SPENT</div>
+              <div className="text-sm font-mono text-white mt-0.5">{fmtSui(session.spent)}</div>
+            </div>
+            <div className="rounded-lg bg-white/[0.03] border border-white/5 py-2">
+              <div className="text-[8px] font-mono text-white/30 tracking-widest">EXPIRES</div>
+              <div className="text-sm font-mono text-white mt-0.5">{expiryLabel(session.expiryMs)}</div>
+            </div>
+          </div>
+          <div className="text-[9px] font-mono text-white/30">Spend cap: <span className="text-white/60">{capLabel}</span></div>
+
+          {!session.revoked && !expired && (
+            <div className="flex gap-2">
+              <input value={depositSui} onChange={e => setDepositSui(e.target.value)} inputMode="decimal" placeholder="SUI"
+                className="w-24 bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-violet-400/40" />
+              <button onClick={doTopUp} disabled={busy}
+                className={`px-3 py-1.5 rounded-lg text-[10px] font-mono transition-colors ${busy ? 'bg-white/5 text-white/25' : 'bg-violet-500/15 text-violet-300 border border-violet-400/30 hover:bg-violet-500/25'}`}>
+                TOP UP
+              </button>
+              <button onClick={doRevoke} disabled={busy}
+                className={`px-3 py-1.5 rounded-lg text-[10px] font-mono transition-colors ${busy ? 'bg-white/5 text-white/25' : 'bg-white/5 text-white/60 border border-white/15 hover:bg-white/10'}`}>
+                REVOKE
+              </button>
+            </div>
+          )}
+          <button onClick={doClose} disabled={busy}
+            className={`w-full py-2 rounded-lg text-[10px] font-mono tracking-widest transition-colors ${busy ? 'bg-white/5 text-white/25' : 'bg-white/10 text-white/70 border border-white/20 hover:bg-white/20'}`}>
+            {busy ? 'WORKING…' : 'CLOSE & WITHDRAW ESCROW'}
+          </button>
+        </>
+      )}
+
+      {msg && <div className="text-[9px] font-mono text-white/40">{msg}</div>}
+    </div>
+  );
 }
 
 export default function AgentPage({ onBack }) {
@@ -1987,6 +2275,9 @@ export default function AgentPage({ onBack }) {
           State a goal in plain language and the agent produces autonomous workflows — planning with an LLM, then executing on-chain through published Nexus DAGs. Five base tools — launch, buy, sell, claim, monitor — power four standing strategies (sniper, DCA, copy-trade, take-profit / stop-loss), which can be combined into entry-plus-exit setups. See HOW TO OPERATE below.
         </p>
       </div>
+
+      {/* ── Agent session (escrow authorization) ───────────────────────── */}
+      <AgentSessionPanel account={account} />
 
       {/* ── Strategy guide (accordion) ─────────────────────────────────── */}
       <div className="border border-white/10 rounded-xl bg-white/[0.02] mb-4 overflow-hidden">

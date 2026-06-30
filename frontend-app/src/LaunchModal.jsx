@@ -4,7 +4,7 @@ import { useCurrentAccount, useDAppKit, useCurrentClient } from '@mysten/dapp-ki
 import { Transaction } from '@mysten/sui/transactions';
 import { X, Plus, Trash2, Rocket, CheckCircle } from 'lucide-react';
 import wasmInit, * as bytecodeTemplate from '@mysten/move-bytecode-template';
-import { PACKAGE_ID, PACKAGE_ID_V5, PACKAGE_ID_V7, MIST_PER_SUI, ANTI_BOT_NONE, ANTI_BOT_15S, ANTI_BOT_30S, GRAD_TARGET_CETUS, GRAD_TARGET_DEEPBOOK, GRAD_TARGET_TURBOS, isV7OrLater, isV9OrLater, EPOCH_PKG, EPOCH_TREASURY, EPOCH_CUT_MIST, PROTOCOL_SURCHARGE_MIST, PROTOCOL_WALLET, EPOCH_SIGN_URL, EPOCH_CHECK_URL, EPOCH_SESSION_PROXY, EPOCH_RECOVERY_PROXY, EPOCH_NETWORK } from './constants.js';
+import { PACKAGE_ID, PACKAGE_ID_V5, PACKAGE_ID_V7, MIST_PER_SUI, ANTI_BOT_NONE, ANTI_BOT_15S, ANTI_BOT_30S, GRAD_TARGET_CETUS, GRAD_TARGET_DEEPBOOK, GRAD_TARGET_TURBOS, isV7OrLater, isV9OrLater, isV10OrLater, EPOCH_PKG, EPOCH_TREASURY, EPOCH_CUT_MIST, PROTOCOL_SURCHARGE_MIST, PROTOCOL_WALLET, EPOCH_SIGN_URL, EPOCH_CHECK_URL, EPOCH_SESSION_PROXY, EPOCH_RECOVERY_PROXY, EPOCH_NETWORK } from './constants.js';
 import { t } from './i18n.js';
 
 // Vesting modes / durations — must match bonding_curve.move v7
@@ -139,6 +139,10 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
   const [lockDevBuy, setLockDevBuy] = useState(false);
   const [lockMode, setLockMode] = useState(VEST_MODE_CLIFF);   // 0 cliff / 1 linear / 2 monthly
   const [lockDuration, setLockDuration] = useState('30d');     // 7d / 30d / 180d / 365d
+  // V10 creator buyback (carved from the creator's own 40% fee slice).
+  const [buybackEnabled, setBuybackEnabled] = useState(false);
+  const [buybackBps,     setBuybackBps]     = useState(2000);  // 0–10000; default 20%
+  const [buybackBurn,    setBuybackBurn]    = useState(true);  // true=burn, false=return to creator
   const [launching, setLaunching] = useState(false);
   const [txStep, setTxStep] = useState(null);
   const [tx1Digest, setTx1Digest] = useState(null);
@@ -586,7 +590,37 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
           ],
         });
         const [protocolCut] = tx2.splitCoins(tx2.gas, [tx2.pure.u64(PROTOCOL_SURCHARGE_MIST)]);
-        tx2.transferObjects([protocolCut], PROTOCOL_WALLET);
+        if (isV10OrLater(PACKAGE_ID)) {
+          // V10: route the +2 SUI into the curve's protocol_fees bucket (claimable
+          // via AdminCap) instead of a raw wallet transfer. Must run while `curve`
+          // is still owned — i.e. before share_curve below.
+          tx2.moveCall({
+            target: `${PACKAGE_ID}::bonding_curve::collect_protocol_surcharge`,
+            typeArguments: [newTokenType],
+            arguments: [curve, protocolCut],
+          });
+        } else {
+          // Legacy active package (pre-V10): interim direct transfer to protocol wallet.
+          tx2.transferObjects([protocolCut], PROTOCOL_WALLET);
+        }
+      }
+
+      // ── V10: optional creator buyback config at launch ─────────────────────
+      // If the creator opted in, set the fraction of THEIR fee slice routed to
+      // buyback and whether bought tokens are burned or returned. Uses `cap`
+      // before it is transferred below. buyback_bps is 0–10000.
+      if (isV10OrLater(PACKAGE_ID) && buybackEnabled && buybackBps > 0) {
+        tx2.moveCall({
+          target: `${PACKAGE_ID}::bonding_curve::set_buyback_config`,
+          typeArguments: [newTokenType],
+          arguments: [
+            cap,
+            curve,
+            tx2.pure.u64(BigInt(buybackBps)),
+            tx2.pure.bool(buybackBurn),
+            tx2.object(SUI_CLOCK_ID),
+          ],
+        });
       }
 
       tx2.moveCall({ target: `${PACKAGE_ID}::bonding_curve::share_curve`, typeArguments: [newTokenType], arguments: [curve] });
@@ -1018,6 +1052,60 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
                 </div>
               )}
 
+              {/* V10: creator buyback config — carved from the creator's own fee slice */}
+              {isV10OrLater(PACKAGE_ID) && (
+                <div className="rounded-2xl border border-white/5 bg-white/[0.02] p-4 space-y-3">
+                  <label className="flex items-center gap-2.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={buybackEnabled}
+                      onChange={e => setBuybackEnabled(e.target.checked)}
+                      className="accent-lime-400 w-3.5 h-3.5"
+                    />
+                    <span className="text-[11px] font-mono text-white/70">
+                      Enable creator buyback
+                    </span>
+                  </label>
+                  <p className="text-[9px] font-mono text-white/25 leading-relaxed">
+                    A slice of YOUR creator fees (not the total fee) is set aside on
+                    every trade. You trigger the buyback later; bought tokens are
+                    burned or returned to you. Does not change the 1% trade fee.
+                  </p>
+
+                  {buybackEnabled && (
+                    <div className="space-y-3 pt-1">
+                      <div>
+                        <div className="flex justify-between text-[9px] tracking-widest text-white/30 mb-1.5">
+                          <span>BUYBACK % OF CREATOR FEES</span>
+                          <span className="text-lime-400">{(buybackBps / 100).toFixed(0)}%</span>
+                        </div>
+                        <input
+                          type="range" min={0} max={10000} step={500}
+                          value={buybackBps}
+                          onChange={e => setBuybackBps(parseInt(e.target.value, 10))}
+                          className="w-full accent-lime-400"
+                        />
+                      </div>
+                      <div>
+                        <div className="text-[9px] tracking-widest text-white/30 mb-1.5">BOUGHT TOKENS</div>
+                        <div className="grid grid-cols-2 gap-1.5">
+                          <button
+                            onClick={() => setBuybackBurn(true)}
+                            className={`py-1.5 rounded-lg text-[10px] font-mono transition-colors ${buybackBurn ? 'bg-lime-400/10 text-lime-400 border border-lime-400/30' : 'text-white/30 hover:text-white/60 border border-white/10'}`}>
+                            Burn 🔥
+                          </button>
+                          <button
+                            onClick={() => setBuybackBurn(false)}
+                            className={`py-1.5 rounded-lg text-[10px] font-mono transition-colors ${!buybackBurn ? 'bg-lime-400/10 text-lime-400 border border-lime-400/30' : 'text-white/30 hover:text-white/60 border border-white/10'}`}>
+                            Return to me
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className="rounded-2xl border border-white/5 bg-white/[0.02] p-4 space-y-2">
                 <div className="flex justify-between text-[10px] font-mono">
                   <span className="text-white/30">{t(lang, 'launchFee')}</span>
@@ -1033,6 +1121,12 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
                   <div className="flex justify-between text-[10px] font-mono">
                     <span className="text-white/30">Token page ({epochSite.name})</span>
                     <span className="text-white">5.00 SUI</span>
+                  </div>
+                )}
+                {isV10OrLater(PACKAGE_ID) && buybackEnabled && buybackBps > 0 && (
+                  <div className="flex justify-between text-[10px] font-mono">
+                    <span className="text-white/30">Creator buyback</span>
+                    <span className="text-white">{(buybackBps / 100).toFixed(0)}% · {buybackBurn ? 'burn' : 'return'}</span>
                   </div>
                 )}
                 <div className="border-t border-white/5 pt-2 flex justify-between text-[10px] font-mono font-bold">

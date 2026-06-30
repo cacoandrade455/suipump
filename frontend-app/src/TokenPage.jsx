@@ -13,7 +13,7 @@ import { useTokenPageFeed } from './useRealtimeFeed.js';
 import HolderList from './HolderList.jsx';
 import Comments from './Comments.jsx';
 import AIAnalysis from './AIAnalysis.jsx';
-import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8, PACKAGE_ID_V9, ALL_PACKAGE_IDS, MIST_PER_SUI, DRAIN_SUI_APPROX, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_SUI_V6, VIRTUAL_SUI_V7, VIRTUAL_SUI_V8, VIRTUAL_SUI_V9, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, VIRTUAL_TOKENS_V6, VIRTUAL_TOKENS_V7, VIRTUAL_TOKENS_V8, VIRTUAL_TOKENS_V9, DRAIN_SUI_V4, DRAIN_SUI_V5, DRAIN_SUI_V6, DRAIN_SUI_V7, DRAIN_SUI_V8, DRAIN_SUI_V9, isNewCurve, isV5OrLater, isV7OrLater, isV8OrLater, isV9OrLater, supportsMetadataUpdate, curveShapeFor } from './constants.js';
+import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8, PACKAGE_ID_V9, PACKAGE_ID_V10, ALL_PACKAGE_IDS, MIST_PER_SUI, DRAIN_SUI_APPROX, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_SUI_V6, VIRTUAL_SUI_V7, VIRTUAL_SUI_V8, VIRTUAL_SUI_V9, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, VIRTUAL_TOKENS_V6, VIRTUAL_TOKENS_V7, VIRTUAL_TOKENS_V8, VIRTUAL_TOKENS_V9, DRAIN_SUI_V4, DRAIN_SUI_V5, DRAIN_SUI_V6, DRAIN_SUI_V7, DRAIN_SUI_V8, DRAIN_SUI_V9, isNewCurve, isV5OrLater, isV7OrLater, isV8OrLater, isV9OrLater, isV10OrLater, supportsMetadataUpdate, curveShapeFor } from './constants.js';
 import { buyQuote, sellQuote } from './curve.js';
 import { t } from './i18n.js';
 
@@ -1470,6 +1470,261 @@ function CommentsBlock({ curveId, packageId, lang, initialSharedVersion = null, 
   );
 }
 
+// ── V10: Community Takeover (CTO) ─────────────────────────────────────────────
+// Surfaces the proposal lifecycle for a V10 curve: a token holder can nominate a
+// new creator once the incumbent has been inactive ≥5 days; holders vote for/
+// against during a 12h window weighted by live balance; anyone resolves after
+// close. The active proposal (id, tallies, close time, nominee) is read from the
+// indexer. The incumbent creator gets a Heartbeat button to reset the timer.
+// Entrypoints:
+//   propose_takeover<T>(curve, nominee, &holder_coin, clock, ctx) -> TakeoverProposal (shared)
+//   vote_takeover<T>(curve, &mut proposal, support, &holder_coin, clock, ctx)
+//   resolve_takeover<T>(curve, proposal, clock, ctx)
+//   creator_heartbeat<T>(&cap, curve, clock, ctx)
+const CTO_INACTIVITY_MS = 5 * 24 * 60 * 60 * 1000;
+const CTO_WINDOW_MS     = 12 * 60 * 60 * 1000;
+const ZERO_ADDR_CTO     = '0x0000000000000000000000000000000000000000000000000000000000000000';
+
+async function firstCoinId(client, owner, coinType) {
+  if (!client || !owner || !coinType) return null;
+  try {
+    const res = await client.getCoins({ owner, coinType });
+    const coins = res?.data ?? res?.coins ?? [];
+    if (!coins.length) return null;
+    let best = coins[0];
+    for (const c of coins) if (BigInt(c.balance ?? 0) > BigInt(best.balance ?? 0)) best = c;
+    return best.coinObjectId ?? best.objectId ?? null;
+  } catch { return null; }
+}
+
+function CommunityTakeoverPanel({ curveId, tokenType, packageId, creator, lastCreatorActivityMs, account, initialSharedVersion, lang }) {
+  const client  = useCurrentClient();
+  const dAppKit = useDAppKit();
+  const isCreator = account && creator && account.address.toLowerCase() === creator.toLowerCase();
+
+  const [proposal, setProposal] = useState(null); // { proposalId, sharedVersion, nominee, forWeight, againstWeight, closesMs, snapshotSupply }
+  const [nominee, setNominee]   = useState('');
+  const [busy, setBusy]         = useState(false);
+  const [msg, setMsg]           = useState('');
+  const [now, setNow]           = useState(Date.now());
+
+  const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
+
+  // Poll the indexer for the active proposal on this curve.
+  useEffect(() => {
+    if (!curveId || !INDEXER_URL) return;
+    let cancelled = false;
+    async function load() {
+      try {
+        const r = await fetch(`${INDEXER_URL}/token/${curveId}/takeover`, { signal: AbortSignal.timeout(5000) });
+        if (r.ok) {
+          const d = await r.json();
+          if (!cancelled) {
+            setProposal(d && d.proposal_id ? {
+              proposalId:     d.proposal_id,
+              sharedVersion:  d.initial_shared_version ?? d.shared_version ?? null,
+              nominee:        d.nominee ?? null,
+              forWeight:      BigInt(d.for_weight ?? 0),
+              againstWeight:  BigInt(d.against_weight ?? 0),
+              closesMs:       Number(d.closes_ms ?? 0),
+              snapshotSupply: BigInt(d.snapshot_supply ?? 0),
+            } : null);
+          }
+        }
+      } catch {}
+    }
+    load();
+    const t = setInterval(load, 8000);
+    const clk = setInterval(() => setNow(Date.now()), 1000);
+    return () => { cancelled = true; clearInterval(t); clearInterval(clk); };
+  }, [curveId, INDEXER_URL]);
+
+  const curveRef = (tx, mutable) => (initialSharedVersion
+    ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: String(initialSharedVersion), mutable })
+    : tx.object(curveId));
+
+  const inactiveFor = lastCreatorActivityMs ? (now - Number(lastCreatorActivityMs)) : 0;
+  const canPropose  = !proposal && inactiveFor >= CTO_INACTIVITY_MS;
+  const voteOpen    = proposal && now < proposal.closesMs;
+  const canResolve  = proposal && now >= proposal.closesMs;
+
+  async function doHeartbeat() {
+    if (busy) return;
+    setBusy(true); setMsg('');
+    try {
+      const { capId } = await resolveCreatorCap(account.address, curveId, INDEXER_URL);
+      const tx = new Transaction();
+      tx.moveCall({
+        target: `${packageId}::bonding_curve::creator_heartbeat`,
+        typeArguments: [tokenType],
+        arguments: [tx.object(capId), curveRef(tx, true), tx.object(SUI_CLOCK_ID)],
+      });
+      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Heartbeat failed');
+      setMsg('Heartbeat sent — inactivity timer reset.');
+    } catch (e) { setMsg(e.message || 'Heartbeat failed'); }
+    finally { setBusy(false); }
+  }
+
+  async function doPropose() {
+    if (busy || !account) return;
+    const nm = nominee.trim();
+    if (!/^0x[0-9a-fA-F]{1,64}$/.test(nm)) { setMsg('Enter a valid nominee address'); return; }
+    setBusy(true); setMsg('');
+    try {
+      const coinId = await firstCoinId(client, account.address, tokenType);
+      if (!coinId) { setMsg('Hold the token to nominate'); setBusy(false); return; }
+      const tx = new Transaction();
+      const prop = tx.moveCall({
+        target: `${packageId}::bonding_curve::propose_takeover`,
+        typeArguments: [tokenType],
+        arguments: [curveRef(tx, true), tx.pure.address(nm), tx.object(coinId), tx.object(SUI_CLOCK_ID)],
+      });
+      // propose_takeover returns a TakeoverProposal — share it so voters can reach it.
+      tx.moveCall({
+        target: '0x2::transfer::public_share_object',
+        typeArguments: [`${packageId}::bonding_curve::TakeoverProposal`],
+        arguments: [prop],
+      });
+      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Propose failed');
+      setMsg('Takeover proposed. Voting is open for 12h.');
+      setNominee('');
+    } catch (e) { setMsg(e.message || 'Propose failed'); }
+    finally { setBusy(false); }
+  }
+
+  async function doVote(support) {
+    if (busy || !account || !proposal) return;
+    setBusy(true); setMsg('');
+    try {
+      const coinId = await firstCoinId(client, account.address, tokenType);
+      if (!coinId) { setMsg('Hold the token to vote'); setBusy(false); return; }
+      const tx = new Transaction();
+      const propRef = proposal.sharedVersion
+        ? tx.sharedObjectRef({ objectId: proposal.proposalId, initialSharedVersion: String(proposal.sharedVersion), mutable: true })
+        : tx.object(proposal.proposalId);
+      tx.moveCall({
+        target: `${packageId}::bonding_curve::vote_takeover`,
+        typeArguments: [tokenType],
+        arguments: [curveRef(tx, false), propRef, tx.pure.bool(support), tx.object(coinId), tx.object(SUI_CLOCK_ID)],
+      });
+      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Vote failed');
+      setMsg(support ? 'Voted FOR.' : 'Voted AGAINST.');
+    } catch (e) { setMsg(e.message || 'Vote failed'); }
+    finally { setBusy(false); }
+  }
+
+  async function doResolve() {
+    if (busy || !proposal) return;
+    setBusy(true); setMsg('');
+    try {
+      const tx = new Transaction();
+      const propRef = proposal.sharedVersion
+        ? tx.sharedObjectRef({ objectId: proposal.proposalId, initialSharedVersion: String(proposal.sharedVersion), mutable: true })
+        : tx.object(proposal.proposalId);
+      tx.moveCall({
+        target: `${packageId}::bonding_curve::resolve_takeover`,
+        typeArguments: [tokenType],
+        arguments: [curveRef(tx, true), propRef, tx.object(SUI_CLOCK_ID)],
+      });
+      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Resolve failed');
+      setMsg('Proposal resolved.');
+      setProposal(null);
+    } catch (e) { setMsg(e.message || 'Resolve failed'); }
+    finally { setBusy(false); }
+  }
+
+  const fmtH = (ms) => {
+    if (ms <= 0) return '0h 0m';
+    const h = Math.floor(ms / 3_600_000), m = Math.floor((ms % 3_600_000) / 60_000);
+    return `${h}h ${m}m`;
+  };
+  const pct = (a, b) => {
+    const tot = a + b;
+    if (tot === 0n) return 0;
+    return Number((a * 100n) / tot);
+  };
+
+  return (
+    <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="text-[10px] font-mono text-lime-400/70 tracking-widest">COMMUNITY TAKEOVER</div>
+        {isCreator && (
+          <button onClick={doHeartbeat} disabled={busy}
+            className={`px-2.5 py-1 rounded-lg text-[9px] font-mono transition-colors ${busy ? 'bg-white/5 text-white/25' : 'bg-lime-400/10 text-lime-400 border border-lime-400/30 hover:bg-lime-400/20'}`}>
+            ♥ HEARTBEAT
+          </button>
+        )}
+      </div>
+
+      {/* No active proposal */}
+      {!proposal && (
+        <div className="space-y-2">
+          <p className="text-[11px] font-mono text-white/40 leading-relaxed">
+            {inactiveFor >= CTO_INACTIVITY_MS
+              ? 'Creator inactive 5+ days. A token holder (≥1% supply) may nominate a new creator.'
+              : `Creator active. Takeover unlocks after 5 days of inactivity (currently ${fmtH(CTO_INACTIVITY_MS - inactiveFor)} remaining).`}
+          </p>
+          {canPropose && account && (
+            <div className="flex gap-2">
+              <input value={nominee} onChange={e => setNominee(e.target.value)} placeholder="New creator address (0x…)"
+                className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white placeholder-white/20 focus:outline-none focus:border-lime-400/40 font-mono" />
+              <button onClick={doPropose} disabled={busy || !nominee.trim()}
+                className={`px-3 py-1.5 rounded-lg text-[10px] font-mono transition-colors ${busy || !nominee.trim() ? 'bg-white/5 text-white/25 cursor-not-allowed' : 'bg-lime-400 hover:bg-lime-300 text-black'}`}>
+                NOMINATE
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Active proposal */}
+      {proposal && (
+        <div className="space-y-2.5">
+          <div className="text-[11px] font-mono text-white/50">
+            Nominee: <Link to={`/portfolio/${proposal.nominee}`} className="text-lime-400 hover:underline">{proposal.nominee?.slice(0,6)}…{proposal.nominee?.slice(-4)}</Link>
+          </div>
+          <div className="space-y-1">
+            <div className="flex justify-between text-[10px] font-mono">
+              <span className="text-lime-400">FOR {pct(proposal.forWeight, proposal.againstWeight)}%</span>
+              <span className="text-red-400">{100 - pct(proposal.forWeight, proposal.againstWeight)}% AGAINST</span>
+            </div>
+            <div className="h-1.5 bg-red-400/30 rounded-full overflow-hidden">
+              <div className="h-full bg-lime-400" style={{ width: `${pct(proposal.forWeight, proposal.againstWeight)}%` }} />
+            </div>
+          </div>
+          <div className="text-[10px] font-mono text-white/30">
+            {voteOpen ? `Voting closes in ${fmtH(proposal.closesMs - now)}` : 'Voting closed'}
+          </div>
+          {voteOpen && account && (
+            <div className="flex gap-2">
+              <button onClick={() => doVote(true)} disabled={busy}
+                className={`flex-1 py-1.5 rounded-lg text-[10px] font-mono transition-colors ${busy ? 'bg-white/5 text-white/25' : 'bg-lime-400/15 text-lime-400 border border-lime-400/30 hover:bg-lime-400/25'}`}>
+                VOTE FOR
+              </button>
+              <button onClick={() => doVote(false)} disabled={busy}
+                className={`flex-1 py-1.5 rounded-lg text-[10px] font-mono transition-colors ${busy ? 'bg-white/5 text-white/25' : 'bg-red-400/15 text-red-400 border border-red-400/30 hover:bg-red-400/25'}`}>
+                VOTE AGAINST
+              </button>
+            </div>
+          )}
+          {canResolve && (
+            <button onClick={doResolve} disabled={busy}
+              className={`w-full py-1.5 rounded-lg text-[10px] font-mono transition-colors ${busy ? 'bg-white/5 text-white/25' : 'bg-white/10 text-white/70 border border-white/20 hover:bg-white/20'}`}>
+              RESOLVE PROPOSAL
+            </button>
+          )}
+        </div>
+      )}
+
+      {msg && <div className="text-[10px] font-mono text-white/40">{msg}</div>}
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function TokenPage({ curveId, tokenType, packageId: packageIdHint, initialSharedVersion: initialSharedVersionProp = null, onBack, lang = 'en', tradeKeypair = null, tradeKeyReady = false }) {
@@ -1969,6 +2224,18 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
 
           <TradesHoldersBlock curveId={curveId} tokenType={tokenType} suiUsd={suiUsd} lang={lang} creator={creatorAddr} trades={feedTrades} connected={feedConnected} loading={feedLoading} symbol={symbol} />
           <CommentsBlock curveId={curveId} packageId={pkgId} lang={lang} initialSharedVersion={initialSharedVersionProp ?? curveState?.initial_shared_version ?? null} tokenType={tokenType} />
+          {isV10OrLater(pkgId) && !graduated && (
+            <CommunityTakeoverPanel
+              curveId={curveId}
+              tokenType={tokenType}
+              packageId={pkgId}
+              creator={creatorAddr}
+              lastCreatorActivityMs={curveState?.last_creator_activity_ms ?? null}
+              account={account}
+              initialSharedVersion={initialSharedVersionProp ?? curveState?.initial_shared_version ?? null}
+              lang={lang}
+            />
+          )}
           {isCreator && (
             <div className="lg:hidden">
               <CreatorToolsPanel curveId={curveId} tokenType={tokenType} packageIdHint={pkgId} account={account} curveState={curveState} currentDesc={desc} currentTwitter={twitter} currentTelegram={telegram} currentWebsite={website} currentDex={dex} lang={lang} onMetaUpdated={handleMetaUpdated} />
