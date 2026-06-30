@@ -43,9 +43,9 @@ const INDEXER_URL   = process.env.SUIPUMP_INDEXER_URL ?? 'https://suipump-62s2.o
 const AGENT_API_KEY = process.env.AGENT_API_KEY ?? '';
 const WRITE_ENDPOINTS = new Set(['/buy', '/sell', '/launch', '/claim']);
 
-// ── Active package for NEW launches (V9) ──────────────────────────────────────
+// ── Active package for NEW launches (V10) ─────────────────────────────────────
 const ACTIVE_PACKAGE_ID = process.env.ACTIVE_PACKAGE_ID
-  ?? '0x719698e5138582d78ee95317271e8bce05769569a4f58c940a7f1b424d90ffe2'; // V9
+  ?? '0x2deda2cade65cd5afd5ffbe799d48f2491debf08d3aef6fa11aa6e1c8afe1598'; // V10
 const LAUNCH_FEE_MIST   = 2_000_000_000n; // 2 SUI
 
 // Compiled coin template bytecode — force-included in repo for the bridge.
@@ -119,9 +119,8 @@ const ALL_PACKAGE_IDS = [
   '0x145a1e79b83cc17680dbfe4f96839cd359c7db380ac15463ecb6dc30f9849b69', // V8_1
   '0xbb4ee050239f59dfd983501ce101698ba27857f77aff2d437cec568fe0062546', // V8
   '0x719698e5138582d78ee95317271e8bce05769569a4f58c940a7f1b424d90ffe2', // V9
+  '0x2deda2cade65cd5afd5ffbe799d48f2491debf08d3aef6fa11aa6e1c8afe1598', // V10
 ];
-
-// Packages that use V5+ buy() signature (with referral + clock)
 const V5_PLUS = new Set([
   '0x785c0604cb6c60a8547501e307d2b0ca7a586ff912c8abff4edfb88db65b7236', // V5
   '0x21d5b1284d5f1d4d14214654f414ffca20c757ee9f9db7701d3ffaaac62cd768', // V6
@@ -136,11 +135,18 @@ const V7_PLUS = new Set([
   '0x145a1e79b83cc17680dbfe4f96839cd359c7db380ac15463ecb6dc30f9849b69', // V8_1
   '0xbb4ee050239f59dfd983501ce101698ba27857f77aff2d437cec568fe0062546', // V8
   '0x719698e5138582d78ee95317271e8bce05769569a4f58c940a7f1b424d90ffe2', // V9
+  '0x2deda2cade65cd5afd5ffbe799d48f2491debf08d3aef6fa11aa6e1c8afe1598', // V10
 ]);
 
 // Packages that use V9+ buy() signature (adds sui_price_scaled: u64 arg)
 const V9_PLUS = new Set([
   '0x719698e5138582d78ee95317271e8bce05769569a4f58c940a7f1b424d90ffe2', // V9
+  '0x2deda2cade65cd5afd5ffbe799d48f2491debf08d3aef6fa11aa6e1c8afe1598', // V10
+]);
+
+// Packages that use V10+ claim_creator_fees() signature (adds clock: &Clock arg)
+const V10_PLUS = new Set([
+  '0x2deda2cade65cd5afd5ffbe799d48f2491debf08d3aef6fa11aa6e1c8afe1598', // V10
 ]);
 
 const SUI_CLOCK_ID = '0x6';
@@ -608,10 +614,16 @@ async function handleClaim(body) {
   const tx       = new Transaction();
   const curveRef = tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: sharedVersion, mutable: true });
 
+  // V10 added clock: &Clock to claim_creator_fees(cap, curve, clock, ctx).
+  // V4-V9: claim_creator_fees(cap, curve, ctx).
+  const claimArgs = V10_PLUS.has(pkgId)
+    ? [tx.object(capObjectId), curveRef, tx.object(SUI_CLOCK_ID)]
+    : [tx.object(capObjectId), curveRef];
+
   tx.moveCall({
     target: `${pkgId}::bonding_curve::claim_creator_fees`,
     typeArguments: [tokenType],
-    arguments: [tx.object(capObjectId), curveRef],
+    arguments: claimArgs,
   });
 
   const result = await client.signAndExecuteTransaction({
@@ -645,8 +657,8 @@ async function handleLaunch(body) {
   const keypair  = loadKeypair(privateKey);
   const address  = keypair.toSuiAddress();
 
-  const pkgId        = ACTIVE_PACKAGE_ID;            // new launches always on the active (V9) package
-  const isV9         = V9_PLUS.has(pkgId);
+  const pkgId        = ACTIVE_PACKAGE_ID;            // new launches always on the active (V10) package
+  const isV9         = V9_PLUS.has(pkgId);           // V10 ∈ V9_PLUS — buy() uses sui_price_scaled arg
   const gradTarget   = Number(graduationTarget ?? 2); // 0=Cetus 1=DeepBook 2=Turbos
   const antiBot      = Number(antiBotDelay ?? 0);
   const tokenName    = String(name).trim();
