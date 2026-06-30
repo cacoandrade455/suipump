@@ -1,4 +1,4 @@
-// strategy.js — SuiPump strategy "brain".
+// strategy.js - SuiPump strategy "brain".
 //
 // Runs as a SECOND process inside the agent-runner service (started by start.sh
 // alongside server.js). server.js stays byte-for-byte unchanged. This process
@@ -23,7 +23,7 @@
 //
 // No npm dependencies: node builtins + global fetch only (Node 18+).
 
-// ── Config (all env-overridable) ──────────────────────────────────────────────
+// -- Config (all env-overridable) ----------------------------------------------
 const PORT              = parseInt(process.env.PORT ?? '3040', 10);
 const RUNNER_URL        = process.env.RUNNER_URL      ?? `http://127.0.0.1:${PORT}`;
 const BRIDGE_URL        = process.env.SUIPUMP_BRIDGE_URL ?? 'https://suipump-bridge.onrender.com';
@@ -37,7 +37,7 @@ const STRATEGY_API_KEY  = process.env.STRATEGY_API_KEY ?? '';
 // only (same value as the bridge's and runner's AGENT_API_KEY).
 const AGENT_API_KEY     = process.env.AGENT_API_KEY ?? '';
 // C2 DEMO MODE: when on, demo'd actions (buy/sell) are executed SOLELY through
-// the Talus leader path — emit the Nexus walk with confirm:true, and if the
+// the Talus leader path - emit the Nexus walk with confirm:true, and if the
 // leader settles it (EndState Ok/Empty, sender = a leader), skip the bridge
 // settle so the leader is the one, provable executor. If the leader path does
 // not confirm in time, we fall back to the bridge so a demo never hangs.
@@ -50,16 +50,16 @@ const DUST_WHOLE        = Number(process.env.STRATEGY_DUST_WHOLE ?? '0.000001');
 
 const MIST_PER_SUI   = 1_000_000_000;
 const TOKEN_DECIMALS = 6;
-const VTOK           = 1_073_000_000; // virtual token reserve — same all versions
+const VTOK           = 1_073_000_000; // virtual token reserve - same all versions
 
-// ── Logging ───────────────────────────────────────────────────────────────────
+// -- Logging -------------------------------------------------------------------
 const log = (...a) => console.log(`[brain]`, ...a);
 const err = (...a) => console.error(`[brain]`, ...a);
 
 process.on('unhandledRejection', (e) => err('unhandledRejection:', e?.message ?? e));
 process.on('uncaughtException',  (e) => err('uncaughtException:',  e?.message ?? e));
 
-// ── Per-package virtual SUI — ported from indexer/api.js getVirtuals ──────────
+// -- Per-package virtual SUI - ported from indexer/api.js getVirtuals ----------
 function getVSui(packageId) {
   if (!packageId) return 3500;
   if (packageId.startsWith('0x2154')) return 30000; // V4
@@ -70,14 +70,14 @@ function getVSui(packageId) {
   return 3500;                                       // V8 / V8_1
 }
 
-// Spot price in SUI per whole token — constant-product, matches api.js + TokenPage.
+// Spot price in SUI per whole token - constant-product, matches api.js + TokenPage.
 function priceFromReserve(vSui, reserveMist) {
   const realSui = Number(reserveMist ?? 0) / MIST_PER_SUI;
   const k = vSui * VTOK;
   return k > 0 ? ((vSui + realSui) * (vSui + realSui)) / k : 0;
 }
 
-// ── Order state (keyed by id) ─────────────────────────────────────────────────
+// -- Order state (keyed by id) -------------------------------------------------
 const ORDERS = new Map();
 
 function normalizeRemote(R) {
@@ -111,7 +111,7 @@ function normalizeRemote(R) {
   };
 }
 
-// ── Indexer order-store client ────────────────────────────────────────────────
+// -- Indexer order-store client ------------------------------------------------
 async function fetchActiveOrders() {
   const r = await fetch(`${INDEXER_URL}/orders?status=active`, { signal: AbortSignal.timeout(8000) });
   if (!r.ok) throw new Error(`orders ${r.status}`);
@@ -134,12 +134,12 @@ async function persistOrder(order) {
   } catch (e) { err(`${order.id}: persist error ${e.message}`); }
 }
 
-// pruneParentEntered — when an AUTOPILOT TP/SL child fully closes (100% exit),
+// pruneParentEntered - when an AUTOPILOT TP/SL child fully closes (100% exit),
 // remove its curve from the parent autopilot's `entered[]` so the panel stops
 // showing a position that no longer exists. Child ids are `ord_<parent>_tp_<hex>`;
 // we recover the parent id, GET it, drop this child's full curveId from
 // params.entered, and PATCH the params back. Best-effort: a failure just leaves
-// the (now-closed) position lingering in the list until the next prune — never
+// the (now-closed) position lingering in the list until the next prune - never
 // throws, never blocks the sell flow.
 async function pruneParentEntered(childOrder) {
   try {
@@ -168,7 +168,7 @@ async function pruneParentEntered(childOrder) {
       method: 'PATCH', headers, body: JSON.stringify({ params: nextParams }), signal: AbortSignal.timeout(8000),
     });
     if (pr.ok) {
-      log(`${childOrder.id}: position closed — pruned ${curveId.slice(0, 10)}\u2026 from autopilot ${parentId} entered[] (${nextEntered.length} open)`);
+      log(`${childOrder.id}: position closed - pruned ${curveId.slice(0, 10)}\u2026 from autopilot ${parentId} entered[] (${nextEntered.length} open)`);
     } else {
       const d = await pr.json().catch(() => ({}));
       err(`${childOrder.id}: prune parent ${parentId} ${pr.status} ${d.error ?? ''}`);
@@ -176,8 +176,8 @@ async function pruneParentEntered(childOrder) {
   } catch (e) { err(`${childOrder.id}: prune parent error ${e.message}`); }
 }
 
-// persistParams — PATCH back the params object (and status) for the param-driven
-// strategies (sniper, dca, …) so counters like sniper's `fired` survive a brain
+// persistParams - PATCH back the params object (and status) for the param-driven
+// strategies (sniper, dca, ...) so counters like sniper's `fired` survive a brain
 // restart. persistOrder above only carries tpsl ladder state; this is its
 // params analog. The indexer PATCH route accepts { params, status }.
 async function persistParams(order) {
@@ -195,7 +195,7 @@ async function persistParams(order) {
   } catch (e) { err(`${order.id}: persistParams error ${e.message}`); }
 }
 
-// recordFire — stamp the most recent on-chain fire (Nexus task/execution + the
+// recordFire - stamp the most recent on-chain fire (Nexus task/execution + the
 // bridge settle digest) onto the order so the agent page can surface live proof
 // of execution per strategy. Stored under params._lastFire (the PATCH route
 // keeps params raw, so it survives). curveId lets the UI link the right curve.
@@ -235,7 +235,7 @@ async function recordFire(order, fire) {
   }).catch(() => {});
 }
 
-// recordAgentAction — POST a row to the indexer's agent_actions history. Used by
+// recordAgentAction - POST a row to the indexer's agent_actions history. Used by
 // recordFire (autonomous). Best-effort, never throws. Mirrors persistParams's
 // key/guard handling (x-strategy-key when STRATEGY_API_KEY is set).
 async function recordAgentAction(action) {
@@ -248,7 +248,7 @@ async function recordAgentAction(action) {
   } catch (e) { err(`recordAgentAction error: ${e.message}`); }
 }
 
-// notifyBell — push a TP/SL fire to the indexer notification store so it surfaces
+// notifyBell - push a TP/SL fire to the indexer notification store so it surfaces
 // in the user's notification bell as "TP triggered" / "SL triggered". Best-effort:
 // a failed notify must never affect the trade. The trigger reason ('TP'|'SL') is
 // only known here (the on-chain sell event can't distinguish them), which is why
@@ -303,11 +303,11 @@ async function spawnChild(parentId, curveId, tokenType, entryPrice, then) {
     } catch (e) { err(`${parentId}: spawn child tpsl error ${e.message}`); return null; }
   }
 
-  // (future child types — e.g. then.dca — slot in here with the same contract)
+  // (future child types - e.g. then.dca - slot in here with the same contract)
   return null;
 }
 
-// armThen — shared helper: after a buy-strategy settles a buy on `curveId`, read
+// armThen - shared helper: after a buy-strategy settles a buy on `curveId`, read
 // the REAL post-buy price and arm whatever the parent's `then` block specifies.
 // Used by sniper, dca, and copytrade so chaining is identical across all three.
 async function armThen(parentId, curveId, then) {
@@ -322,20 +322,20 @@ async function armThen(parentId, curveId, then) {
   }
   const childId = await spawnChild(parentId, curveId, childTokenType, entryPrice, then);
   if (childId) {
-    log(`${parentId}: armed child ${childId} on ${curveId.slice(0, 10)}… entry=${entryPrice != null ? entryPrice.toExponential(3) : 'observe'} SUI`);
+    log(`${parentId}: armed child ${childId} on ${curveId.slice(0, 10)}... entry=${entryPrice != null ? entryPrice.toExponential(3) : 'observe'} SUI`);
   }
   return childId;
 }
 
-// armThenAt — like armThen, but uses a SUPPLIED entry price and tokenType rather
+// armThenAt - like armThen, but uses a SUPPLIED entry price and tokenType rather
 // than reading the curve fresh. DCA uses this to arm the child (e.g. TP/SL) on
 // the blended AVERAGE cost across all fills, so profit/loss is measured against
-// what was actually paid — not a single fill or a fresh spot read.
+// what was actually paid - not a single fill or a fresh spot read.
 async function armThenAt(parentId, curveId, tokenType, entryPrice, then) {
   if (!then || typeof then !== 'object') return null;
   const childId = await spawnChild(parentId, curveId, tokenType, entryPrice, then);
   if (childId) {
-    log(`${parentId}: armed child ${childId} on ${curveId.slice(0, 10)}… entry(avg)=${entryPrice != null ? entryPrice.toExponential(3) : 'observe'} SUI`);
+    log(`${parentId}: armed child ${childId} on ${curveId.slice(0, 10)}... entry(avg)=${entryPrice != null ? entryPrice.toExponential(3) : 'observe'} SUI`);
   }
   return childId;
 }
@@ -364,7 +364,7 @@ async function syncOrders() {
   }
 }
 
-// ── Serialized execution queue (one nexus sell at a time, globally) ───────────
+// -- Serialized execution queue (one nexus sell at a time, globally) -----------
 const queue = [];
 let running = false;
 const firing = new Set();
@@ -395,7 +395,7 @@ function schedule(order, trigger) {
   pump();
 }
 
-// ── On-chain reads (GraphQL, read-only, no key) ───────────────────────────────
+// -- On-chain reads (GraphQL, read-only, no key) -------------------------------
 async function gql(query, variables) {
   const r = await fetch(SUI_GRAPHQL_URL, {
     method: 'POST',
@@ -437,7 +437,7 @@ async function getBalanceWhole(tokenType, addr = INVOKER_ADDRESS) {
   return Number(BigInt(atomic)) / 10 ** TOKEN_DECIMALS;
 }
 
-// ── Fire a sell via the proven runner path (server.js signs) ──────────────────
+// -- Fire a sell via the proven runner path (server.js signs) ------------------
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 // Sui rejects a tx that referenced an object version another tx just bumped
@@ -446,21 +446,21 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 // A fresh /run-dag rebuilds against current versions, so retry this class.
 const STALE_OBJECT_RE = /unavailable for consumption|needs to be rebuilt|rejected as invalid by more than|not available for consumption|equivocat/i;
 
-async function fireSell(curveId, tokenWhole, minSuiOut, sellAll = false) {
+async function fireSell(curveId, tokenWhole, minSuiOut, sellAll = false, sessionId = null) {
   // SELL = two layers, mirroring how buy already settles on these surfaces:
-  //   1. EMIT the Nexus DAG request (/run-dag) — produces a real on-chain
+  //   1. EMIT the Nexus DAG request (/run-dag) - produces a real on-chain
   //      DAGExecution digest (the agentic-decision proof). This NEVER blocks the
   //      sell: if it errors, we log and still settle. The leader does not execute
-  //      it (no leader executes any walk — proven on-chain), so it is emission
+  //      it (no leader executes any walk - proven on-chain), so it is emission
   //      only, by design.
-  //   2. SETTLE via the bridge /sell — the proven path that actually moves the
+  //   2. SETTLE via the bridge /sell - the proven path that actually moves the
   //      tokens (same bridge every working trade on SuiPump uses; the Nexus sell
   //      tool itself calls this exact endpoint). The bridge resolves
   //      tokenType/version/coins and signs with its own SUI_PRIVATE_KEY, so we
   //      pass only curve + amount.
   // Returns { ok, txDigest (settlement), nexusDigest, nexusExecutionId, ... }.
   //
-  // WHOLE-BALANCE SELLS use tokenAmount:"all" — the bridge's proven path that
+  // WHOLE-BALANCE SELLS use tokenAmount:"all" - the bridge's proven path that
   // merges ALL of the wallet's coin objects for this type and sells the lot.
   // A floored exact integer (e.g. 1214301) fails to simulate when the balance is
   // spread across multiple coin objects (bought in several buys): the PTB can't
@@ -476,7 +476,7 @@ async function fireSell(curveId, tokenWhole, minSuiOut, sellAll = false) {
   // robust across multiple coin objects.
   const emitTokenAmount = Math.max(1, Math.floor(tokenWhole));
 
-  // ── 1. Emit the Nexus DAG request (non-blocking) ───────────────────────────
+  // -- 1. Emit the Nexus DAG request (non-blocking) ---------------------------
   let nexusDigest = null, nexusExecutionId = null;
   let leaderSettlement = null, leaderEndState = null, leaderSender = null;
   try {
@@ -502,7 +502,7 @@ async function fireSell(curveId, tokenWhole, minSuiOut, sellAll = false) {
     err(`sell: Nexus DAG emit failed: ${e.message} (continuing to settle)`);
   }
 
-  // ── DEMO MODE: if the leader settled the walk on-chain (Ok/Empty), the leader
+  // -- DEMO MODE: if the leader settled the walk on-chain (Ok/Empty), the leader
   // path already executed the sell (the Nexus sell tool calls the same bridge
   // endpoint). Return the LEADER settlement as the proof and skip the redundant
   // bridge-direct settle, so the leader is the sole, provable executor.
@@ -518,24 +518,36 @@ async function fireSell(curveId, tokenWhole, minSuiOut, sellAll = false) {
     };
   }
   // DEMO MODE fallback note: if we reach here in demo mode, the leader path did
-  // not confirm in time — we fall through to the bridge settle below so the demo
+  // not confirm in time - we fall through to the bridge settle below so the demo
   // still completes. (Logged as a normal settle.)
 
-  // ── 2. Settle the swap via the bridge (the path that moves tokens) ─────────
+  // -- 2. Settle the swap via the bridge (the path that moves tokens) ---------
   // Whole tokens; the bridge converts to base units itself. 3-try retry for the
   // stale-object class (same as the buy/sell coin-version races).
-  const body = { curveId, tokenAmount, minSuiOut: minSuiOut ?? 0 };
+  //
+  // Session sells go to /session-sell, spending from the session's parked tokens
+  // (Option A - interim until the Nexus sell tool routes /session-sell under the
+  // Leader). The session holds its tokens as a single coin, so "all" is not
+  // supported there: we pass a concrete integer amount. For a whole-balance
+  // session sell, tokenWhole already carries the full known balance.
+  // TODO(nexus-session): when sell.rs branches to /session-sell on a sessionId in
+  // the walk, emit the sell with the sessionId so the Leader executes it (Option B).
+  const endpoint = sessionId ? '/session-sell' : '/sell';
+  const sessionTokenAmount = Math.max(0, Math.floor(tokenWhole));
+  const body = sessionId
+    ? { sessionId, curveId, tokenAmount: sessionTokenAmount, minSuiOut: minSuiOut ?? 0 }
+    : { curveId, tokenAmount, minSuiOut: minSuiOut ?? 0 };
   let lastErr;
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      const r = await fetch(`${BRIDGE_URL}/sell`, {
+      const r = await fetch(`${BRIDGE_URL}${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(AGENT_API_KEY ? { 'x-agent-key': AGENT_API_KEY } : {}) },
         body: JSON.stringify(body), signal: AbortSignal.timeout(190000),
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok || d.ok === false) throw new Error(d.error ?? `bridge ${r.status}`);
-      log(`sell: settled via bridge digest=${d.txDigest} sui=${d.suiReceived}`);
+      log(`sell: settled via bridge${sessionId ? ' (session)' : ''} digest=${d.txDigest} sui=${d.suiReceived ?? '?'}`);
       return { ok: true, ...d, nexusDigest, nexusExecutionId };
     } catch (e) {
       lastErr = e;
@@ -551,7 +563,7 @@ async function fireSell(curveId, tokenWhole, minSuiOut, sellAll = false) {
   throw lastErr;
 }
 
-// ── Fire any workflow as a Nexus scheduler TASK (server.js /schedule-task) ─────
+// -- Fire any workflow as a Nexus scheduler TASK (server.js /schedule-task) -----
 // The /schedule-task analog of fireSell: emits a real, persistent, on-chain
 // Nexus scheduler Task + RequestScheduledOccurrence for the given workflow,
 // returning { taskId, detail:{digest, schedule_digest, ...} }. Used by the
@@ -590,10 +602,10 @@ async function fireScheduleTask(workflow, payload, schedule) {
   throw lastErr;
 }
 
-// ── C2 DEMO: buy via the Talus leader path (sole executor), bridge fallback ────
+// -- C2 DEMO: buy via the Talus leader path (sole executor), bridge fallback ----
 // Emits the buy walk with confirm:true. If a leader settles it (EndState Ok,
 // sender = a leader), the leader path already executed the buy (the Nexus buy
-// tool calls the same bridge endpoint) — we return the LEADER settlement digest
+// tool calls the same bridge endpoint) - we return the LEADER settlement digest
 // as the proof and do NOT call the bridge directly. If the leader path does not
 // confirm in time, we fall back to fireBridgeBuy so the demo always completes.
 // Returns { settleDigest, leaderSettled, nexusExecutionId } shaped like the
@@ -620,11 +632,11 @@ async function fireNexusBuy(curveId, amountSui) {
   return { settleDigest, leaderSettled: false, leaderSender: null, nexusExecutionId: null };
 }
 
-// ── Settle a BUY through the bridge (the path that actually moves tokens) ──────
+// -- Settle a BUY through the bridge (the path that actually moves tokens) ------
 // The scheduler task (fireScheduleTask above) emits the on-chain agentic-decision
 // PROOF, but on testnet no Talus leader consumes the occurrence, so the task
 // alone never moves tokens. This is the sniper analog of fireSell's settle leg:
-// it calls the bridge /buy — the same endpoint the site's wallet buys use, which
+// it calls the bridge /buy - the same endpoint the site's wallet buys use, which
 // signs with the bridge's own key and executes the swap now. Returns the
 // settlement txDigest. 3-try retry for the stale-object coin-version race, same
 // as fireSell. The task emit stays best-effort PROOF; this is the money path and
@@ -640,16 +652,30 @@ async function fireNexusBuy(curveId, amountSui) {
 // through the Talus leader path (fireNexusBuy) and reports leaderSettled=true
 // when the leader settles; otherwise it returns the bridge digest with
 // leaderSettled=false. In production (DEMO_MODE off) it is the raw bridge buy.
-async function fireBridgeBuy(curveId, amountSui) {
-  if (DEMO_MODE) {
+async function fireBridgeBuy(curveId, amountSui, sessionId = null) {
+  if (DEMO_MODE && !sessionId) {
+    // Leader-executed path stays the agent-wallet flow. Session trades currently
+    // settle via the bridge /session-buy endpoint (Option A - interim until the
+    // Nexus buy tool learns to call /session-buy under the Leader).
+    // TODO(nexus-session): when buy.rs branches to /session-buy on a sessionId in
+    // the walk, route session buys through fireNexusBuy with the sessionId so the
+    // Leader executes them through Nexus (Option B) instead of this direct call.
     return await fireNexusBuy(curveId, amountSui);
   }
-  const settleDigest = await fireBridgeBuyRaw(curveId, amountSui);
+  const settleDigest = await fireBridgeBuyRaw(curveId, amountSui, sessionId);
   return { settleDigest, leaderSettled: false, leaderSender: null, nexusExecutionId: null };
 }
 
-async function fireBridgeBuyRaw(curveId, amountSui) {
-  const body = { curveId, suiAmount: amountSui };
+async function fireBridgeBuyRaw(curveId, amountSui, sessionId = null) {
+  // When the order is bound to an agent session, spend the session's escrow via
+  // /session-buy instead of the agent wallet via /buy. No privateKey is sent, so
+  // the bridge signs with its own key (= the session_address the user authorized,
+  // the agent wallet 0x877af0...). The on-chain spend_cap/expiry/revoke protect the
+  // user's funds; key custody does not.
+  const endpoint = sessionId ? '/session-buy' : '/buy';
+  const body = sessionId
+    ? { sessionId, curveId, suiAmount: amountSui }
+    : { curveId, suiAmount: amountSui };
   // A snipe fires seconds after launch; the fresh curve's object version / coin
   // state can still be settling, so the first simulate may fail transiently
   // ("Failed to simulate transaction") even though a manual buy moments later
@@ -662,7 +688,7 @@ async function fireBridgeBuyRaw(curveId, amountSui) {
   let lastErr;
   for (let attempt = 1; attempt <= MAX; attempt++) {
     try {
-      const r = await fetch(`${BRIDGE_URL}/buy`, {
+      const r = await fetch(`${BRIDGE_URL}${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(AGENT_API_KEY ? { 'x-agent-key': AGENT_API_KEY } : {}) },
         body: JSON.stringify(body), signal: AbortSignal.timeout(190000),
@@ -673,7 +699,7 @@ async function fireBridgeBuyRaw(curveId, amountSui) {
     } catch (e) {
       lastErr = e;
       if (attempt < MAX && RETRYABLE.test(e.message ?? '')) {
-        const wait = 2500 * attempt;   // 2.5s, 5s, 7.5s, 10s — rides out fresh-curve settle
+        const wait = 2500 * attempt;   // 2.5s, 5s, 7.5s, 10s - rides out fresh-curve settle
         err(`buy settle attempt ${attempt}/${MAX} not ready (${String(e.message).slice(0, 80)}); retrying in ${wait}ms`);
         await sleep(wait);
         continue;
@@ -684,7 +710,7 @@ async function fireBridgeBuyRaw(curveId, amountSui) {
   throw lastErr;
 }
 
-// ── Order evaluation ──────────────────────────────────────────────────────────
+// -- Order evaluation ----------------------------------------------------------
 const slPriceOf   = (order)    => { const s = order.stopLoss; return s ? (s.priceSui ?? order.entryPriceSui * s.multiple) : null; };
 const rungPriceOf = (order, r) => r.priceSui ?? order.entryPriceSui * r.multiple;
 
@@ -707,7 +733,7 @@ async function processOrder(order) {
   try { st = await getCurveState(order.curveId); }
   catch (e) { err(`${order.id}: curve read failed: ${e.message}`); order._cooldownUntil = Date.now() + ERROR_COOLDOWN_MS; return; }
 
-  if (st.graduated) { log(`${order.id}: curve graduated — closing order`); order.done = true; await persistOrder(order); return; }
+  if (st.graduated) { log(`${order.id}: curve graduated - closing order`); order.done = true; await persistOrder(order); return; }
   if (!order.tokenType) order.tokenType = st.tokenType;
   if (!order.packageId) order.packageId = st.packageId;
   if (!order.tokenType) { err(`${order.id}: curve has no tokenType yet`); order._cooldownUntil = Date.now() + ERROR_COOLDOWN_MS; return; }
@@ -717,7 +743,7 @@ async function processOrder(order) {
 
   if (order.entryPriceSui == null) {
     order.entryPriceSui = price;
-    log(`${order.id}: entry not provided — seeding from current price ${price.toExponential(4)} SUI`);
+    log(`${order.id}: entry not provided - seeding from current price ${price.toExponential(4)} SUI`);
     await persistOrder(order);
   }
   order.lastPrice = price;
@@ -752,11 +778,11 @@ async function processOrder(order) {
     const sellWhole = isWholeSell ? balWhole : balWhole * (action.sellPct / 100);
     if (!(sellWhole > DUST_WHOLE)) { if (action.rung) action.rung._fired = true; await persistOrder(order); continue; }
 
-    log(`${order.id}: ${action.kind} fire — (${mult.toFixed(3)}x) selling ${action.sellPct}% of ${balWhole.toFixed(6)} = ${isWholeSell ? 'ALL' : sellWhole.toFixed(6)} tokens`);
+    log(`${order.id}: ${action.kind} fire - (${mult.toFixed(3)}x) selling ${action.sellPct}% of ${balWhole.toFixed(6)} = ${isWholeSell ? 'ALL' : sellWhole.toFixed(6)} tokens`);
     const balBefore = balWhole;
     let receipt;
     try {
-      receipt = await fireSell(order.curveId, sellWhole, order.minSuiOut, isWholeSell);
+      receipt = await fireSell(order.curveId, sellWhole, order.minSuiOut, isWholeSell, order.params?.sessionId ?? null);
     } catch (e) {
       err(`${order.id}: sell failed: ${e.message}`);
       order._cooldownUntil = Date.now() + ERROR_COOLDOWN_MS;
@@ -779,12 +805,12 @@ async function processOrder(order) {
       if (moved >= sellWhole * 0.9) { confirmed = true; break; }
     }
     if (!confirmed) {
-      err(`${order.id}: SELL NOT CONFIRMED — bridge returned digest ${receipt.txDigest ?? '?'} but on-chain balance moved ${moved.toFixed(6)} of ${sellWhole.toFixed(6)} expected (${balBefore.toFixed(6)} -> ${balAfter.toFixed(6)}); order stays active, will retry`);
+      err(`${order.id}: SELL NOT CONFIRMED - bridge returned digest ${receipt.txDigest ?? '?'} but on-chain balance moved ${moved.toFixed(6)} of ${sellWhole.toFixed(6)} expected (${balBefore.toFixed(6)} -> ${balAfter.toFixed(6)}); order stays active, will retry`);
       order._cooldownUntil = Date.now() + ERROR_COOLDOWN_MS;
-      return; // do NOT mark fired/done — the sell did not move tokens
+      return; // do NOT mark fired/done - the sell did not move tokens
     }
 
-    log(`${order.id}: SOLD ${moved.toFixed(6)} tokens CONFIRMED on-chain — balance ${balBefore.toFixed(6)} -> ${balAfter.toFixed(6)} | settle ${receipt.txDigest ?? '?'} | nexus ${receipt.nexusDigest ?? 'not-emitted'}`);
+    log(`${order.id}: SOLD ${moved.toFixed(6)} tokens CONFIRMED on-chain - balance ${balBefore.toFixed(6)} -> ${balAfter.toFixed(6)} | settle ${receipt.txDigest ?? '?'} | nexus ${receipt.nexusDigest ?? 'not-emitted'}`);
 
     balWhole = balAfter; // trust the verified on-chain balance, not an assumption
     if (action.kind === 'SL') {
@@ -804,7 +830,7 @@ async function processOrder(order) {
     if (order.done) await pruneParentEntered(order); // autopilot: drop fully-closed position from parent entered[]
     await recordFire(order, { kind: 'sell', curveId: order.curveId, nexusExec: receipt.nexusExecutionId ?? null, nexusDigest: receipt.nexusDigest ?? null, settle: receipt.txDigest ?? null, leaderSettled: receipt.leaderSettled === true, leaderSender: receipt.leaderSender ?? null });
     // Surface the fire in the notification bell, labelled by WHY it fired
-    // (TP vs SL) — only known here. tokens = confirmed on-chain amount moved.
+    // (TP vs SL) - only known here. tokens = confirmed on-chain amount moved.
     await notifyBell({
       type:    'tpsl',
       trigger: action.kind,                 // 'TP' | 'SL'
@@ -818,15 +844,15 @@ async function processOrder(order) {
   if (order.done) log(`${order.id}: COMPLETE`);
 }
 
-// ── SSE wake-up (never prices from the event) ─────────────────────────────────
+// -- SSE wake-up (never prices from the event) ---------------------------------
 function handleEvent(ev) {
   if (!ev || ev.type === 'connected') return;
   const isTrade  = ev.type === 'TokensPurchased' || ev.type === 'TokensBought' || ev.type === 'TokensSold';
   const isLaunch = ev.type === 'CurveCreated';
   // DIAGNOSTIC: surface any event whose type mentions sell/sold/trade but did NOT
-  // classify as a trade above — catches a sell event with an unexpected type tail.
+  // classify as a trade above - catches a sell event with an unexpected type tail.
   if (!isTrade && !isLaunch && /sold|sell|trade|purchas|bought/i.test(String(ev.type ?? ''))) {
-    log(`[unmatched-ev] type=${ev.type} curve=${String(ev.curveId ?? '∅').slice(0, 10)}… keys=${Object.keys(ev.data ?? {}).join(',')}`);
+    log(`[unmatched-ev] type=${ev.type} curve=${String(ev.curveId ?? 'none').slice(0, 10)}... keys=${Object.keys(ev.data ?? {}).join(',')}`);
   }
 
   if (isTrade && ev.curveId) {
@@ -836,7 +862,7 @@ function handleEvent(ev) {
       : (ev.data?.buyer ?? null);
     // DIAGNOSTIC: log every trade event the brain sees, so a non-matching sell is
     // visible on the wire (type tail + buyer/seller fields). Remove once resolved.
-    log(`[trade-ev] type=${ev.type} side=${side} curve=${String(ev.curveId).slice(0, 10)}… buyer=${ev.data?.buyer ?? '∅'} seller=${ev.data?.seller ?? '∅'}`);
+    log(`[trade-ev] type=${ev.type} side=${side} curve=${String(ev.curveId).slice(0, 10)}... buyer=${ev.data?.buyer ?? 'none'} seller=${ev.data?.seller ?? 'none'}`);
     for (const order of ORDERS.values()) {
       if (order.done) continue;
       const w = HANDLERS[order.type]?.wakesOn;
@@ -907,14 +933,14 @@ async function streamSSE() {
   }
 }
 
-// ── Boot ──────────────────────────────────────────────────────────────────────
+// -- Boot ----------------------------------------------------------------------
 function summarizeOrder(o) {
   const tp = o.takeProfit.map(r => `${r.multiple != null ? r.multiple + 'x' : r.priceSui + ' SUI'}->${r.sellPct}%`).join(', ');
   const sl = o.stopLoss ? (o.stopLoss.multiple != null ? `${o.stopLoss.multiple}x` : `${o.stopLoss.priceSui} SUI`) : 'none';
-  return `${o.id} curve ${o.curveId.slice(0, 10)}… entry ${o.entryPriceSui ?? 'observe'} | TP [${tp}] | SL ${sl}`;
+  return `${o.id} curve ${o.curveId.slice(0, 10)}... entry ${o.entryPriceSui ?? 'observe'} | TP [${tp}] | SL ${sl}`;
 }
 
-// ── Strategy handler registry (dispatch by order.type) ────────────────────────
+// -- Strategy handler registry (dispatch by order.type) ------------------------
 // tpsl is the proven take-profit/stop-loss ladder, wired verbatim to the
 // existing normalizeRemote / processOrder / summarizeOrder. sniper, dca, and
 // copytrade are SCAFFOLDS for A2/A3/A4: the store accepts them and the brain
@@ -941,7 +967,7 @@ function makeScaffold(type, milestone, wakesOn) {
     label: type,
     wakesOn,
     normalize: scaffoldNormalize,
-    summarize: (o) => `${o.id} ${type} ${JSON.stringify(o.params)}${o.curveId ? ' curve ' + o.curveId.slice(0, 10) + '…' : ''} — pending ${milestone}`,
+    summarize: (o) => `${o.id} ${type} ${JSON.stringify(o.params)}${o.curveId ? ' curve ' + o.curveId.slice(0, 10) + '...' : ''} - pending ${milestone}`,
     process: async (order) => {
       if (!order._warned) {
         log(`${order.id}: ${type} not yet implemented (${milestone}); order is inert until then`);
@@ -971,7 +997,7 @@ const HANDLERS = {
     summarize: summarizeOrder,        // existing, unchanged
   },
 
-  // SNIPER — wakes on a CurveCreated event. Emits a buy task on the freshly
+  // SNIPER - wakes on a CurveCreated event. Emits a buy task on the freshly
   // launched curve (from the wake event), amount from order.params.amountSui.
   // Optional params.filter (substring) lets an order snipe only matching curves;
   // absent = snipe every launch. One task per launch (cooldown-guarded).
@@ -996,7 +1022,7 @@ const HANDLERS = {
 
       const p = order.params ?? {};
 
-      // ── Idempotency: claim this curve SYNCHRONOUSLY before any await. The
+      // -- Idempotency: claim this curve SYNCHRONOUSLY before any await. The
       // indexer can emit the same CurveCreated over SSE more than once (gRPC
       // stream + GraphQL backfill overlap), and two wakes can enter process()
       // back-to-back before the in-flight lock releases. A sniper must buy a
@@ -1006,12 +1032,12 @@ const HANDLERS = {
       if (!order._sniped) order._sniped = new Set();
       if (order._sniped.has(curveId)) return;   // already fired for this curve
 
-      // Cap reached? (defensive — sync also closes it; this stops an in-flight wake)
+      // Cap reached? (defensive - sync also closes it; this stops an in-flight wake)
       if (p.maxSnipes > 0 && num2(p.fired, 0) >= p.maxSnipes) {
         order.done = true; await persistParams(order); return;
       }
 
-      // ── Filter against the launch event. The indexer's pg_notify payload puts
+      // -- Filter against the launch event. The indexer's pg_notify payload puts
       // the raw Move event under ev.data, so creator/name/symbol live there.
       const d        = ev.data ?? {};
       const creator  = typeof d.creator === 'string' ? d.creator.toLowerCase() : null;
@@ -1031,7 +1057,7 @@ const HANDLERS = {
         const pass = p.match === 'any' ? hits.some(Boolean) : hits.every(Boolean);
         if (!pass) return;
       } else if (p.all !== true) {
-        // No filters and not explicitly all → never fire (store guards this too).
+        // No filters and not explicitly all -> never fire (store guards this too).
         return;
       }
 
@@ -1041,9 +1067,9 @@ const HANDLERS = {
 
       if (onCooldown(order)) return;
       const amountSui = num2(p.amountSui, 0.1);
-      log(`${order.id}: SNIPE launch ${curveId.slice(0, 10)}… (${symbol || name || 'unknown'}) buy ${amountSui} SUI`);
+      log(`${order.id}: SNIPE launch ${curveId.slice(0, 10)}... (${symbol || name || 'unknown'}) buy ${amountSui} SUI`);
       try {
-        // 1) EMIT the Nexus scheduler task — the on-chain agentic-decision PROOF.
+        // 1) EMIT the Nexus scheduler task - the on-chain agentic-decision PROOF.
         //    Best-effort: a leader may not consume it on testnet, so this never
         //    blocks settlement. We keep the task id/digest for the demo trail.
         let taskId = null, emitDigest = null;
@@ -1056,9 +1082,9 @@ const HANDLERS = {
           err(`${order.id}: sniper emit failed: ${e.message} (continuing to settle)`);
         }
 
-        // 2) SETTLE the buy through the bridge — the path that actually moves
+        // 2) SETTLE the buy through the bridge - the path that actually moves
         //    tokens. THIS is what makes the snipe real; the task above is proof.
-        const buyResult = await fireBridgeBuy(curveId, amountSui);
+        const buyResult = await fireBridgeBuy(curveId, amountSui, order.params?.sessionId ?? null);
         const settleDigest = buyResult.settleDigest;
         log(`${order.id}: sniper settled buy digest=${settleDigest} via=${buyResult.leaderSettled ? 'leader' : 'bridge'}`);
 
@@ -1074,9 +1100,9 @@ const HANDLERS = {
         if (p.maxSnipes > 0 && p.fired >= p.maxSnipes) order.done = true;
         await persistParams(order);
         await recordFire(order, { kind: 'buy', curveId, nexusTask: taskId, nexusExec: buyResult.nexusExecutionId ?? null, settle: settleDigest, leaderSettled: buyResult.leaderSettled === true, leaderSender: buyResult.leaderSender ?? null });
-        log(`${order.id}: SNIPE COMPLETE ${curveId.slice(0, 10)}… task=${taskId ?? 'n/a'} settle=${settleDigest} fired=${p.fired}${p.maxSnipes > 0 ? `/${p.maxSnipes}` : ''}${order.done ? ' — cap reached, closing' : ''}`);
+        log(`${order.id}: SNIPE COMPLETE ${curveId.slice(0, 10)}... task=${taskId ?? 'n/a'} settle=${settleDigest} fired=${p.fired}${p.maxSnipes > 0 ? `/${p.maxSnipes}` : ''}${order.done ? ' - cap reached, closing' : ''}`);
       } catch (e) {
-        // Settlement failed — release the claim so a genuine retry can re-attempt
+        // Settlement failed - release the claim so a genuine retry can re-attempt
         // this curve (no tokens moved, so it must not count as a snipe).
         order._sniped.delete(curveId);
         err(`${order.id}: sniper settle failed: ${e.message}`);
@@ -1084,9 +1110,9 @@ const HANDLERS = {
     },
   },
 
-  // DCA / scale-in — brain-driven accumulation. Two trigger modes:
-  //   • time: buy `suiPerBuy` every `intervalMs`, up to `buys` times.
-  //   • dip:  buy `suiPerBuy` each time price drops `dropPct`% (×rung) from the
+  // DCA / scale-in - brain-driven accumulation. Two trigger modes:
+  //   * time: buy `suiPerBuy` every `intervalMs`, up to `buys` times.
+  //   * dip:  buy `suiPerBuy` each time price drops `dropPct`% (xrung) from the
   //           entry price, up to `buys` rungs.
   // Each fire emits a Nexus task (the agentic-decision proof) AND settles the buy
   // through the bridge (the path that moves tokens), exactly like sniper. Every
@@ -1094,7 +1120,7 @@ const HANDLERS = {
   // panel can show it and a `then.tpsl` can target the blended basis. After the
   // FINAL buy, arms the `then` child (e.g. TP/SL) via the shared armThen.
   //
-  // Wakes on the timer tick; dip mode also re-checks price each tick (poll-based —
+  // Wakes on the timer tick; dip mode also re-checks price each tick (poll-based -
   // dip-buying is not latency-critical the way sniping is).
   // params: { curveId, suiPerBuy, buys, done, intervalMs?, dropPct?, mode?,
   //           entryPriceSui?, avgPriceSui?, filledSui?, lastFireMs?, then? }
@@ -1105,7 +1131,7 @@ const HANDLERS = {
     summarize: (o) => {
       const p = o.params || {};
       const mode = p.mode === 'dip' ? `every -${num2(p.dropPct, 10)}%` : `every ${Math.round(num2(p.intervalMs, 86400000) / 1000)}s`;
-      return `${o.id} dca buy ${num2(p.suiPerBuy, 0.1)} SUI ${mode} · ${num2(p.done, 0)}/${num2(p.buys, 1)} on ${(o.curveId ?? p.curveId ?? '').slice(0, 10)}…`;
+      return `${o.id} dca buy ${num2(p.suiPerBuy, 0.1)} SUI ${mode} . ${num2(p.done, 0)}/${num2(p.buys, 1)} on ${(o.curveId ?? p.curveId ?? '').slice(0, 10)}...`;
     },
     process: async (order) => {
       const p = order.params || {};
@@ -1133,9 +1159,9 @@ const HANDLERS = {
         err(`${order.id}: dca price read failed (${e.message}); skipping this tick`);
         return;
       }
-      if (graduated) { log(`${order.id}: dca curve graduated — closing`); order.done = true; await persistParams(order); return; }
+      if (graduated) { log(`${order.id}: dca curve graduated - closing`); order.done = true; await persistParams(order); return; }
 
-      // ── Trigger gating ────────────────────────────────────────────────────
+      // -- Trigger gating ----------------------------------------------------
       // Minimum spacing between ANY two fires on this order, so a rung can never
       // fire in the settle-shadow of the previous buy (which transiently moves
       // the reserve/price and previously let a dip rung fire with no real dip).
@@ -1145,17 +1171,17 @@ const HANDLERS = {
 
       if (isDip) {
         // Rung 0 establishes entry; rungs 1+ require price to have fallen
-        // dropPct% × rung BELOW the locked entry. Entry must be locked (set on the
-        // anchor's settled fill) — if it isn't yet, do not evaluate a dip.
+        // dropPct% x rung BELOW the locked entry. Entry must be locked (set on the
+        // anchor's settled fill) - if it isn't yet, do not evaluate a dip.
         const dropPct = num2(p.dropPct, 10) / 100;
         if (done === 0) {
           // anchor fires immediately (no drop required)
         } else {
           const entry = num2(p.entryPriceSui, 0);
-          if (!(entry > 0)) return;                          // entry not locked yet — wait
-          const targetRungPrice = entry * (1 - dropPct * done); // -10%, -20%, … from entry
+          if (!(entry > 0)) return;                          // entry not locked yet - wait
+          const targetRungPrice = entry * (1 - dropPct * done); // -10%, -20%, ... from entry
           if (!(price <= targetRungPrice)) return;           // not dropped enough yet
-          log(`${order.id}: dip rung ${done} eligible — price ${price.toExponential(3)} <= target ${targetRungPrice.toExponential(3)} (entry ${entry.toExponential(3)})`);
+          log(`${order.id}: dip rung ${done} eligible - price ${price.toExponential(3)} <= target ${targetRungPrice.toExponential(3)} (entry ${entry.toExponential(3)})`);
         }
       } else {
         // time mode: require intervalMs since last fire (first fire is immediate)
@@ -1163,7 +1189,7 @@ const HANDLERS = {
         if (done > 0 && sinceLast < intervalMs) return;
       }
 
-      // ── Fire one buy: Nexus proof task + bridge settle ─────────────────────
+      // -- Fire one buy: Nexus proof task + bridge settle ---------------------
       if (onCooldown(order)) return;   // guard against double-fire within a tick window
       let taskId = null;
       try {
@@ -1175,7 +1201,7 @@ const HANDLERS = {
 
       let settleDigest, dcaBuyResult;
       try {
-        dcaBuyResult = await fireBridgeBuy(curveId, thisBuySui);
+        dcaBuyResult = await fireBridgeBuy(curveId, thisBuySui, order.params?.sessionId ?? null);
         settleDigest = dcaBuyResult.settleDigest;
       } catch (e) {
         err(`${order.id}: dca settle failed: ${e.message}`);
@@ -1185,10 +1211,10 @@ const HANDLERS = {
       // DRY-BUY GUARD: a real second buy must have a NEW on-chain digest. If the
       // bridge returns the SAME digest as the previous fill (the known dry/
       // duplicate-execution failure mode), or no digest at all on a rung buy, the
-      // buy did NOT actually move tokens — do not count it, do not advance the
+      // buy did NOT actually move tokens - do not count it, do not advance the
       // rung, and back off so a genuine retry can happen on a later tick.
       if (settleDigest && settleDigest === p._lastSettleDigest) {
-        err(`${order.id}: dca dry buy — settle digest ${settleDigest.slice(0, 10)}… matches previous fill; NOT counting (no tokens moved)`);
+        err(`${order.id}: dca dry buy - settle digest ${settleDigest.slice(0, 10)}... matches previous fill; NOT counting (no tokens moved)`);
         p.lastFireMs = now;          // space out the retry
         order.params = p;
         await persistParams(order);
@@ -1202,7 +1228,7 @@ const HANDLERS = {
         return;
       }
 
-      // ── Record fill + update running average cost ──────────────────────────
+      // -- Record fill + update running average cost --------------------------
       const prevFilled = num2(p.filledSui, 0);
       const prevAvg    = num2(p.avgPriceSui, 0);
       const newFilled  = prevFilled + thisBuySui;
@@ -1220,9 +1246,9 @@ const HANDLERS = {
       await persistParams(order);
       await recordFire(order, { kind: 'buy', curveId, nexusTask: taskId, nexusExec: dcaBuyResult.nexusExecutionId ?? null, settle: settleDigest, leaderSettled: dcaBuyResult.leaderSettled === true, leaderSender: dcaBuyResult.leaderSender ?? null });
 
-      log(`${order.id}: DCA buy ${p.done}/${buys} ${thisBuySui} SUI @ ${price.toExponential(3)} (avg ${p.avgPriceSui.toExponential(3)}) task=${taskId ?? 'n/a'} settle=${settleDigest}${order.done ? ' — complete' : ''}`);
+      log(`${order.id}: DCA buy ${p.done}/${buys} ${thisBuySui} SUI @ ${price.toExponential(3)} (avg ${p.avgPriceSui.toExponential(3)}) task=${taskId ?? 'n/a'} settle=${settleDigest}${order.done ? ' - complete' : ''}`);
 
-      // ── COMPOSE: after the FINAL buy, arm the `then` child on the blended
+      // -- COMPOSE: after the FINAL buy, arm the `then` child on the blended
       //    basis. We pass the average cost as the entry so a then.tpsl targets
       //    profit/loss relative to what was actually paid across all fills.
       if (order.done && p.then) {
@@ -1231,13 +1257,13 @@ const HANDLERS = {
     },
   },
 
-  // COPY-TRADE — follows a TARGET WALLET across any curve. wakesOn 'walletTrade':
+  // COPY-TRADE - follows a TARGET WALLET across any curve. wakesOn 'walletTrade':
   // handleEvent only schedules this when the trade's buyer/seller IS the target.
-  //   • target BUYS curve C  -> agent buys `suiPerTrade` SUI of C (Nexus + bridge).
-  //   • target SELLS curve C -> agent sells the SAME FRACTION of its own C balance
+  //   * target BUYS curve C  -> agent buys `suiPerTrade` SUI of C (Nexus + bridge).
+  //   * target SELLS curve C -> agent sells the SAME FRACTION of its own C balance
   //     that the target just sold of theirs (proportional mirror).
   // Proportional sell math: fraction = sold / (sold + target's remaining balance),
-  // read on-chain right after their sell. The agent then sells fraction × (agent's
+  // read on-chain right after their sell. The agent then sells fraction x (agent's
   // own balance of C). Uses the proven fireBridgeBuy / fireSell settle paths.
   // params: { targetWallet, suiPerTrade }
   copytrade: {
@@ -1246,7 +1272,7 @@ const HANDLERS = {
     normalize: scaffoldNormalize,
     summarize: (o) => {
       const p = o.params || {};
-      return `${o.id} copytrade ${num2(p.suiPerTrade, 0.1)} SUI/buy mirroring ${String(p.targetWallet ?? '?').slice(0, 10)}…`;
+      return `${o.id} copytrade ${num2(p.suiPerTrade, 0.1)} SUI/buy mirroring ${String(p.targetWallet ?? '?').slice(0, 10)}...`;
     },
     process: async (order, trigger) => {
       const p = order.params || {};
@@ -1257,16 +1283,16 @@ const HANDLERS = {
       if (!target || !curveId || !side) return;
       // Per-(side+curve) dedup: a target's buy and a following sell are distinct
       // actions and must BOTH mirror, and trades on different curves are distinct
-      // too — so the cooldown is keyed by side+curve, NOT order-wide. This still
+      // too - so the cooldown is keyed by side+curve, NOT order-wide. This still
       // catches a genuine duplicate (same side+curve fired twice in quick
-      // succession — the duplicate-event issue seen in logs) without letting a
+      // succession - the duplicate-event issue seen in logs) without letting a
       // buy suppress a sell.
       const COPY_DEDUP_MS = parseInt(process.env.STRATEGY_COPY_DEDUP_MS ?? '15000', 10);
       const dedupKey = `${side}:${curveId}`;
       order._copyFired = order._copyFired || {};
       const lastFired = order._copyFired[dedupKey] ?? 0;
       if (Date.now() - lastFired < COPY_DEDUP_MS) {
-        log(`${order.id}: copytrade dedup — ${dedupKey.slice(0, 16)}… fired ${Date.now() - lastFired}ms ago, skipping duplicate`);
+        log(`${order.id}: copytrade dedup - ${dedupKey.slice(0, 16)}... fired ${Date.now() - lastFired}ms ago, skipping duplicate`);
         return;
       }
       order._copyFired[dedupKey] = Date.now();
@@ -1276,7 +1302,7 @@ const HANDLERS = {
       try {
         const st = await getCurveState(curveId);
         tokenType = st.tokenType ?? null;
-        if (st.graduated) { log(`${order.id}: copytrade skip — ${curveId.slice(0, 10)}… graduated`); return; }
+        if (st.graduated) { log(`${order.id}: copytrade skip - ${curveId.slice(0, 10)}... graduated`); return; }
       } catch (e) {
         err(`${order.id}: copytrade curve read failed (${e.message})`); return;
       }
@@ -1285,16 +1311,16 @@ const HANDLERS = {
         // Mirror the target's BUY with a fixed-size agent buy.
         const suiPerTrade = num2(p.suiPerTrade, 0);
         if (!(suiPerTrade > 0)) { if (!order._warned) { err(`${order.id}: copytrade needs suiPerTrade`); order._warned = true; } return; }
-        log(`${order.id}: COPYTRADE target BUY -> agent buy ${suiPerTrade} SUI on ${curveId.slice(0, 10)}…`);
+        log(`${order.id}: COPYTRADE target BUY -> agent buy ${suiPerTrade} SUI on ${curveId.slice(0, 10)}...`);
         let taskId = null;
         try {
           const d = await fireScheduleTask('buy', { buy: { curveId, amountSui: suiPerTrade } }, { generator: 'queue' });
           taskId = d?.taskId ?? null;
         } catch (e) { err(`${order.id}: copytrade buy emit failed: ${e.message} (continuing to settle)`); }
         try {
-          const cpBuy = await fireBridgeBuy(curveId, suiPerTrade);
+          const cpBuy = await fireBridgeBuy(curveId, suiPerTrade, order.params?.sessionId ?? null);
           const settle = cpBuy.settleDigest;
-          log(`${order.id}: copytrade BUY settled ${suiPerTrade} SUI on ${curveId.slice(0, 10)}… task=${taskId ?? 'n/a'} settle=${settle} via=${cpBuy.leaderSettled ? 'leader' : 'bridge'}`);
+          log(`${order.id}: copytrade BUY settled ${suiPerTrade} SUI on ${curveId.slice(0, 10)}... task=${taskId ?? 'n/a'} settle=${settle} via=${cpBuy.leaderSettled ? 'leader' : 'bridge'}`);
           await recordFire(order, { kind: 'buy', curveId, nexusTask: taskId, nexusExec: cpBuy.nexusExecutionId ?? null, settle, leaderSettled: cpBuy.leaderSettled === true, leaderSender: cpBuy.leaderSender ?? null });
         } catch (e) { err(`${order.id}: copytrade buy settle failed: ${e.message}`); }
         return;
@@ -1303,36 +1329,36 @@ const HANDLERS = {
       // side === 'sell': proportional mirror.
       // 1) the fraction the TARGET sold = sold / (sold + their remaining balance).
       const soldWhole = num2(ev?.data?.tokens_in, 0) / 1e6; // tokens_in = tokens sold (atomic, 6 decimals)
-      if (!(soldWhole > 0)) { log(`${order.id}: copytrade sell — target sold amount unknown, skipping`); return; }
+      if (!(soldWhole > 0)) { log(`${order.id}: copytrade sell - target sold amount unknown, skipping`); return; }
       let targetRemaining = 0;
       try { targetRemaining = await getBalanceWhole(tokenType, target); }
       catch (e) { err(`${order.id}: copytrade target balance read failed (${e.message})`); }
       const fraction = soldWhole / (soldWhole + targetRemaining);
-      if (!(fraction > 0)) { log(`${order.id}: copytrade sell — computed zero fraction, skipping`); return; }
+      if (!(fraction > 0)) { log(`${order.id}: copytrade sell - computed zero fraction, skipping`); return; }
 
       // 2) agent sells the same fraction of ITS OWN balance of this curve.
       let agentBal = 0;
       try { agentBal = await getBalanceWhole(tokenType, INVOKER_ADDRESS); }
       catch (e) { err(`${order.id}: copytrade agent balance read failed (${e.message})`); return; }
-      if (!(agentBal > 0)) { log(`${order.id}: copytrade sell — agent holds none of ${curveId.slice(0, 10)}…, nothing to mirror`); return; }
+      if (!(agentBal > 0)) { log(`${order.id}: copytrade sell - agent holds none of ${curveId.slice(0, 10)}..., nothing to mirror`); return; }
 
       const sellWhole = agentBal * fraction;
       const sellAll = fraction >= 0.999; // target dumped ~everything -> agent sells all (robust coin-merge path)
-      log(`${order.id}: COPYTRADE target SELL ${(fraction * 100).toFixed(1)}% -> agent sell ${sellAll ? 'ALL' : sellWhole.toFixed(4)} of ${agentBal.toFixed(4)} on ${curveId.slice(0, 10)}…`);
+      log(`${order.id}: COPYTRADE target SELL ${(fraction * 100).toFixed(1)}% -> agent sell ${sellAll ? 'ALL' : sellWhole.toFixed(4)} of ${agentBal.toFixed(4)} on ${curveId.slice(0, 10)}...`);
       try {
-        const receipt = await fireSell(curveId, sellWhole, 0, sellAll);
-        log(`${order.id}: copytrade SELL settled on ${curveId.slice(0, 10)}… settle=${receipt?.txDigest ?? '?'} nexus=${receipt?.nexusDigest ?? '?'}`);
+        const receipt = await fireSell(curveId, sellWhole, 0, sellAll, order.params?.sessionId ?? null);
+        log(`${order.id}: copytrade SELL settled on ${curveId.slice(0, 10)}... settle=${receipt?.txDigest ?? '?'} nexus=${receipt?.nexusDigest ?? '?'}`);
         await recordFire(order, { kind: 'sell', curveId, nexusExec: receipt?.nexusExecutionId ?? null, nexusDigest: receipt?.nexusDigest ?? null, settle: receipt?.txDigest ?? null, leaderSettled: receipt?.leaderSettled === true, leaderSender: receipt?.leaderSender ?? null });
       } catch (e) { err(`${order.id}: copytrade sell settle failed: ${e.message}`); }
     },
   },
 
-  // AUTOPILOT — the Analyzer-armed standing strategy ("a personal agent for every
+  // AUTOPILOT - the Analyzer-armed standing strategy ("a personal agent for every
   // user"). Where sniper fires on launch events and copytrade mirrors a wallet,
   // autopilot SCANS THE MARKET on the timer tick, scores candidates off the
   // indexer's existing /trending momentum engine, vetoes the dangerous ones with
   // deterministic on-chain signals (top-holder concentration + holder count +
-  // graduation), and enters the best survivor each tick — strictly inside the
+  // graduation), and enters the best survivor each tick - strictly inside the
   // user's mandate (spend cap + per-entry size + max open positions). Each entry
   // optionally arms a TP/SL exit on the real fill price via the shared armThen.
   //
@@ -1357,12 +1383,12 @@ const HANDLERS = {
       const p = o.params || {};
       const spent = num2(p.spentSui, 0), cap = num2(p.spendCapSui, 0);
       const open = Array.isArray(p.entered) ? p.entered.length : 0;
-      return `${o.id} autopilot ${num2(p.perEntrySui, 0.5)} SUI/entry · ${spent.toFixed(2)}/${cap} SUI deployed · ${open}/${num2(p.maxOpenPositions, 5)} open · momentum>${num2(p.minMomentum, 0)}`;
+      return `${o.id} autopilot ${num2(p.perEntrySui, 0.5)} SUI/entry . ${spent.toFixed(2)}/${cap} SUI deployed . ${open}/${num2(p.maxOpenPositions, 5)} open . momentum>${num2(p.minMomentum, 0)}`;
     },
     process: async (order) => {
       const p = order.params || {};
 
-      // ── Mandate gate (off-chain cap; AgentAuthority hardens this later) ──────
+      // -- Mandate gate (off-chain cap; AgentAuthority hardens this later) ------
       const spendCapSui = num2(p.spendCapSui, 0);
       const perEntrySui = num2(p.perEntrySui, 0.5);
       const spentSui    = num2(p.spentSui, 0);
@@ -1371,7 +1397,7 @@ const HANDLERS = {
         return;
       }
       if (spentSui + perEntrySui > spendCapSui + 1e-9) {
-        log(`${order.id}: autopilot spend cap reached (${spentSui.toFixed(2)}/${spendCapSui} SUI) — closing`);
+        log(`${order.id}: autopilot spend cap reached (${spentSui.toFixed(2)}/${spendCapSui} SUI) - closing`);
         order.done = true; await persistParams(order); return;
       }
 
@@ -1384,7 +1410,7 @@ const HANDLERS = {
       const maxOpen = Math.trunc(num2(p.maxOpenPositions, 5));
       if (maxOpen > 0 && entered.length >= maxOpen) return; // holding max; wait for exits
 
-      // ── Scan: pull trending candidates ──────────────────────────────────────
+      // -- Scan: pull trending candidates --------------------------------------
       const scanTopN            = Math.trunc(num2(p.scanTopN, 10));
       const minMomentum         = num2(p.minMomentum, 0);
       const maxConcentrationPct = num2(p.maxConcentrationPct, 35);
@@ -1421,7 +1447,7 @@ const HANDLERS = {
         } catch { return null; }
       };
 
-      // ── Decide: first survivor of the policy filter wins this tick ──────────
+      // -- Decide: first survivor of the policy filter wins this tick ----------
       let pick = null;
       for (const c of candidates) {
         const curveId = c.curve_id ?? c.curveId;
@@ -1434,11 +1460,11 @@ const HANDLERS = {
         const conc = await concentrationOf(curveId);
         if (conc) {
           if (minHolders > 0 && conc.holderCount < minHolders) {
-            log(`${order.id}: autopilot skip ${curveId.slice(0, 10)}… — only ${conc.holderCount} holders (< ${minHolders})`);
+            log(`${order.id}: autopilot skip ${curveId.slice(0, 10)}... - only ${conc.holderCount} holders (< ${minHolders})`);
             continue;
           }
           if (conc.pct > maxConcentrationPct) {
-            log(`${order.id}: autopilot skip ${curveId.slice(0, 10)}… — top holder ${conc.pct.toFixed(1)}% liquid (> ${maxConcentrationPct}%)`);
+            log(`${order.id}: autopilot skip ${curveId.slice(0, 10)}... - top holder ${conc.pct.toFixed(1)}% liquid (> ${maxConcentrationPct}%)`);
             continue;
           }
         }
@@ -1449,14 +1475,14 @@ const HANDLERS = {
           pick = { curveId, momentum };
           break;
         } catch (e) {
-          err(`${order.id}: autopilot curve read failed for ${curveId.slice(0, 10)}… (${e.message}); next candidate`);
+          err(`${order.id}: autopilot curve read failed for ${curveId.slice(0, 10)}... (${e.message}); next candidate`);
           continue;
         }
       }
 
       if (!pick) return; // nothing cleared the policy this tick
 
-      // ── Act: enter exactly like dca (Nexus proof + bridge settle) ───────────
+      // -- Act: enter exactly like dca (Nexus proof + bridge settle) -----------
       if (onCooldown(order)) return;
       const { curveId } = pick;
 
@@ -1470,16 +1496,16 @@ const HANDLERS = {
 
       let settleDigest, buyResult;
       try {
-        buyResult = await fireBridgeBuy(curveId, perEntrySui);
+        buyResult = await fireBridgeBuy(curveId, perEntrySui, order.params?.sessionId ?? null);
         settleDigest = buyResult.settleDigest;
       } catch (e) {
-        err(`${order.id}: autopilot settle failed on ${curveId.slice(0, 10)}…: ${e.message}`);
+        err(`${order.id}: autopilot settle failed on ${curveId.slice(0, 10)}...: ${e.message}`);
         return; // do not count an entry that didn't settle
       }
 
       // DRY-BUY GUARD: a real entry must produce a NEW on-chain digest.
       if (!settleDigest || settleDigest === p._lastSettleDigest) {
-        err(`${order.id}: autopilot dry-buy (digest=${settleDigest ?? 'null'}) — not counting, backing off`);
+        err(`${order.id}: autopilot dry-buy (digest=${settleDigest ?? 'null'}) - not counting, backing off`);
         order._cooldownUntil = Date.now() + cooldownMs;
         return;
       }
@@ -1497,17 +1523,17 @@ const HANDLERS = {
 
       if (p.spentSui + perEntrySui > spendCapSui + 1e-9) {
         order.done = true;
-        log(`${order.id}: autopilot cap exhausted after entry — closing`);
+        log(`${order.id}: autopilot cap exhausted after entry - closing`);
       }
 
       await persistParams(order);
       await recordFire(order, { kind: 'buy', curveId, nexusTask: taskId, nexusExec: buyResult.nexusExecutionId ?? null, settle: settleDigest, leaderSettled: buyResult.leaderSettled === true, leaderSender: buyResult.leaderSender ?? null });
-      log(`${order.id}: AUTOPILOT ENTRY ${curveId.slice(0, 10)}… momentum=${pick.momentum.toFixed(1)} size=${perEntrySui} SUI task=${taskId ?? 'n/a'} settle=${settleDigest} via=${buyResult.leaderSettled ? 'leader' : 'bridge'} deployed=${p.spentSui.toFixed(2)}/${spendCapSui}${order.done ? ' — cap reached, closing' : ''}`);
+      log(`${order.id}: AUTOPILOT ENTRY ${curveId.slice(0, 10)}... momentum=${pick.momentum.toFixed(1)} size=${perEntrySui} SUI task=${taskId ?? 'n/a'} settle=${settleDigest} via=${buyResult.leaderSettled ? 'leader' : 'bridge'} deployed=${p.spentSui.toFixed(2)}/${spendCapSui}${order.done ? ' - cap reached, closing' : ''}`);
     },
   },
 };
 
-// DCA tick — wakes timer-driven orders. A3 will honor each order's interval; for
+// DCA tick - wakes timer-driven orders. A3 will honor each order's interval; for
 // now this only routes them to their (inert) handler.
 const DCA_TICK_MS = parseInt(process.env.STRATEGY_DCA_TICK_MS ?? '30000', 10);
 function dcaTick() {
@@ -1517,9 +1543,9 @@ function dcaTick() {
 }
 
 async function main() {
-  console.log('━'.repeat(52));
+  console.log('-'.repeat(52));
   console.log('  SUIPUMP STRATEGY BRAIN (multi-strategy dispatcher)');
-  console.log('━'.repeat(52));
+  console.log('-'.repeat(52));
   log(`runner   : ${RUNNER_URL}`);
   log(`indexer  : ${INDEXER_URL}`);
   log(`graphql  : ${SUI_GRAPHQL_URL}`);

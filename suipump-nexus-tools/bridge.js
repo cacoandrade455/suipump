@@ -594,9 +594,11 @@ async function handleSell(body) {
 // Buy on a curve using an AgentSession's escrow, signed by the SESSION key.
 // Unlike /buy, no payment coin is split and no tokens are transferred: the
 // contract draws `amount` SUI from escrow and parks bought tokens on the session.
-// Body: { sessionId, curveId, amountMist | suiAmount, minTokensOut?, privateKey, rpcUrl? }
-//   privateKey here is the SESSION keypair (sender == session_address), not the
-//   protocol agent wallet. The session must authorize this address on-chain.
+// Body: { sessionId, curveId, amountMist | suiAmount, minTokensOut?, privateKey?, rpcUrl? }
+//   The session_address authorized by the UI is the agent wallet (0x877af0...),
+//   so privateKey is normally OMITTED and the bridge signs with its own
+//   SUI_PRIVATE_KEY (= that wallet). Pass privateKey only if a future per-user
+//   session key is used. The contract enforces sender == session_address.
 async function handleSessionBuy(body) {
   const { sessionId, curveId, amountMist, suiAmount, minTokensOut, privateKey, rpcUrl } = body;
   if (!sessionId) throw new Error('sessionId required');
@@ -669,8 +671,10 @@ async function handleSessionBuy(body) {
 // Sell session-held tokens of a curve back into the session's escrow, signed by
 // the SESSION key. No coin sourcing: the contract sells from tokens already
 // parked on the session by prior session-buys. Proceeds compound into escrow.
-// Body: { sessionId, curveId, tokenAmount, minSuiOut?, privateKey, rpcUrl? }
-//   tokenAmount is whole tokens (scaled by 1e6 to atomic on-chain).
+// Body: { sessionId, curveId, tokenAmount, minSuiOut?, privateKey?, rpcUrl? }
+//   tokenAmount is whole tokens (scaled by 1e6 to atomic on-chain). As with
+//   /session-buy, privateKey is normally omitted (the bridge signs with its own
+//   key = the authorized agent-wallet session_address).
 async function handleSessionSell(body) {
   const { sessionId, curveId, tokenAmount, minSuiOut, privateKey, rpcUrl } = body;
   if (!sessionId)   throw new Error('sessionId required');
