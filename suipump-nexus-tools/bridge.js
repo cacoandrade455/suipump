@@ -267,7 +267,7 @@ async function resolveSession(client, sessionId, { tries = 6, delayMs = 2000 } =
   throw lastErr ?? new Error(`Session ${sessionId} could not be resolved`);
 }
 
-
+function jsonResp(res, status, body) {
   res.writeHead(status, {
     'Content-Type': 'application/json',
     // CORS - the agent UI (suipump.org) calls these endpoints from the browser.
