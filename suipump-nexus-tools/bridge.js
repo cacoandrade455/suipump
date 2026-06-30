@@ -1163,7 +1163,7 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`[bridge] SuiPump bridge listening on port ${PORT}`);
   console.log(`[bridge] Indexer: ${INDEXER_URL}`);
-  console.log(`[bridge] Endpoints: /buy /sell /claim /launch /status /health`);
+  console.log(`[bridge] Endpoints: /buy /sell /session-buy /session-sell /claim /launch /status /health`);
 });
 
 export { handleBuy, handleSell, handleClaim, handleLaunch, handleSessionBuy, handleSessionSell };
