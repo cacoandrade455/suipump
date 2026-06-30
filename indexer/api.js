@@ -11,6 +11,7 @@ import { mountAgentActions } from './agent_actions.js';
 import { mountPoints } from './points.js';
 import { mountPartnerLaunches } from './partner_launches.js';
 import { mountGameProgress } from './game_progress.js';
+import { mountTakeover } from './takeover_api.js';
 
 const PORT = parseInt(process.env.PORT || '3001');
 const app  = express();
@@ -38,6 +39,11 @@ mountPartnerLaunches(app);
 // table; does not touch db.js. Adds GET/POST /game-progress. Wallet is used
 // purely as an identity key; never moves funds or signs a tx.
 mountGameProgress(app);
+
+// V10 community takeover (CTO) — self-contained module, owns NO table (reads the
+// Takeover*/CreatorHeartbeat events from the events table). Adds
+// GET /token/:id/takeover. Passed `pool` since it queries events directly.
+mountTakeover(app, pool);
 
 // ── Virtual reserves per package — must match frontend constants.js ─────────
 const MIST = 1_000_000_000;

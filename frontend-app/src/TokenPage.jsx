@@ -1503,6 +1503,7 @@ function CommunityTakeoverPanel({ curveId, tokenType, packageId, creator, lastCr
   const isCreator = account && creator && account.address.toLowerCase() === creator.toLowerCase();
 
   const [proposal, setProposal] = useState(null); // { proposalId, sharedVersion, nominee, forWeight, againstWeight, closesMs, snapshotSupply }
+  const [activityMs, setActivityMs] = useState(null); // last_creator_activity_ms from the takeover route
   const [nominee, setNominee]   = useState('');
   const [busy, setBusy]         = useState(false);
   const [msg, setMsg]           = useState('');
@@ -1520,6 +1521,10 @@ function CommunityTakeoverPanel({ curveId, tokenType, packageId, creator, lastCr
         if (r.ok) {
           const d = await r.json();
           if (!cancelled) {
+            // The takeover route also returns last_creator_activity_ms (latest
+            // heartbeat, else curve created_at) — use it to drive the inactivity
+            // gate without needing a curves-table column.
+            if (d && d.last_creator_activity_ms != null) setActivityMs(Number(d.last_creator_activity_ms));
             setProposal(d && d.proposal_id ? {
               proposalId:     d.proposal_id,
               sharedVersion:  d.initial_shared_version ?? d.shared_version ?? null,
@@ -1543,7 +1548,9 @@ function CommunityTakeoverPanel({ curveId, tokenType, packageId, creator, lastCr
     ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: String(initialSharedVersion), mutable })
     : tx.object(curveId));
 
-  const inactiveFor = lastCreatorActivityMs ? (now - Number(lastCreatorActivityMs)) : 0;
+  // Prefer the route-sourced activity (always fresh); fall back to the prop.
+  const effectiveActivityMs = activityMs ?? lastCreatorActivityMs ?? null;
+  const inactiveFor = effectiveActivityMs ? (now - Number(effectiveActivityMs)) : 0;
   const canPropose  = !proposal && inactiveFor >= CTO_INACTIVITY_MS;
   const voteOpen    = proposal && now < proposal.closesMs;
   const canResolve  = proposal && now >= proposal.closesMs;

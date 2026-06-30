@@ -41,7 +41,7 @@ const INDEXER_URL   = process.env.SUIPUMP_INDEXER_URL ?? 'https://suipump-62s2.o
 // is OPEN (local dev) but we log a loud warning so it's never silently open in
 // production.
 const AGENT_API_KEY = process.env.AGENT_API_KEY ?? '';
-const WRITE_ENDPOINTS = new Set(['/buy', '/sell', '/launch', '/claim']);
+const WRITE_ENDPOINTS = new Set(['/buy', '/sell', '/launch', '/claim', '/session-buy', '/session-sell']);
 
 // ── Active package for NEW launches (V10) ─────────────────────────────────────
 const ACTIVE_PACKAGE_ID = process.env.ACTIVE_PACKAGE_ID
@@ -239,7 +239,35 @@ async function resolveCurve(client, curveId, { tries = 6, delayMs = 2000 } = {})
   throw lastErr ?? new Error(`Curve ${curveId} could not be resolved`);
 }
 
-function jsonResp(res, status, body) {
+// Resolve an AgentSession shared object — returns its package id, the session
+// owner, and the initialSharedVersion needed to build a sharedObjectRef. Read-
+// only, retryable (a freshly opened session may lag GraphQL by a beat).
+async function resolveSession(client, sessionId, { tries = 6, delayMs = 2000 } = {}) {
+  let lastErr;
+  for (let attempt = 1; attempt <= tries; attempt++) {
+    try {
+      const obj = await client.getObject({ objectId: sessionId });
+      if (!obj?.object) throw new Error(`Session ${sessionId} not found`);
+      const sType = obj.object.type ?? '';
+      const pkgId = sType.split('::')[0];
+      if (!sType.includes('::agent_session::AgentSession')) {
+        throw new Error(`Object ${sessionId} is not an AgentSession`);
+      }
+      const sharedVersion = obj.object.owner?.Shared?.initialSharedVersion;
+      if (!sharedVersion) throw new Error(`Session ${sessionId} is not a shared object`);
+      return { pkgId, sharedVersion };
+    } catch (err) {
+      lastErr = err;
+      if (attempt < tries) {
+        console.log(`[bridge] resolveSession ${sessionId}: not ready (attempt ${attempt}/${tries}) — ${String(err?.message ?? err)}`);
+        await new Promise(r => setTimeout(r, delayMs));
+      }
+    }
+  }
+  throw lastErr ?? new Error(`Session ${sessionId} could not be resolved`);
+}
+
+
   res.writeHead(status, {
     'Content-Type': 'application/json',
     // CORS — the agent UI (suipump.org) calls these endpoints from the browser.
@@ -559,6 +587,141 @@ async function handleSell(body) {
     txDigest:    txDigestOf(result),
     tokensSold:  (Number(tokAtomic) / 1e6).toFixed(6),
     suiReceived: suiChange ? (Number(BigInt(suiChange.amount)) / 1e9).toFixed(6) : 'unknown',
+  };
+}
+
+// ── Handler: /session-buy ─────────────────────────────────────────────────────
+// Buy on a curve using an AgentSession's escrow, signed by the SESSION key.
+// Unlike /buy, no payment coin is split and no tokens are transferred: the
+// contract draws `amount` SUI from escrow and parks bought tokens on the session.
+// Body: { sessionId, curveId, amountMist | suiAmount, minTokensOut?, privateKey, rpcUrl? }
+//   privateKey here is the SESSION keypair (sender == session_address), not the
+//   protocol agent wallet. The session must authorize this address on-chain.
+async function handleSessionBuy(body) {
+  const { sessionId, curveId, amountMist, suiAmount, minTokensOut, privateKey, rpcUrl } = body;
+  if (!sessionId) throw new Error('sessionId required');
+  if (!curveId)   throw new Error('curveId required');
+
+  let suiMist;
+  if (amountMist != null) {
+    suiMist = BigInt(amountMist);
+  } else if (suiAmount != null) {
+    suiMist = BigInt(Math.floor(parseFloat(suiAmount) * Number(MIST_PER_SUI)));
+  } else {
+    throw new Error('amountMist (u64 MIST) or suiAmount (float SUI) required');
+  }
+  if (suiMist <= 0n) throw new Error('Spend amount must be > 0');
+
+  const client  = makeClient(rpcUrl);
+  const keypair = loadKeypair(privateKey);
+  const address = keypair.toSuiAddress();
+
+  const { pkgId, tokenType, sharedVersion } = await resolveCurve(client, curveId);
+  const { sharedVersion: sessVersion }      = await resolveSession(client, sessionId);
+  const minOut = BigInt(minTokensOut ?? 0);
+
+  // buy_with_session<T>(session, curve, amount, min_tokens_out, sui_price_scaled, clock, ctx)
+  // Always the V9+ shape — V10 is the only package with sessions, and it carries
+  // the oracle price arg. Fetch live SUI price (fallback 0 -> stored BASE_GRAD).
+  let suiPriceScaled = 0n;
+  try {
+    const pr = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=SUIUSDT', { signal: AbortSignal.timeout(2000) });
+    if (pr.ok) { const pd = await pr.json(); const p = parseFloat(pd.price ?? '0'); if (p > 0) suiPriceScaled = BigInt(Math.floor(p * 1000)); }
+  } catch {}
+
+  const tx = new Transaction();
+  tx.setSender(address);
+  const sessionRef = tx.sharedObjectRef({ objectId: sessionId, initialSharedVersion: sessVersion, mutable: true });
+  const curveRef   = tx.sharedObjectRef({ objectId: curveId,   initialSharedVersion: sharedVersion, mutable: true });
+  const clockRef   = tx.sharedObjectRef({ objectId: SUI_CLOCK_ID, initialSharedVersion: 1, mutable: false });
+
+  tx.moveCall({
+    target: `${pkgId}::agent_session::buy_with_session`,
+    typeArguments: [tokenType],
+    arguments: [sessionRef, curveRef, tx.pure.u64(suiMist), tx.pure.u64(minOut), tx.pure.u64(suiPriceScaled), clockRef],
+  });
+
+  let result;
+  try {
+    result = await client.signAndExecuteTransaction({
+      signer: keypair, transaction: tx,
+      include: { balanceChanges: true },
+    });
+  } catch (e) {
+    const detail = e?.cause?.message ?? e?.cause ?? e?.message ?? String(e);
+    throw new Error(`session buy simulate/execute failed: ${typeof detail === 'string' ? detail : JSON.stringify(detail)}`);
+  }
+
+  if (!txOk(result)) {
+    throw new Error(`buy_with_session() failed: ${txErrorOf(result) ?? 'transaction failed'}`);
+  }
+
+  return {
+    txDigest:  txDigestOf(result),
+    sessionId,
+    suiSpent:  (Number(suiMist) / Number(MIST_PER_SUI)).toFixed(9),
+    tokenType,
+    bootId:    BRIDGE_BOOT_ID,
+  };
+}
+
+// ── Handler: /session-sell ────────────────────────────────────────────────────
+// Sell session-held tokens of a curve back into the session's escrow, signed by
+// the SESSION key. No coin sourcing: the contract sells from tokens already
+// parked on the session by prior session-buys. Proceeds compound into escrow.
+// Body: { sessionId, curveId, tokenAmount, minSuiOut?, privateKey, rpcUrl? }
+//   tokenAmount is whole tokens (scaled by 1e6 to atomic on-chain).
+async function handleSessionSell(body) {
+  const { sessionId, curveId, tokenAmount, minSuiOut, privateKey, rpcUrl } = body;
+  if (!sessionId)   throw new Error('sessionId required');
+  if (!curveId)     throw new Error('curveId required');
+  if (!tokenAmount) throw new Error('tokenAmount required (whole tokens, e.g. 1000)');
+
+  const client  = makeClient(rpcUrl);
+  const keypair = loadKeypair(privateKey);
+  const address = keypair.toSuiAddress();
+
+  const { pkgId, tokenType, sharedVersion } = await resolveCurve(client, curveId);
+  const { sharedVersion: sessVersion }      = await resolveSession(client, sessionId);
+
+  const tokAtomic = BigInt(Math.floor(parseFloat(tokenAmount) * 1e6));
+  if (tokAtomic <= 0n) throw new Error('tokenAmount must be > 0');
+  const minOut = BigInt(minSuiOut ?? 0);
+
+  const tx = new Transaction();
+  tx.setSender(address);
+  const sessionRef = tx.sharedObjectRef({ objectId: sessionId, initialSharedVersion: sessVersion, mutable: true });
+  const curveRef   = tx.sharedObjectRef({ objectId: curveId,   initialSharedVersion: sharedVersion, mutable: true });
+  const clockRef   = tx.sharedObjectRef({ objectId: SUI_CLOCK_ID, initialSharedVersion: 1, mutable: false });
+
+  // sell_with_session<T>(session, curve, token_amount, min_sui_out, clock, ctx)
+  tx.moveCall({
+    target: `${pkgId}::agent_session::sell_with_session`,
+    typeArguments: [tokenType],
+    arguments: [sessionRef, curveRef, tx.pure.u64(tokAtomic), tx.pure.u64(minOut), clockRef],
+  });
+
+  let result;
+  try {
+    result = await client.signAndExecuteTransaction({
+      signer: keypair, transaction: tx,
+      include: { balanceChanges: true },
+    });
+  } catch (e) {
+    const detail = e?.cause?.message ?? e?.cause ?? e?.message ?? String(e);
+    throw new Error(`session sell simulate/execute failed: ${typeof detail === 'string' ? detail : JSON.stringify(detail)}`);
+  }
+
+  if (!txOk(result)) {
+    throw new Error(`sell_with_session() failed: ${txErrorOf(result) ?? 'transaction failed'}`);
+  }
+
+  return {
+    txDigest:   txDigestOf(result),
+    sessionId,
+    tokensSold: (Number(tokAtomic) / 1e6).toFixed(6),
+    tokenType,
+    bootId:     BRIDGE_BOOT_ID,
   };
 }
 
@@ -980,6 +1143,8 @@ const server = http.createServer(async (req, res) => {
     switch (req.url) {
       case '/buy':    result = await handleBuy(body);    break;
       case '/sell':   result = await handleSell(body);   break;
+      case '/session-buy':  result = await handleSessionBuy(body);  break;
+      case '/session-sell': result = await handleSessionSell(body); break;
       case '/claim':  result = await handleClaim(body);  break;
       case '/launch': result = await handleLaunch(body); break;
       case '/status': result = await handleStatus(body); break;
@@ -1001,4 +1166,4 @@ server.listen(PORT, () => {
   console.log(`[bridge] Endpoints: /buy /sell /claim /launch /status /health`);
 });
 
-export { handleBuy, handleSell, handleClaim, handleLaunch };
+export { handleBuy, handleSell, handleClaim, handleLaunch, handleSessionBuy, handleSessionSell };
