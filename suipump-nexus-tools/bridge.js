@@ -1,19 +1,19 @@
 // suipump-nexus-tools/bridge.js
 // HTTP bridge between Nexus Rust tool servers (port 8080) and the Sui blockchain.
-// Nexus → Rust (8080) → this bridge (3030) → Sui RPC
+// Nexus -> Rust (8080) -> this bridge (3030) -> Sui RPC
 //
 // Endpoints:
-//   POST /buy    — buy tokens on a bonding curve
-//   POST /sell   — sell tokens on a bonding curve
-//   POST /claim  — claim creator fees
-//   POST /launch — launch a new token (native two-tx flow: publish + create_and_return)
-//   POST /status — read curve state snapshot
+//   POST /buy    - buy tokens on a bonding curve
+//   POST /sell   - sell tokens on a bonding curve
+//   POST /claim  - claim creator fees
+//   POST /launch - launch a new token (native two-tx flow: publish + create_and_return)
+//   POST /status - read curve state snapshot
 //
 // Environment:
-//   SUI_PRIVATE_KEY      — base64WithFlag Ed25519 key for the agent wallet
-//   SUI_RPC_URL          — default: testnet fullnode
-//   SUIPUMP_INDEXER_URL  — indexer base URL (for curve lookups)
-//   PORT                 — default: 3030
+//   SUI_PRIVATE_KEY      - base64WithFlag Ed25519 key for the agent wallet
+//   SUI_RPC_URL          - default: testnet fullnode
+//   SUIPUMP_INDEXER_URL  - indexer base URL (for curve lookups)
+//   PORT                 - default: 3030
 
 import http from 'node:http';
 import { readFileSync } from 'node:fs';
@@ -31,39 +31,39 @@ const __dirname     = path.dirname(fileURLToPath(import.meta.url));
 const PORT          = parseInt(process.env.PORT ?? '3030', 10);
 const INDEXER_URL   = process.env.SUIPUMP_INDEXER_URL ?? 'https://suipump-62s2.onrender.com';
 
-// ── Write-endpoint auth ───────────────────────────────────────────────────────
+// -- Write-endpoint auth -------------------------------------------------------
 // /buy /sell /launch /claim mutate state and SPEND THE AGENT WALLET'S SUI. They
 // must only be reachable by our own server-side callers (the Vercel agent proxy
 // and the strategy brain), never by a random browser or a direct curl. We gate
 // them behind a shared secret sent as `x-agent-key`. The key lives ONLY in the
-// bridge env and in the callers' server-side envs — it is NEVER shipped to the
+// bridge env and in the callers' server-side envs - it is NEVER shipped to the
 // browser. Reads (/status /health) stay open. If AGENT_API_KEY is unset the gate
 // is OPEN (local dev) but we log a loud warning so it's never silently open in
 // production.
 const AGENT_API_KEY = process.env.AGENT_API_KEY ?? '';
 const WRITE_ENDPOINTS = new Set(['/buy', '/sell', '/launch', '/claim', '/session-buy', '/session-sell']);
 
-// ── Active package for NEW launches (V10) ─────────────────────────────────────
+// -- Active package for NEW launches (V10) -------------------------------------
 const ACTIVE_PACKAGE_ID = process.env.ACTIVE_PACKAGE_ID
   ?? '0x2deda2cade65cd5afd5ffbe799d48f2491debf08d3aef6fa11aa6e1c8afe1598'; // V10
 const LAUNCH_FEE_MIST   = 2_000_000_000n; // 2 SUI
 
-// Compiled coin template bytecode — force-included in repo for the bridge.
+// Compiled coin template bytecode - force-included in repo for the bridge.
 // Override with TEMPLATE_MV_PATH if the build path differs on the host.
 const TEMPLATE_MV_PATH = process.env.TEMPLATE_MV_PATH
   ?? path.resolve(__dirname, '../coin-template/build/coin_template/bytecode_modules/template.mv');
 
-// Placeholders baked into coin-template/sources/template.move — must match EXACTLY.
+// Placeholders baked into coin-template/sources/template.move - must match EXACTLY.
 const PLACEHOLDER_NAME = 'Template Coin';
 const PLACEHOLDER_SYM  = 'TMPL';
 const PLACEHOLDER_DESC = 'Template description placeholder that is intentionally long to accommodate real token descriptions.';
 const PLACEHOLDER_ICON = 'https://suipump.test/icon-placeholder.png';
 
-// BCS-encode a string as vector<u8> for update_constants — matches scripts/launch.js.
+// BCS-encode a string as vector<u8> for update_constants - matches scripts/launch.js.
 // Single-byte ULEB128 length prefix (values are short; assert < 128 bytes).
 function bcsBytes(str) {
   const buf = new TextEncoder().encode(str);
-  if (buf.length > 127) throw new Error(`Constant "${str.slice(0, 30)}…" too long for single-byte length (${buf.length} bytes)`);
+  if (buf.length > 127) throw new Error(`Constant "${str.slice(0, 30)}..." too long for single-byte length (${buf.length} bytes)`);
   return Uint8Array.from([buf.length, ...buf]);
 }
 
@@ -100,7 +100,7 @@ async function withRetry(label, fn, { tries = 4, delayMs = 2500 } = {}) {
     } catch (err) {
       lastErr = err;
       if (attempt < tries && isTransient(err)) {
-        console.log(`[bridge] ${label}: transient error (attempt ${attempt}/${tries}) — ${String(err?.message ?? err).slice(0, 120)}; retrying in ${delayMs}ms`);
+        console.log(`[bridge] ${label}: transient error (attempt ${attempt}/${tries}) - ${String(err?.message ?? err).slice(0, 120)}; retrying in ${delayMs}ms`);
         await new Promise(r => setTimeout(r, delayMs));
         continue;
       }
@@ -110,7 +110,7 @@ async function withRetry(label, fn, { tries = 4, delayMs = 2500 } = {}) {
   throw lastErr;
 }
 
-// ── Package IDs (all versions — read paths) ───────────────────────────────────
+// -- Package IDs (all versions - read paths) -----------------------------------
 const ALL_PACKAGE_IDS = [
   '0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8', // V4
   '0x785c0604cb6c60a8547501e307d2b0ca7a586ff912c8abff4edfb88db65b7236', // V5
@@ -152,12 +152,12 @@ const V10_PLUS = new Set([
 const SUI_CLOCK_ID = '0x6';
 const MIST_PER_SUI = 1_000_000_000n;
 
-// ── Result readback (deployed SDK shape) ──────────────────────────────────────
+// -- Result readback (deployed SDK shape) --------------------------------------
 // signAndExecuteTransaction returns a discriminated union:
 //   { $kind: 'Transaction',       Transaction:       { digest, status, balanceChanges, ... } }  // success
 //   { $kind: 'FailedTransaction', FailedTransaction: { status: { error } } }                    // failure
 // (Confirmed by logging the live result.) Earlier code read .data.executeTransaction.*,
-// which is undefined here — that is why txDigest came back null and amounts "unknown".
+// which is undefined here - that is why txDigest came back null and amounts "unknown".
 function txOk(result) {
   return result?.$kind === 'Transaction' || result?.Transaction?.status?.success === true;
 }
@@ -189,10 +189,10 @@ const bcType = b => (typeof b.coinType === 'string' ? b.coinType : b.coinType?.r
 // '0x0000...0002::sui::SUI'. Match either so token vs SUI changes aren't confused.
 const isSui = t => typeof t === 'string' && /^0x0*2::sui::SUI$/.test(t);
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// -- Helpers -------------------------------------------------------------------
 function loadKeypair(privateKey) {
   const raw = privateKey ?? process.env.SUI_PRIVATE_KEY;
-  if (!raw) throw new Error('No private key — set SUI_PRIVATE_KEY or pass privateKey in body');
+  if (!raw) throw new Error('No private key - set SUI_PRIVATE_KEY or pass privateKey in body');
   const bytes = fromBase64(raw);
   const seed  = (bytes.length === 65 || bytes.length === 33) ? bytes.slice(1) : bytes;
   return Ed25519Keypair.fromSecretKey(seed);
@@ -210,7 +210,7 @@ function makeClient(rpcUrl) {
 }
 
 async function resolveCurve(client, curveId, { tries = 6, delayMs = 2000 } = {}) {
-  // A read-only resolution — safe to retry. When buy runs immediately after a
+  // A read-only resolution - safe to retry. When buy runs immediately after a
   // launch (DAG launch->buy edge), the brand-new curve may not be resolvable
   // via GraphQL yet, so getObject returns nothing and buy would error. Retrying
   // the READ (never a transaction) lets the just-created curve settle.
@@ -231,7 +231,7 @@ async function resolveCurve(client, curveId, { tries = 6, delayMs = 2000 } = {})
     } catch (err) {
       lastErr = err;
       if (attempt < tries) {
-        console.log(`[bridge] resolveCurve ${curveId}: not ready (attempt ${attempt}/${tries}) — ${String(err?.message ?? err)}`);
+        console.log(`[bridge] resolveCurve ${curveId}: not ready (attempt ${attempt}/${tries}) - ${String(err?.message ?? err)}`);
         await new Promise(r => setTimeout(r, delayMs));
       }
     }
@@ -239,7 +239,7 @@ async function resolveCurve(client, curveId, { tries = 6, delayMs = 2000 } = {})
   throw lastErr ?? new Error(`Curve ${curveId} could not be resolved`);
 }
 
-// Resolve an AgentSession shared object — returns its package id, the session
+// Resolve an AgentSession shared object - returns its package id, the session
 // owner, and the initialSharedVersion needed to build a sharedObjectRef. Read-
 // only, retryable (a freshly opened session may lag GraphQL by a beat).
 async function resolveSession(client, sessionId, { tries = 6, delayMs = 2000 } = {}) {
@@ -259,7 +259,7 @@ async function resolveSession(client, sessionId, { tries = 6, delayMs = 2000 } =
     } catch (err) {
       lastErr = err;
       if (attempt < tries) {
-        console.log(`[bridge] resolveSession ${sessionId}: not ready (attempt ${attempt}/${tries}) — ${String(err?.message ?? err)}`);
+        console.log(`[bridge] resolveSession ${sessionId}: not ready (attempt ${attempt}/${tries}) - ${String(err?.message ?? err)}`);
         await new Promise(r => setTimeout(r, delayMs));
       }
     }
@@ -270,7 +270,7 @@ async function resolveSession(client, sessionId, { tries = 6, delayMs = 2000 } =
 
   res.writeHead(status, {
     'Content-Type': 'application/json',
-    // CORS — the agent UI (suipump.org) calls these endpoints from the browser.
+    // CORS - the agent UI (suipump.org) calls these endpoints from the browser.
     // Without these headers the browser blocks the response and fetch() throws
     // "Failed to fetch" even when the bridge settled the trade server-side.
     'Access-Control-Allow-Origin': '*',
@@ -293,7 +293,7 @@ async function parseBody(req) {
   });
 }
 
-// ── Buy idempotency (kills the Leader retry-after-timeout double-fire) ─────────
+// -- Buy idempotency (kills the Leader retry-after-timeout double-fire) ---------
 // The Nexus Leader uses at-least-once delivery: if the buy tool responds slowly or
 // the response fails verification, the Leader re-invokes the buy tool, which POSTs
 // a SECOND identical /buy to this bridge -> a second real on-chain tx (two distinct
@@ -312,7 +312,7 @@ const BUY_IDEMPOTENCY_TTL_MS = Number(process.env.BUY_IDEMPOTENCY_TTL_MS ?? 90_0
 const _buyInflight  = new Map(); // key -> Promise<result>
 const _buyCompleted = new Map(); // key -> { result, ts }
 
-// Per-process identity — lets us tell if Render is running >1 bridge instance
+// Per-process identity - lets us tell if Render is running >1 bridge instance
 // (in-memory dedupe only works within a single process; if /health returns
 // different bootIds across calls, the dedupe MUST move to a shared store).
 const BRIDGE_BOOT_ID = Math.random().toString(36).slice(2, 10);
@@ -329,12 +329,12 @@ function _sweepBuyCache() {
   }
 }
 
-// ── Handler: /buy ─────────────────────────────────────────────────────────────
+// -- Handler: /buy -------------------------------------------------------------
 // Body: { curveId, amountMist?, suiAmount?, minTokensOut?, referral?, privateKey?, rpcUrl? }
 //
 // FIELD RESOLUTION (accepts both for backwards compat):
-//   amountMist  — u64 MIST integer sent by the Rust tool (buy.rs)
-//   suiAmount   — float SUI sent by direct curl / manual calls
+//   amountMist  - u64 MIST integer sent by the Rust tool (buy.rs)
+//   suiAmount   - float SUI sent by direct curl / manual calls
 // At least one must be present.
 //
 // handleBuy is the idempotency gate; executeBuy holds the unchanged buy logic.
@@ -387,7 +387,7 @@ async function executeBuy(body) {
   const { curveId, amountMist, suiAmount, minTokensOut, referral, privateKey, rpcUrl } = body;
   if (!curveId) throw new Error('curveId required');
 
-  // Resolve spend amount to MIST bigint — accept either field
+  // Resolve spend amount to MIST bigint - accept either field
   let suiMist;
   if (amountMist != null) {
     // Rust sends this as a u64 integer representing MIST
@@ -421,7 +421,7 @@ async function executeBuy(body) {
   // V4: buy(curve, payment, min_out)
   let buyArgs;
   if (isV9Plus) {
-    // Fetch live SUI price for oracle — fallback to 0 (uses stored BASE_GRAD)
+    // Fetch live SUI price for oracle - fallback to 0 (uses stored BASE_GRAD)
     let suiPriceScaled = 0n;
     try {
       const pr = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=SUIUSDT', { signal: AbortSignal.timeout(2000) });
@@ -442,7 +442,7 @@ async function executeBuy(body) {
     });
     tx.transferObjects([tokens, refund], address);
   } else {
-    // V4: buy(curve, payment, min_out) returns (Coin<T>, Coin<SUI>) — TWO values,
+    // V4: buy(curve, payment, min_out) returns (Coin<T>, Coin<SUI>) - TWO values,
     // same as V5+/V9 (verified on-chain via sui_getNormalizedMoveFunction). The
     // earlier code passed the whole result as a single object to transferObjects,
     // which Sui rejects with "expected a single result but found multiple".
@@ -488,7 +488,7 @@ async function executeBuy(body) {
   };
 }
 
-// ── Handler: /sell ────────────────────────────────────────────────────────────
+// -- Handler: /sell ------------------------------------------------------------
 // Body: { curveId, tokenAmount, minSuiOut?, referral?, privateKey?, rpcUrl? }
 async function handleSell(body) {
   const { curveId, tokenAmount, minSuiOut, referral, privateKey, rpcUrl, sellAll } = body;
@@ -511,7 +511,7 @@ async function handleSell(body) {
   const isV5Plus  = V5_PLUS.has(pkgId);
   const isV7Plus  = V7_PLUS.has(pkgId);
 
-  // Source token coins via client.listCoins(...).objects — the exact call your own
+  // Source token coins via client.listCoins(...).objects - the exact call your own
   // working frontend uses on this deployed SDK (TokenPage.jsx, useCopyTrade.js,
   // useRebalance.js: "SuiGraphQLClient 2.x: listCoins, result.objects, c.objectId").
   // The bridge was calling client.getCoins(...), which does not exist on this client
@@ -590,7 +590,7 @@ async function handleSell(body) {
   };
 }
 
-// ── Handler: /session-buy ─────────────────────────────────────────────────────
+// -- Handler: /session-buy -----------------------------------------------------
 // Buy on a curve using an AgentSession's escrow, signed by the SESSION key.
 // Unlike /buy, no payment coin is split and no tokens are transferred: the
 // contract draws `amount` SUI from escrow and parks bought tokens on the session.
@@ -621,7 +621,7 @@ async function handleSessionBuy(body) {
   const minOut = BigInt(minTokensOut ?? 0);
 
   // buy_with_session<T>(session, curve, amount, min_tokens_out, sui_price_scaled, clock, ctx)
-  // Always the V9+ shape — V10 is the only package with sessions, and it carries
+  // Always the V9+ shape - V10 is the only package with sessions, and it carries
   // the oracle price arg. Fetch live SUI price (fallback 0 -> stored BASE_GRAD).
   let suiPriceScaled = 0n;
   try {
@@ -665,7 +665,7 @@ async function handleSessionBuy(body) {
   };
 }
 
-// ── Handler: /session-sell ────────────────────────────────────────────────────
+// -- Handler: /session-sell ----------------------------------------------------
 // Sell session-held tokens of a curve back into the session's escrow, signed by
 // the SESSION key. No coin sourcing: the contract sells from tokens already
 // parked on the session by prior session-buys. Proceeds compound into escrow.
@@ -725,7 +725,7 @@ async function handleSessionSell(body) {
   };
 }
 
-// ── Handler: /claim ───────────────────────────────────────────────────────────
+// -- Handler: /claim -----------------------------------------------------------
 // Body: { curveId, privateKey?, rpcUrl? }
 async function handleClaim(body) {
   const { curveId, privateKey, rpcUrl } = body;
@@ -742,13 +742,13 @@ async function handleClaim(body) {
   // versions AND the cap's curve_id field.
   //
   // SDK NOTES (verified against @mysten/sui types):
-  //  • This client is a SuiGraphQLClient — the method is `listOwnedObjects`, NOT
+  //  * This client is a SuiGraphQLClient - the method is `listOwnedObjects`, NOT
   //    `getOwnedObjects` (JSON-RPC only; calling it threw "is not a function"
-  //    and claim never settled — same class of bug fixed earlier for sell).
-  //  • listOwnedObjects returns 20 objects PER PAGE; this wallet holds ~188
+  //    and claim never settled - same class of bug fixed earlier for sell).
+  //  * listOwnedObjects returns 20 objects PER PAGE; this wallet holds ~188
   //    objects incl. 44 CreatorCaps, so we MUST paginate via `res.cursor` /
   //    `res.hasNextPage` until the cap is found.
-  //  • By default the response carries only objectId/version/digest/owner/type —
+  //  * By default the response carries only objectId/version/digest/owner/type -
   //    NO struct fields. To read `curve_id` we pass `include: { json: true }`,
   //    which adds `object.json` = the Move struct fields as JSON. So the cap's
   //    curve id is at `o.json.curve_id`.
@@ -764,7 +764,7 @@ async function handleClaim(body) {
     for (const o of owned) {
       const type = o.type ?? '';
       if (!type.includes('::bonding_curve::CreatorCap')) continue;
-      // CreatorCap matched by type — confirm it is THIS curve's cap.
+      // CreatorCap matched by type - confirm it is THIS curve's cap.
       const cid = o.json?.curve_id ?? o.json?.curveId ?? null;
       if (cid === curveId) { capObjectId = o.objectId ?? null; break; }
     }
@@ -809,7 +809,7 @@ async function handleClaim(body) {
   };
 }
 
-// ── Handler: /launch ──────────────────────────────────────────────────────────
+// -- Handler: /launch ----------------------------------------------------------
 // Body: { name, symbol, description?, iconUrl?, devBuySui?, graduationTarget?, antiBotDelay?, privateKey?, rpcUrl? }
 async function handleLaunch(body) {
   const { name, symbol, description, iconUrl, devBuySui, graduationTarget, antiBotDelay, privateKey, rpcUrl } = body;
@@ -821,14 +821,14 @@ async function handleLaunch(body) {
   const address  = keypair.toSuiAddress();
 
   const pkgId        = ACTIVE_PACKAGE_ID;            // new launches always on the active (V10) package
-  const isV9         = V9_PLUS.has(pkgId);           // V10 ∈ V9_PLUS — buy() uses sui_price_scaled arg
+  const isV9         = V9_PLUS.has(pkgId);           // V10 in V9_PLUS - buy() uses sui_price_scaled arg
   const gradTarget   = Number(graduationTarget ?? 2); // 0=Cetus 1=DeepBook 2=Turbos
   const antiBot      = Number(antiBotDelay ?? 0);
   const tokenName    = String(name).trim();
   const tokenSymbol  = String(symbol).trim().toUpperCase();
-  const moduleName   = tokenSymbol.toLowerCase();    // identifier: module is lowercased symbol, witness is TEMPLATE→symbol
+  const moduleName   = tokenSymbol.toLowerCase();    // identifier: module is lowercased symbol, witness is TEMPLATE->symbol
   // Description is BCS-patched into a fixed constant; keep within the placeholder's length budget.
-  const rawDesc      = String(description ?? `${tokenName} — launched via SuiPump agent`).trim();
+  const rawDesc      = String(description ?? `${tokenName} - launched via SuiPump agent`).trim();
   const tokenDesc    = rawDesc.slice(0, PLACEHOLDER_DESC.length);
   const tokenIcon    = String(iconUrl ?? PLACEHOLDER_ICON).slice(0, PLACEHOLDER_ICON.length);
   const devBuyMist   = devBuySui && parseFloat(devBuySui) > 0
@@ -837,7 +837,7 @@ async function handleLaunch(body) {
 
   console.log(`[bridge] /launch: ${tokenSymbol} (grad=${gradTarget}, antibot=${antiBot}, devBuy=${devBuyMist})`);
 
-  // ── Patch the coin template bytecode ────────────────────────────────────────
+  // -- Patch the coin template bytecode ----------------------------------------
   await ensureWasm();
   const templateBytes = new Uint8Array(readFileSync(TEMPLATE_MV_PATH));
 
@@ -850,7 +850,7 @@ async function handleLaunch(body) {
   patched = bytecodeTemplate.update_constants(patched, bcsBytes(tokenDesc),   bcsBytes(PLACEHOLDER_DESC), 'Vector(U8)');
   patched = bytecodeTemplate.update_constants(patched, bcsBytes(tokenIcon),   bcsBytes(PLACEHOLDER_ICON), 'Vector(U8)');
 
-  // ── Tx 1: publish patched coin module ───────────────────────────────────────
+  // -- Tx 1: publish patched coin module ---------------------------------------
   const tx1 = new Transaction();
   const [upgradeCap] = tx1.publish({
     modules: [Array.from(patched)],
@@ -858,8 +858,8 @@ async function handleLaunch(body) {
   });
   tx1.transferObjects([upgradeCap], address);
 
-  // NOTE: the observed transient errors ("simulateTransaction did not return…",
-  // CRITICAL: publish is NOT idempotent — every call mints a brand-new package
+  // NOTE: the observed transient errors ("simulateTransaction did not return...",
+  // CRITICAL: publish is NOT idempotent - every call mints a brand-new package
   // (new CA). It must run EXACTLY ONCE. Retrying it on a transient *response*
   // error (e.g. the tx succeeds on-chain but waitForTransaction/index read
   // times out) re-publishes and mints duplicate tokens. This was the cause of
@@ -905,7 +905,7 @@ async function handleLaunch(body) {
   // Extra settle margin for the GraphQL indexer.
   await new Promise(r => setTimeout(r, 2500));
 
-  // ── Tx 2: create_and_return + optional dev-buy + share_curve ────────────────
+  // -- Tx 2: create_and_return + optional dev-buy + share_curve ----------------
   const tx2 = new Transaction();
   const [launchFeeCoin] = tx2.splitCoins(tx2.gas, [tx2.pure.u64(LAUNCH_FEE_MIST)]);
 
@@ -951,7 +951,7 @@ async function handleLaunch(body) {
   });
   tx2.transferObjects([cap], address);
 
-  // CRITICAL: create_and_return is NOT idempotent — it consumes the launch fee
+  // CRITICAL: create_and_return is NOT idempotent - it consumes the launch fee
   // and runs the dev-buy. Retrying on a transient response error would create a
   // second curve and double-charge. Submit once; never retry.
   const exec2 = await client.signAndExecuteTransaction({
@@ -959,12 +959,12 @@ async function handleLaunch(body) {
     include: { objectTypes: true },
   });
   if (exec2?.$kind === 'FailedTransaction') {
-    throw new Error(`Tx2 (create_and_return) failed: ${exec2.FailedTransaction?.status?.error ?? 'unknown'} — stranded TreasuryCap ${treasuryCapId}`);
+    throw new Error(`Tx2 (create_and_return) failed: ${exec2.FailedTransaction?.status?.error ?? 'unknown'} - stranded TreasuryCap ${treasuryCapId}`);
   }
   const tx2Digest = exec2?.Transaction?.digest;
   if (!tx2Digest) throw new Error(`Tx2 returned no digest. raw=${JSON.stringify(exec2).slice(0, 800)}`);
   if (exec2?.Transaction?.status?.success === false) {
-    throw new Error(`Tx2 reverted: ${exec2.Transaction.status.error ?? 'unknown'} — stranded TreasuryCap ${treasuryCapId}`);
+    throw new Error(`Tx2 reverted: ${exec2.Transaction.status.error ?? 'unknown'} - stranded TreasuryCap ${treasuryCapId}`);
   }
 
   // Find the shared Curve object id from Tx2 objectTypes map.
@@ -998,7 +998,7 @@ async function handleLaunch(body) {
   };
 }
 
-// ── Handler: /status ─────────────────────────────────────────────────────────
+// -- Handler: /status ---------------------------------------------------------
 // Body: { curveId, rpcUrl? }
 async function handleStatus(body) {
   const { curveId, rpcUrl } = body;
@@ -1095,9 +1095,9 @@ async function handleStatus(body) {
   };
 }
 
-// ── HTTP server ───────────────────────────────────────────────────────────────
+// -- HTTP server ---------------------------------------------------------------
 const server = http.createServer(async (req, res) => {
-  // CORS preflight — browsers send OPTIONS before a cross-origin POST. Answer it
+  // CORS preflight - browsers send OPTIONS before a cross-origin POST. Answer it
   // with 204 + the allow headers, otherwise the real POST never fires and the
   // UI shows "Failed to fetch".
   if (req.method === 'OPTIONS') {
@@ -1112,7 +1112,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method !== 'POST') {
-    jsonResp(res, 405, { error: 'Method not allowed — use POST' });
+    jsonResp(res, 405, { error: 'Method not allowed - use POST' });
     return;
   }
 
@@ -1137,7 +1137,7 @@ const server = http.createServer(async (req, res) => {
           return;
         }
       } else {
-        console.warn(`[bridge] WARNING: AGENT_API_KEY unset — ${req.url} is OPEN to anyone. Set AGENT_API_KEY in env to lock write endpoints.`);
+        console.warn(`[bridge] WARNING: AGENT_API_KEY unset - ${req.url} is OPEN to anyone. Set AGENT_API_KEY in env to lock write endpoints.`);
       }
     }
     switch (req.url) {
