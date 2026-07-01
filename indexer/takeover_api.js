@@ -1,8 +1,8 @@
-// takeover_api.js — V10 Community Takeover (CTO) read route.
+// takeover_api.js - V10 Community Takeover (CTO) read route.
 //
 // Self-contained, same pattern as orders.js / agent_actions.js: it takes the
 // Express `app` and the shared pg `pool`, and adds ONE read endpoint. It owns no
-// tables and never mutates anything — all data is derived from the `events`
+// tables and never mutates anything - all data is derived from the `events`
 // table the indexer already writes (the V10 Takeover* and CreatorHeartbeat
 // events all carry curve_id, so they're already persisted there).
 //
@@ -17,8 +17,18 @@
 //          proposal_id, nominee, nominator,
 //          snapshot_supply, closes_ms,
 //          for_weight, against_weight,
-//          initial_shared_version,        // null — proposal obj version not in events
-//          last_creator_activity_ms       // latest heartbeat, else curve created_at
+//          initial_shared_version,        // null -- proposal obj version not in events
+//          last_creator_activity_ms,      // latest heartbeat, else curve created_at
+//          last_creator_activity_source,  // 'heartbeat' | 'launch_fallback' --
+//                                          //   the contract's ONLY activity signal is
+//                                          //   an explicit creator_heartbeat call, so a
+//                                          //   creator who is genuinely active but has
+//                                          //   never heartbeated reads identically to an
+//                                          //   abandoned one on-chain. 'launch_fallback'
+//                                          //   tells the frontend this number is a guess
+//                                          //   from launch time, not a real reading --
+//                                          //   show "never heartbeated", not a stale-
+//                                          //   looking activity date.
 //        }
 //
 // "Active" = the most recent TakeoverProposed for this curve whose proposal_id
@@ -54,22 +64,32 @@ export function mountTakeover(app, pool) {
         [curveId]
       );
       let lastActivity = hbRes.rows[0]?.at_ms != null ? Number(hbRes.rows[0].at_ms) : null;
+      // The contract's ONLY activity signal is an explicit creator_heartbeat call
+      // -- it has no notion of "creator traded/claimed fees counts as active."
+      // A creator who is genuinely active but has never clicked heartbeat is
+      // indistinguishable, on-chain, from an abandoned one. That's a contract
+      // design property, not something this route can fix by reading different
+      // data -- so instead of hiding it, expose WHICH signal this number is, so
+      // the frontend can show "never heartbeated" rather than implying a real
+      // activity reading.
+      let activitySource = 'heartbeat';
       if (lastActivity == null) {
         const cRes = await pool.query(
           `SELECT created_at FROM curves WHERE curve_id = $1`,
           [curveId]
         );
         lastActivity = cRes.rows[0]?.created_at != null ? Number(cRes.rows[0].created_at) : null;
+        activitySource = 'launch_fallback';
       }
 
       if (!propRes.rows.length) {
-        return res.json({ last_creator_activity_ms: lastActivity });
+        return res.json({ last_creator_activity_ms: lastActivity, last_creator_activity_source: activitySource });
       }
 
       const prop = propRes.rows[0].data ?? {};
       const proposalId = prop.proposal_id ?? null;
       if (!proposalId) {
-        return res.json({ last_creator_activity_ms: lastActivity });
+        return res.json({ last_creator_activity_ms: lastActivity, last_creator_activity_source: activitySource });
       }
 
       // 2. Has this proposal already been resolved (succeeded or failed)?
@@ -83,8 +103,8 @@ export function mountTakeover(app, pool) {
         [curveId, proposalId]
       );
       if (resolvedRes.rows.length) {
-        // Resolved — no active proposal to surface.
-        return res.json({ last_creator_activity_ms: lastActivity });
+        // Resolved -- no active proposal to surface.
+        return res.json({ last_creator_activity_ms: lastActivity, last_creator_activity_source: activitySource });
       }
 
       // 3. Tally votes for this proposal_id. Weights are u64 strings on-chain;
@@ -114,7 +134,8 @@ export function mountTakeover(app, pool) {
         for_weight:             forWeight.toString(),
         against_weight:         againstWeight.toString(),
         initial_shared_version: null, // proposal object version is not in events
-        last_creator_activity_ms: lastActivity,
+        last_creator_activity_ms:     lastActivity,
+        last_creator_activity_source: activitySource,
       });
     } catch (err) {
       console.error('[takeover] /token/:id/takeover error:', err.message);

@@ -1,7 +1,7 @@
-// index.js — SuiPump event indexer
+// index.js - SuiPump event indexer
 //
-// PRIMARY:  gRPC checkpoint streaming — sub-second latency
-// FALLBACK: GraphQL cursor pagination — backfill + gap recovery on reconnect
+// PRIMARY:  gRPC checkpoint streaming - sub-second latency
+// FALLBACK: GraphQL cursor pagination - backfill + gap recovery on reconnect
 //
 // Transport: @protobuf-ts/grpc-transport (Node.js native HTTP/2, NOT browser fetch)
 
@@ -18,7 +18,7 @@ import {
 import { startGraduationWatcher } from './auto_graduate.js';
 import { startApi } from './api.js';
 
-// ── Config ────────────────────────────────────────────────────────────────────
+// -- Config --------------------------------------------------------------------
 
 const ALL_PACKAGE_IDS = [
   '0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8', // V4
@@ -42,13 +42,24 @@ const EVENT_NAMES = [
   'TokensPurchased', 'TokensSold', 'CurveCreated', 'Comment', 'Graduated',
   'TokensLocked', 'VestedClaimed',
   // V10 events (all carry curve_id, so they ride the existing curve-keyed
-  // insert + pg_notify pipeline). Older packages never emit these — harmless.
+  // insert + pg_notify pipeline). Older packages never emit these -- harmless.
   'BuybackConfigured', 'BuybackExecuted', 'CreatorHeartbeat',
   'ProtocolSurchargeCollected',
   'TakeoverProposed', 'TakeoverVoted', 'TakeoverSucceeded', 'TakeoverFailed',
 ];
 
-// ── Epoch launch-with-site (partner integration) ──────────────────────────────
+// V10's agent_session module -- a SEPARATE module from bonding_curve, so these
+// can't ride the `${pkg}::bonding_curve::${name}` template above. These events
+// carry session_id, NOT curve_id, so they never trigger recomputeStats/
+// recomputeHolders (correctly -- a session isn't a curve); they just persist to
+// `events` and pg_notify like everything else, giving the agent page a queryable
+// history instead of the frontend's live GraphQL-scan fallback. Harmless on
+// V4-V9 (never emitted there), same as the bonding_curve V10 events above.
+const SESSION_EVENT_NAMES = [
+  'SessionOpened', 'SessionToppedUp', 'SessionBuy', 'SessionSell', 'SessionClosed',
+];
+
+// -- Epoch launch-with-site (partner integration) ------------------------------
 // Epoch's record_partner_launch emits PartnerLaunch on a DIFFERENT package +
 // module ({EPOCH_PKG}::walrus_names::PartnerLaunch), so it can't go through the
 // bonding_curve event-name template. Track it as an explicit extra event type.
@@ -59,10 +70,11 @@ const EPOCH_PARTNER_LAUNCH_TYPE = `${EPOCH_PKG}::walrus_names::PartnerLaunch`;
 
 const TRACKED_EVENT_TYPES = new Set([
   ...PACKAGE_IDS.flatMap(pkg => EVENT_NAMES.map(name => `${pkg}::bonding_curve::${name}`)),
+  ...PACKAGE_IDS.flatMap(pkg => SESSION_EVENT_NAMES.map(name => `${pkg}::agent_session::${name}`)),
   EPOCH_PARTNER_LAUNCH_TYPE,
 ]);
 
-// ── Clients ───────────────────────────────────────────────────────────────────
+// -- Clients -------------------------------------------------------------------
 
 const grpcTransport = new GrpcTransport({
   host: GRPC_URL,
@@ -76,7 +88,7 @@ const grpcClient = new SuiGrpcClient({
 
 const graphqlClient = new SuiGraphQLClient({ url: GRAPHQL_URL });
 
-// ── GraphQL backfill ──────────────────────────────────────────────────────────
+// -- GraphQL backfill ----------------------------------------------------------
 
 const EVENTS_QUERY = `
   query SuiPumpEvents($type: String!, $after: String, $first: Int!) {
@@ -141,30 +153,42 @@ async function syncEventType(eventType, packageId) {
 }
 
 async function graphqlBackfill() {
-  console.log('  Backfilling historical events via GraphQL…');
+  console.log('  Backfilling historical events via GraphQL...');
   for (const packageId of PACKAGE_IDS) {
     for (const eventName of EVENT_NAMES) {
       const eventType = `${packageId}::bonding_curve::${eventName}`;
       try {
         const count = await syncEventType(eventType, packageId);
-        if (count > 0) console.log(`  synced ${count} new: ${eventName} (${packageId.slice(0,10)}…)`);
+        if (count > 0) console.log(`  synced ${count} new: ${eventName} (${packageId.slice(0,10)}...)`);
+      } catch (err) {
+        console.error(`  backfill error ${eventName}:`, err.message);
+      }
+    }
+    // agent_session -- separate module from bonding_curve above, so it needs its
+    // own loop with its own event-type template. Never emitted on V4-V9;
+    // syncEventType just returns 0 for those, same as any other unused type.
+    for (const eventName of SESSION_EVENT_NAMES) {
+      const eventType = `${packageId}::agent_session::${eventName}`;
+      try {
+        const count = await syncEventType(eventType, packageId);
+        if (count > 0) console.log(`  synced ${count} new: ${eventName} (${packageId.slice(0,10)}...)`);
       } catch (err) {
         console.error(`  backfill error ${eventName}:`, err.message);
       }
     }
   }
-  // Epoch PartnerLaunch — different package/module, backfilled explicitly so a
+  // Epoch PartnerLaunch -- different package/module, backfilled explicitly so a
   // reconnect gap doesn't drop a site-attached launch.
   try {
     const count = await syncEventType(EPOCH_PARTNER_LAUNCH_TYPE, EPOCH_PKG);
-    if (count > 0) console.log(`  synced ${count} new: PartnerLaunch (epoch ${EPOCH_PKG.slice(0,10)}…)`);
+    if (count > 0) console.log(`  synced ${count} new: PartnerLaunch (epoch ${EPOCH_PKG.slice(0,10)}...)`);
   } catch (err) {
     console.error('  backfill error PartnerLaunch:', err.message);
   }
-  console.log('  ✓ Backfill complete');
+  console.log('  OK Backfill complete');
 }
 
-// ── Event processor ───────────────────────────────────────────────────────────
+// -- Event processor -----------------------------------------------------------
 
 async function processEvent(eventType, evt, packageId) {
   await insertEvent(eventType, evt);
@@ -218,7 +242,7 @@ async function processEvent(eventType, evt, packageId) {
   }
 }
 
-// ── Proto Value → JS conversion ───────────────────────────────────────────────
+// -- Proto Value -> JS conversion -----------------------------------------------
 
 function protoValueToJs(val) {
   if (!val) return null;
@@ -243,7 +267,7 @@ function pkgFromEventType(eventType) {
   return eventType?.split('::')?.[0] ?? null;
 }
 
-// ── gRPC checkpoint stream processor ─────────────────────────────────────────
+// -- gRPC checkpoint stream processor -----------------------------------------
 
 async function processCheckpoint(checkpoint, seqNum) {
   let processed = 0;
@@ -266,7 +290,7 @@ async function processCheckpoint(checkpoint, seqNum) {
 
   for (const eventType of trackedEventTypes) {
     try {
-      // GraphQL may lag behind gRPC stream — retry up to 5x with 1s delay
+      // GraphQL may lag behind gRPC stream - retry up to 5x with 1s delay
       let nodes = [];
       for (let attempt = 0; attempt < 5; attempt++) {
         if (attempt > 0) await sleep(1000);
@@ -303,7 +327,7 @@ async function processCheckpoint(checkpoint, seqNum) {
 
         await processEvent(eventType, evt, pkgId);
         processed++;
-        console.log(`  [stream] ${eventType.split('::').pop()} curve=${parsedJson?.curve_id?.slice(0,10)}… tx=${digest.slice(0,12)}…`);
+        console.log(`  [stream] ${eventType.split('::').pop()} curve=${parsedJson?.curve_id?.slice(0,10)}... tx=${digest.slice(0,12)}...`);
       }
     } catch (err) {
       console.error(`[stream] checkpoint events fetch error:`, err.message);
@@ -313,10 +337,10 @@ async function processCheckpoint(checkpoint, seqNum) {
   return processed;
 }
 
-// ── gRPC streaming (primary real-time path) ───────────────────────────────────
+// -- gRPC streaming (primary real-time path) -----------------------------------
 
 async function startStreaming() {
-  console.log(`  Starting gRPC checkpoint stream → ${GRPC_URL}`);
+  console.log(`  Starting gRPC checkpoint stream -> ${GRPC_URL}`);
   let reconnectDelay = 1000;
 
   while (true) {
@@ -332,7 +356,7 @@ async function startStreaming() {
         },
       });
 
-      console.log('  ✓ gRPC stream connected');
+      console.log('  OK gRPC stream connected');
       reconnectDelay = 1000;
       let lastSeq = null;
 
@@ -346,12 +370,12 @@ async function startStreaming() {
         lastSeq = seqNum;
       }
 
-      console.log(`  gRPC stream ended at checkpoint ${lastSeq}. Reconnecting…`);
+      console.log(`  gRPC stream ended at checkpoint ${lastSeq}. Reconnecting...`);
     } catch (err) {
       console.error(`  gRPC stream error: ${err.message}`);
     }
 
-    console.log('  Backfilling gap via GraphQL before reconnect…');
+    console.log('  Backfilling gap via GraphQL before reconnect...');
     try { await graphqlBackfill(); } catch (e) { console.error('  gap backfill error:', e.message); }
 
     await sleep(reconnectDelay);
@@ -359,16 +383,16 @@ async function startStreaming() {
   }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// -- Helpers -------------------------------------------------------------------
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-// ── Main ──────────────────────────────────────────────────────────────────────
+// -- Main ----------------------------------------------------------------------
 
 async function main() {
-  console.log('━'.repeat(52));
+  console.log('-'.repeat(52));
   console.log('  SUIPUMP INDEXER (gRPC streaming + GraphQL backfill)');
-  console.log('━'.repeat(52));
+  console.log('-'.repeat(52));
   console.log(`  Network:  ${NETWORK}`);
   console.log(`  gRPC:     ${GRPC_URL}`);
   console.log(`  GraphQL:  ${GRAPHQL_URL}`);
@@ -381,9 +405,9 @@ async function main() {
 
   try {
     const test = await graphqlClient.query({ query: `{ chainIdentifier }` });
-    console.log(`  ✓ GraphQL — chain: ${test.data?.chainIdentifier}`);
+    console.log(`  OK GraphQL - chain: ${test.data?.chainIdentifier}`);
   } catch (err) {
-    console.error(`  ✗ GraphQL failed: ${err.message}`);
+    console.error(`  X GraphQL failed: ${err.message}`);
   }
 
   await graphqlBackfill();

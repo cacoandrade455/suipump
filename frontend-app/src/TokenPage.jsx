@@ -1504,6 +1504,10 @@ function CommunityTakeoverPanel({ curveId, tokenType, packageId, creator, lastCr
 
   const [proposal, setProposal] = useState(null); // { proposalId, sharedVersion, nominee, forWeight, againstWeight, closesMs, snapshotSupply }
   const [activityMs, setActivityMs] = useState(null); // last_creator_activity_ms from the takeover route
+  // 'heartbeat' = a real creator_heartbeat reading; 'launch_fallback' = the
+  // creator has never heartbeated, so this is a guess from launch time, not a
+  // real activity signal. The contract has no other notion of "creator active."
+  const [activitySource, setActivitySource] = useState(null);
   const [nominee, setNominee]   = useState('');
   const [busy, setBusy]         = useState(false);
   const [msg, setMsg]           = useState('');
@@ -1525,6 +1529,7 @@ function CommunityTakeoverPanel({ curveId, tokenType, packageId, creator, lastCr
             // heartbeat, else curve created_at) - use it to drive the inactivity
             // gate without needing a curves-table column.
             if (d && d.last_creator_activity_ms != null) setActivityMs(Number(d.last_creator_activity_ms));
+            if (d && d.last_creator_activity_source) setActivitySource(d.last_creator_activity_source);
             setProposal(d && d.proposal_id ? {
               proposalId:     d.proposal_id,
               sharedVersion:  d.initial_shared_version ?? d.shared_version ?? null,
@@ -1672,8 +1677,10 @@ function CommunityTakeoverPanel({ curveId, tokenType, packageId, creator, lastCr
         <div className="space-y-2">
           <p className="text-[11px] font-mono text-white/40 leading-relaxed">
             {inactiveFor >= CTO_INACTIVITY_MS
-              ? 'Creator inactive 5+ days. A token holder (≥1% supply) may nominate a new creator.'
-              : `Creator active. Takeover unlocks after 5 days of inactivity (currently ${fmtH(CTO_INACTIVITY_MS - inactiveFor)} remaining).`}
+              ? 'Creator inactive 5+ days. A token holder (\u22651% supply) may nominate a new creator.'
+              : activitySource === 'launch_fallback'
+                ? `Creator has never checked in (no heartbeat on record). Takeover unlocks ${fmtH(CTO_INACTIVITY_MS - inactiveFor)} after launch if they still haven't.`
+                : `Creator active. Takeover unlocks after 5 days of inactivity (currently ${fmtH(CTO_INACTIVITY_MS - inactiveFor)} remaining).`}
           </p>
           {canPropose && account && (
             <div className="flex gap-2">
