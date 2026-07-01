@@ -1,4 +1,4 @@
-// AgentPage.jsx — Autonomous agent console (routed page, renders inside <main>).
+// AgentPage.jsx - Autonomous agent console (routed page, renders inside <main>).
 //
 // Flow:
 //   1. Natural-language goal -> Groq plans off-chain (/api/agent-plan) into a
@@ -19,7 +19,7 @@ import { useNavigate } from 'react-router-dom';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { PACKAGE_ID, MIST_PER_SUI } from './constants.js';
 
-// The agent's execution wallet — the session_address authorized to trade the
+// The agent's execution wallet - the session_address authorized to trade the
 // escrow. buy_with_session/sell_with_session are signed by THIS wallet
 // server-side (the bridge), never the user. Opening a session deposits SUI the
 // agent may spend up to spend_cap, until expiry or revoke/close.
@@ -49,9 +49,9 @@ const WORKFLOW_DAGS = {
 };
 
 // "How to operate" content for the agent-page accordion, in three tiers:
-//   TOOLS      — the 5 atomic Nexus tools (xyz.suipump.*@1), from the Rust source.
-//   STRATEGIES — the 4 standing behaviours built on those tools.
-//   COMBINING  — the one real composition (a buy-strategy auto-arming an exit).
+//   TOOLS      - the 5 atomic Nexus tools (xyz.suipump.*@1), from the Rust source.
+//   STRATEGIES - the 4 standing behaviours built on those tools.
+//   COMBINING  - the one real composition (a buy-strategy auto-arming an exit).
 // Example goals match the deterministic parsers / planner verbatim; clicking one
 // loads it into the goal box. Content is limited to what actually works on-chain.
 const OPERATE_GUIDE = [
@@ -62,7 +62,7 @@ const OPERATE_GUIDE = [
       {
         key: 'launch', title: 'Launch', fqn: 'xyz.suipump.launch@1',
         tagline: 'Create a new token (with an optional dev-buy)',
-        body: 'Publishes a new token on SuiPump — handles the bytecode patching and publishing — and optionally does a dev-buy in the same transaction. You can set the graduation DEX (Cetus, DeepBook, or Turbos) and an anti-bot delay.',
+        body: 'Publishes a new token on SuiPump - handles the bytecode patching and publishing - and optionally does a dev-buy in the same transaction. You can set the graduation DEX (Cetus, DeepBook, or Turbos) and an anti-bot delay.',
         inputs: ['Name, symbol, description', 'Optional: icon URL', 'Optional: dev-buy in SUI', 'Optional: graduation target (cetus / deepbook / turbos)', 'Optional: anti-bot delay (0 / 15 / 30s)'],
         examples: ['Launch a dog token called MoonCat, symbol MCAT, dev-buy 1 SUI'],
       },
@@ -83,8 +83,8 @@ const OPERATE_GUIDE = [
       {
         key: 'claim', title: 'Claim', fqn: 'xyz.suipump.claim@2',
         tagline: 'Collect pending creator fees',
-        body: 'Claims the creator fees that have accrued on a curve you launched. Does nothing if there are no fees pending. You can claim one curve by pasting its CA, or claim every curve you created at once — say "claim all" with no CA and the agent enumerates your curves and claims each one through Nexus.',
-        inputs: ['A token CA you created — or "claim all" for every curve at once'],
+        body: 'Claims the creator fees that have accrued on a curve you launched. Does nothing if there are no fees pending. You can claim one curve by pasting its CA, or claim every curve you created at once - say "claim all" with no CA and the agent enumerates your curves and claims each one through Nexus.',
+        inputs: ['A token CA you created - or "claim all" for every curve at once'],
         examples: ['Claim creator fees on 0xCURVE', 'Claim all my creator fees'],
       },
       {
@@ -103,13 +103,13 @@ const OPERATE_GUIDE = [
       {
         key: 'sniper', title: 'Sniper', fqn: 'strategy.sniper@1',
         tagline: 'Auto-buy new launches the moment they appear',
-        body: 'A standing order that watches for new token launches and fires a buy through Nexus the instant one is created — every launch, or only launches from a specific creator. Runs until cancelled or an optional cap is hit.',
+        body: 'A standing order that watches for new token launches and fires a buy through Nexus the instant one is created - every launch, or only launches from a specific creator. Runs until cancelled or an optional cap is hit.',
         inputs: ['A SUI amount per snipe', 'Optional: a creator wallet to restrict to', 'Optional: a max number of snipes', 'Optional: an exit armed on each buy'],
         examples: ['Snipe 1 SUI of every new token launch', 'Snipe 2 SUI of every token launched by 0xCREATOR, take profit at 50%'],
       },
       {
         key: 'dca', title: 'DCA / Scale-in', fqn: 'strategy.dca@1',
-        tagline: 'Accumulate over time, or buy each dip — tracking average cost',
+        tagline: 'Accumulate over time, or buy each dip - tracking average cost',
         body: 'A standing accumulation order on one curve. TIME mode buys on a schedule; DIP mode buys each time price drops a set %. The agent tracks your blended average cost across fills and can auto-arm a take-profit measured against that average.',
         inputs: ['A token CA', 'A SUI amount per buy', 'A trigger: an interval (time) OR a % drop (dip)', 'How many buys total', 'Optional: a take-profit on the average cost'],
         examples: ['Buy 5 SUI of 0xCURVE every day for 10', 'Buy 5 SUI of 0xCURVE, buy 5 more if it drops 10%, take profit at 20%'],
@@ -124,7 +124,7 @@ const OPERATE_GUIDE = [
       {
         key: 'tpsl', title: 'Take-profit / Stop-loss', fqn: 'strategy.tpsl@1',
         tagline: 'Auto-sell a position at a price target',
-        body: 'Watches a curve you hold and sells automatically through Nexus when price hits a take-profit multiple or falls to a stop-loss. Take-profit can be tiered — sell part at one level, the rest higher.',
+        body: 'Watches a curve you hold and sells automatically through Nexus when price hits a take-profit multiple or falls to a stop-loss. Take-profit can be tiered - sell part at one level, the rest higher.',
         inputs: ['A token CA you hold', 'A take-profit target and/or a stop-loss'],
         examples: ['Take profit on 0xCURVE at 50% and stop loss at 20%', 'Sell 50% of 0xCURVE at +30%, sell the rest at +100%'],
       },
@@ -137,7 +137,7 @@ const OPERATE_GUIDE = [
       {
         key: 'combining', title: 'Entry strategy + automatic TP/SL exit', fqn: null,
         tagline: 'Pair Sniper or DCA with a hands-off take-profit / stop-loss',
-        body: 'Two pairings are supported today, both adding a TP/SL exit onto an entry strategy:\n\n• Sniper + TP/SL — each snipe auto-arms an exit, seeded at that buy\'s real fill price.\n• DCA + TP/SL — after the accumulation completes, an exit arms on the blended average cost.\n\nIn both cases you just add "take profit at X%" and/or "stop loss at Y%" to the same goal; the exit then watches and sells on its own. Copy-trade does not take an added exit — its selling is already driven by the target wallet. These two entry→exit pairings are the only compositions: strategies otherwise run independently, and there is no multi-step chaining of one strategy into another (e.g. no Sniper→DCA, no DCA→Copy-trade).',
+        body: 'Two pairings are supported today, both adding a TP/SL exit onto an entry strategy:\n\n* Sniper + TP/SL - each snipe auto-arms an exit, seeded at that buy\'s real fill price.\n* DCA + TP/SL - after the accumulation completes, an exit arms on the blended average cost.\n\nIn both cases you just add "take profit at X%" and/or "stop loss at Y%" to the same goal; the exit then watches and sells on its own. Copy-trade does not take an added exit - its selling is already driven by the target wallet. These two entry->exit pairings are the only compositions: strategies otherwise run independently, and there is no multi-step chaining of one strategy into another (e.g. no Sniper->DCA, no DCA->Copy-trade).',
         inputs: null,
         examples: ['Snipe 1 SUI of every new launch, take profit at 50%', 'Buy 5 SUI of 0xCURVE, buy 5 more if it drops 10%, take profit at 20% and stop loss at 15%'],
       },
@@ -171,7 +171,7 @@ function TokenIcon({ url, symbol, size = 28 }) {
   );
 }
 
-// Tool node metadata per workflow — drives the execution animation.
+// Tool node metadata per workflow - drives the execution animation.
 const WORKFLOW_NODES = {
   launch_and_buy: [
     { id: 'launch', tool: 'xyz.suipump.launch@1', label: 'Launch',  desc: 'Create token on bonding curve' },
@@ -193,7 +193,7 @@ const WORKFLOW_NODES = {
   ],
 };
 
-// extractTakeProfitRungs — pull EVERY take-profit rung from a goal, in order.
+// extractTakeProfitRungs - pull EVERY take-profit rung from a goal, in order.
 // Splits the goal into clauses on connectors (commas, "and", "then", ";") and
 // parses each clause independently: a take-profit trigger plus the sell-size in
 // that SAME clause ("sell 50%" / "sell all" / "dump all"), defaulting to 100%.
@@ -201,13 +201,13 @@ const WORKFLOW_NODES = {
 // rung, so "sell 50% at +10% and sell all at +20%" yields TWO rungs.
 //
 // A take-profit trigger is recognized as either:
-//   • an explicit "+N%"  (e.g. "+20%"), OR
-//   • a bare "to/at N%" / standalone "N%" WITHOUT any stop-loss keyword in the
+//   * an explicit "+N%"  (e.g. "+20%"), OR
+//   * a bare "to/at N%" / standalone "N%" WITHOUT any stop-loss keyword in the
 //     clause (e.g. "to 5% sell all", "sell all at 5%"). Bare percentages default
 //     to take-profit; stop-loss only ever arms on an explicit keyword (handled in
 //     parseStrategyGoal), so a bare percentage is never a stop-loss.
 // The sell-size percentage ("sell 50%") is NEVER mistaken for the trigger.
-// sanitizePercents — repair common fat-finger typos INSIDE numeric percent
+// sanitizePercents - repair common fat-finger typos INSIDE numeric percent
 // tokens so "sell !00%" reads as "sell 100%" and "5O%" as "50%". Only digits
 // adjacent to a % are touched; the rest of the goal is left alone. ! -> 1
 // (shift+1 slip), O/o -> 0, l/I -> 1 when wedged among digits before a %.
@@ -216,7 +216,7 @@ export function sanitizePercents(s) {
     tok.replace(/!/g, '1').replace(/[Oo]/g, '0').replace(/[lI]/g, '1'));
 }
 
-// extractTakeProfitRungs — pull EVERY take-profit rung from a goal, in order.
+// extractTakeProfitRungs - pull EVERY take-profit rung from a goal, in order.
 // Splits the goal into clauses on connectors (commas, "and", "then", ";"), then
 // within each clause keeps ONLY the portion BEFORE any stop-loss keyword (so a
 // single breath like "tp 5% sell 100% sl -5% sell 100%" contributes the +5% TP
@@ -320,7 +320,7 @@ export function parseStrategyGoal(text) {
 
   // Compound: a leading "buy N sui" in the SAME goal means buy first, then arm
   // the take-profit/stop-loss on the bought position. e.g.
-  //   "buy 500 sui of 0x… , take profit at +20% sell all"
+  //   "buy 500 sui of 0x... , take profit at +20% sell all"
   // The buy settles immediately via the bridge; the TP/SL is then armed at the
   // post-buy fill price so "+20%" is measured from what we actually paid.
   const buyMatch = lower.match(/buy\s+(\d*\.?\d+)\s*sui/);
@@ -329,7 +329,7 @@ export function parseStrategyGoal(text) {
     if (amountSui > 0) {
       const tpDescC = tp.length ? `take-profit ${tp.map(r => `+${Math.round((r.multiple - 1) * 100)}% (sell ${r.sellPct}%)`).join(', ')}` : '';
       const slDescC = stopLoss ? `stop-loss -${Math.round((1 - stopLoss.multiple) * 100)}%` : '';
-      const summaryC = `Buy ${amountSui} SUI of ${curveId.slice(0, 10)}…, then arm ${[tpDescC, slDescC].filter(Boolean).join(' · ')}. The agent buys now and sells automatically when a trigger is hit.`;
+      const summaryC = `Buy ${amountSui} SUI of ${curveId.slice(0, 10)}..., then arm ${[tpDescC, slDescC].filter(Boolean).join(' . ')}. The agent buys now and sells automatically when a trigger is hit.`;
       return {
         workflow: 'buy_then_tpsl',
         summary: summaryC,
@@ -341,7 +341,7 @@ export function parseStrategyGoal(text) {
 
   const tpDesc = tp.length ? `take-profit ${tp.map(r => `+${Math.round((r.multiple - 1) * 100)}% (sell ${r.sellPct}%)`).join(', ')}` : '';
   const slDesc = stopLoss ? `stop-loss -${Math.round((1 - stopLoss.multiple) * 100)}%` : '';
-  const summary = `Arm a standing strategy on ${curveId.slice(0, 10)}…: ${[tpDesc, slDesc].filter(Boolean).join(' · ')}. The agent watches the price and sells automatically when a trigger is hit.`;
+  const summary = `Arm a standing strategy on ${curveId.slice(0, 10)}...: ${[tpDesc, slDesc].filter(Boolean).join(' . ')}. The agent watches the price and sells automatically when a trigger is hit.`;
 
   return { workflow: 'tpsl', summary, tpsl: { curveId, takeProfit: tp, stopLoss } };
 }
@@ -368,7 +368,7 @@ function parseSniperGoal(text) {
   // Yield to AUTOPILOT when the goal is trending-DISCOVERY rather than launch-
   // sniping. "ape into every token that's trending" matches sniper's
   // "every ... token" net, but the word "trending" (with no launch word) means
-  // the user wants the agent to discover already-trending tokens — that is
+  // the user wants the agent to discover already-trending tokens - that is
   // autopilot, which runs next in the chain. An EXPLICIT "snipe/sniper" keyword
   // overrides (the user literally asked to snipe), so this only yields for the
   // generic "ape/buy every token" phrasings.
@@ -389,8 +389,8 @@ function parseSniperGoal(text) {
   { let m; const re = /(?:symbol|ticker)\s*[:\-]?\s*\$?([a-z0-9]{1,12})/ig;
     while ((m = re.exec(g)) !== null) symbols.push(m[1].toUpperCase()); }
 
-  // nameIncludes: "named X" / "called X" / "name contains X" — stop at a clause
-  // boundary or a 0x address so it doesn't swallow "by 0x…".
+  // nameIncludes: "named X" / "called X" / "name contains X" - stop at a clause
+  // boundary or a 0x address so it doesn't swallow "by 0x...".
   let nameIncludes = null;
   {
     const m = g.match(/(?:name\s+(?:contains|includes|with)|named|called)\s*[:\-]?\s*["']?([a-z0-9][a-z0-9 ]{0,38}?)["']?(?=\s+(?:by|from|launched|with|and|or|symbol|ticker|max|first|up\s+to|limit)\b|\s+0x|["']|$)/i);
@@ -416,7 +416,7 @@ function parseSniperGoal(text) {
   if (!hasFilter)           sniper.all = true;   // explicit opt-in to every launch
   if (maxSnipes != null)    sniper.maxSnipes = maxSnipes;
 
-  // ── then.tpsl: a "dump all / take profit at +X%" (and/or "stop loss at -Y%")
+  // -- then.tpsl: a "dump all / take profit at +X%" (and/or "stop loss at -Y%")
   // in the SAME sentence means "after each snipe, arm a TP/SL on that curve".
   // The brain reads the real post-buy fill price and seeds entry, so "+X%" is
   // measured from what the snipe actually paid. Same extraction shape as
@@ -455,7 +455,7 @@ function parseSniperGoal(text) {
     ? `, then arm ${[
         then.tpsl.takeProfit.length ? `take-profit ${then.tpsl.takeProfit.map(r => `+${Math.round((r.multiple - 1) * 100)}% (sell ${r.sellPct}%)`).join(', ')}` : '',
         then.tpsl.stopLoss ? `stop-loss -${Math.round((1 - then.tpsl.stopLoss.multiple) * 100)}%` : '',
-      ].filter(Boolean).join(' · ')} on each buy`
+      ].filter(Boolean).join(' . ')} on each buy`
     : '';
 
   const summary = `Arm a standing sniper: buy ${amountSui} SUI of ${scope}${maxSnipes != null ? `, first ${maxSnipes} only` : ' (unbounded)'}${thenDesc}. The agent watches new launches, buys automatically the moment one matches${then ? ', then auto-sells each position when its trigger is hit' : ''}.`;
@@ -465,13 +465,13 @@ function parseSniperGoal(text) {
 
 // Client-side DCA / scale-in parser. DCA is a STANDING accumulation order on a
 // SPECIFIC curve (so a CA is required in the goal). Two trigger shapes:
-//   • time: "buy 10 sui of <CA> every day for 10"  -> intervalMs + buys
-//   • dip:  "buy 5 sui of <CA>, 10 more each -10% drop, 3 buys" -> dropPct + buys
+//   * time: "buy 10 sui of <CA> every day for 10"  -> intervalMs + buys
+//   * dip:  "buy 5 sui of <CA>, 10 more each -10% drop, 3 buys" -> dropPct + buys
 // Recognized here (not via the LLM) so the 64-hex CA is never mangled and the
 // amount/interval/drop are parsed deterministically. `then.tpsl` in the same
 // goal arms an exit on the blended average cost after the final buy.
 // Returns a dca plan or null. (parseSniperGoal runs FIRST, so "every token
-// launched by 0x…" routes to sniper, not here.)
+// launched by 0x..." routes to sniper, not here.)
 function parseDcaGoal(text) {
   const g = String(text || '');
   const lower = g.toLowerCase();
@@ -481,7 +481,7 @@ function parseDcaGoal(text) {
   // Requires a SUI buy amount somewhere.
   const hasDcaWord = /\bdca\b|\bdollar[\s-]?cost\b|\baverage\s+(?:in|down)\b|\bscale\s+in\b|\baccumulate\b/.test(lower);
   const hasEveryTime = /\bevery\s+(?:\d+\s*)?(?:second|sec|minute|min|hour|hr|day|week)s?\b/.test(lower);
-  // Dip: any percentage tied to a fall — "drops/falls/dips/down/lower X%",
+  // Dip: any percentage tied to a fall - "drops/falls/dips/down/lower X%",
   // "if it drops 10%", "each -10%", "on a 10% dip", or "N more" (scale-in) with a %.
   const dropPhrase =
     /(?:drops?|falls?|dips?|down|lower|loses?)\s*(?:by\s*)?-?\s*\d+(?:\.\d+)?\s*%/.test(lower) ||
@@ -496,8 +496,8 @@ function parseDcaGoal(text) {
   const curveId = ca ? ca[0].toLowerCase() : null;
   if (!curveId) return null; // can't DCA without a target curve
 
-  // Per-buy SUI. Your phrasing can carry TWO sizes: an anchor ("buy 5 sui …")
-  // and a per-dip rung ("…buy 10 more each -10%"). Capture both; the rung size is
+  // Per-buy SUI. Your phrasing can carry TWO sizes: an anchor ("buy 5 sui ...")
+  // and a per-dip rung ("...buy 10 more each -10%"). Capture both; the rung size is
   // the one tied to "more". If only one amount, it is both anchor and rung.
   const allAmts = [...lower.matchAll(/(\d*\.?\d+)\s*sui/g)].map(m => Number(m[1]));
   const moreMatch = lower.match(/(\d*\.?\d+)\s*(?:sui\s+)?more/);
@@ -557,7 +557,7 @@ function parseDcaGoal(text) {
     modeDesc = `every ${label}`;
   }
 
-  // then.tpsl — shared extraction (same shape as sniper / parseStrategyGoal). The
+  // then.tpsl - shared extraction (same shape as sniper / parseStrategyGoal). The
   // brain arms this on the BLENDED average cost after the final buy.
   let then = null;
   {
@@ -584,10 +584,10 @@ function parseDcaGoal(text) {
     ? `, then arm ${[
         then.tpsl.takeProfit.length ? `take-profit +${Math.round((then.tpsl.takeProfit[0].multiple - 1) * 100)}%` : '',
         then.tpsl.stopLoss ? `stop-loss -${Math.round((1 - then.tpsl.stopLoss.multiple) * 100)}%` : '',
-      ].filter(Boolean).join(' · ')} on the average cost`
+      ].filter(Boolean).join(' . ')} on the average cost`
     : '';
 
-  const summary = `Arm DCA on ${curveId.slice(0, 10)}…: buy ${suiPerBuy} SUI ${modeDesc}, ${buys} buy${buys > 1 ? 's' : ''} total${thenDesc}. The agent accumulates automatically and tracks the average cost${then ? ', then auto-exits against that average' : ''}.`;
+  const summary = `Arm DCA on ${curveId.slice(0, 10)}...: buy ${suiPerBuy} SUI ${modeDesc}, ${buys} buy${buys > 1 ? 's' : ''} total${thenDesc}. The agent accumulates automatically and tracks the average cost${then ? ', then auto-exits against that average' : ''}.`;
 
   return { workflow: 'dca', summary, dca, then };
 }
@@ -626,14 +626,14 @@ function parseCopytradeGoal(text) {
 
   const copytrade = { targetWallet, suiPerTrade };
 
-  const summary = `Arm copy-trade on ${targetWallet.slice(0, 10)}…: when they buy, the agent buys ${suiPerTrade} SUI; when they sell, the agent sells the same proportion of its position. Mirrors across every curve the target trades, automatically through Nexus.`;
+  const summary = `Arm copy-trade on ${targetWallet.slice(0, 10)}...: when they buy, the agent buys ${suiPerTrade} SUI; when they sell, the agent sells the same proportion of its position. Mirrors across every curve the target trades, automatically through Nexus.`;
 
   return { workflow: 'copytrade', summary, copytrade };
 }
 
-// parseAutopilotGoal — the AUTOPILOT strategy: a hands-off, 24/7 autonomous trader.
+// parseAutopilotGoal - the AUTOPILOT strategy: a hands-off, 24/7 autonomous trader.
 // Runs AFTER sniper/dca/copytrade in the parse chain (those need a specific curve);
-// autopilot is the "no specific token — you pick" catch-all for autonomous goals.
+// autopilot is the "no specific token - you pick" catch-all for autonomous goals.
 // Returns an autopilot plan or null.
 function parseAutopilotGoal(text) {
   const g = String(text || '');
@@ -644,7 +644,7 @@ function parseAutopilotGoal(text) {
 
   // Autopilot is the curve-less autonomous intent. isAutopilotIntent() returns
   // false when a 0x curve id is present (that's a targeted buy/strategy, not
-  // autopilot) — this is the fix for the autopilot<->buy ambiguity.
+  // autopilot) - this is the fix for the autopilot<->buy ambiguity.
   if (!isAutopilotIntent(lower)) return null;
 
   const numAfter = (re, d) => { const m = lower.match(re); return m ? Number(m[1]) : d; };
@@ -725,9 +725,9 @@ function parseAutopilotGoal(text) {
   return { workflow: 'autopilot', summary, autopilot, then };
 }
 
-// ── Active-strategies helpers ─────────────────────────────────────────────────
+// -- Active-strategies helpers -------------------------------------------------
 const ORDER_LABEL = { tpsl: 'TP / SL', sniper: 'Sniper', dca: 'DCA', copytrade: 'Copy-trade', autopilot: 'Autopilot' };
-const shortId  = (s) => (typeof s === 'string' && s.startsWith('0x') && s.length > 14) ? `${s.slice(0, 8)}…${s.slice(-4)}` : s;
+const shortId  = (s) => (typeof s === 'string' && s.startsWith('0x') && s.length > 14) ? `${s.slice(0, 8)}...${s.slice(-4)}` : s;
 const shortType = (t) => {
   if (typeof t !== 'string') return '';
   const m = t.match(/::([^:]+)::([^>]+)$/);
@@ -743,18 +743,18 @@ function describeOrder(o) {
     if (Array.isArray(p.symbols) && p.symbols.length)   bits.push(`$${p.symbols.join('/$')}`);
     if (p.nameIncludes) bits.push(`name~"${p.nameIncludes}"`);
     if (!bits.length && p.all) bits.push('every launch');
-    const cap = p.maxSnipes ? ` · ${p.fired || 0}/${p.maxSnipes} fired` : ` · ${p.fired || 0} fired`;
-    const then = p.then?.tpsl ? ' → then TP/SL' : '';
+    const cap = p.maxSnipes ? ` . ${p.fired || 0}/${p.maxSnipes} fired` : ` . ${p.fired || 0} fired`;
+    const then = p.then?.tpsl ? ' -> then TP/SL' : '';
     return `Buy ${p.amountSui} SUI on ${bits.join(p.match === 'any' ? ' or ' : ' & ')}${cap}${then}`;
   }
   if (o.type === 'dca') {
     const every = p.intervalMs >= 60000 ? `${Math.round(p.intervalMs / 60000)}m` : `${Math.round((p.intervalMs || 0) / 1000)}s`;
-    const then = p.then?.tpsl ? ' → then TP/SL' : '';
-    return `Buy ${p.suiPerBuy} SUI every ${every} · ${p.done || 0}/${p.buys} done${then}`;
+    const then = p.then?.tpsl ? ' -> then TP/SL' : '';
+    return `Buy ${p.suiPerBuy} SUI every ${every} . ${p.done || 0}/${p.buys} done${then}`;
   }
   if (o.type === 'copytrade') {
-    const size = p.suiPerTrade ? `${p.suiPerTrade} SUI/trade` : `${p.ratio}× their size`;
-    const then = p.then?.tpsl ? ' → then TP/SL' : '';
+    const size = p.suiPerTrade ? `${p.suiPerTrade} SUI/trade` : `${p.ratio}x their size`;
+    const then = p.then?.tpsl ? ' -> then TP/SL' : '';
     return `Mirror ${shortId(p.targetWallet)} at ${size}${then}`;
   }
   if (o.type === 'autopilot') {
@@ -764,20 +764,20 @@ function describeOrder(o) {
     const open = Array.isArray(p.entered) ? p.entered.length : (Number(p.openCount ?? 0) || 0);
     const per = Number(p.perEntrySui ?? 0);
     const maxOpen = Number(p.maxOpenPositions ?? 0);
-    const then = p.then?.tpsl ? ' → TP/SL per entry' : '';
-    return `Autopilot · ${per} SUI/entry · ${deployed.toFixed(2)}/${cap} SUI deployed · ${open}${maxOpen ? `/${maxOpen}` : ''} open${then}`;
+    const then = p.then?.tpsl ? ' -> TP/SL per entry' : '';
+    return `Autopilot . ${per} SUI/entry . ${deployed.toFixed(2)}/${cap} SUI deployed . ${open}${maxOpen ? `/${maxOpen}` : ''} open${then}`;
   }
 
   // tpsl
   const tp = Array.isArray(o.takeProfit) ? o.takeProfit : [];
   const tpStr = tp.length
-    ? 'TP ' + tp.map((r) => (r.multiple ? `${r.multiple}×` : `${r.priceSui} SUI`) + ` (${r.sellPct}%)`).join(', ')
+    ? 'TP ' + tp.map((r) => (r.multiple ? `${r.multiple}x` : `${r.priceSui} SUI`) + ` (${r.sellPct}%)`).join(', ')
     : '';
-  const sl = o.stopLoss ? `SL ${o.stopLoss.multiple ? `${o.stopLoss.multiple}×` : `${o.stopLoss.priceSui} SUI`}` : '';
-  return [tpStr, sl].filter(Boolean).join(' · ') || 'TP/SL order';
+  const sl = o.stopLoss ? `SL ${o.stopLoss.multiple ? `${o.stopLoss.multiple}x` : `${o.stopLoss.priceSui} SUI`}` : '';
+  return [tpStr, sl].filter(Boolean).join(' . ') || 'TP/SL order';
 }
 
-// ── Agent session (escrow authorization) ──────────────────────────────────────
+// -- Agent session (escrow authorization) --------------------------------------
 // A user opens an AgentSession to let the agent's execution wallet trade on their
 // behalf without per-trade signing: deposit SUI into escrow, set a spend cap and
 // expiry, and the agent (session_address) spends up to the cap until expiry or
@@ -787,12 +787,12 @@ function describeOrder(o) {
 const GQL_URL = 'https://graphql.testnet.sui.io/graphql';
 
 function fmtSui(mist) {
-  if (mist == null) return '—';
+  if (mist == null) return '-';
   const n = Number(BigInt(mist)) / 1e9;
   return n.toLocaleString(undefined, { maximumFractionDigits: 4 });
 }
 
-function AgentSessionPanel({ account }) {
+function AgentSessionPanel({ account, onSessionChange }) {
   const dAppKit = useDAppKit();
   const client  = useCurrentClient();
 
@@ -863,6 +863,17 @@ function AgentSessionPanel({ account }) {
   useEffect(() => { loadSession(); }, [loadSession]);
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
 
+  // Report the active, spendable session id up to AgentPage so strategy
+  // arm-payloads can bind an order to it. A revoked or expired session is
+  // reported as null -- it exists but a bridge /session-buy /session-sell
+  // against it would fail on-chain, so orders should not be tagged with it.
+  useEffect(() => {
+    if (!onSessionChange) return;
+    const expired = session && session.expiryMs > 0 && Date.now() >= session.expiryMs;
+    const usable = session && !session.revoked && !expired ? session.id : null;
+    onSessionChange(usable);
+  }, [session, onSessionChange]);
+
   async function doOpen() {
     if (busy || !account) return;
     const dep = parseFloat(depositSui), cap = parseFloat(capSui), dd = parseFloat(days);
@@ -886,7 +897,7 @@ function AgentSessionPanel({ account }) {
       });
       const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
       if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Open failed');
-      setMsg('Session opened — the agent can now trade your escrow.');
+      setMsg('Session opened - the agent can now trade your escrow.');
       setTimeout(loadSession, 1500);
     } catch (e) { setMsg(e.message || 'Open failed'); }
     finally { setBusy(false); }
@@ -928,7 +939,7 @@ function AgentSessionPanel({ account }) {
       });
       const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
       if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Revoke failed');
-      setMsg('Session revoked — the agent can no longer spend. Close to withdraw escrow.');
+      setMsg('Session revoked - the agent can no longer spend. Close to withdraw escrow.');
       setTimeout(loadSession, 1500);
     } catch (e) { setMsg(e.message || 'Revoke failed'); }
     finally { setBusy(false); }
@@ -946,7 +957,7 @@ function AgentSessionPanel({ account }) {
       tx.transferObjects([refund], account.address);
       const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
       if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Close failed');
-      setMsg('Session closed — unspent escrow returned to your wallet.');
+      setMsg('Session closed - unspent escrow returned to your wallet.');
       setSession(null);
       setTimeout(loadSession, 1500);
     } catch (e) { setMsg(e.message || 'Close failed'); }
@@ -960,7 +971,7 @@ function AgentSessionPanel({ account }) {
     ? (BigInt(session.spendCap || '0') === 0n ? 'unbounded' : `${fmtSui(session.spendCap)} SUI`)
     : '';
   const expiryLabel = (ms) => {
-    if (!ms) return '—';
+    if (!ms) return '-';
     const rem = ms - now;
     if (rem <= 0) return 'expired';
     const dys = Math.floor(rem / 86_400_000);
@@ -982,11 +993,11 @@ function AgentSessionPanel({ account }) {
       </div>
 
       {loading ? (
-        <div className="py-3 text-center text-white/20 text-[10px] font-mono">Loading…</div>
+        <div className="py-3 text-center text-white/20 text-[10px] font-mono">Loading...</div>
       ) : !session ? (
         <>
           <p className="text-[10px] font-mono text-white/35 leading-relaxed">
-            Authorize the agent to trade a SUI escrow on your behalf — no per-trade signing.
+            Authorize the agent to trade a SUI escrow on your behalf - no per-trade signing.
             Set a spend cap and expiry; revoke or close anytime to reclaim unspent funds.
           </p>
           <div className="grid grid-cols-3 gap-2">
@@ -1008,11 +1019,16 @@ function AgentSessionPanel({ account }) {
           </div>
           <button onClick={doOpen} disabled={busy}
             className={`w-full py-2 rounded-lg text-[11px] font-mono tracking-widest transition-colors ${busy ? 'bg-white/5 text-white/25' : 'bg-violet-500/80 hover:bg-violet-500 text-white'}`}>
-            {busy ? 'OPENING…' : 'OPEN SESSION'}
+            {busy ? 'OPENING...' : 'OPEN SESSION'}
           </button>
         </>
       ) : (
         <>
+          {!session.revoked && !expired && (
+            <p className="text-[9px] font-mono text-violet-300/60 leading-relaxed">
+              Strategies armed from here now spend this escrow, not the agent wallet.
+            </p>
+          )}
           <div className="grid grid-cols-3 gap-2 text-center">
             <div className="rounded-lg bg-white/[0.03] border border-white/5 py-2">
               <div className="text-[8px] font-mono text-white/30 tracking-widest">ESCROW</div>
@@ -1045,7 +1061,7 @@ function AgentSessionPanel({ account }) {
           )}
           <button onClick={doClose} disabled={busy}
             className={`w-full py-2 rounded-lg text-[10px] font-mono tracking-widest transition-colors ${busy ? 'bg-white/5 text-white/25' : 'bg-white/10 text-white/70 border border-white/20 hover:bg-white/20'}`}>
-            {busy ? 'WORKING…' : 'CLOSE & WITHDRAW ESCROW'}
+            {busy ? 'WORKING...' : 'CLOSE & WITHDRAW ESCROW'}
           </button>
         </>
       )}
@@ -1059,8 +1075,15 @@ export default function AgentPage({ onBack }) {
   const account = useCurrentAccount();
   const navigate = useNavigate();
 
+  // Reported by AgentSessionPanel below -- the user's active, spendable
+  // AgentSession id (or null). When set, arm payloads bind the order to it so
+  // the strategy brain routes that order's trades through the bridge's
+  // /session-buy /session-sell (spending session escrow) instead of /buy /sell
+  // (the agent wallet). See orders.js POST /orders for how it's persisted.
+  const [activeSessionId, setActiveSessionId] = useState(null);
+
   const [goal, setGoal]         = useState('');
-  const [guideOpen, setGuideOpen]     = useState(false);  // tutorial collapsed by default — page loads compact
+  const [guideOpen, setGuideOpen]     = useState(false);  // tutorial collapsed by default - page loads compact
   const [openStrategy, setOpenStrategy] = useState(null); // which accordion row is open
   const [planning, setPlanning] = useState(false);
   const [plan, setPlan]         = useState(null);
@@ -1098,7 +1121,7 @@ export default function AgentPage({ onBack }) {
       const autopilotIds = new Set(all.filter(o => o.type === 'autopilot').map(o => o.id));
       const visible = all.filter((o) => {
         const m = typeof o.id === 'string' && o.id.match(/^(ord_\d+_[a-z0-9]+)_tp_[0-9a-f]+$/i);
-        if (m && autopilotIds.has(m[1])) return false; // autopilot child exit — folded into the autopilot row
+        if (m && autopilotIds.has(m[1])) return false; // autopilot child exit - folded into the autopilot row
         return true;
       });
       setOrders(visible);
@@ -1143,7 +1166,7 @@ export default function AgentPage({ onBack }) {
     return () => { cancelled = true; };
   }, [orders]);  // tickerByCurve intentionally omitted (read-time cache; same pattern as history)
 
-  // ── Agent action history (persistent, survives refresh) ─────────────────────
+  // -- Agent action history (persistent, survives refresh) ---------------------
   // Backed by the indexer's agent_actions table via the /api/agent-actions proxy.
   // Manual fires record a row here (POST pending -> PATCH on settle/fallback);
   // autonomous fires are recorded by the strategy brain (strategy.js recordFire).
@@ -1204,7 +1227,7 @@ export default function AgentPage({ onBack }) {
     })();
   }, [historyOpen, history]);  // tickerByCurve intentionally omitted (see note above)
 
-  // Record a manual fire (returns the row id, or null on failure). Best-effort —
+  // Record a manual fire (returns the row id, or null on failure). Best-effort -
   // history must never block or fail a trade.
   const recordAction = useCallback(async (action) => {
     try {
@@ -1263,7 +1286,7 @@ export default function AgentPage({ onBack }) {
     setCandidates(null); setResolvedNote(null);
     setNodeState({}); setPhase('idle'); clearAnim();
     try {
-      // ── A2: resolve a $ticker to a real curve id BEFORE the deterministic parsers
+      // -- A2: resolve a $ticker to a real curve id BEFORE the deterministic parsers
       // run. The parsers (parseStrategyGoal / sniper / dca) key on a 0x curve
       // address and bail on a bare "$TICKER", which previously let a goal like
       // "buy 5 sui of $Overflow and tp at 5%" fall through to the LLM, which then
@@ -1322,7 +1345,7 @@ export default function AgentPage({ onBack }) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Planning failed');
 
-      // ── Guardrail: the LLM must NEVER turn a buy/sell intent into a launch. If
+      // -- Guardrail: the LLM must NEVER turn a buy/sell intent into a launch. If
       // the goal has no explicit launch verb but the planner returned a launch
       // (it hallucinates "launch <unknown token>" when it can't resolve a ticker),
       // rewrite it to a buy so ticker resolution can run. A real launch requires
@@ -1415,13 +1438,13 @@ export default function AgentPage({ onBack }) {
     const needsCurve = ['buy', 'sell', 'claim', 'tpsl', 'dca'].includes(p.workflow);
     if (!needsCurve) return;
     const slot = p.buy ?? p.sell ?? p.claim ?? p.tpsl ?? p.dca ?? {};
-    if (isRealCurveId(slot.curveId)) return; // genuine pasted CA — nothing to do
+    if (isRealCurveId(slot.curveId)) return; // genuine pasted CA - nothing to do
     // Ticker comes from the goal, or from a hallucinated "$final"/"final" the LLM
     // dropped into the curveId slot. Clear that bad value so the slot is null.
     const ticker = extractTickerFromGoal(goal)
       ?? (typeof slot.curveId === 'string' ? slot.curveId.replace(/^\$/, '').trim() : null);
     clearBadCurveId();
-    if (!ticker) return; // no ticker either — execute() will throw the CA error
+    if (!ticker) return; // no ticker either - execute() will throw the CA error
     try {
       setResolving(true);
       const r = await fetch(`${INDEXER_URL}/search/by-symbol/${encodeURIComponent(ticker)}`, { signal: AbortSignal.timeout(6000) });
@@ -1441,7 +1464,7 @@ export default function AgentPage({ onBack }) {
   }
 
   // Null out a non-real curveId the LLM hallucinated into the slot, so the plan
-  // display shows the picker (not "$final…") and execute() won't try to use it.
+  // display shows the picker (not "$final...") and execute() won't try to use it.
   function clearBadCurveId() {
     setPlan(prev => {
       if (!prev) return prev;
@@ -1488,7 +1511,7 @@ export default function AgentPage({ onBack }) {
     applyCurveToPlan(c.curveId);
   }
 
-  // ── Runtime resolvers (browser supplies what the planner can't) ───────────
+  // -- Runtime resolvers (browser supplies what the planner can't) -----------
 
   // Resolve curve -> { tokenType, pkgId } from the indexer.
   async function fetchCurveMeta(curveId) {
@@ -1531,7 +1554,7 @@ export default function AgentPage({ onBack }) {
         const buyAmount = Number(p.buy?.amountSui ?? p.launch.devBuySui ?? 0);
         // A launch with no dev-buy is, to the user, just a launch. Route it to the
         // standalone "launch" workflow (launch_only DAG), NOT the launch_and_buy
-        // combo — the combo's curve_id edge cannot carry off-chain output, so its
+        // combo - the combo's curve_id edge cannot carry off-chain output, so its
         // buy vertex consumes and the walk never completes. launch_only settles
         // cleanly on its own. With a real dev-buy, keep launch_and_buy.
         if (!(buyAmount > 0)) {
@@ -1556,20 +1579,20 @@ export default function AgentPage({ onBack }) {
           },
         };
       case 'buy':
-        if (!p.buy?.curveId) throw new Error('No curve id for buy — paste the token CA in your goal');
+        if (!p.buy?.curveId) throw new Error('No curve id for buy - paste the token CA in your goal');
         return { workflow: 'buy', buy: { curveId: p.buy.curveId, amountSui: p.buy.amountSui } };
       case 'sell': {
-        if (!p.sell?.curveId) throw new Error('No curve id for sell — paste the token CA in your goal');
+        if (!p.sell?.curveId) throw new Error('No curve id for sell - paste the token CA in your goal');
         const { tokenAmount } = await resolveSellAmount(p.sell.curveId, p.sell.tokenAmount);
         return { workflow: 'sell', sell: { curveId: p.sell.curveId, tokenAmount } };
       }
       case 'claim': {
-        if (!p.claim?.curveId) throw new Error('No curve id for claim — paste the token CA in your goal');
+        if (!p.claim?.curveId) throw new Error('No curve id for claim - paste the token CA in your goal');
         const { tokenType } = await fetchCurveMeta(p.claim.curveId);
         return { workflow: 'claim', claim: { curveId: p.claim.curveId, tokenType } };
       }
       case 'claim_all':
-        // Fan-out claim. No CA and no per-curve metadata here — the server-side
+        // Fan-out claim. No CA and no per-curve metadata here - the server-side
         // proxy enumerates the connected wallet's curves and resolves each
         // tokenType itself. Just carry the workflow through.
         return { workflow: 'claim_all', claimAll: {} };
@@ -1577,7 +1600,7 @@ export default function AgentPage({ onBack }) {
         if (!p.alerts?.curveIds?.length) throw new Error('No curve ids for alerts');
         return { workflow: 'alerts', alerts: { curveIds: p.alerts.curveIds } };
       case 'tpsl': {
-        if (!p.tpsl?.curveId) throw new Error('No curve id for the strategy — paste the token CA in your goal');
+        if (!p.tpsl?.curveId) throw new Error('No curve id for the strategy - paste the token CA in your goal');
         const { tokenType } = await fetchCurveMeta(p.tpsl.curveId);
         return {
           workflow: 'tpsl',
@@ -1590,7 +1613,7 @@ export default function AgentPage({ onBack }) {
         };
       }
       case 'buy_then_tpsl': {
-        if (!p.buy?.curveId) throw new Error('No curve id — paste the token CA in your goal');
+        if (!p.buy?.curveId) throw new Error('No curve id - paste the token CA in your goal');
         const { tokenType } = await fetchCurveMeta(p.buy.curveId);
         return {
           workflow: 'buy_then_tpsl',
@@ -1607,7 +1630,7 @@ export default function AgentPage({ onBack }) {
         // Standing order: no curve to resolve (the target is discovered at launch
         // time). Pass the validated filter params straight to the store.
         const s = p.sniper ?? {};
-        if (!(Number(s.amountSui) > 0)) throw new Error('Sniper needs a SUI amount (e.g. "snipe 1 sui …")');
+        if (!(Number(s.amountSui) > 0)) throw new Error('Sniper needs a SUI amount (e.g. "snipe 1 sui ...")');
         const hasFilter = (Array.isArray(s.creators) && s.creators.length) ||
                           (Array.isArray(s.symbols) && s.symbols.length) || !!s.nameIncludes;
         if (!hasFilter && s.all !== true) {
@@ -1617,8 +1640,8 @@ export default function AgentPage({ onBack }) {
       }
       case 'dca': {
         const d = p.dca ?? {};
-        if (!d.curveId) throw new Error('DCA needs a curve — paste the token CA in your goal');
-        if (!(Number(d.suiPerBuy) > 0)) throw new Error('DCA needs a SUI amount (e.g. "buy 5 sui …")');
+        if (!d.curveId) throw new Error('DCA needs a curve - paste the token CA in your goal');
+        if (!(Number(d.suiPerBuy) > 0)) throw new Error('DCA needs a SUI amount (e.g. "buy 5 sui ...")');
         // Resolve tokenType so a then.tpsl child can sell the right coin.
         const { tokenType } = await fetchCurveMeta(d.curveId);
         return { workflow: 'dca', dca: { ...d, tokenType } };
@@ -1627,7 +1650,7 @@ export default function AgentPage({ onBack }) {
         const c = p.copytrade ?? {};
         if (!/^0x[a-fA-F0-9]{60,66}$/.test(c.targetWallet ?? '')) throw new Error('Copy-trade needs a target wallet (paste the 0x address)');
         if (!(Number(c.suiPerTrade) > 0)) throw new Error('Copy-trade needs a SUI size (e.g. "5 sui per trade")');
-        // No curve to resolve — the target's curves are discovered at runtime.
+        // No curve to resolve - the target's curves are discovered at runtime.
         return { workflow: 'copytrade', copytrade: c };
       }
       case 'autopilot': {
@@ -1645,14 +1668,14 @@ export default function AgentPage({ onBack }) {
     }
   }
 
-  // Settle the swap through the bridge — the path that actually moves tokens
+  // Settle the swap through the bridge - the path that actually moves tokens
   // (the Nexus DAG request emits the on-chain execution digest but does not
   // settle, so we settle here, the same bridge every working SuiPump trade uses).
   // Maps the runner payload's fields to the bridge's body. Calls go through the
   // same-origin Vercel proxy (/api/agent-bridge), which injects AGENT_API_KEY
   // server-side and forwards to the bridge's gated write endpoints. The key never
   // ships to the browser, so only our deployed UI (via this proxy) can spend the
-  // agent wallet — a direct browser/curl to the bridge gets 401. We pass the
+  // agent wallet - a direct browser/curl to the bridge gets 401. We pass the
   // target bridge path in `path`. Returns the settlement txDigest, or null for
   // workflows the bridge doesn't settle (claim/alerts go DAG-only).
   async function settleViaBridge(payload) {
@@ -1719,7 +1742,7 @@ export default function AgentPage({ onBack }) {
       // fill price so "+X%" is measured from what we actually paid. Two real
       // actions from one instruction.
       if (payload.workflow === 'buy_then_tpsl') {
-        // 1) BUY — settle through the bridge (the path that moves tokens).
+        // 1) BUY - settle through the bridge (the path that moves tokens).
         let buyDigest = null;
         try {
           buyDigest = await settleViaBridge({ workflow: 'buy', buy: payload.buy });
@@ -1731,7 +1754,7 @@ export default function AgentPage({ onBack }) {
           return;
         }
 
-        // 2) Entry MUST be seeded on the SAME price basis the brain ticks use —
+        // 2) Entry MUST be seeded on the SAME price basis the brain ticks use -
         //    priceFromReserve (current spot from reserve). The indexer's
         //    `last_price` is the fill price, which on a bonding curve sits BELOW
         //    the post-buy spot price (you move price as you buy). Seeding entry
@@ -1754,6 +1777,7 @@ export default function AgentPage({ onBack }) {
               entryPriceSui,
               takeProfit: payload.tpsl.takeProfit,
               stopLoss: payload.tpsl.stopLoss,
+              sessionId: activeSessionId,
             }),
           });
           const d = await r.json().catch(() => ({}));
@@ -1774,7 +1798,7 @@ export default function AgentPage({ onBack }) {
         return;
       }
 
-      // STRATEGY (tpsl): not a one-shot trade — create a STANDING order in the
+      // STRATEGY (tpsl): not a one-shot trade - create a STANDING order in the
       // strategy store. The strategy engine polls these and fires the sell
       // through the bridge automatically when a trigger is hit. Nothing settles
       // now; settlement happens later when the price crosses a rung.
@@ -1792,6 +1816,7 @@ export default function AgentPage({ onBack }) {
               type: 'tpsl',
               takeProfit: payload.tpsl.takeProfit,
               stopLoss: payload.tpsl.stopLoss,
+              sessionId: activeSessionId,
             }),
           });
           const d = await r.json().catch(() => ({}));
@@ -1811,14 +1836,14 @@ export default function AgentPage({ onBack }) {
       }
 
       // STRATEGY (sniper): standing buy keyed on a launch filter. Like tpsl, it
-      // creates an order in the strategy store and nothing settles now — the brain
+      // creates an order in the strategy store and nothing settles now - the brain
       // fires a buy (real Nexus scheduler task) on every NEW launch that matches.
       if (payload.workflow === 'sniper') {
         try {
           const r = await fetch(`/api/create-order`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ type: 'sniper', params: payload.sniper }),
+            body: JSON.stringify({ type: 'sniper', params: payload.sniper, sessionId: activeSessionId }),
           });
           const d = await r.json().catch(() => ({}));
           if (!r.ok) throw new Error(d.error || `order create failed (${r.status})`);
@@ -1837,7 +1862,7 @@ export default function AgentPage({ onBack }) {
       }
 
       // STRATEGY (dca): standing accumulation on a specific curve. Like sniper it
-      // creates a store order and nothing settles now — the brain fires each buy
+      // creates a store order and nothing settles now - the brain fires each buy
       // (Nexus task + bridge settle) on its schedule / dip trigger, tracks the
       // average cost, and arms the `then` exit on that average after the final buy.
       if (payload.workflow === 'dca') {
@@ -1850,6 +1875,7 @@ export default function AgentPage({ onBack }) {
               curveId: payload.dca.curveId,
               tokenType: payload.dca.tokenType,
               params: payload.dca,
+              sessionId: activeSessionId,
             }),
           });
           const d = await r.json().catch(() => ({}));
@@ -1876,7 +1902,7 @@ export default function AgentPage({ onBack }) {
           const r = await fetch(`/api/create-order`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ type: 'copytrade', params: payload.copytrade }),
+            body: JSON.stringify({ type: 'copytrade', params: payload.copytrade, sessionId: activeSessionId }),
           });
           const d = await r.json().catch(() => ({}));
           if (!r.ok) throw new Error(d.error || `order create failed (${r.status})`);
@@ -1903,7 +1929,7 @@ export default function AgentPage({ onBack }) {
           const r = await fetch(`/api/create-order`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ type: 'autopilot', params: payload.autopilot }),
+            body: JSON.stringify({ type: 'autopilot', params: payload.autopilot, sessionId: activeSessionId }),
           });
           const d = await r.json().catch(() => ({}));
           if (!r.ok) throw new Error(d.error || `order create failed (${r.status})`);
@@ -1923,13 +1949,13 @@ export default function AgentPage({ onBack }) {
 
       // FAN-OUT (claim_all): claim creator fees across every curve the connected
       // (agent) wallet created with fees pending. The server-side proxy
-      // enumerates, filters, and fires the claim DAG per curve — each a real
+      // enumerates, filters, and fires the claim DAG per curve - each a real
       // Nexus walk. Nothing routes through the bridge (claim is DAG-only).
       if (payload.workflow === 'claim_all') {
         if (!account?.address) {
           clearAnim();
           setNodeState({ claim: 'error' });
-          setError('Connect your wallet to claim — the agent claims fees for the curves this wallet created.');
+          setError('Connect your wallet to claim - the agent claims fees for the curves this wallet created.');
           setPhase('failed');
           return;
         }
@@ -1954,7 +1980,7 @@ export default function AgentPage({ onBack }) {
         return;
       }
 
-      // STEP 1 — Emit the Nexus DAG request (agentic-decision proof). This is
+      // STEP 1 - Emit the Nexus DAG request (agentic-decision proof). This is
       // BEST-EFFORT: the on-chain walk request is the orchestration paper trail,
       // not the settlement path. A slow/failed /run-dag must NEVER block the trade
       // from settling. We capture whatever the runner returns and move on.
@@ -1968,11 +1994,11 @@ export default function AgentPage({ onBack }) {
         const res = await fetch(`/api/agent-run`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),   // C2 async: no inline confirm — never hang the request
+          body: JSON.stringify(payload),   // C2 async: no inline confirm - never hang the request
         });
         data = await res.json().catch(() => ({}));
         if (!res.ok || data.ok === false) {
-          // Emission failed — log it, keep going. Settlement is independent.
+          // Emission failed - log it, keep going. Settlement is independent.
           console.warn('[agent] Nexus emit failed, settling anyway:', data.error || res.status);
           data = {};
         }
@@ -1986,7 +2012,7 @@ export default function AgentPage({ onBack }) {
       // Show the card IMMEDIATELY in an "executing via Talus leader" state (no
       // hang), then poll /api/agent-confirm every 2s. When a leader settles the
       // walk on-chain (endState Ok, sender = a Talus leader), update the card live
-      // to show the leader settlement — the leader is the sole, provable executor.
+      // to show the leader settlement - the leader is the sole, provable executor.
       // FALLBACK: if no leader settles within DEMO_FALLBACK_MS, settle via the
       // bridge so the trade always completes on stage (never a dangling action).
       if (DEMO_MODE && data.executionId) {
@@ -1999,7 +2025,7 @@ export default function AgentPage({ onBack }) {
           digest:        data.digest ?? null,
           checkpoint:    data.checkpoint ?? null,
           dagId:         data.dagId ?? null,
-          leaderPending: true,        // card shows "executing via Talus leader…"
+          leaderPending: true,        // card shows "executing via Talus leader..."
         });
         setPhase('done');
 
@@ -2034,7 +2060,7 @@ export default function AgentPage({ onBack }) {
               return;
             }
           } catch { /* keep polling */ }
-          // Fallback: leader did not settle in time — settle via the bridge so the
+          // Fallback: leader did not settle in time - settle via the bridge so the
           // demo trade still completes. (b) accepts the narrow double-execute window.
           if (!done && Date.now() - started > DEMO_FALLBACK_MS) {
             done = true; clearInterval(poll);
@@ -2052,7 +2078,7 @@ export default function AgentPage({ onBack }) {
         return;   // async path owns the rest; do not run the synchronous bridge settle below
       }
 
-      // STEP 2 — Settle the swap through the bridge so the tokens actually move.
+      // STEP 2 - Settle the swap through the bridge so the tokens actually move.
       // This is the money path and runs REGARDLESS of whether the Nexus emit
       // above succeeded. Only this step's failure fails the action.
       let settleDigest = null;
@@ -2084,7 +2110,7 @@ export default function AgentPage({ onBack }) {
         settleDigest,
       });
       setPhase('done');
-      // Record the manual fire (production path — bridge settled). Best-effort.
+      // Record the manual fire (production path - bridge settled). Best-effort.
       recordAction({
         kind:               data.workflow ?? plan.workflow,
         source:             'manual',
@@ -2151,19 +2177,19 @@ export default function AgentPage({ onBack }) {
       case 'buy':
         return [
           ['workflow', p.workflow],
-          ['curve', p.buy?.curveId ? `${p.buy.curveId.slice(0, 10)}…` : '(missing — paste CA)'],
+          ['curve', p.buy?.curveId ? `${p.buy.curveId.slice(0, 10)}...` : '(missing - paste CA)'],
           ['amount', `${p.buy?.amountSui ?? 0} SUI`],
         ];
       case 'sell':
         return [
           ['workflow', p.workflow],
-          ['curve', p.sell?.curveId ? `${p.sell.curveId.slice(0, 10)}…` : '(missing — paste CA)'],
+          ['curve', p.sell?.curveId ? `${p.sell.curveId.slice(0, 10)}...` : '(missing - paste CA)'],
           ['amount', p.sell?.tokenAmount === 'ALL' ? 'ALL tokens' : `${p.sell?.tokenAmount} tokens`],
         ];
       case 'claim':
         return [
           ['workflow', p.workflow],
-          ['curve', p.claim?.curveId ? `${p.claim.curveId.slice(0, 10)}…` : '(missing — paste CA)'],
+          ['curve', p.claim?.curveId ? `${p.claim.curveId.slice(0, 10)}...` : '(missing - paste CA)'],
         ];
       case 'claim_all':
         return [
@@ -2178,10 +2204,10 @@ export default function AgentPage({ onBack }) {
       case 'tpsl': {
         const rows = [
           ['workflow', 'tp/sl strategy'],
-          ['curve', p.tpsl?.curveId ? `${p.tpsl.curveId.slice(0, 10)}…` : '(missing — paste CA)'],
+          ['curve', p.tpsl?.curveId ? `${p.tpsl.curveId.slice(0, 10)}...` : '(missing - paste CA)'],
         ];
         (p.tpsl?.takeProfit ?? []).forEach((r, i) =>
-          rows.push([`take-profit ${i + 1}`, `+${Math.round((r.multiple - 1) * 100)}% · sell ${r.sellPct}%`]));
+          rows.push([`take-profit ${i + 1}`, `+${Math.round((r.multiple - 1) * 100)}% . sell ${r.sellPct}%`]));
         if (p.tpsl?.stopLoss)
           rows.push(['stop-loss', `-${Math.round((1 - p.tpsl.stopLoss.multiple) * 100)}%`]);
         return rows;
@@ -2190,10 +2216,10 @@ export default function AgentPage({ onBack }) {
         const rows = [
           ['workflow', 'buy + tp/sl'],
           ['buy', `${p.buy?.amountSui ?? 0} SUI`],
-          ['curve', p.buy?.curveId ? `${p.buy.curveId.slice(0, 10)}…` : '(missing — paste CA)'],
+          ['curve', p.buy?.curveId ? `${p.buy.curveId.slice(0, 10)}...` : '(missing - paste CA)'],
         ];
         (p.tpsl?.takeProfit ?? []).forEach((r, i) =>
-          rows.push([`take-profit ${i + 1}`, `+${Math.round((r.multiple - 1) * 100)}% · sell ${r.sellPct}%`]));
+          rows.push([`take-profit ${i + 1}`, `+${Math.round((r.multiple - 1) * 100)}% . sell ${r.sellPct}%`]));
         if (p.tpsl?.stopLoss)
           rows.push(['stop-loss', `-${Math.round((1 - p.tpsl.stopLoss.multiple) * 100)}%`]);
         return rows;
@@ -2205,7 +2231,7 @@ export default function AgentPage({ onBack }) {
           ['buy size', `${s.amountSui ?? 0} SUI per launch`],
         ];
         if (Array.isArray(s.creators) && s.creators.length)
-          rows.push(['creators', s.creators.map(c => `${c.slice(0, 10)}…`).join(', ')]);
+          rows.push(['creators', s.creators.map(c => `${c.slice(0, 10)}...`).join(', ')]);
         if (Array.isArray(s.symbols) && s.symbols.length)
           rows.push(['symbols', s.symbols.join(', ')]);
         if (s.nameIncludes)
@@ -2219,7 +2245,7 @@ export default function AgentPage({ onBack }) {
         rows.push(['limit', s.maxSnipes != null ? `${s.maxSnipes} snipes` : 'unbounded']);
         if (s.then?.tpsl) {
           (s.then.tpsl.takeProfit ?? []).forEach((r, i) =>
-            rows.push([`then take-profit ${i + 1}`, `+${Math.round((r.multiple - 1) * 100)}% · sell ${r.sellPct}%`]));
+            rows.push([`then take-profit ${i + 1}`, `+${Math.round((r.multiple - 1) * 100)}% . sell ${r.sellPct}%`]));
           if (s.then.tpsl.stopLoss)
             rows.push(['then stop-loss', `-${Math.round((1 - s.then.tpsl.stopLoss.multiple) * 100)}%`]);
         }
@@ -2229,14 +2255,14 @@ export default function AgentPage({ onBack }) {
         const d = p.dca ?? {};
         const rows = [
           ['workflow', 'dca (standing accumulation)'],
-          ['curve', d.curveId ? `${d.curveId.slice(0, 10)}…` : '(missing — paste CA)'],
+          ['curve', d.curveId ? `${d.curveId.slice(0, 10)}...` : '(missing - paste CA)'],
           ['buy size', `${d.suiPerBuy ?? 0} SUI per buy`],
           ['trigger', d.mode === 'dip' ? `each -${d.dropPct}% drop from entry` : `every ${Math.round((d.intervalMs ?? 86400000) / 1000)}s`],
           ['total buys', `${d.buys ?? 1}`],
         ];
         if (d.then?.tpsl) {
           (d.then.tpsl.takeProfit ?? []).forEach((r, i) =>
-            rows.push([`then take-profit ${i + 1}`, `+${Math.round((r.multiple - 1) * 100)}% · sell ${r.sellPct}% (on avg cost)`]));
+            rows.push([`then take-profit ${i + 1}`, `+${Math.round((r.multiple - 1) * 100)}% . sell ${r.sellPct}% (on avg cost)`]));
           if (d.then.tpsl.stopLoss)
             rows.push(['then stop-loss', `-${Math.round((1 - d.then.tpsl.stopLoss.multiple) * 100)}% (on avg cost)`]);
         }
@@ -2246,7 +2272,7 @@ export default function AgentPage({ onBack }) {
         const c = p.copytrade ?? {};
         return [
           ['workflow', 'copy-trade (wallet follow)'],
-          ['target wallet', c.targetWallet ? `${c.targetWallet.slice(0, 10)}…${c.targetWallet.slice(-4)}` : '(missing — paste 0x)'],
+          ['target wallet', c.targetWallet ? `${c.targetWallet.slice(0, 10)}...${c.targetWallet.slice(-4)}` : '(missing - paste 0x)'],
           ['buy size', `${c.suiPerTrade ?? 0} SUI per trade`],
           ['sells', 'proportional to target'],
           ['scope', 'every curve the target trades'],
@@ -2272,14 +2298,14 @@ export default function AgentPage({ onBack }) {
           </span>
         </div>
         <p className="text-white/40 text-[11px] font-mono leading-relaxed max-w-xl">
-          State a goal in plain language and the agent produces autonomous workflows — planning with an LLM, then executing on-chain through published Nexus DAGs. Five base tools — launch, buy, sell, claim, monitor — power four standing strategies (sniper, DCA, copy-trade, take-profit / stop-loss), which can be combined into entry-plus-exit setups. See HOW TO OPERATE below.
+          State a goal in plain language and the agent produces autonomous workflows - planning with an LLM, then executing on-chain through published Nexus DAGs. Five base tools - launch, buy, sell, claim, monitor - power four standing strategies (sniper, DCA, copy-trade, take-profit / stop-loss), which can be combined into entry-plus-exit setups. See HOW TO OPERATE below.
         </p>
       </div>
 
-      {/* ── Agent session (escrow authorization) ───────────────────────── */}
-      <AgentSessionPanel account={account} />
+      {/* -- Agent session (escrow authorization) ------------------------- */}
+      <AgentSessionPanel account={account} onSessionChange={setActiveSessionId} />
 
-      {/* ── Strategy guide (accordion) ─────────────────────────────────── */}
+      {/* -- Strategy guide (accordion) ----------------------------------- */}
       <div className="border border-white/10 rounded-xl bg-white/[0.02] mb-4 overflow-hidden">
         <button
           onClick={() => setGuideOpen(v => !v)}
@@ -2324,14 +2350,14 @@ export default function AgentPage({ onBack }) {
                                 <ul className="space-y-1">
                                   {s.inputs.map((inp, i) => (
                                     <li key={i} className="text-[11px] font-mono text-white/55 flex gap-2">
-                                      <span className="text-violet-400/50">·</span>{inp}
+                                      <span className="text-violet-400/50">.</span>{inp}
                                     </li>
                                   ))}
                                 </ul>
                               </div>
                             )}
                             <div>
-                              <div className="text-[9px] font-mono text-white/30 tracking-widest mb-1.5">EXAMPLES — CLICK TO USE</div>
+                              <div className="text-[9px] font-mono text-white/30 tracking-widest mb-1.5">EXAMPLES - CLICK TO USE</div>
                               <div className="space-y-1.5">
                                 {s.examples.map((ex, i) => (
                                   <button
@@ -2364,7 +2390,7 @@ export default function AgentPage({ onBack }) {
         <textarea
           value={goal}
           onChange={(e) => setGoal(e.target.value)}
-          placeholder="e.g. Launch a dog token called MoonCat, dev-buy 1 SUI  ·  or  ·  Sell all tokens of 0xCURVE…"
+          placeholder="e.g. Launch a dog token called MoonCat, dev-buy 1 SUI  .  or  .  Sell all tokens of 0xCURVE..."
           rows={2}
           className="w-full bg-black/40 border border-white/10 rounded-lg p-3 text-[12px] font-mono text-white/80 placeholder:text-white/20 focus:border-violet-400/40 outline-none resize-none"
         />
@@ -2387,15 +2413,15 @@ export default function AgentPage({ onBack }) {
 
           {resolving && (
             <div className="text-[10px] font-mono text-white/40 mb-3 flex items-center gap-2">
-              <Loader size={11} className="animate-spin text-violet-400" /> Finding matching tokens…
+              <Loader size={11} className="animate-spin text-violet-400" /> Finding matching tokens...
             </div>
           )}
 
-          {/* Ticker disambiguation — multiple tokens share this ticker; pick one. */}
+          {/* Ticker disambiguation - multiple tokens share this ticker; pick one. */}
           {candidates && candidates.length > 1 && (
             <div className="mb-4">
               <div className="text-[10px] font-mono text-amber-400/80 tracking-widest mb-2">
-                MULTIPLE TOKENS MATCH — PICK ONE
+                MULTIPLE TOKENS MATCH - PICK ONE
               </div>
               <div className="space-y-1.5 max-h-72 overflow-y-auto">
                 {candidates.map(c => (
@@ -2414,16 +2440,16 @@ export default function AgentPage({ onBack }) {
                     </div>
                     <div className="text-right flex-shrink-0">
                       <div className="text-[10px] font-mono text-lime-400/80">{c.marketCapSui >= 1000 ? `${(c.marketCapSui/1000).toFixed(1)}K` : c.marketCapSui.toFixed(1)} SUI mcap</div>
-                      <div className="text-[8.5px] font-mono text-white/35">{c.volumeSui.toFixed(1)} vol · {c.holders} holder{c.holders === 1 ? '' : 's'}</div>
+                      <div className="text-[8.5px] font-mono text-white/35">{c.volumeSui.toFixed(1)} vol . {c.holders} holder{c.holders === 1 ? '' : 's'}</div>
                     </div>
                   </button>
                 ))}
               </div>
-              <div className="text-[8.5px] font-mono text-white/25 mt-1.5">Curve address resolved from your pick — the agent acts on the exact token you choose.</div>
+              <div className="text-[8.5px] font-mono text-white/25 mt-1.5">Curve address resolved from your pick - the agent acts on the exact token you choose.</div>
             </div>
           )}
 
-          {/* Single match auto-resolved — shown for confirmation (b-soft). */}
+          {/* Single match auto-resolved - shown for confirmation (b-soft). */}
           {resolvedNote && (
             <div className="mb-4 flex items-center gap-3 px-3 py-2.5 rounded-lg border border-violet-400/25 bg-violet-400/[0.05]">
               <TokenIcon url={resolvedNote.iconUrl} symbol={resolvedNote.symbol} />
@@ -2433,7 +2459,7 @@ export default function AgentPage({ onBack }) {
                   <span className="text-[12px] font-mono font-bold text-white/90">${resolvedNote.symbol}</span>
                   <span className="text-[8px] font-mono text-violet-400/60 tracking-wider">{GRAD[resolvedNote.graduationTarget] ?? ''}</span>
                 </div>
-                <div className="text-[8.5px] font-mono text-white/40">{resolvedNote.marketCapSui >= 1000 ? `${(resolvedNote.marketCapSui/1000).toFixed(1)}K` : resolvedNote.marketCapSui.toFixed(1)} SUI mcap · {resolvedNote.volumeSui.toFixed(1)} vol · {resolvedNote.holders} holder{resolvedNote.holders === 1 ? '' : 's'}</div>
+                <div className="text-[8.5px] font-mono text-white/40">{resolvedNote.marketCapSui >= 1000 ? `${(resolvedNote.marketCapSui/1000).toFixed(1)}K` : resolvedNote.marketCapSui.toFixed(1)} SUI mcap . {resolvedNote.volumeSui.toFixed(1)} vol . {resolvedNote.holders} holder{resolvedNote.holders === 1 ? '' : 's'}</div>
               </div>
             </div>
           )}
@@ -2448,7 +2474,7 @@ export default function AgentPage({ onBack }) {
               onClick={approve}
               className="w-full text-[11px] font-mono font-bold tracking-widest px-4 py-3 rounded-lg bg-violet-500 text-white hover:bg-violet-400 transition-colors flex items-center justify-center gap-2"
             >
-              <Play size={12} /> {phase === 'failed' ? 'RETRY — EXECUTE ON-CHAIN' : 'APPROVE & EXECUTE ON-CHAIN'}
+              <Play size={12} /> {phase === 'failed' ? 'RETRY - EXECUTE ON-CHAIN' : 'APPROVE & EXECUTE ON-CHAIN'}
             </button>
           )}
         </div>
@@ -2486,7 +2512,7 @@ export default function AgentPage({ onBack }) {
                   </div>
                   <div className="flex-1">
                     <div className="text-[12px] font-mono text-white/80">{n.label}</div>
-                    <div className="text-[9px] font-mono text-white/30">{n.tool} · {n.desc}</div>
+                    <div className="text-[9px] font-mono text-white/30">{n.tool} . {n.desc}</div>
                   </div>
                 </div>
               );
@@ -2499,14 +2525,14 @@ export default function AgentPage({ onBack }) {
         <div className="border border-emerald-400/30 rounded-xl p-4 bg-emerald-400/[0.05]">
           <div className="text-[10px] font-mono text-emerald-400/80 tracking-widest mb-3">
             {result.workflow === 'buy_then_tpsl'
-              ? '✓ BOUGHT & STRATEGY ARMED — AGENT IS WATCHING'
+              ? '✓ BOUGHT & STRATEGY ARMED - AGENT IS WATCHING'
               : result.workflow === 'sniper'
-              ? '✓ SNIPER ARMED — AGENT IS WATCHING LAUNCHES'
+              ? '✓ SNIPER ARMED - AGENT IS WATCHING LAUNCHES'
               : result.workflow === 'dca'
-              ? '✓ DCA ARMED — AGENT IS ACCUMULATING'
+              ? '✓ DCA ARMED - AGENT IS ACCUMULATING'
               : result.workflow === 'copytrade'
-              ? '✓ COPY-TRADE ARMED — AGENT IS MIRRORING THE WALLET'
-              : '✓ STRATEGY ARMED — AGENT IS WATCHING'}
+              ? '✓ COPY-TRADE ARMED - AGENT IS MIRRORING THE WALLET'
+              : '✓ STRATEGY ARMED - AGENT IS WATCHING'}
           </div>
           <div className="space-y-2 text-[10px] font-mono">
             {result.buyDigest && (
@@ -2526,7 +2552,7 @@ export default function AgentPage({ onBack }) {
                     <a key={k} href={suiscanObject(NEXUS_DAG[k])} target="_blank" rel="noreferrer"
                        className="flex items-center gap-1 text-violet-300/70 hover:text-violet-300 break-all">
                       <span className="text-white/30 uppercase w-7 shrink-0">{k}</span>
-                      {NEXUS_DAG[k].slice(0, 18)}… <ExternalLink size={9} />
+                      {NEXUS_DAG[k].slice(0, 18)}... <ExternalLink size={9} />
                     </a>
                   ))}
                 </div>
@@ -2536,7 +2562,7 @@ export default function AgentPage({ onBack }) {
               {result.workflow === 'sniper'
                 ? "The agent now watches new launches and fires a buy through Nexus the moment one matches your filter. No further action needed."
                 : result.workflow === 'dca'
-                ? "The agent now accumulates on this curve automatically through Nexus — on schedule or on each dip — tracking your average cost. Watch it in Active Strategies below."
+                ? "The agent now accumulates on this curve automatically through Nexus - on schedule or on each dip - tracking your average cost. Watch it in Active Strategies below."
                 : result.workflow === 'copytrade'
                 ? "The agent now follows the target wallet through Nexus: buying when it buys, selling proportionally when it sells, across every curve it trades. Watch it in Active Strategies below."
                 : "The agent now watches this curve's price and sells automatically through Nexus when a trigger is hit. No further action needed."}
@@ -2547,10 +2573,10 @@ export default function AgentPage({ onBack }) {
 
       {result && result.workflow === 'claim_all' && (
         <div className="border border-violet-400/30 rounded-xl p-4 bg-violet-400/[0.05]">
-          <div className="text-[10px] font-mono text-violet-400/80 tracking-widest mb-3">✓ CLAIM ALL — VIA NEXUS</div>
+          <div className="text-[10px] font-mono text-violet-400/80 tracking-widest mb-3">✓ CLAIM ALL - VIA NEXUS</div>
           <div className="text-[11px] font-mono text-white/80 mb-3">
             Claimed {result.claimedCount ?? 0} of {result.attempted ?? 0} curve(s) with fees pending
-            {Number(result.totalFeesSui) > 0 ? ` · ~${Number(result.totalFeesSui).toFixed(4)} SUI` : ''}.
+            {Number(result.totalFeesSui) > 0 ? ` . ~${Number(result.totalFeesSui).toFixed(4)} SUI` : ''}.
             {(result.totalCurves != null) && <span className="text-white/30"> ({result.totalCurves} created total)</span>}
           </div>
           {(!result.results || result.results.length === 0) ? (
@@ -2562,7 +2588,7 @@ export default function AgentPage({ onBack }) {
                   <div className="min-w-0 flex items-center gap-1.5">
                     <span className={`text-[10px] font-mono ${row.ok ? 'text-emerald-400' : 'text-red-400'}`}>{row.ok ? '✓' : '✗'}</span>
                     <span className="text-[10px] font-mono text-white/70 truncate">
-                      {row.symbol ? `$${row.symbol}` : `${String(row.curveId).slice(0, 10)}…`}
+                      {row.symbol ? `$${row.symbol}` : `${String(row.curveId).slice(0, 10)}...`}
                     </span>
                     <span className="text-[9px] font-mono text-white/30">{Number(row.feesSui).toFixed(4)} SUI</span>
                   </div>
@@ -2606,7 +2632,7 @@ export default function AgentPage({ onBack }) {
             {result.leaderPending && (
               <div className="inline-flex items-center gap-1.5 text-violet-300/90">
                 <span className="inline-block w-1.5 h-1.5 rounded-full bg-violet-400 animate-pulse" />
-                executing via Talus leader… (settling on-chain)
+                executing via Talus leader... (settling on-chain)
               </div>
             )}
             {result.leaderSettled && result.settlementDigest && (
@@ -2616,7 +2642,7 @@ export default function AgentPage({ onBack }) {
               </a>
             )}
             {result.fellBack && (
-              <div className="text-amber-300/70">leader slow — settled via bridge fallback</div>
+              <div className="text-amber-300/70">leader slow - settled via bridge fallback</div>
             )}
             {result.settleDigest && (
               <a href={suiscanTx(result.settleDigest)} target="_blank" rel="noreferrer"
@@ -2634,11 +2660,11 @@ export default function AgentPage({ onBack }) {
         </div>
       )}
 
-      {/* ── Active strategies ─────────────────────────────────────────────── */}
+      {/* -- Active strategies ----------------------------------------------- */}
       <div className="mt-10 pt-6 border-t border-white/10">
         <div className="flex items-center justify-between mb-4">
           <div className="text-[10px] font-mono text-violet-400/70 tracking-widest">
-            ACTIVE STRATEGIES{orders.length ? ` · ${orders.length}` : ''}
+            ACTIVE STRATEGIES{orders.length ? ` . ${orders.length}` : ''}
           </div>
           <button
             onClick={loadOrders}
@@ -2650,7 +2676,7 @@ export default function AgentPage({ onBack }) {
 
         {ordersLoading ? (
           <div className="flex items-center gap-2 text-[11px] font-mono text-white/30">
-            <Loader size={13} className="animate-spin" /> loading…
+            <Loader size={13} className="animate-spin" /> loading...
           </div>
         ) : ordersError ? (
           <div className="text-[11px] font-mono text-red-400/70">{ordersError}</div>
@@ -2718,7 +2744,7 @@ export default function AgentPage({ onBack }) {
                             className="inline-flex items-center gap-1 text-violet-300/60 hover:text-violet-300"
                             title="Nexus DAG execution"
                           >
-                            nexus {String(o.params._lastFire.nexusDigest || o.params._lastFire.nexusTask).slice(0, 10)}… <ExternalLink size={8} />
+                            nexus {String(o.params._lastFire.nexusDigest || o.params._lastFire.nexusTask).slice(0, 10)}... <ExternalLink size={8} />
                           </a>
                         )}
                         {o.params._lastFire.settle && (
@@ -2728,7 +2754,7 @@ export default function AgentPage({ onBack }) {
                             className="inline-flex items-center gap-1 text-emerald-300/60 hover:text-emerald-300"
                             title="bridge settlement"
                           >
-                            settle {String(o.params._lastFire.settle).slice(0, 10)}… <ExternalLink size={8} />
+                            settle {String(o.params._lastFire.settle).slice(0, 10)}... <ExternalLink size={8} />
                           </a>
                         )}
                       </div>
@@ -2743,7 +2769,7 @@ export default function AgentPage({ onBack }) {
                           disabled={isCanceling}
                           className="text-[9px] font-mono text-red-400 hover:text-red-300 border border-red-400/30 rounded px-2 py-1 tracking-widest disabled:opacity-50"
                         >
-                          {isCanceling ? '…' : 'CONFIRM'}
+                          {isCanceling ? '...' : 'CONFIRM'}
                         </button>
                         <button
                           onClick={() => setConfirmId(null)}
@@ -2769,14 +2795,14 @@ export default function AgentPage({ onBack }) {
         )}
       </div>
 
-      {/* ── Agent action history (persistent) ─────────────────────────────── */}
+      {/* -- Agent action history (persistent) ------------------------------- */}
       <div className="mt-10 pt-6 border-t border-white/10">
         <button
           onClick={() => setHistoryOpen(o => !o)}
           className="w-full flex items-center justify-between mb-4"
         >
           <div className="text-[10px] font-mono text-violet-400/70 tracking-widest">
-            AGENT HISTORY{history.length ? ` · ${history.length}` : ''}
+            AGENT HISTORY{history.length ? ` . ${history.length}` : ''}
           </div>
           <ChevronDown size={14} className={`text-white/30 transition-transform ${historyOpen ? 'rotate-180' : ''}`} />
         </button>
@@ -2802,7 +2828,7 @@ export default function AgentPage({ onBack }) {
                         <span className="text-white/70 truncate">{a.summary || a.kind}</span>
                       </div>
                       <span className={`shrink-0 text-[9px] tracking-widest ${a.status === 'settled' ? 'text-emerald-400/80' : a.status === 'pending' ? 'text-violet-300/70' : a.status === 'fallback' ? 'text-amber-300/70' : 'text-red-400/70'}`}>
-                        {a.status}{via ? ` · ${via}` : ''}
+                        {a.status}{via ? ` . ${via}` : ''}
                       </span>
                     </div>
                     {when && <div className="text-white/30 mt-1">{when}</div>}

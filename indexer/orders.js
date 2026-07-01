@@ -1,8 +1,8 @@
-// orders.js — strategy order store for the SuiPump strategy brain.
+// orders.js - strategy order store for the SuiPump strategy brain.
 //
 // Self-contained: it owns the `strategy_orders` table and the /orders CRUD
 // routes, and is mounted onto the indexer's existing Express app via
-// mountOrders(app). It does NOT touch db.js or its schema — it ensures its
+// mountOrders(app). It does NOT touch db.js or its schema - it ensures its
 // own table. The only edit to api.js is the import + the mountOrders(app) call.
 //
 // Consumers:
@@ -11,7 +11,7 @@
 //   - a future strategies UI can create/cancel orders through the same routes.
 //
 // SECURITY: write routes (POST/PATCH/DELETE) are gated by STRATEGY_API_KEY when
-// that env var is set on the indexer — callers must send header `x-strategy-key`.
+// that env var is set on the indexer - callers must send header `x-strategy-key`.
 // If unset, writes are OPEN (dev/testnet only). Set it before mainnet: an open
 // POST lets anyone queue a sell the brain will execute from the invoker wallet.
 
@@ -41,7 +41,7 @@ function ensureSchema() {
       CREATE INDEX IF NOT EXISTS idx_strategy_orders_status ON strategy_orders (status);
       CREATE INDEX IF NOT EXISTS idx_strategy_orders_curve  ON strategy_orders (curve_id);
       CREATE INDEX IF NOT EXISTS idx_strategy_orders_type   ON strategy_orders (type);
-    `).then(() => console.log('  ✓ strategy_orders table ready'))
+    `).then(() => console.log('  OK strategy_orders table ready'))
       .catch(e => { console.error('  strategy_orders schema error:', e.message); schemaReady = null; });
   }
   return schemaReady;
@@ -90,7 +90,7 @@ function sanitizeStop(sl) {
 
 const ORDER_TYPES = ['tpsl', 'sniper', 'dca', 'copytrade', 'autopilot'];
 
-// sanitizeThen — validate an optional `then` chaining block. After a buy-strategy
+// sanitizeThen - validate an optional `then` chaining block. After a buy-strategy
 // (sniper/dca/copytrade) settles a buy, the brain arms whatever `then` specifies
 // on the bought curve. Today the only child is `tpsl` (an auto-exit). Returns a
 // clean { tpsl: { takeProfit, stopLoss } } or null. Structured so more child
@@ -122,7 +122,7 @@ function sanitizeParams(type, raw) {
     // `match` controls AND ("all", default) vs OR ("any") ACROSS those categories.
     // With NO filters, `all:true` is required to opt into sniping every launch
     // (guard against accidentally draining the agent wallet on the whole chain).
-    // `maxSnipes` caps total fires (optional; UNBOUNDED if omitted — by design).
+    // `maxSnipes` caps total fires (optional; UNBOUNDED if omitted - by design).
     // `fired` is the internal counter; it is preserved across re-creates / PATCH
     // round-trips so a restart resumes the cap correctly.
     const amountSui = num(p.amountSui);
@@ -176,8 +176,8 @@ function sanitizeParams(type, raw) {
     // Accumulate `suiPerBuy` on curveId across `buys` fills, with one of two
     // triggers. The strategy brain owns the loop (emits a Nexus task + settles
     // each buy through the bridge) and tracks a running average cost.
-    //   • time mode: a fill every `intervalMs` (>= 1s).
-    //   • dip  mode: a fill each time price drops `dropPct`% (×rung) from entry.
+    //   * time mode: a fill every `intervalMs` (>= 1s).
+    //   * dip  mode: a fill each time price drops `dropPct`% (xrung) from entry.
     // Provide intervalMs for time, or dropPct for dip. If both are given, dropPct
     // wins (mode:'dip'). Tracking fields (done/avgPriceSui/filledSui/entryPriceSui/
     // lastFireMs) are preserved across PATCH round-trips so a restart resumes.
@@ -236,7 +236,7 @@ function sanitizeParams(type, raw) {
   }
 
   if (type === 'autopilot') {
-    // Standing autonomous trader. No curveId — the strategy brain DISCOVERS the
+    // Standing autonomous trader. No curveId - the strategy brain DISCOVERS the
     // curve at runtime by scanning /trending each tick (like sniper/copytrade
     // discover their target), then enters the best candidate that clears the
     // policy filters, strictly inside the user's mandate. The brain owns the loop
@@ -255,7 +255,7 @@ function sanitizeParams(type, raw) {
 
     const out = { spendCapSui, perEntrySui };
 
-    // Policy knobs — only carry through ones that were provided & valid; the
+    // Policy knobs - only carry through ones that were provided & valid; the
     // brain defaults the rest.
     const minMomentum = num(p.minMomentum);          if (minMomentum != null && minMomentum >= 0) out.minMomentum = minMomentum;
     const maxConc     = num(p.maxConcentrationPct);  if (maxConc > 0)        out.maxConcentrationPct = maxConc;
@@ -346,6 +346,17 @@ export function mountOrders(app) {
         if (type === 'dca' && !curveId) return res.status(400).json({ error: 'dca requires curveId (0x...)' });
       }
 
+      // Optional AgentSession binding - validated ONCE here (outside the
+      // per-type sanitizeParams allowlists, which would otherwise silently drop
+      // it) and folded into `params` for every type, including tpsl (whose
+      // branch above never touches params, so it would land as {} without this).
+      // The strategy brain reads order.params.sessionId at fire time to route
+      // the trade through the bridge's /session-buy /session-sell instead of the
+      // agent wallet's /buy /sell. When absent, execution is unchanged.
+      if (isHex(b.sessionId)) {
+        params = { ...params, sessionId: b.sessionId };
+      }
+
       await pool.query(
         `INSERT INTO strategy_orders
            (id, curve_id, token_type, type, params, entry_price, min_sui_out, take_profit, stop_loss, status, created_at, updated_at)
@@ -382,7 +393,7 @@ export function mountOrders(app) {
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
-  // Cancel (soft) — mark cancelled so the brain stops tracking it.
+  // Cancel (soft) - mark cancelled so the brain stops tracking it.
   app.delete('/orders/:id', async (req, res) => {
     if (!writeGuard(req, res)) return;
     try {
@@ -396,5 +407,5 @@ export function mountOrders(app) {
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
-  console.log('  ✓ /orders routes mounted');
+  console.log('  OK /orders routes mounted');
 }
