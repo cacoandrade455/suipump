@@ -1,0 +1,30 @@
+# Force LF line endings for all source files, regardless of core.autocrlf on
+# any machine (Windows, CI, a future contributor). Prevents git's checkout-time
+# line-ending conversion from silently altering committed source -- the
+# suspected root cause of a bridge.js deploy crash (2026-07-01): file content
+# and MD5 matched between environments, but Node's parser choked, which is
+# consistent with CRLF conversion interacting badly with a file on checkout.
+* text=auto eol=lf
+
+*.js  text eol=lf
+*.jsx text eol=lf
+*.ts  text eol=lf
+*.tsx text eol=lf
+*.mjs text eol=lf
+*.cjs text eol=lf
+*.move text eol=lf
+*.json text eol=lf
+*.md  text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Binary / generated -- never touch these regardless of extension guesses.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.pdf binary
+*.zip binary
+*.lock binary
