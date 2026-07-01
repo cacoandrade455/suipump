@@ -17,7 +17,12 @@
 //          proposal_id, nominee, nominator,
 //          snapshot_supply, closes_ms,
 //          for_weight, against_weight,
-//          initial_shared_version,        // null -- proposal obj version not in events
+//          initial_shared_version,        // the TakeoverProposal's shared
+//                                          //   version, fetched live (not in
+//                                          //   events) -- null only if that
+//                                          //   lookup itself fails; callers
+//                                          //   should still handle null with a
+//                                          //   tx.object() fallback
 //          last_creator_activity_ms,      // latest heartbeat, else curve created_at
 //          last_creator_activity_source,  // 'heartbeat' | 'launch_fallback' --
 //                                          //   the contract's ONLY activity signal is
@@ -33,6 +38,30 @@
 //
 // "Active" = the most recent TakeoverProposed for this curve whose proposal_id
 // has NOT yet been consumed by a TakeoverSucceeded or TakeoverFailed.
+//
+// initial_shared_version for the TakeoverProposal object is NOT emitted in any
+// event (it's the object's owner metadata, only available from a direct chain
+// read) -- so this module does one live GraphQL lookup for it when an active
+// proposal is found. Kept as its own minimal client (not importing index.js's
+// internals) to preserve this module's "reads only pool + one narrow chain
+// call" self-containment, same spirit as orders.js owning only its table.
+import { SuiGraphQLClient } from '@mysten/sui/graphql';
+
+const TAKEOVER_GRAPHQL_URL = process.env.SUI_GRAPHQL_URL
+  ?? `https://graphql.${process.env.NETWORK ?? 'testnet'}.sui.io/graphql`;
+const takeoverGqlClient = new SuiGraphQLClient({ url: TAKEOVER_GRAPHQL_URL });
+
+async function fetchProposalSharedVersion(proposalId) {
+  try {
+    const result = await takeoverGqlClient.query({
+      query: `query($id: SuiAddress!) { object(address: $id) { owner { ... on Shared { initialSharedVersion } } } }`,
+      variables: { id: proposalId },
+    });
+    return result?.data?.object?.owner?.initialSharedVersion ?? null;
+  } catch {
+    return null; // degrade to null -- callers already handle a missing version (tx.object fallback)
+  }
+}
 
 export function mountTakeover(app, pool) {
   app.get('/token/:id/takeover', async (req, res) => {
@@ -125,6 +154,10 @@ export function mountTakeover(app, pool) {
         if (row.support === true) forWeight = w; else againstWeight = w;
       }
 
+      // One live lookup, only when there's an active proposal to act on -- not
+      // derivable from indexed events (see the module-level note above).
+      const initialSharedVersion = await fetchProposalSharedVersion(proposalId);
+
       return res.json({
         proposal_id:            proposalId,
         nominee:                prop.nominee ?? null,
@@ -133,7 +166,7 @@ export function mountTakeover(app, pool) {
         closes_ms:              Number(prop.closes_ms ?? 0),
         for_weight:             forWeight.toString(),
         against_weight:         againstWeight.toString(),
-        initial_shared_version: null, // proposal object version is not in events
+        initial_shared_version: initialSharedVersion,
         last_creator_activity_ms:     lastActivity,
         last_creator_activity_source: activitySource,
       });

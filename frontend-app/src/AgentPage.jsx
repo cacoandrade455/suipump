@@ -817,44 +817,76 @@ function AgentSessionPanel({ account, onSessionChange }) {
     if (!account) { setSession(null); setLoading(false); return; }
     setLoading(true);
     try {
-      const evType = `${PACKAGE_ID}::agent_session::SessionOpened`;
-      const q = `{ events(filter: { type: "${evType}" }, last: 50) { nodes { contents { json } } } }`;
-      const r = await fetch(GQL_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: q }),
-        signal: AbortSignal.timeout(8000),
-      });
-      const d = await r.json();
-      const nodes = d?.data?.events?.nodes ?? [];
-      const mine = nodes
-        .map(n => n.contents?.json)
-        .filter(j => j && (j.owner ?? '').toLowerCase() === account.address.toLowerCase());
-      const latest = mine.length ? mine[mine.length - 1] : null;
-      if (!latest?.session_id) { setSession(null); setLoading(false); return; }
+      const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
 
-      // Read the session object's current state (escrow may have changed).
-      const obj = await client.getObject({ objectId: latest.session_id, options: { showContent: true, showOwner: true } })
+      // Fast path: ask the indexer (one Postgres-backed request) instead of
+      // scanning the last 50 SessionOpened events live via GraphQL. If the
+      // indexer has no record yet (fresh session not backfilled/streamed
+      // through, or the indexer is unreachable), fall back to the original
+      // live GraphQL scan so a brand-new session is still discoverable.
+      const idxData = INDEXER_URL
+        ? await fetch(`${INDEXER_URL}/agent/session?owner=${account.address}`, { signal: AbortSignal.timeout(5000) })
+            .then(r => r.ok ? r.json() : null)
+            .catch(() => null)
+        : null;
+
+      let sessionId = idxData?.sessionId ?? null;
+      let latest = null; // only populated if the fallback GraphQL path runs
+
+      if (!sessionId) {
+        const evType = `${PACKAGE_ID}::agent_session::SessionOpened`;
+        const q = `{ events(filter: { type: "${evType}" }, last: 50) { nodes { contents { json } } } }`;
+        const r = await fetch(GQL_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: q }),
+          signal: AbortSignal.timeout(8000),
+        });
+        const d = await r.json();
+        const nodes = d?.data?.events?.nodes ?? [];
+        const mine = nodes
+          .map(n => n.contents?.json)
+          .filter(j => j && (j.owner ?? '').toLowerCase() === account.address.toLowerCase());
+        latest = mine.length ? mine[mine.length - 1] : null;
+        sessionId = latest?.session_id ?? null;
+      }
+
+      if (!sessionId) { setSession(null); setLoading(false); return; }
+
+      // sharedVersion is not derivable from events (it's the object's owner
+      // metadata) -- a live read is always required regardless of which path
+      // above found the session id.
+      const obj = await client.getObject({ objectId: sessionId, options: { showContent: true, showOwner: true } })
         .catch(() => null);
       const content = obj?.data?.content ?? obj?.object?.asMoveObject ?? null;
       const fields = content?.fields ?? content?.contents?.json ?? {};
       const ownerObj = obj?.data?.owner ?? obj?.object?.owner ?? null;
       const sharedVersion = ownerObj?.Shared?.initial_shared_version
         ?? ownerObj?.shared?.initialSharedVersion
-        ?? latest.__sharedVersion
+        ?? latest?.__sharedVersion
         ?? null;
 
-      const revoked = fields.revoked === true || fields.revoked === 'true';
-      const escrowVal = fields.escrow?.fields?.value ?? fields.escrow ?? null;
+      // Prefer the indexer's fields when it resolved this session (fast, and
+      // correct except the documented SessionBuy-escrow edge case in
+      // agent_session_api.js); fall back to the live object read's fields when
+      // the indexer path wasn't used -- same values the original code always
+      // read from getObject.
+      const revoked = idxData?.sessionId
+        ? !!idxData.revoked
+        : (fields.revoked === true || fields.revoked === 'true');
+      const escrowVal    = idxData?.sessionId ? idxData.escrow    : (fields.escrow?.fields?.value ?? fields.escrow ?? null);
+      const spentVal     = idxData?.sessionId ? idxData.spent     : fields.spent;
+      const spendCapVal  = idxData?.sessionId ? idxData.spendCap  : (latest?.spend_cap ?? fields.spend_cap ?? '0');
+      const expiryVal    = idxData?.sessionId ? idxData.expiryMs  : (latest?.expiry_ms ?? fields.expiry_ms ?? 0);
 
-      setLastSessionRef({ id: latest.session_id, sharedVersion });
+      setLastSessionRef({ id: sessionId, sharedVersion });
       setSession({
-        id:            latest.session_id,
+        id:            sessionId,
         sharedVersion,
         escrow:        escrowVal != null ? String(escrowVal) : null,
-        spent:         fields.spent != null ? String(fields.spent) : '0',
-        spendCap:      latest.spend_cap != null ? String(latest.spend_cap) : (fields.spend_cap ?? '0'),
-        expiryMs:      Number(latest.expiry_ms ?? fields.expiry_ms ?? 0),
+        spent:         spentVal != null ? String(spentVal) : '0',
+        spendCap:      spendCapVal != null ? String(spendCapVal) : '0',
+        expiryMs:      Number(expiryVal ?? 0),
         revoked,
       });
     } catch (e) {

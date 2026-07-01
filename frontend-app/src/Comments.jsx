@@ -1,4 +1,4 @@
-// Comments.jsx — on-chain comments + replies
+// Comments.jsx - on-chain comments + replies
 //   V4-V9: top-level comments on-chain; replies off-chain (localStorage).
 //   V10:   holder-gated comments AND replies on-chain via post_comment's
 //          holder_coin + parent_id args. parent_id = parent comment's tx digest.
@@ -16,7 +16,7 @@ import {
   COMMENT_FEE_MIST, isV7OrLater, isV9OrLater, isV10OrLater,
 } from './constants.js';
 
-// The zero address — V10 parent_id sentinel for a top-level comment.
+// The zero address - V10 parent_id sentinel for a top-level comment.
 const ZERO_ADDR = '0x0000000000000000000000000000000000000000000000000000000000000000';
 
 // Fetch the caller's largest coin object of `coinType` (for V10 holder_coin proof).
@@ -47,8 +47,8 @@ function walletColor(addr) {
 }
 
 function shortAddr(addr) {
-  if (!addr) return '—';
-  return addr.slice(0, 6) + '…' + addr.slice(-4);
+  if (!addr) return '-';
+  return addr.slice(0, 6) + '...' + addr.slice(-4);
 }
 
 function timeAgo(ts) {
@@ -115,7 +115,7 @@ function CommentItem({ comment, replies, account, curveId, onReplyPosted,
     if (!trimmed || !account || replyBusy) return;
     if (trimmed.length > 200) { setReplyErr('Max 200 characters'); return; }
 
-    // ── Legacy (V4-V9): replies stay off-chain in localStorage ──
+    // -- Legacy (V4-V9): replies stay off-chain in localStorage --
     if (!isV10) {
       const reply = {
         id: `reply_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
@@ -127,7 +127,7 @@ function CommentItem({ comment, replies, account, curveId, onReplyPosted,
       return;
     }
 
-    // ── V10: reply is an on-chain post_comment with parent_id = parent tx digest ──
+    // -- V10: reply is an on-chain post_comment with parent_id = parent tx digest --
     setReplyBusy(true); setReplyErr('');
     try {
       // Resolve the holder coin (proves balance > 0). Parent passes its cached
@@ -137,7 +137,7 @@ function CommentItem({ comment, replies, account, curveId, onReplyPosted,
       if (!coinId) { setReplyErr('Hold the token to reply'); onNeedHolder?.(); setReplyBusy(false); return; }
 
       const parentDigest = comment.digestKey ?? null;
-      if (!parentDigest) { setReplyErr('Parent not yet on-chain — try again in a moment'); setReplyBusy(false); return; }
+      if (!parentDigest) { setReplyErr('Parent not yet on-chain - try again in a moment'); setReplyBusy(false); return; }
 
       const isv = initialSharedVersion;
       const tx = new Transaction();
@@ -210,19 +210,25 @@ function CommentItem({ comment, replies, account, curveId, onReplyPosted,
           </div>
           {replyOpen && (
             <div className="mt-2 space-y-1.5">
-              <div className="flex gap-2">
-                <input ref={inputRef} value={replyText} onChange={e => setReplyText(e.target.value)} onKeyDown={handleKey}
-                  placeholder="Write a reply…" maxLength={200}
-                  className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white placeholder-white/20 focus:outline-none focus:border-lime-400/40 font-mono" />
-                <button onClick={handlePostReply} disabled={!replyText.trim() || replyBusy}
-                  className={`px-2.5 py-1.5 rounded-lg text-[10px] font-mono transition-colors ${!replyText.trim() || replyBusy ? 'bg-white/5 text-white/25 cursor-not-allowed' : 'bg-lime-400 hover:bg-lime-300 text-black'}`}>
-                  <Send size={12} />
-                </button>
-              </div>
-              <div className="flex items-center justify-between pl-7">
-                {replyErr ? <span className="text-[10px] font-mono text-red-400">{replyErr}</span> : <span />}
-                <span className="text-[10px] font-mono text-white/25">{replyText.length}/200</span>
-              </div>
+              {isV10 && !holderCoinId ? (
+                <p className="text-[10px] font-mono text-white/30 pl-1">Hold the token to reply.</p>
+              ) : (
+                <>
+                  <div className="flex gap-2">
+                    <input ref={inputRef} value={replyText} onChange={e => setReplyText(e.target.value)} onKeyDown={handleKey}
+                      placeholder="Write a reply..." maxLength={200}
+                      className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white placeholder-white/20 focus:outline-none focus:border-lime-400/40 font-mono" />
+                    <button onClick={handlePostReply} disabled={!replyText.trim() || replyBusy}
+                      className={`px-2.5 py-1.5 rounded-lg text-[10px] font-mono transition-colors ${!replyText.trim() || replyBusy ? 'bg-white/5 text-white/25 cursor-not-allowed' : 'bg-lime-400 hover:bg-lime-300 text-black'}`}>
+                      <Send size={12} />
+                    </button>
+                  </div>
+                  <div className="flex items-center justify-between pl-7">
+                    {replyErr ? <span className="text-[10px] font-mono text-red-400">{replyErr}</span> : <span />}
+                    <span className="text-[10px] font-mono text-white/25">{replyText.length}/200</span>
+                  </div>
+                </>
+              )}
             </div>
           )}
           {showReplies && replyCount > 0 && (
@@ -330,7 +336,7 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
 
     load();
 
-    // SSE for real-time comments — stable ref pattern:
+    // SSE for real-time comments - stable ref pattern:
     // cancelled flag guards both connect() and the reconnect timeout so no
     // phantom EventSources survive after unmount or curveId change.
     function connect() {
@@ -350,7 +356,7 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
             const parentId = d.parent_id ?? null;
             const id = txDigest ? `${txDigest}_0` : `sse_${author}_${cText}`;
 
-            // V10: a Comment carrying a non-zero parent_id is a reply → replies state.
+            // V10: a Comment carrying a non-zero parent_id is a reply -> replies state.
             if (isV10 && parentId && parentId !== ZERO_ADDR) {
               setReplies(prev => {
                 if (txDigest && prev.find(r => r.digestKey === txDigest)) return prev;
@@ -363,7 +369,7 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
             setComments(prev => {
               // Dedup on the bare tx_digest, NOT the seq-suffixed id. The initial
               // load keys comments as `${digest}_${event_seq}` (seq may be nonzero),
-              // while SSE/optimistic use `${digest}_0` — so matching on full id
+              // while SSE/optimistic use `${digest}_0` - so matching on full id
               // missed same-digest comments and rendered duplicates until refresh.
               if (txDigest && prev.find(c => c.digestKey === txDigest)) return prev;
               if (prev.find(c => c.id === id)) return prev;
@@ -399,7 +405,7 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
 
     setPosting(true); setPostErr('');
     try {
-      // Resolve initialSharedVersion — try prop first, then indexer, then fail gracefully
+      // Resolve initialSharedVersion - try prop first, then indexer, then fail gracefully
       let isv = initialSharedVersion;
       if (!isv && INDEXER_URL) {
         try {
@@ -411,7 +417,7 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
       const tx = new Transaction();
       const isV7 = isV7OrLater(packageId);
 
-      // post_comment takes &mut Curve<T> — MUST use sharedObjectRef
+      // post_comment takes &mut Curve<T> - MUST use sharedObjectRef
       const curveRef = isv
         ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: String(isv), mutable: true })
         : tx.object(curveId);
@@ -444,7 +450,7 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
           });
         }
       } else {
-        // V4/V5/V6: post_comment(curve_id, text, ctx) — no fee, no type arg
+        // V4/V5/V6: post_comment(curve_id, text, ctx) - no fee, no type arg
         tx.moveCall({
           target: `${packageId}::bonding_curve::post_comment`,
           arguments: [tx.pure.address(curveId), tx.pure.string(trimmed)],
@@ -456,7 +462,7 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
 
       const txDigest = result.digest ?? result.Transaction?.digest ?? null;
       setText('');
-      // Optimistic update — keyed on the bare tx_digest so the SSE event for the
+      // Optimistic update - keyed on the bare tx_digest so the SSE event for the
       // same comment dedups against it (both use digestKey) instead of appending.
       setComments(prev => {
         const id = txDigest ? `${txDigest}_0` : `opt_${Date.now()}`;
@@ -500,7 +506,7 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
   return (
     <div className="bg-white/[0.03] border border-white/10 rounded-xl overflow-hidden">
       {loading ? (
-        <div className="py-8 text-center text-white/20 text-xs font-mono">Loading…</div>
+        <div className="py-8 text-center text-white/20 text-xs font-mono">Loading...</div>
       ) : visibleComments.length === 0 ? (
         <div className="py-8 text-center text-white/20 text-xs font-mono">No comments yet. Be the first!</div>
       ) : (
@@ -539,7 +545,7 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
                   value={text}
                   onChange={e => setText(e.target.value.slice(0, 500))}
                   onKeyDown={handleKey}
-                  placeholder="Write a comment… (Enter to post)"
+                  placeholder="Write a comment... (Enter to post)"
                   rows={2}
                   className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder-white/20 focus:outline-none focus:border-lime-400/40 font-mono resize-none transition-colors"
                 />

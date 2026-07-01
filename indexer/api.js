@@ -12,6 +12,7 @@ import { mountPoints } from './points.js';
 import { mountPartnerLaunches } from './partner_launches.js';
 import { mountGameProgress } from './game_progress.js';
 import { mountTakeover } from './takeover_api.js';
+import { mountAgentSession } from './agent_session_api.js';
 
 const PORT = parseInt(process.env.PORT || '3001');
 const app  = express();
@@ -44,6 +45,11 @@ mountGameProgress(app);
 // Takeover*/CreatorHeartbeat events from the events table). Adds
 // GET /token/:id/takeover. Passed `pool` since it queries events directly.
 mountTakeover(app, pool);
+
+// V10 agent-session fast lookup -- self-contained module, owns NO table (reads
+// the agent_session module's events from the events table, tracked by index.js
+// since the SESSION_EVENT_NAMES addition). Adds GET /agent/session?owner=.
+mountAgentSession(app, pool);
 
 // ── Virtual reserves per package — must match frontend constants.js ─────────
 const MIST = 1_000_000_000;
