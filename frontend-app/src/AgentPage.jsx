@@ -797,6 +797,10 @@ function AgentSessionPanel({ account, onSessionChange }) {
   const client  = useCurrentClient();
 
   const [session, setSession] = useState(null); // { id, sharedVersion, escrow, spent, spendCap, expiryMs, revoked }
+  // Survives session=null (after close/no-session-found) so sweep_token can
+  // still target the last session this wallet had, since a stuck token can
+  // legitimately be discovered AFTER the SUI side has already been closed.
+  const [lastSessionRef, setLastSessionRef] = useState(null); // { id, sharedVersion }
   const [loading, setLoading] = useState(true);
   const [busy, setBusy]       = useState(false);
   const [msg, setMsg]         = useState('');
@@ -843,6 +847,7 @@ function AgentSessionPanel({ account, onSessionChange }) {
       const revoked = fields.revoked === true || fields.revoked === 'true';
       const escrowVal = fields.escrow?.fields?.value ?? fields.escrow ?? null;
 
+      setLastSessionRef({ id: latest.session_id, sharedVersion });
       setSession({
         id:            latest.session_id,
         sharedVersion,
@@ -964,6 +969,38 @@ function AgentSessionPanel({ account, onSessionChange }) {
     finally { setBusy(false); }
   }
 
+  // sweep_token<T> recovers any tokens still parked on the session (from a prior
+  // buy_with_session that was never sold back before revoke/expiry/close). It is
+  // owner-gated on-chain but does NOT touch the SUI escrow, so it is a SEPARATE
+  // action from close/revoke -- a user may need this even after already closing.
+  // The contract has no way to enumerate which token types are parked (dynamic
+  // object fields aren't queryable that way), so the user supplies the
+  // coin type of the token they believe is stuck; a wrong guess simply aborts
+  // on-chain with no funds at risk.
+  const [sweepType, setSweepType] = useState('');
+  async function doSweep() {
+    if (busy || !lastSessionRef) return;
+    const coinType = sweepType.trim();
+    if (!coinType) { setMsg('Enter the stuck token\'s coin type'); return; }
+    setBusy(true); setMsg('');
+    try {
+      const tx = new Transaction();
+      const targetRef = lastSessionRef.sharedVersion
+        ? tx.sharedObjectRef({ objectId: lastSessionRef.id, initialSharedVersion: String(lastSessionRef.sharedVersion), mutable: true })
+        : tx.object(lastSessionRef.id);
+      tx.moveCall({
+        target: `${PACKAGE_ID}::agent_session::sweep_token`,
+        typeArguments: [coinType],
+        arguments: [targetRef],
+      });
+      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Sweep failed - check the coin type is correct');
+      setMsg('Swept - tokens sent to your wallet.');
+      setSweepType('');
+    } catch (e) { setMsg(e.message || 'Sweep failed'); }
+    finally { setBusy(false); }
+  }
+
   if (!account) return null;
 
   const expired = session && session.expiryMs > 0 && now >= session.expiryMs;
@@ -1064,6 +1101,34 @@ function AgentSessionPanel({ account, onSessionChange }) {
             {busy ? 'WORKING...' : 'CLOSE & WITHDRAW ESCROW'}
           </button>
         </>
+      )}
+
+      {/* Sweep a stuck token -- independent of the SUI escrow above. Reachable
+          any time this wallet has had a session (even after it's been closed),
+          since a leftover parked token can be discovered after the fact and
+          close_session does not touch it. */}
+      {lastSessionRef && (
+        <details className="pt-1">
+          <summary className="text-[9px] font-mono text-white/30 hover:text-white/50 cursor-pointer tracking-widest">
+            STUCK TOKENS?
+          </summary>
+          <div className="mt-2 space-y-2">
+            <p className="text-[9px] font-mono text-white/25 leading-relaxed">
+              If a token was bought via this session and never sold back, it can
+              be left parked here after close/revoke/expiry. Enter its coin type
+              (e.g. {'{package}::{module}::{TOKEN}'}) to recover it to your wallet.
+              A wrong type simply fails on-chain -- no funds are at risk.
+            </p>
+            <div className="flex gap-2">
+              <input value={sweepType} onChange={e => setSweepType(e.target.value)} placeholder="0x...::token::TOKEN"
+                className="flex-1 bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-[11px] text-white placeholder-white/20 font-mono focus:outline-none focus:border-violet-400/40" />
+              <button onClick={doSweep} disabled={busy || !sweepType.trim()}
+                className={`px-3 py-1.5 rounded-lg text-[10px] font-mono transition-colors ${busy || !sweepType.trim() ? 'bg-white/5 text-white/25 cursor-not-allowed' : 'bg-violet-500/15 text-violet-300 border border-violet-400/30 hover:bg-violet-500/25'}`}>
+                SWEEP
+              </button>
+            </div>
+          </div>
+        </details>
       )}
 
       {msg && <div className="text-[9px] font-mono text-white/40">{msg}</div>}

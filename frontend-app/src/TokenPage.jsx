@@ -27,15 +27,15 @@ function bcsOptionSomeAddress(addr) {
   return bytes;
 }
 
-// ── constants ─────────────────────────────────────────────────────────────────
+// -- constants -----------------------------------------------------------------
 const TOKEN_DECIMALS     = 6;
 const TOTAL_SUPPLY_WHOLE = 1_000_000_000;
 const SUI_CLOCK_ID       = '0x6';
 
-// Quick-buy preset amounts (whole SUI, no fractions — SUI is cheap)
+// Quick-buy preset amounts (whole SUI, no fractions - SUI is cheap)
 const QUICK_BUY_AMOUNTS = ['1', '10', '50', '100', '500'];
 
-// ── CreatorCap resolution ───────────────────────────────────────────────────
+// -- CreatorCap resolution ---------------------------------------------------
 // Normalize a Sui address/ID to canonical 0x + 64-hex lowercase form so that
 // strict matching can't fail on prefix/padding/case differences. Sui GraphQL
 // can return a struct's `ID` field in a shape that does not byte-match the URL
@@ -69,7 +69,7 @@ async function _gql(query, ms = 8000) {
 async function resolveCreatorCap(ownerAddr, curveId, indexerUrl) {
   const want = _normAddr(curveId);
 
-  // 1. Indexer endpoint — trust only when it returns an objectId.
+  // 1. Indexer endpoint - trust only when it returns an objectId.
   if (indexerUrl) {
     try {
       const res = await fetch(`${indexerUrl}/token/${curveId}/creator-cap?owner=${ownerAddr}`, { signal: AbortSignal.timeout(5000) });
@@ -82,7 +82,7 @@ async function resolveCreatorCap(ownerAddr, curveId, indexerUrl) {
 
   let scanned = 0;
 
-  // 2. Type-filtered, paginated query per known package (cheap — caps only).
+  // 2. Type-filtered, paginated query per known package (cheap - caps only).
   for (const pid of ALL_PACKAGE_IDS) {
     if (!pid) continue;
     let cursor = null;
@@ -102,7 +102,7 @@ async function resolveCreatorCap(ownerAddr, curveId, indexerUrl) {
     }
   }
 
-  // 3. Package-agnostic fallback — bounded scan over owned objects, matched by
+  // 3. Package-agnostic fallback - bounded scan over owned objects, matched by
   //    type repr. Covers caps minted by a package id missing from constants.
   {
     let cursor = null;
@@ -220,7 +220,7 @@ function getTokenPackageId(tokenType) {
 function resolvePackageId(tokenType, packageIdHint) {
   // packageIdHint comes from the indexer and is always the correct bonding
   // curve package. Use it first. getTokenPackageId() tries to match the coin
-  // package against curve package IDs which can never work — they're always
+  // package against curve package IDs which can never work - they're always
   // different addresses. Only fall back to it if hint is missing.
   if (packageIdHint) return packageIdHint;
   const fromType = getTokenPackageId(tokenType);
@@ -229,13 +229,13 @@ function resolvePackageId(tokenType, packageIdHint) {
 }
 
 const SLIPPAGE_PRESETS = ['0.5', '1', '2', '5'];
-const AUTO_SLIPPAGE_FLOOR = 1;    // % — minimum auto tolerance even on tiny/zero-impact trades
-const AUTO_SLIPPAGE_BUFFER = 3;   // % — added on top of measured price impact (covers block delay)
-const AUTO_SLIPPAGE_CEILING = 20; // % — hard cap; above this, auto refuses silent acceptance
+const AUTO_SLIPPAGE_FLOOR = 1;    // % - minimum auto tolerance even on tiny/zero-impact trades
+const AUTO_SLIPPAGE_BUFFER = 3;   // % - added on top of measured price impact (covers block delay)
+const AUTO_SLIPPAGE_CEILING = 20; // % - hard cap; above this, auto refuses silent acceptance
 
 // Resolve the effective slippage % to use for a trade.
-//   - 'auto'  → sized to this trade's price impact (floor/buffer/ceiling above)
-//   - number  → user's manual value, with the legacy impact>5 → impact+3 safety bump
+//   - 'auto'  -> sized to this trade's price impact (floor/buffer/ceiling above)
+//   - number  -> user's manual value, with the legacy impact>5 -> impact+3 safety bump
 // Returns a Number (percent). impactPct is the quote's priceImpact (percent).
 function resolveSlippagePct(slippage, impactPct) {
   const impact = Number(impactPct) || 0;
@@ -248,11 +248,11 @@ function resolveSlippagePct(slippage, impactPct) {
   return Math.max(manual, impact > 5 ? impact + AUTO_SLIPPAGE_BUFFER : manual);
 }
 
-// ── Target Return Calculator ──────────────────────────────────────────────────
+// -- Target Return Calculator --------------------------------------------------
 // Given current curve state + a buy amount, shows what mcap the token needs to
 // reach for 2x / 5x / 10x returns after fees on both sides.
 // Uses binary search on future SUI reserve to find the sell price that yields
-// the target proceeds. Fully deterministic curve math — no RPC needed.
+// the target proceeds. Fully deterministic curve math - no RPC needed.
 function calcReturnTargets(reserveMist, tokensRemaining, suiInMist, vSui, vTok, suiUsd) {
   if (!reserveMist || !tokensRemaining || !suiInMist || suiInMist <= 0n) return null;
 
@@ -303,7 +303,7 @@ function calcReturnTargets(reserveMist, tokensRemaining, suiInMist, vSui, vTok, 
   });
 }
 
-// ── Vesting panel (V7+) ───────────────────────────────────────────────────────
+// -- Vesting panel (V7+) -------------------------------------------------------
 const VEST_MODE_LABEL = { 0: 'Cliff', 1: 'Linear', 2: 'Monthly' };
 const VEST_DURATIONS_MS = {
   '7d':   7   * 24 * 60 * 60 * 1000,
@@ -338,12 +338,12 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
   const [lockDuration, setLockDuration] = React.useState('30d');
 
   const isV7      = isV7OrLater(packageId);
-  const vestingPkg = packageId; // use the token's actual package — lock_tokens exists in V7 and V8
+  const vestingPkg = packageId; // use the token's actual package - lock_tokens exists in V7 and V8
 
   const loadLocks = useCallback(async () => {
     if (!isV7 || !curveId || !account || !vestingPkg) { setLoading(false); return; }
     try {
-      // queryEvents removed in @mysten/sui 2.x — use indexer for lock IDs
+      // queryEvents removed in @mysten/sui 2.x - use indexer for lock IDs
       const INDEXER_URL_VP = import.meta.env.VITE_INDEXER_URL || '';
       let mine = [];
       if (INDEXER_URL_VP) {
@@ -352,7 +352,7 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
           if (res.ok) { const rows = await res.json(); mine = rows.map(r => r.lock_id).filter(Boolean); }
         } catch {}
       }
-      // Lock detail fetching needs direct RPC — will work once CORS is resolved
+      // Lock detail fetching needs direct RPC - will work once CORS is resolved
       // For now, locks are listed but details may not load in browser context
       const out = [];
       for (const lockId of mine) {
@@ -374,7 +374,7 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
     if (!account || busy) return;
     setBusy(true); setMsg('');
     try {
-      // VestLock objects are user-owned, not shared — use tx.object directly
+      // VestLock objects are user-owned, not shared - use tx.object directly
       const tx = new Transaction();
       const lockRef = tx.object(lockId);
       const [claimed] = tx.moveCall({ target: `${vestingPkg}::bonding_curve::claim_vested`, typeArguments: [tokenType], arguments: [lockRef, tx.object(SUI_CLOCK_ID)] });
@@ -396,7 +396,7 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
       const coins  = await client.listCoins({ owner: account.address, coinType: tokenType });
       if (!coins.objects.length) throw new Error('No token balance');
       const tx  = new Transaction();
-      // Always use sharedObjectRef for the curve — tx.object() on a shared object causes TypeMismatch
+      // Always use sharedObjectRef for the curve - tx.object() on a shared object causes TypeMismatch
       let isv = initialSharedVersion ?? curveState?.initial_shared_version ?? null;
       if (!isv) {
         // Fetch ISV from indexer as last resort
@@ -437,7 +437,7 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
           <p className="text-[9px] font-mono text-white/25 leading-relaxed">Lock tokens you already hold. Terms are immutable once set.</p>
           <div>
             <div className="text-[9px] tracking-widest text-white/30 mb-1.5">AMOUNT</div>
-            <input type="number" value={lockAmount} onChange={e => { setLockAmount(e.target.value); setMsg(''); }} placeholder={`0 — you hold ${tokenBalance}`} min="0" className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-lime-400/50" />
+            <input type="number" value={lockAmount} onChange={e => { setLockAmount(e.target.value); setMsg(''); }} placeholder={`0 - you hold ${tokenBalance}`} min="0" className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-lime-400/50" />
             <div className="flex gap-1.5 mt-1.5">
               {[50, 75, 100].map(pct => (
                 <button key={pct} onClick={() => setLockAmount(((tokenBalance * pct) / 100).toFixed(0))}
@@ -464,7 +464,7 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
               ))}
             </div>
           </div>
-          <button onClick={handleLock} disabled={busy || !lockAmount} className={`w-full py-2.5 rounded-lg text-[11px] font-mono transition-colors ${busy || !lockAmount ? 'bg-white/5 text-white/25 cursor-not-allowed' : 'bg-lime-400 hover:bg-lime-300 text-black'}`}>{busy ? 'Locking…' : 'Lock tokens'}</button>
+          <button onClick={handleLock} disabled={busy || !lockAmount} className={`w-full py-2.5 rounded-lg text-[11px] font-mono transition-colors ${busy || !lockAmount ? 'bg-white/5 text-white/25 cursor-not-allowed' : 'bg-lime-400 hover:bg-lime-300 text-black'}`}>{busy ? 'Locking...' : 'Lock tokens'}</button>
         </div>
       )}
       {locks.length === 0 ? (
@@ -479,14 +479,14 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
             return (
               <div key={lk.id} className="px-4 py-3 space-y-2">
                 <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-mono text-white/50">{VEST_MODE_LABEL[lk.mode]} · {Math.round(lk.durationMs / 86400000)}d</span>
+                  <span className="text-[10px] font-mono text-white/50">{VEST_MODE_LABEL[lk.mode]} . {Math.round(lk.durationMs / 86400000)}d</span>
                   <span className="text-[10px] font-mono text-white/40">{whole(lk.remaining)} locked</span>
                 </div>
                 <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
                   <div className="h-full bg-lime-400" style={{ width: `${Math.min(100, pct)}%` }} />
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-[9px] font-mono text-white/30">{pct.toFixed(1)}% vested · {whole(lk.claimed)} claimed</span>
+                  <span className="text-[9px] font-mono text-white/30">{pct.toFixed(1)}% vested . {whole(lk.claimed)} claimed</span>
                   <button onClick={() => handleClaim(lk.id)} disabled={busy || claimable <= 0} className={`text-[10px] font-mono px-2.5 py-1 rounded transition-colors ${busy || claimable <= 0 ? 'bg-white/5 text-white/20 cursor-not-allowed' : 'bg-lime-400 hover:bg-lime-300 text-black'}`}>
                     {claimable > 0 ? `Claim ${whole(claimable)}` : 'Nothing vested'}
                   </button>
@@ -501,7 +501,7 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
   );
 }
 
-// ── Creator Tools Panel ───────────────────────────────────────────────────────
+// -- Creator Tools Panel -------------------------------------------------------
 
 function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveState, currentDesc, currentTwitter, currentTelegram, currentWebsite, currentDex, lang, onMetaUpdated }) {
   const client = useCurrentClient();
@@ -523,11 +523,11 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
   const [iconUploadError, setIconUploadError] = useState(null);
 
   // One-time metadata lock state.
-  //   justUpdated  — set the instant our own update tx succeeds. A successful
+  //   justUpdated  - set the instant our own update tx succeeds. A successful
   //                  update_metadata PROVABLY set metadata_updated=true on-chain
   //                  (the contract aborts otherwise), so we can lock the form
   //                  immediately without waiting on the indexer to re-index.
-  //   chainUpdated — authoritative on-chain flag, fetched fresh on mount so a
+  //   chainUpdated - authoritative on-chain flag, fetched fresh on mount so a
   //                  returning creator sees the locked state right away rather
   //                  than a deceptively-open form. null = not yet known.
   const [justUpdated,  setJustUpdated]  = useState(false);
@@ -545,7 +545,7 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
           const d = await r.json();
           setChainUpdated((d.metadataUpdated ?? d.metadata_updated) === true);
         }
-      } catch { /* keep null — falls back to curveState prop */ }
+      } catch { /* keep null - falls back to curveState prop */ }
     })();
     return () => { cancelled = true; };
   }, [curveId]);
@@ -558,7 +558,7 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
   };
 
   const getCurveRef = async (tx) => {
-    // Use initialSharedVersion from curveState (loaded from indexer) — no direct RPC call
+    // Use initialSharedVersion from curveState (loaded from indexer) - no direct RPC call
     const isv = curveState?.initial_shared_version ?? null;
     return isv ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: isv, mutable: true }) : tx.object(curveId);
   };
@@ -575,10 +575,10 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
     if (!(isV7Token || isV8Token || isV9OrLater(pkgId)) || !metadataPkg) { showMsg('Metadata update requires V7+ token'); return; }
     const windowClosesAt = curveState?.created_at_ms ? Number(curveState.created_at_ms) + 24 * 60 * 60 * 1000 : 0;
     if (windowClosesAt > 0 && Date.now() >= windowClosesAt) { showMsg('24h window has closed'); return; }
-    if (justUpdated || chainUpdated === true || curveState?.metadata_updated === true) { showMsg('Already updated — one time only'); return; }
+    if (justUpdated || chainUpdated === true || curveState?.metadata_updated === true) { showMsg('Already updated - one time only'); return; }
     setBusy(true); setMsg('');
     try {
-      // Fetch CoinMetadata object info via indexer proxy — avoids CORS
+      // Fetch CoinMetadata object info via indexer proxy - avoids CORS
       const IURL_CM = import.meta.env.VITE_INDEXER_URL || '';
       let metadataId = null;
       let metaSharedVersion = null;
@@ -588,7 +588,7 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
           if (res.ok) { const d = await res.json(); metadataId = d.objectId; metaSharedVersion = d.initialSharedVersion; }
         } catch {}
       }
-      if (!metadataId) throw new Error('CoinMetadata object not found — indexer may not support this endpoint yet');
+      if (!metadataId) throw new Error('CoinMetadata object not found - indexer may not support this endpoint yet');
       const capId = await getCapId();
       const tx = new Transaction();
       const curveRef = await getCurveRef(tx);
@@ -608,11 +608,11 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
 
       // Instant display: build a partial override from ONLY the fields the
       // creator actually filled in. Blank fields pass `null` on-chain and don't
-      // overwrite, so we mirror that here — merge, never replace. Two surfaces:
-      //   1. localStorage `suipump_meta_${curveId}` — the durable override the
+      // overwrite, so we mirror that here - merge, never replace. Two surfaces:
+      //   1. localStorage `suipump_meta_${curveId}` - the durable override the
       //      header already reads (_metaOverride), so it survives a later
       //      indexer refetch that may still be serving stale metadata.
-      //   2. onMetaUpdated(partial) — pushes straight into the parent's
+      //   2. onMetaUpdated(partial) - pushes straight into the parent's
       //      metadata/iconUrl state so the header re-renders this frame,
       //      with no reload and no indexer round-trip.
       const partial = {};
@@ -626,7 +626,7 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
       } catch {}
       if (typeof onMetaUpdated === 'function') onMetaUpdated(partial);
 
-      showMsg('Metadata updated on-chain ✅ — locked (one-time)'); setBusy(false);
+      showMsg('Metadata updated on-chain ✅ - locked (one-time)'); setBusy(false);
     } catch (e) { showMsg(e.message || 'Update failed'); setBusy(false); }
   };
 
@@ -646,12 +646,12 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
 
       {tab === 'links' && (
         <div className="space-y-2.5">
-          <div className="text-[9px] font-mono text-white/25">Update your social links — saved instantly</div>
-          <textarea value={links.desc} onChange={e => setLinks(l => ({ ...l, desc: e.target.value }))} placeholder="Token description…" rows={2} className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 transition-colors resize-none" />
+          <div className="text-[9px] font-mono text-white/25">Update your social links - saved instantly</div>
+          <textarea value={links.desc} onChange={e => setLinks(l => ({ ...l, desc: e.target.value }))} placeholder="Token description..." rows={2} className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 transition-colors resize-none" />
           {[{ key: 'twitter', placeholder: 'https://x.com/yourtoken' }, { key: 'telegram', placeholder: 'https://t.me/yourtoken' }, { key: 'website', placeholder: 'https://yourtoken.xyz' }].map(({ key, placeholder }) => (
             <input key={key} value={links[key]} onChange={e => setLinks(l => ({ ...l, [key]: e.target.value }))} placeholder={placeholder} className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 transition-colors" />
           ))}
-          <button onClick={handleQueueLinks} disabled={busy} className={`w-full py-2 rounded-lg text-[10px] font-mono font-bold transition-colors ${busy ? 'bg-white/5 text-white/20 cursor-not-allowed' : 'bg-lime-400/10 border border-lime-400/30 text-lime-400 hover:bg-lime-400/20'}`}>{busy ? 'SAVING…' : 'UPDATE LINKS'}</button>
+          <button onClick={handleQueueLinks} disabled={busy} className={`w-full py-2 rounded-lg text-[10px] font-mono font-bold transition-colors ${busy ? 'bg-white/5 text-white/20 cursor-not-allowed' : 'bg-lime-400/10 border border-lime-400/30 text-lime-400 hover:bg-lime-400/20'}`}>{busy ? 'SAVING...' : 'UPDATE LINKS'}</button>
         </div>
       )}
 
@@ -669,13 +669,13 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
         return (
           <div className="space-y-2.5">
             {alreadyUpdated ? (
-              <div className="rounded-lg bg-white/5 border border-white/10 px-3 py-3 text-[9px] font-mono text-white/40 text-center">✅ Metadata already updated — one-time change used</div>
+              <div className="rounded-lg bg-white/5 border border-white/10 px-3 py-3 text-[9px] font-mono text-white/40 text-center">✅ Metadata already updated - one-time change used</div>
             ) : !windowOpen ? (
               <div className="rounded-lg bg-white/5 border border-white/10 px-3 py-3 text-[9px] font-mono text-white/40 text-center">🔒 24h update window has closed</div>
             ) : (
               <>
                 <div className="flex items-center justify-between">
-                  <div className="text-[9px] font-mono text-white/25">{isV7Token ? 'On-chain · one-time only' : 'Instant · one-time only'} · {hoursLeft}h remaining</div>
+                  <div className="text-[9px] font-mono text-white/25">{isV7Token ? 'On-chain . one-time only' : 'Instant . one-time only'} . {hoursLeft}h remaining</div>
                   <div className="flex items-center gap-1 text-[9px] font-mono text-lime-400/60"><Clock size={9} />{hoursLeft}h left</div>
                 </div>
                 {[{ key: 'name', placeholder: 'New token name (optional)' }, { key: 'symbol', placeholder: 'NEW SYMBOL (optional)' }, { key: 'description', placeholder: 'New description (optional)' }].map(({ key, placeholder }) => (
@@ -685,7 +685,7 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
                   <div className="flex gap-2 items-center">
                     <label className="flex-1 flex items-center gap-2 bg-white/5 border border-white/10 rounded-xl px-3 py-2 cursor-pointer hover:border-lime-400/40 transition-colors">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-white/40 shrink-0"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-                      <span className="text-xs font-mono text-white/40 truncate">{iconUploading ? 'Uploading…' : meta.iconUrl ? 'Image uploaded ✓' : 'Upload icon image'}</span>
+                      <span className="text-xs font-mono text-white/40 truncate">{iconUploading ? 'Uploading...' : meta.iconUrl ? 'Image uploaded ✓' : 'Upload icon image'}</span>
                       <input type="file" accept="image/*" className="hidden" onChange={async (e) => {
                         const file = e.target.files?.[0]; if (!file) return;
                         setIconUploading(true); setIconUploadError(null);
@@ -703,7 +703,7 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
                   {iconUploadError && <div className="text-[9px] font-mono text-red-400">{iconUploadError}</div>}
                   <input value={meta.iconUrl} onChange={e => setMeta(m => ({ ...m, iconUrl: e.target.value }))} placeholder="or paste URL (optional)" className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 transition-colors" />
                 </div>
-                <button onClick={handleUpdateMetadata} disabled={busy} className={`w-full py-2 rounded-lg text-[10px] font-mono font-bold transition-colors ${busy ? 'bg-white/5 text-white/20 cursor-not-allowed' : 'bg-lime-400 text-black hover:bg-lime-300'}`}>{busy ? 'UPDATING…' : (isV7Token ? 'UPDATE ON-CHAIN' : 'UPDATE NOW (INSTANT)')}</button>
+                <button onClick={handleUpdateMetadata} disabled={busy} className={`w-full py-2 rounded-lg text-[10px] font-mono font-bold transition-colors ${busy ? 'bg-white/5 text-white/20 cursor-not-allowed' : 'bg-lime-400 text-black hover:bg-lime-300'}`}>{busy ? 'UPDATING...' : (isV7Token ? 'UPDATE ON-CHAIN' : 'UPDATE NOW (INSTANT)')}</button>
               </>
             )}
           </div>
@@ -716,7 +716,7 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
   );
 }
 
-// ── Trade Panel ───────────────────────────────────────────────────────────────
+// -- Trade Panel ---------------------------------------------------------------
 
 function TradePanelContent({
   lang, side, setSide, amount, setAmount,
@@ -748,10 +748,10 @@ function TradePanelContent({
     if (!isNaN(n) && n >= 0 && n <= 50) setSlippage(clean);
   };
 
-  // ── Quick-buy: set amount then immediately fire the trade ─────────────────
+  // -- Quick-buy: set amount then immediately fire the trade -----------------
   // We need to call executeTrade with the new amount value, not the stale closure.
   // Solution: set amount first, then re-invoke onExecute after React flushes state.
-  // onExecute reads `amount` from its parent closure — we bypass this by passing
+  // onExecute reads `amount` from its parent closure - we bypass this by passing
   // the amount directly via a temporary ref that executeTrade reads on next tick.
   const quickBuyAmountRef = React.useRef(null);
 
@@ -779,7 +779,7 @@ function TradePanelContent({
         if (r.capPkgId) capPkgId = r.capPkgId;
       }
 
-      // Get ISV from indexer — avoids getObject CORS issue
+      // Get ISV from indexer - avoids getObject CORS issue
       const _IURL = import.meta.env.VITE_INDEXER_URL || '';
       let isv = panelCurveId && _IURL
         ? await fetch(`${_IURL}/token/${panelCurveId}`, { signal: AbortSignal.timeout(3000) })
@@ -803,7 +803,7 @@ function TradePanelContent({
     } catch (err) { setClaimMsg(err.message || 'Claim failed'); setClaiming(false); }
   };
 
-  // ── Return targets (memoized — only recalculate when inputs change) ────────
+  // -- Return targets (memoized - only recalculate when inputs change) --------
   const returnTargets = React.useMemo(() => {
     if (!showReturnCalc || side !== 'buy' || !amount || parseFloat(amount) <= 0) return null;
     if (!reserveMist || !tokensRemaining || !vSui || !vTok) return null;
@@ -833,7 +833,7 @@ function TradePanelContent({
             {SLIPPAGE_PRESETS.map(v => (
               <button key={v} onClick={() => handleSlippagePreset(v)} className={`flex-1 py-1.5 text-[10px] font-mono rounded-lg border transition-colors ${slippage === v && !isCustom ? 'bg-lime-400/10 border-lime-400/30 text-lime-400' : 'border-white/10 text-white/40 hover:border-white/25 hover:text-white/60'}`}>{v}%</button>
             ))}
-            <input type="number" min="0" max="50" step="0.1" value={customSlippage} onChange={e => handleCustomSlippage(e.target.value)} placeholder="—"
+            <input type="number" min="0" max="50" step="0.1" value={customSlippage} onChange={e => handleCustomSlippage(e.target.value)} placeholder="-"
               className={`w-14 py-1.5 text-[10px] font-mono rounded-lg border text-center bg-transparent transition-colors ${isCustom ? 'border-lime-400/30 text-lime-400' : 'border-white/10 text-white/40'} focus:outline-none focus:border-lime-400/50`} />
           </div>
           <div className="text-[8px] font-mono text-white/20 leading-relaxed">
@@ -851,7 +851,7 @@ function TradePanelContent({
             <div className="text-[10px] font-mono text-white/35">{t(lang, 'creatorFees')}</div>
             {Number(creatorFeesMist) > 0 && <div className="text-xs font-mono text-lime-400">{fmt(Number(creatorFeesMist) / 1e9, 4)} SUI</div>}
           </div>
-          <button onClick={handleClaim} disabled={claiming || Number(creatorFeesMist) === 0} className={`w-full py-2 rounded-lg text-[10px] font-mono font-bold transition-colors ${claiming || Number(creatorFeesMist) === 0 ? 'bg-white/5 text-white/20 cursor-not-allowed' : 'bg-lime-400/10 border border-lime-400/30 text-lime-400 hover:bg-lime-400/20'}`}>{claiming ? 'CLAIMING…' : Number(creatorFeesMist) === 0 ? 'NO FEES YET' : t(lang, 'claimFees')}</button>
+          <button onClick={handleClaim} disabled={claiming || Number(creatorFeesMist) === 0} className={`w-full py-2 rounded-lg text-[10px] font-mono font-bold transition-colors ${claiming || Number(creatorFeesMist) === 0 ? 'bg-white/5 text-white/20 cursor-not-allowed' : 'bg-lime-400/10 border border-lime-400/30 text-lime-400 hover:bg-lime-400/20'}`}>{claiming ? 'CLAIMING...' : Number(creatorFeesMist) === 0 ? 'NO FEES YET' : t(lang, 'claimFees')}</button>
           {claimMsg && <div className={`text-[10px] font-mono text-center ${claimMsg.includes('🎉') ? 'text-lime-400' : 'text-red-400'}`}>{claimMsg}</div>}
         </div>
       )}
@@ -904,9 +904,9 @@ function TradePanelContent({
                 {/* Quick-buy label */}
                 <div className="flex items-center gap-1 text-[9px] font-mono text-white/20 tracking-widest">
                   <Zap size={8} className="text-lime-400/40" />
-                  QUICK BUY — tap to buy instantly
+                  QUICK BUY - tap to buy instantly
                 </div>
-                {/* Quick-buy buttons — one click sets amount + fires trade immediately */}
+                {/* Quick-buy buttons - one click sets amount + fires trade immediately */}
                 <div className="flex gap-1.5">
                   {QUICK_BUY_AMOUNTS.map(v => (
                     <button key={v}
@@ -972,7 +972,7 @@ function TradePanelContent({
                 <span className="text-white/50">1%</span>
               </div>
 
-              {/* Return calculator toggle — buy side only */}
+              {/* Return calculator toggle - buy side only */}
               {side === 'buy' && (
                 <button onClick={() => setShowReturnCalc(s => !s)}
                   className="w-full mt-0.5 pt-1.5 border-t border-white/5 text-[9px] font-mono text-white/25 hover:text-lime-400/60 transition-colors flex items-center justify-center gap-1">
@@ -1013,7 +1013,7 @@ function TradePanelContent({
                     </div>
                   ))}
                   <div className="text-[8px] font-mono text-white/15 pt-1 border-t border-white/5">
-                    sell full position · both fees included · estimate only
+                    sell full position . both fees included . estimate only
                   </div>
                 </div>
               )}
@@ -1027,7 +1027,7 @@ function TradePanelContent({
                 ? 'bg-white/5 text-white/20 cursor-not-allowed'
                 : side === 'buy' ? 'bg-lime-400 text-black hover:bg-lime-300' : 'bg-red-500 text-white hover:bg-red-400'
             }`}>
-            {isPending ? '⏳ …' : !account ? 'Connect wallet' : side === 'buy' ? t(lang, 'buy') : t(lang, 'sell')}
+            {isPending ? '⏳ ...' : !account ? 'Connect wallet' : side === 'buy' ? t(lang, 'buy') : t(lang, 'sell')}
           </button>
 
           {txStatus && txMsg && (
@@ -1041,10 +1041,10 @@ function TradePanelContent({
   );
 }
 
-// ── TP/SL Panel ───────────────────────────────────────────────────────────────
+// -- TP/SL Panel ---------------------------------------------------------------
 // Shown in the right column below the trade panel.
 // User sets take-profit and/or stop-loss levels with partial sell %.
-// When triggered, fires a sell PTB → Slush wallet signs.
+// When triggered, fires a sell PTB -> Slush wallet signs.
 
 function TPSLPanel({
   account, curveId, tokenType, pkgId,
@@ -1053,7 +1053,7 @@ function TPSLPanel({
   tokenBalance,
   reserveMist, tokensRemaining, vSui, vTok,
   slippage,
-  keypair,        // Ed25519Keypair | null — if set, signs autonomously (no Slush popup)
+  keypair,        // Ed25519Keypair | null - if set, signs autonomously (no Slush popup)
 }) {
   const client = useCurrentClient();
   const dAppKit = useDAppKit();
@@ -1068,7 +1068,7 @@ function TPSLPanel({
   const [triggerMsg, setTriggerMsg] = useState(null);
   const [selling, setSelling]       = useState(false);
 
-  // ── Build and sign the sell PTB ──────────────────────────────────────────
+  // -- Build and sign the sell PTB ------------------------------------------
   const executeSell = useCallback(async (sellWholeTokens) => {
     if (!account || !curveId || !tokenType || !pkgId || selling) return;
     if (sellWholeTokens <= 0) return;
@@ -1076,12 +1076,12 @@ function TPSLPanel({
     try {
       const tokInAtomic = BigInt(Math.floor(sellWholeTokens * 10 ** TOKEN_DECIMALS));
 
-      // Determine signer address — keypair address or connected wallet
+      // Determine signer address - keypair address or connected wallet
       const signerAddress = keypair
         ? keypair.getPublicKey().toSuiAddress()
         : account.address;
 
-      // Fetch ISV from indexer at sell time — TPSLPanel doesn't have access
+      // Fetch ISV from indexer at sell time - TPSLPanel doesn't have access
       // to initialSharedVersionProp or curveState from the outer TokenPage scope
       let isv = null;
       try {
@@ -1099,7 +1099,7 @@ function TPSLPanel({
         ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: isv, mutable: true })
         : tx.object(curveId);
 
-      // Get token coins owned by the signer — wallet handles this via dAppKit
+      // Get token coins owned by the signer - wallet handles this via dAppKit
       const coins = await client.listCoins({ owner: signerAddress, coinType: tokenType });
       if (!coins.objects.length) throw new Error('No token balance in trading wallet');
       const coinObjs = coins.objects.map(c => tx.object(c.objectId));
@@ -1123,7 +1123,7 @@ function TPSLPanel({
       });
       tx.transferObjects([suiOut], signerAddress);
 
-      // ── Autonomous path (keypair) ────────────────────────────────────────
+      // -- Autonomous path (keypair) ----------------------------------------
       if (keypair) {
         tx.setSender(signerAddress);
         const autonomousClient = new SuiGraphQLClient({ url: '/api/rpc' });
@@ -1139,7 +1139,7 @@ function TPSLPanel({
         return;
       }
 
-      // ── Slush fallback (no keypair) ──────────────────────────────────────
+      // -- Slush fallback (no keypair) --------------------------------------
       const sellResult = await dAppKit.signAndExecuteTransaction({ transaction: tx });
       if (sellResult.$kind === 'FailedTransaction') throw new Error(sellResult.FailedTransaction.status.error ?? 'Sell failed');
       setTriggerMsg(m => m ? { ...m, status: 'done' } : m);
@@ -1150,7 +1150,7 @@ function TPSLPanel({
     }
   }, [account, curveId, tokenType, pkgId, selling, client, dAppKit, reserveMist, tokensRemaining, vSui, vTok, slippage, keypair]);
 
-  // ── onTrigger callback passed to useTPSL ────────────────────────────────
+  // -- onTrigger callback passed to useTPSL --------------------------------
   const handleTrigger = useCallback(({ level, currentPriceSui }) => {
     const sellTokens = tokenBalance * (level.sellPct / 100);
     setTriggerMsg({ level, currentPriceSui, status: 'pending', sellTokens });
@@ -1165,7 +1165,7 @@ function TPSLPanel({
     onTrigger:       handleTrigger,
   });
 
-  // ── Helpers ──────────────────────────────────────────────────────────────
+  // -- Helpers --------------------------------------------------------------
   const updateLevel = (idx, field, val) => {
     setPendingLevels(prev => prev.map((l, i) => i === idx ? { ...l, [field]: val } : l));
   };
@@ -1180,7 +1180,7 @@ function TPSLPanel({
   const handleActivate = () => {
     const ep = parseFloat(entryPrice) || priceSui;
     if (!ep || ep <= 0) return;
-    // OCO group is shared across all levels when linked — first to fire cancels the rest.
+    // OCO group is shared across all levels when linked - first to fire cancels the rest.
     const ocoGroup = ocoLink ? `oco_${Date.now()}` : null;
     const levels = pendingLevels
       .filter(l => l.pct !== '' && l.sellPct !== '')
@@ -1213,7 +1213,7 @@ function TPSLPanel({
           {isActive && (
             <span className="flex items-center gap-1 text-[9px] font-mono text-lime-400/70">
               <span className="w-1.5 h-1.5 rounded-full bg-lime-400 animate-pulse inline-block" />
-              {keypair ? 'AUTO · NO POPUP' : 'ACTIVE · TAB MUST STAY OPEN'}
+              {keypair ? 'AUTO . NO POPUP' : 'ACTIVE . TAB MUST STAY OPEN'}
             </span>
           )}
         </div>
@@ -1237,7 +1237,7 @@ function TPSLPanel({
       {isActive && !showConfig && (
         <div className="px-4 py-3 space-y-2">
           <div className="text-[9px] font-mono text-white/25 mb-1">
-            Entry: {config.entryPriceSui?.toFixed(8)} SUI · Now: {priceSui?.toFixed(8)} SUI
+            Entry: {config.entryPriceSui?.toFixed(8)} SUI . Now: {priceSui?.toFixed(8)} SUI
           </div>
           {config.peakPrice != null && config.levels?.some(l => l.type === 'trail') && (
             <div className="text-[9px] font-mono text-amber-400/40 -mt-1">Peak: {config.peakPrice.toFixed(8)} SUI</div>
@@ -1267,7 +1267,7 @@ function TPSLPanel({
                     {level.type === 'tp' ? `▲ TP +${level.pct}%`
                       : level.type === 'trail' ? `⇲ TRAIL ↓${level.trailPct}%`
                       : `▼ SL ${level.pct}%`}
-                    {level.ocoGroup && <span className="text-white/25 ml-1">· OCO</span>}
+                    {level.ocoGroup && <span className="text-white/25 ml-1">. OCO</span>}
                   </span>
                   <span className="text-white/40">Sell {level.sellPct}%</span>
                   {level.cancelled && <span className="text-white/25 text-[9px]">CANCELLED</span>}
@@ -1302,7 +1302,7 @@ function TPSLPanel({
           </div>
           {triggerMsg.status === 'pending' && (
             <div className="text-white/30 animate-pulse">
-              {keypair ? 'Auto-executing…' : 'Waiting for wallet signature…'}
+              {keypair ? 'Auto-executing...' : 'Waiting for wallet signature...'}
             </div>
           )}
           {triggerMsg.status === 'done' && (
@@ -1403,7 +1403,7 @@ function TPSLPanel({
               }`}
             >
               <span className="text-[10px] font-mono text-white/60">
-                OCO <span className="text-white/30">— one cancels other</span>
+                OCO <span className="text-white/30">- one cancels other</span>
               </span>
               <span className={`w-8 h-4 rounded-full relative transition-colors ${ocoLink ? 'bg-lime-400' : 'bg-white/15'}`}>
                 <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-black transition-all ${ocoLink ? 'left-4' : 'left-0.5'}`} />
@@ -1442,7 +1442,7 @@ function TPSLPanel({
   );
 }
 
-// ── Trades / Holders toggle block ─────────────────────────────────────────────
+// -- Trades / Holders toggle block ---------------------------------------------
 
 function TradesHoldersBlock({ curveId, tokenType, suiUsd, lang, creator, trades, connected, loading, symbol }) {
   const [tab, setTab] = useState('trades');
@@ -1470,7 +1470,7 @@ function CommentsBlock({ curveId, packageId, lang, initialSharedVersion = null, 
   );
 }
 
-// ── V10: Community Takeover (CTO) ─────────────────────────────────────────────
+// -- V10: Community Takeover (CTO) ---------------------------------------------
 // Surfaces the proposal lifecycle for a V10 curve: a token holder can nominate a
 // new creator once the incumbent has been inactive ≥5 days; holders vote for/
 // against during a 12h window weighted by live balance; anyone resolves after
@@ -1522,7 +1522,7 @@ function CommunityTakeoverPanel({ curveId, tokenType, packageId, creator, lastCr
           const d = await r.json();
           if (!cancelled) {
             // The takeover route also returns last_creator_activity_ms (latest
-            // heartbeat, else curve created_at) — use it to drive the inactivity
+            // heartbeat, else curve created_at) - use it to drive the inactivity
             // gate without needing a curves-table column.
             if (d && d.last_creator_activity_ms != null) setActivityMs(Number(d.last_creator_activity_ms));
             setProposal(d && d.proposal_id ? {
@@ -1568,7 +1568,7 @@ function CommunityTakeoverPanel({ curveId, tokenType, packageId, creator, lastCr
       });
       const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
       if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Heartbeat failed');
-      setMsg('Heartbeat sent — inactivity timer reset.');
+      setMsg('Heartbeat sent - inactivity timer reset.');
     } catch (e) { setMsg(e.message || 'Heartbeat failed'); }
     finally { setBusy(false); }
   }
@@ -1587,7 +1587,7 @@ function CommunityTakeoverPanel({ curveId, tokenType, packageId, creator, lastCr
         typeArguments: [tokenType],
         arguments: [curveRef(tx, true), tx.pure.address(nm), tx.object(coinId), tx.object(SUI_CLOCK_ID)],
       });
-      // propose_takeover returns a TakeoverProposal — share it so voters can reach it.
+      // propose_takeover returns a TakeoverProposal - share it so voters can reach it.
       tx.moveCall({
         target: '0x2::transfer::public_share_object',
         typeArguments: [`${packageId}::bonding_curve::TakeoverProposal`],
@@ -1677,7 +1677,7 @@ function CommunityTakeoverPanel({ curveId, tokenType, packageId, creator, lastCr
           </p>
           {canPropose && account && (
             <div className="flex gap-2">
-              <input value={nominee} onChange={e => setNominee(e.target.value)} placeholder="New creator address (0x…)"
+              <input value={nominee} onChange={e => setNominee(e.target.value)} placeholder="New creator address (0x...)"
                 className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white placeholder-white/20 focus:outline-none focus:border-lime-400/40 font-mono" />
               <button onClick={doPropose} disabled={busy || !nominee.trim()}
                 className={`px-3 py-1.5 rounded-lg text-[10px] font-mono transition-colors ${busy || !nominee.trim() ? 'bg-white/5 text-white/25 cursor-not-allowed' : 'bg-lime-400 hover:bg-lime-300 text-black'}`}>
@@ -1692,7 +1692,7 @@ function CommunityTakeoverPanel({ curveId, tokenType, packageId, creator, lastCr
       {proposal && (
         <div className="space-y-2.5">
           <div className="text-[11px] font-mono text-white/50">
-            Nominee: <Link to={`/portfolio/${proposal.nominee}`} className="text-lime-400 hover:underline">{proposal.nominee?.slice(0,6)}…{proposal.nominee?.slice(-4)}</Link>
+            Nominee: <Link to={`/portfolio/${proposal.nominee}`} className="text-lime-400 hover:underline">{proposal.nominee?.slice(0,6)}...{proposal.nominee?.slice(-4)}</Link>
           </div>
           <div className="space-y-1">
             <div className="flex justify-between text-[10px] font-mono">
@@ -1732,7 +1732,165 @@ function CommunityTakeoverPanel({ curveId, tokenType, packageId, creator, lastCr
   );
 }
 
-// ── Main component ────────────────────────────────────────────────────────────
+// -- V10: Creator buyback -- post-launch config + execute -------------------
+// LaunchModal can only SET buyback_bps/burn at launch; there was previously no
+// way to change it afterward, and no UI at all for execute_buyback (the
+// entrypoint that actually drains the accrued bucket and fires the buy). This
+// closes both gaps. Current config is read from the latest BuybackConfigured
+// event for this curve via GraphQL (no dedicated indexer route exists yet --
+// same approach AgentSessionPanel uses for session discovery -- so this needs
+// no backend change to work).
+//   set_buyback_config<T>(cap, curve, buyback_bps, burn, clock, ctx)  -- creator-gated
+//   execute_buyback<T>(curve, ctx)                                    -- callable by anyone
+const BUYBACK_GQL_URL = 'https://graphql.testnet.sui.io/graphql';
+
+function CreatorBuybackPanel({ curveId, tokenType, packageId, isCreator, account, initialSharedVersion, lang }) {
+  const dAppKit = useDAppKit();
+
+  const [config, setConfig]   = useState(null); // { bps, burn } | null = never configured
+  const [loading, setLoading] = useState(true);
+  const [bps, setBps]         = useState(2000);
+  const [burn, setBurn]       = useState(true);
+  const [busy, setBusy]       = useState(false);
+  const [msg, setMsg]         = useState('');
+
+  const loadConfig = React.useCallback(async () => {
+    if (!curveId) { setLoading(false); return; }
+    setLoading(true);
+    try {
+      const evType = `${packageId}::bonding_curve::BuybackConfigured`;
+      const q = `{ events(filter: { type: "${evType}" }, last: 50) { nodes { contents { json } } } }`;
+      const r = await fetch(BUYBACK_GQL_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: q }),
+        signal: AbortSignal.timeout(8000),
+      });
+      const d = await r.json();
+      const nodes = d?.data?.events?.nodes ?? [];
+      const mine = nodes
+        .map(n => n.contents?.json)
+        .filter(j => j && (j.curve_id ?? '').toLowerCase() === curveId.toLowerCase());
+      const latest = mine.length ? mine[mine.length - 1] : null;
+      if (latest) {
+        const cfg = { bps: Number(latest.buyback_bps ?? 0), burn: latest.burn === true || latest.burn === 'true' };
+        setConfig(cfg);
+        setBps(cfg.bps);
+        setBurn(cfg.burn);
+      } else {
+        setConfig(null);
+      }
+    } catch { setConfig(null); }
+    finally { setLoading(false); }
+  }, [curveId, packageId]);
+
+  React.useEffect(() => { loadConfig(); }, [loadConfig]);
+
+  const curveRef = (tx, mutable) => (initialSharedVersion
+    ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: String(initialSharedVersion), mutable })
+    : tx.object(curveId));
+
+  async function doSetConfig() {
+    if (busy || !account) return;
+    const bpsNum = Math.max(0, Math.min(10000, Math.trunc(Number(bps) || 0)));
+    setBusy(true); setMsg('');
+    try {
+      const { capId } = await resolveCreatorCap(account.address, curveId, import.meta.env.VITE_INDEXER_URL || '');
+      const tx = new Transaction();
+      tx.moveCall({
+        target: `${packageId}::bonding_curve::set_buyback_config`,
+        typeArguments: [tokenType],
+        arguments: [tx.object(capId), curveRef(tx, true), tx.pure.u64(BigInt(bpsNum)), tx.pure.bool(burn), tx.object(SUI_CLOCK_ID)],
+      });
+      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Update failed');
+      setMsg('Buyback config updated.');
+      setTimeout(loadConfig, 1500);
+    } catch (e) { setMsg(e.message || 'Update failed'); }
+    finally { setBusy(false); }
+  }
+
+  async function doExecute() {
+    if (busy) return;
+    setBusy(true); setMsg('');
+    try {
+      const tx = new Transaction();
+      tx.moveCall({
+        target: `${packageId}::bonding_curve::execute_buyback`,
+        typeArguments: [tokenType],
+        arguments: [curveRef(tx, true)],
+      });
+      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Buyback execution failed');
+      setMsg('Buyback executed.');
+    } catch (e) { setMsg(e.message || 'Buyback execution failed'); }
+    finally { setBusy(false); }
+  }
+
+  if (loading) return null;
+  // Nothing configured and not the creator: nothing useful to show.
+  if (!config && !isCreator) return null;
+
+  return (
+    <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 space-y-3">
+      <div className="text-[10px] font-mono text-lime-400/70 tracking-widest">CREATOR BUYBACK</div>
+
+      {config ? (
+        <div className="text-[10px] font-mono text-white/40">
+          {(config.bps / 100).toFixed(0)}% of creator fees &rarr; {config.burn ? 'burn' : 'return to creator'}
+        </div>
+      ) : (
+        <div className="text-[10px] font-mono text-white/25">Not configured.</div>
+      )}
+
+      {/* Anyone can trigger the accrued buyback once configured. */}
+      {config && config.bps > 0 && (
+        <button onClick={doExecute} disabled={busy}
+          className={`w-full py-1.5 rounded-lg text-[10px] font-mono transition-colors ${busy ? 'bg-white/5 text-white/25' : 'bg-lime-400/10 text-lime-400 border border-lime-400/30 hover:bg-lime-400/20'}`}>
+          {busy ? 'WORKING...' : 'EXECUTE BUYBACK'}
+        </button>
+      )}
+
+      {/* Creator-only: change the config after launch. */}
+      {isCreator && (
+        <details className="pt-1">
+          <summary className="text-[9px] font-mono text-white/30 hover:text-white/50 cursor-pointer tracking-widest">
+            {config ? 'CHANGE CONFIG' : 'SET UP BUYBACK'}
+          </summary>
+          <div className="mt-2 space-y-2">
+            <div>
+              <div className="flex justify-between text-[9px] tracking-widest text-white/30 mb-1.5">
+                <span>% OF CREATOR FEES</span>
+                <span className="text-lime-400">{(bps / 100).toFixed(0)}%</span>
+              </div>
+              <input type="range" min={0} max={10000} step={500} value={bps}
+                onChange={e => setBps(parseInt(e.target.value, 10))}
+                className="w-full accent-lime-400" />
+            </div>
+            <div className="grid grid-cols-2 gap-1.5">
+              <button onClick={() => setBurn(true)}
+                className={`py-1.5 rounded-lg text-[10px] font-mono transition-colors ${burn ? 'bg-lime-400/10 text-lime-400 border border-lime-400/30' : 'text-white/30 hover:text-white/60 border border-white/10'}`}>
+                Burn
+              </button>
+              <button onClick={() => setBurn(false)}
+                className={`py-1.5 rounded-lg text-[10px] font-mono transition-colors ${!burn ? 'bg-lime-400/10 text-lime-400 border border-lime-400/30' : 'text-white/30 hover:text-white/60 border border-white/10'}`}>
+                Return to me
+              </button>
+            </div>
+            <button onClick={doSetConfig} disabled={busy}
+              className={`w-full py-1.5 rounded-lg text-[10px] font-mono transition-colors ${busy ? 'bg-white/5 text-white/25' : 'bg-violet-500/15 text-violet-300 border border-violet-400/30 hover:bg-violet-500/25'}`}>
+              {busy ? 'SAVING...' : 'SAVE'}
+            </button>
+          </div>
+        </details>
+      )}
+
+      {msg && <div className="text-[10px] font-mono text-white/40">{msg}</div>}
+    </div>
+  );
+}
+
+// -- Main component ----------------------------------------------------------
 
 export default function TokenPage({ curveId, tokenType, packageId: packageIdHint, initialSharedVersion: initialSharedVersionProp = null, onBack, lang = 'en', tradeKeypair = null, tradeKeyReady = false }) {
   const navigate = useNavigate();
@@ -1740,7 +1898,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   const client   = useCurrentClient();
   const dAppKit  = useDAppKit();
 
-  // ── Shared SSE feed — one connection for chart + trades ──────────────────
+  // -- Shared SSE feed - one connection for chart + trades ------------------
   // Must be declared before any hook that consumes feedOhlc/feedTrades
   const { trades: feedTrades, ohlc: feedOhlc, loading: feedLoading, connected: feedConnected } = useTokenPageFeed(curveId, packageIdHint);
 
@@ -1761,9 +1919,9 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   const [linkCopied,      setLinkCopied]      = useState(false);
   const [mTpslOpen,       setMTpslOpen]       = useState(false); // mobile-only TP/SL accordion (right column hidden <lg)
   const [mVestOpen,       setMVestOpen]       = useState(false); // mobile-only Vesting accordion (right column hidden <lg)
-  const [volumeSui,       setVolumeSui]       = useState(null);  // authoritative all-time volume (token_stats.volume_sui — same as leaderboard/Crown)
+  const [volumeSui,       setVolumeSui]       = useState(null);  // authoritative all-time volume (token_stats.volume_sui - same as leaderboard/Crown)
 
-  // ── data loading ──────────────────────────────────────────────────────────
+  // -- data loading ----------------------------------------------------------
 
   useEffect(() => {
     fetchSuiUsd().then(setSuiUsd);
@@ -1781,7 +1939,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
         const res = await fetch(`${IURL}/token/${curveId}`, { signal: AbortSignal.timeout(5000) });
         if (res.ok && !cancelled) {
           const d = await res.json();
-          // Authoritative all-time volume: the indexer's token_stats.volume_sui —
+          // Authoritative all-time volume: the indexer's token_stats.volume_sui -
           // the SAME server-aggregated column the leaderboard and Community Crown
           // rank on, computed with no row limit. Read it here so the header number
           // always matches the rest of the app. (Available top-level and under stats.)
@@ -1794,7 +1952,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
             sui_reserve:            String(stats.reserve_sui != null ? Math.round(stats.reserve_sui * 1e9) : (d.suiReserve ?? d.sui_reserve ?? 0)),
             token_reserve:          String(stats.token_reserve != null ? Math.round(stats.token_reserve * 1e6) : (d.tokenReserve ?? d.token_reserve ?? String(800_000_000 * 1e6))),
             graduated:              d.graduated ?? false,
-            creator_fees:           prev?.creator_fees ?? '0', // preserved — on-chain fetch owns this field; do NOT reset to 0 each poll
+            creator_fees:           prev?.creator_fees ?? '0', // preserved - on-chain fetch owns this field; do NOT reset to 0 each poll
             creator:                d.creator ?? null,
             initial_shared_version: d.initialSharedVersion ?? d.initial_shared_version ?? null,
             metadata_updated:       d.metadataUpdated ?? d.metadata_updated ?? false,
@@ -1809,13 +1967,13 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
     return () => { cancelled = true; clearInterval(timer); };
   }, [curveId]);
 
-  // ── Fetch real on-chain creator_fees — indexer estimate is stale after claims ──
+  // -- Fetch real on-chain creator_fees - indexer estimate is stale after claims --
   useEffect(() => {
     if (!curveId || !client) return;
     let cancelled = false;
     async function fetchOnChainFees() {
       try {
-        // Direct fetch — client.graphql() silently fails for some queries
+        // Direct fetch - client.graphql() silently fails for some queries
         const gql = `{ object(address: "${curveId}") { asMoveObject { contents { json } } } }`;
         const r = await fetch('https://graphql.testnet.sui.io/graphql', {
           method: 'POST',
@@ -1842,7 +2000,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   useEffect(() => {
     if (!tokenType) return;
     let cancelled = false;
-    // Load metadata from indexer — avoids CORS on graphql.testnet.sui.io
+    // Load metadata from indexer - avoids CORS on graphql.testnet.sui.io
     const IURL_META = import.meta.env.VITE_INDEXER_URL || '';
     if (IURL_META) {
       fetch(`${IURL_META}/token/${curveId}`, { signal: AbortSignal.timeout(5000) })
@@ -1898,7 +2056,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   const [freshReserveMist,     setFreshReserveMist]     = React.useState(null);
   const [freshTokensRemaining, setFreshTokensRemaining] = React.useState(null);
 
-  // Debounced fetch — runs 300ms after amount changes
+  // Debounced fetch - runs 300ms after amount changes
   React.useEffect(() => {
     if (!amount || !curveId) return;
     const IURL = import.meta.env.VITE_INDEXER_URL || '';
@@ -1917,10 +2075,10 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
     return () => { cancelled = true; clearTimeout(timer); };
   }, [amount, curveId]);
 
-  // ── derived state ─────────────────────────────────────────────────────────
+  // -- derived state ---------------------------------------------------------
 
   const pkgId    = resolvePackageId(tokenType, packageIdHint ?? curveState?.package_id ?? null);
-  // Use curveShapeFor() — single source of truth for all virtual reserve values.
+  // Use curveShapeFor() - single source of truth for all virtual reserve values.
   // Previously used inline ternary chains which could silently fall through to
   // wrong defaults, causing the displayed quote to differ from the executed tx.
   const { virtualSui: vSui, virtualTokens: vTok, drainSui } = curveShapeFor(pkgId);
@@ -1933,10 +2091,10 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   const priceMist       = curveState ? priceMistPerToken(reserveMist, tokensSold, vSui, vTok) : 0n;
   const priceSui        = Number(priceMist) / 1e9;
   const priceUsd        = priceSui * suiUsd;
-  // Pump.fun-style mcap using constant-product curve price × total supply.
+  // Pump.fun-style mcap using constant-product curve price x total supply.
   // Formula: price = (vSui + realSui)² / (vSui * vTok)
   //          mcap  = price * TOTAL_SUPPLY
-  // Gives ~$4.4K at launch → ~$66K at graduation = 15x ✓
+  // Gives ~$4.4K at launch -> ~$66K at graduation = 15x ✓
   const _realSui    = Number(reserveMist) / 1e9;
   const _k          = vSui * vTok;
   const _priceSui   = _k > 0 ? (vSui + _realSui) * (vSui + _realSui) / _k : 0;
@@ -1962,7 +2120,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
 
   // Instant metadata reflection: when the creator's update_metadata tx settles,
   // CreatorToolsPanel calls this with ONLY the fields that changed. Merge them
-  // into display state so the header (name/symbol/icon) updates this frame —
+  // into display state so the header (name/symbol/icon) updates this frame -
   // no page reload, no waiting on the indexer's 10s poll. The panel also writes
   // the same partial to localStorage as a durable backstop across remounts.
   const handleMetaUpdated = React.useCallback((partial) => {
@@ -1989,7 +2147,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
     }
   }, [account?.address, curveState?.creator]);
 
-  // ── actions ───────────────────────────────────────────────────────────────
+  // -- actions ---------------------------------------------------------------
 
   const handleCopy = () => { if (curveId) { navigator.clipboard.writeText(curveId); setCopied(true); setTimeout(() => setCopied(false), 1500); } };
   const handleShare = () => {
@@ -2034,7 +2192,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
       if (side === 'buy') {
         const suiInMist = BigInt(Math.floor(amtFloat * Number(MIST_PER_SUI)));
 
-        // ── Fresh reserve fetch — avoid stale-state slippage aborts ──────────
+        // -- Fresh reserve fetch - avoid stale-state slippage aborts ----------
         // The curveState in component state can be seconds old. Large buys on
         // active curves fail with E_SLIPPAGE_EXCEEDED (abort 3) if the reserve
         // moved since the last SSE update. Fetch fresh stats right before quoting.
@@ -2092,7 +2250,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
         if (coinObjs.length === 1) { [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(tokInAtomic)]); }
         else { tx.mergeCoins(coinObjs[0], coinObjs.slice(1)); [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(tokInAtomic)]); }
 
-        // ── Fresh reserve fetch — avoid stale-state slippage aborts ──────────
+        // -- Fresh reserve fetch - avoid stale-state slippage aborts ----------
         // Same hazard as the buy branch: curveState can be seconds old, so a
         // large sell on an active curve fails with E_SLIPPAGE_EXCEEDED (abort 3)
         // if the reserve moved since the last SSE update. Fetch fresh stats right
@@ -2144,7 +2302,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
     reserveMist, tokensRemaining, vSui, vTok,
   };
 
-  // ── render ────────────────────────────────────────────────────────────────
+  // -- render ----------------------------------------------------------------
 
   return (
     <div className="min-h-screen" style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}>
@@ -2243,13 +2401,24 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
               lang={lang}
             />
           )}
+          {isV10OrLater(pkgId) && (
+            <CreatorBuybackPanel
+              curveId={curveId}
+              tokenType={tokenType}
+              packageId={pkgId}
+              isCreator={isCreator}
+              account={account}
+              initialSharedVersion={initialSharedVersionProp ?? curveState?.initial_shared_version ?? null}
+              lang={lang}
+            />
+          )}
           {isCreator && (
             <div className="lg:hidden">
               <CreatorToolsPanel curveId={curveId} tokenType={tokenType} packageIdHint={pkgId} account={account} curveState={curveState} currentDesc={desc} currentTwitter={twitter} currentTelegram={telegram} currentWebsite={website} currentDex={dex} lang={lang} onMetaUpdated={handleMetaUpdated} />
             </div>
           )}
 
-          {/* Mobile-only accordions — the right column is hidden below lg, so TP/SL and
+          {/* Mobile-only accordions - the right column is hidden below lg, so TP/SL and
               Vesting are surfaced here as collapsible grids (lime, token-page palette). */}
           <div className="lg:hidden border border-white/10 rounded-xl bg-white/[0.02] overflow-hidden">
             <button onClick={() => setMTpslOpen(v => !v)} className="w-full flex items-center justify-between px-4 py-3 text-left">
