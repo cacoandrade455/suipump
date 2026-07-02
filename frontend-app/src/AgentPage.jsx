@@ -32,6 +32,24 @@ const BRIDGE_URL  = import.meta.env.VITE_SUIPUMP_BRIDGE_URL || 'https://suipump-
 const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || 'https://suipump-62s2.onrender.com';
 const TOKEN_DECIMALS = 6;
 
+// close_session drains escrow but does NOT delete the shared AgentSession
+// object, so a closed session stays discoverable forever via events/indexer.
+// Remember locally which sessions THIS browser closed so discovery skips them
+// immediately; the chain-derived dead-state rule in loadSession covers other
+// devices. Capped list; failures are non-fatal (private mode etc.).
+const CLOSED_SESSIONS_KEY = 'suipump_closed_sessions';
+function closedSessionIds() {
+  try { const v = JSON.parse(localStorage.getItem(CLOSED_SESSIONS_KEY) ?? '[]'); return Array.isArray(v) ? v : []; }
+  catch { return []; }
+}
+function rememberClosedSession(id) {
+  try {
+    const list = closedSessionIds().filter(x => x !== id);
+    list.push(id);
+    localStorage.setItem(CLOSED_SESSIONS_KEY, JSON.stringify(list.slice(-20)));
+  } catch { /* storage unavailable - dead-state rule still applies */ }
+}
+
 const suiscanObject = (id) => `https://suiscan.xyz/testnet/object/${id}`;
 
 // Published Nexus DAG IDs each strategy executes through (testnet). Shown on the
@@ -853,6 +871,10 @@ function AgentSessionPanel({ account, onSessionChange }) {
 
       if (!sessionId) { setSession(null); setLoading(false); return; }
 
+      // This browser already closed this session - do not resurrect it. (The
+      // object survives close on-chain, so discovery keeps returning it.)
+      if (closedSessionIds().includes(sessionId)) { setSession(null); setLoading(false); return; }
+
       // Live object read - the chain is the source of truth for session state.
       // v2 SuiGraphQLClient shape: include:{json:true} puts the Move struct
       // fields at obj.object.json, and the owner at obj.object.owner (the old
@@ -887,6 +909,16 @@ function AgentSessionPanel({ account, onSessionChange }) {
       const expiryVal    = fields.expiry_ms     ?? idxData?.expiryMs ?? latest?.expiry_ms ?? 0;
 
       setLastSessionRef({ id: sessionId, sharedVersion });
+
+      // Dead-state rule: a revoked or expired session with a drained escrow is
+      // finished - it can never trade and there is nothing left to withdraw.
+      // Showing it would block opening a new session (the open form only
+      // renders when no session is set). lastSessionRef stays set above so the
+      // STUCK TOKENS sweep remains reachable for it.
+      const expiredNow = Number(expiryVal ?? 0) > 0 && Date.now() >= Number(expiryVal);
+      const deadAndEmpty = (revoked || expiredNow) && Number(escrowVal ?? 0) <= 0;
+      if (deadAndEmpty) { setSession(null); setLoading(false); return; }
+
       setSession({
         id:            sessionId,
         sharedVersion,
@@ -1028,6 +1060,7 @@ function AgentSessionPanel({ account, onSessionChange }) {
       tx.transferObjects([refund], account.address);
       const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
       if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Close failed');
+      rememberClosedSession(session.id);
       setMsg('Session closed - unspent escrow returned to your wallet.');
       setSession(null);
       setTimeout(loadSession, 1500);
