@@ -853,31 +853,38 @@ function AgentSessionPanel({ account, onSessionChange }) {
 
       if (!sessionId) { setSession(null); setLoading(false); return; }
 
-      // sharedVersion is not derivable from events (it's the object's owner
-      // metadata) -- a live read is always required regardless of which path
-      // above found the session id.
-      const obj = await client.getObject({ objectId: sessionId, options: { showContent: true, showOwner: true } })
+      // Live object read - the chain is the source of truth for session state.
+      // v2 SuiGraphQLClient shape: include:{json:true} puts the Move struct
+      // fields at obj.object.json, and the owner at obj.object.owner (the old
+      // code used the JSON-RPC options:{showContent} shape here, so fields
+      // always parsed to {} - escrow showed "-", revoked read false, and the
+      // badge said ACTIVE forever; same shape-class bug fixed in claim).
+      const obj = await client.getObject({ objectId: sessionId, include: { json: true } })
         .catch(() => null);
-      const content = obj?.data?.content ?? obj?.object?.asMoveObject ?? null;
-      const fields = content?.fields ?? content?.contents?.json ?? {};
-      const ownerObj = obj?.data?.owner ?? obj?.object?.owner ?? null;
-      const sharedVersion = ownerObj?.Shared?.initial_shared_version
-        ?? ownerObj?.shared?.initialSharedVersion
+
+      // No object on-chain => the session was CLOSED (close_session consumes
+      // it). A stale indexer/event id must NOT resurrect it as a ghost ACTIVE
+      // session - treat as "no session" so the open-a-new-session form shows.
+      if (!obj?.object) { setSession(null); setLoading(false); return; }
+
+      const fields = obj.object.json ?? {};
+      const sharedVersion = obj.object.owner?.Shared?.initialSharedVersion
         ?? latest?.__sharedVersion
         ?? null;
 
-      // Prefer the indexer's fields when it resolved this session (fast, and
-      // correct except the documented SessionBuy-escrow edge case in
-      // agent_session_api.js); fall back to the live object read's fields when
-      // the indexer path wasn't used -- same values the original code always
-      // read from getObject.
-      const revoked = idxData?.sessionId
-        ? !!idxData.revoked
-        : (fields.revoked === true || fields.revoked === 'true');
-      const escrowVal    = idxData?.sessionId ? idxData.escrow    : (fields.escrow?.fields?.value ?? fields.escrow ?? null);
-      const spentVal     = idxData?.sessionId ? idxData.spent     : fields.spent;
-      const spendCapVal  = idxData?.sessionId ? idxData.spendCap  : (latest?.spend_cap ?? fields.spend_cap ?? '0');
-      const expiryVal    = idxData?.sessionId ? idxData.expiryMs  : (latest?.expiry_ms ?? fields.expiry_ms ?? 0);
+      // Live fields win; indexer values are the fallback. The indexer cannot
+      // know `revoked` at all (revoke_session emits no event), and its escrow
+      // has the documented SessionBuy gap - the object's own state has neither
+      // problem. Balance<SUI> may render as {value:"..."} or a bare string in
+      // GraphQL json; tolerate both.
+      const escrowRaw = (fields.escrow && typeof fields.escrow === 'object')
+        ? fields.escrow.value : fields.escrow;
+      const revoked = fields.revoked === true || fields.revoked === 'true'
+        || (fields.revoked == null && !!idxData?.revoked);
+      const escrowVal    = escrowRaw            ?? idxData?.escrow   ?? null;
+      const spentVal     = fields.spent         ?? idxData?.spent    ?? '0';
+      const spendCapVal  = fields.spend_cap     ?? idxData?.spendCap ?? latest?.spend_cap ?? '0';
+      const expiryVal    = fields.expiry_ms     ?? idxData?.expiryMs ?? latest?.expiry_ms ?? 0;
 
       setLastSessionRef({ id: sessionId, sharedVersion });
       setSession({
@@ -1156,7 +1163,7 @@ function AgentSessionPanel({ account, onSessionChange }) {
             </div>
           )}
           <button onClick={doClose} disabled={busy}
-            className={`w-full py-2 rounded-lg text-[10px] font-mono tracking-widest transition-colors ${busy ? 'bg-white/5 text-white/25' : 'bg-white/10 text-white/70 border border-white/20 hover:bg-white/20'}`}>
+            className={`w-full py-2 rounded-lg text-[10px] font-mono tracking-widest transition-colors ${busy ? 'bg-white/5 text-white/25' : 'bg-red-500/10 text-red-400 border border-red-400/30 hover:bg-red-500/20 hover:text-red-300'}`}>
             {busy ? 'WORKING...' : 'CLOSE & WITHDRAW ESCROW'}
           </button>
         </>
