@@ -26,6 +26,13 @@ import { Transaction } from '@mysten/sui/transactions';
 import { bcs } from '@mysten/sui/bcs';
 import { fromBase64 } from '@mysten/sui/utils';
 import * as bytecodeTemplate from '@mysten/move-bytecode-template';
+import pg from 'pg';
+import {
+  signAndExecute as signViaEnclave,
+  suiAddressForPublicKeyHex,
+  turnkeyConfigured,
+  provisionEd25519Key,
+} from './turnkey_signer.js';
 
 const __dirname     = path.dirname(fileURLToPath(import.meta.url));
 const PORT          = parseInt(process.env.PORT ?? '3030', 10);
@@ -41,7 +48,7 @@ const INDEXER_URL   = process.env.SUIPUMP_INDEXER_URL ?? 'https://suipump-62s2.o
 // is OPEN (local dev) but we log a loud warning so it's never silently open in
 // production.
 const AGENT_API_KEY = process.env.AGENT_API_KEY ?? '';
-const WRITE_ENDPOINTS = new Set(['/buy', '/sell', '/launch', '/claim', '/session-buy', '/session-sell']);
+const WRITE_ENDPOINTS = new Set(['/buy', '/sell', '/launch', '/claim', '/session-buy', '/session-sell', '/provision-session-key']);
 
 // -- Active package for NEW launches (V10) -------------------------------------
 const ACTIVE_PACKAGE_ID = process.env.ACTIVE_PACKAGE_ID
@@ -265,6 +272,136 @@ async function resolveSession(client, sessionId, { tries = 6, delayMs = 2000 } =
     }
   }
   throw lastErr ?? new Error(`Session ${sessionId} could not be resolved`);
+}
+
+// -- Per-session Turnkey signer store (Phase 1 trust minimization) ---------------
+// Maps sessionId -> { signWith, publicKeyHex } so session trades are signed by
+// that session's OWN enclave-held key instead of the shared SUI_PRIVATE_KEY.
+// Two layers, checked in order:
+//   1. TURNKEY_SESSION_KEYS env var - interim JSON map
+//      { "<sessionId>": { "signWith": "...", "publicKeyHex": "..." } }.
+//      Zero-infra path for manual testing; survives even without Postgres.
+//   2. Postgres table session_signers (auto-created) - the scaling path. Rows
+//      are inserted at provision time KEYED BY ADDRESS (the session does not
+//      exist yet - its address is what open_and_share will authorize). The
+//      sessionId column is bound LAZILY on first trade: we read the session
+//      object's on-chain session_address field and match it to a stored row.
+//      The CHAIN is the source of truth for the binding - no caller can point
+//      an arbitrary sessionId at someone else's key, because the lookup only
+//      succeeds if the session object itself names that key's address.
+// Every failure path returns null -> the handler falls back to the shared
+// keypair, so a DB or Turnkey outage degrades to pre-Turnkey behavior instead
+// of breaking trades.
+const { Pool } = pg;
+let _pgPool = null;
+let _signersTableReady = false;
+
+function signerPool() {
+  const url = process.env.DATABASE_URL;
+  if (!url) return null;
+  if (_pgPool) return _pgPool;
+  // Render Postgres requires SSL; local dev does not. Decide from the URL so we
+  // don't depend on NODE_ENV being set on this service.
+  const useSsl = !/localhost|127\.0\.0\.1/.test(url);
+  _pgPool = new Pool({ connectionString: url, ssl: useSsl ? { rejectUnauthorized: false } : false });
+  return _pgPool;
+}
+
+async function ensureSignersTable(pool) {
+  if (_signersTableReady) return;
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS session_signers (
+      sui_address    TEXT PRIMARY KEY,
+      sign_with      TEXT NOT NULL,
+      public_key_hex TEXT NOT NULL,
+      owner_address  TEXT,
+      session_id     TEXT UNIQUE,
+      created_at     TIMESTAMPTZ DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_signers_session ON session_signers (session_id);
+  `);
+  _signersTableReady = true;
+}
+
+async function insertSessionSigner({ suiAddress, signWith, publicKeyHex, ownerAddress }) {
+  const pool = signerPool();
+  if (!pool) throw new Error('DATABASE_URL not set - cannot persist session signer mapping');
+  await ensureSignersTable(pool);
+  await pool.query(
+    `INSERT INTO session_signers (sui_address, sign_with, public_key_hex, owner_address)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (sui_address) DO NOTHING`,
+    [suiAddress.toLowerCase(), signWith, publicKeyHex, ownerAddress ?? null]
+  );
+}
+
+function envMapKeyForSession(sessionId) {
+  const raw = process.env.TURNKEY_SESSION_KEYS;
+  if (!raw) return null;
+  try {
+    const map = JSON.parse(raw);
+    const k = map?.[sessionId];
+    return k?.signWith && k?.publicKeyHex ? { signWith: k.signWith, publicKeyHex: k.publicKeyHex } : null;
+  } catch {
+    console.warn('[turnkey] TURNKEY_SESSION_KEYS is not valid JSON - ignoring');
+    return null;
+  }
+}
+
+// Read the session object's own session_address field (the address the OWNER
+// authorized in open_and_share). include:{json:true} adds object.json = the
+// Move struct fields, same pattern handleClaim uses for CreatorCap.curve_id.
+async function sessionAddressOf(client, sessionId) {
+  const obj = await client.getObject({ objectId: sessionId, include: { json: true } });
+  const addr = obj?.object?.json?.session_address;
+  return typeof addr === 'string' ? addr.toLowerCase() : null;
+}
+
+async function turnkeyKeyForSession(client, sessionId) {
+  // Without Turnkey creds NO enclave key is usable - returning one anyway would
+  // set the tx sender to the enclave address while the fallback signs with the
+  // shared keypair, guaranteeing an on-chain sender/signature mismatch.
+  if (!turnkeyConfigured()) return null;
+
+  // Layer 1: interim env map.
+  const envKey = envMapKeyForSession(sessionId);
+  if (envKey) return envKey;
+
+  // Layer 2: Postgres.
+  const pool = signerPool();
+  if (!pool) return null;
+  try {
+    await ensureSignersTable(pool);
+
+    // Already bound?
+    const bound = await pool.query(
+      `SELECT sign_with, public_key_hex FROM session_signers WHERE session_id = $1`,
+      [sessionId]
+    );
+    if (bound.rows[0]) {
+      return { signWith: bound.rows[0].sign_with, publicKeyHex: bound.rows[0].public_key_hex };
+    }
+
+    // Lazy bind: match the session's on-chain session_address to a provisioned
+    // row, then record the binding. Chain-verified - the session object itself
+    // names which address (and therefore which enclave key) may sign for it.
+    const sessAddr = await sessionAddressOf(client, sessionId);
+    if (!sessAddr) return null;
+    const byAddr = await pool.query(
+      `UPDATE session_signers SET session_id = $1
+       WHERE sui_address = $2 AND (session_id IS NULL OR session_id = $1)
+       RETURNING sign_with, public_key_hex`,
+      [sessionId, sessAddr]
+    );
+    if (byAddr.rows[0]) {
+      console.log(`[turnkey] bound session ${sessionId.slice(0, 12)}... to enclave key at ${sessAddr.slice(0, 12)}...`);
+      return { signWith: byAddr.rows[0].sign_with, publicKeyHex: byAddr.rows[0].public_key_hex };
+    }
+    return null; // session_address is not a provisioned key (e.g. shared agent wallet)
+  } catch (e) {
+    console.warn(`[turnkey] signer lookup failed for ${sessionId.slice(0, 12)}... - falling back to shared key: ${e.message}`);
+    return null;
+  }
 }
 
 function jsonResp(res, status, body) {
@@ -595,10 +732,13 @@ async function handleSell(body) {
 // Unlike /buy, no payment coin is split and no tokens are transferred: the
 // contract draws `amount` SUI from escrow and parks bought tokens on the session.
 // Body: { sessionId, curveId, amountMist | suiAmount, minTokensOut?, privateKey?, rpcUrl? }
-//   The session_address authorized by the UI is the agent wallet (0x877af0...),
-//   so privateKey is normally OMITTED and the bridge signs with its own
-//   SUI_PRIVATE_KEY (= that wallet). Pass privateKey only if a future per-user
-//   session key is used. The contract enforces sender == session_address.
+//   SIGNER SELECTION (contract enforces sender == session_address):
+//   - If this session's session_address maps to a provisioned Turnkey key
+//     (session_signers / TURNKEY_SESSION_KEYS), the tx is signed INSIDE the
+//     enclave by that per-user key - the trust-minimized path.
+//   - Otherwise (legacy sessions opened on the shared agent wallet, or Turnkey
+//     unconfigured) the bridge signs with SUI_PRIVATE_KEY as before. privateKey
+//     in the body overrides the fallback keypair only, never the enclave path.
 async function handleSessionBuy(body) {
   const { sessionId, curveId, amountMist, suiAmount, minTokensOut, privateKey, rpcUrl } = body;
   if (!sessionId) throw new Error('sessionId required');
@@ -616,7 +756,12 @@ async function handleSessionBuy(body) {
 
   const client  = makeClient(rpcUrl);
   const keypair = loadKeypair(privateKey);
-  const address = keypair.toSuiAddress();
+  // Per-session enclave key (Turnkey). When this session's session_address is a
+  // provisioned Turnkey key, the tx MUST be sent from (and signed by) THAT
+  // address - the contract enforces sender == session_address. Null means no
+  // key is mapped (legacy session on the shared agent wallet) -> local keypair.
+  const sessionKey = await turnkeyKeyForSession(client, sessionId);
+  const address = sessionKey ? suiAddressForPublicKeyHex(sessionKey.publicKeyHex) : keypair.toSuiAddress();
 
   const { pkgId, tokenType, sharedVersion } = await resolveCurve(client, curveId);
   const { sharedVersion: sessVersion }      = await resolveSession(client, sessionId);
@@ -645,8 +790,10 @@ async function handleSessionBuy(body) {
 
   let result;
   try {
-    result = await client.signAndExecuteTransaction({
-      signer: keypair, transaction: tx,
+    // Enclave path when a Turnkey key is mapped; identical local-keypair
+    // behavior otherwise (signViaEnclave handles the fallback internally).
+    result = await signViaEnclave({
+      client, transaction: tx, sessionKey, fallbackKeypair: keypair,
       include: { balanceChanges: true },
     });
   } catch (e) {
@@ -672,9 +819,9 @@ async function handleSessionBuy(body) {
 // the SESSION key. No coin sourcing: the contract sells from tokens already
 // parked on the session by prior session-buys. Proceeds compound into escrow.
 // Body: { sessionId, curveId, tokenAmount, minSuiOut?, privateKey?, rpcUrl? }
-//   tokenAmount is whole tokens (scaled by 1e6 to atomic on-chain). As with
-//   /session-buy, privateKey is normally omitted (the bridge signs with its own
-//   key = the authorized agent-wallet session_address).
+//   tokenAmount is whole tokens (scaled by 1e6 to atomic on-chain). Signer
+//   selection is identical to /session-buy: per-session Turnkey enclave key
+//   when mapped, shared-keypair fallback otherwise.
 async function handleSessionSell(body) {
   const { sessionId, curveId, tokenAmount, minSuiOut, privateKey, rpcUrl } = body;
   if (!sessionId)   throw new Error('sessionId required');
@@ -683,7 +830,9 @@ async function handleSessionSell(body) {
 
   const client  = makeClient(rpcUrl);
   const keypair = loadKeypair(privateKey);
-  const address = keypair.toSuiAddress();
+  // Same per-session enclave key selection as /session-buy (see comment there).
+  const sessionKey = await turnkeyKeyForSession(client, sessionId);
+  const address = sessionKey ? suiAddressForPublicKeyHex(sessionKey.publicKeyHex) : keypair.toSuiAddress();
 
   const { pkgId, tokenType, sharedVersion } = await resolveCurve(client, curveId);
   const { sharedVersion: sessVersion }      = await resolveSession(client, sessionId);
@@ -707,8 +856,8 @@ async function handleSessionSell(body) {
 
   let result;
   try {
-    result = await client.signAndExecuteTransaction({
-      signer: keypair, transaction: tx,
+    result = await signViaEnclave({
+      client, transaction: tx, sessionKey, fallbackKeypair: keypair,
       include: { balanceChanges: true },
     });
   } catch (e) {
@@ -726,6 +875,73 @@ async function handleSessionSell(body) {
     tokensSold: (Number(tokAtomic) / 1e6).toFixed(6),
     tokenType,
     bootId:     BRIDGE_BOOT_ID,
+  };
+}
+
+// -- Handler: /provision-session-key ---------------------------------------------
+// Create a per-user enclave key (Turnkey) BEFORE a session is opened. The
+// returned sessionAddress is what the UI passes to open_and_share as
+// session_address, so only this enclave-held key can ever sign that session's
+// trades. Flow: create key in the enclave -> persist the address->key mapping
+// (session id bound lazily on first trade, chain-verified) -> fund the fresh
+// address with gas from the bridge wallet (trade SUI comes from the session's
+// escrow, but GAS is paid by the sender, and a brand-new address holds zero).
+//
+// Body: { ownerAddress? }  (bookkeeping only - which user wallet asked)
+// Returns { configured:false, reason } when Turnkey or the DB is not set up,
+// so the UI can gracefully fall back to the shared agent wallet instead of
+// failing the session-open flow.
+// Gated by AGENT_API_KEY (WRITE_ENDPOINTS): keys cost money to create and the
+// gas funding spends the bridge wallet, so only our Vercel proxy may call this.
+const TURNKEY_GAS_FUND_MIST = BigInt(process.env.TURNKEY_GAS_FUND_MIST ?? '500000000'); // 0.5 SUI
+
+async function handleProvisionSessionKey(body) {
+  const { ownerAddress, rpcUrl } = body ?? {};
+
+  if (!turnkeyConfigured()) {
+    return { configured: false, reason: 'turnkey_env_unset' };
+  }
+  if (!signerPool()) {
+    return { configured: false, reason: 'database_url_unset' };
+  }
+
+  // 1. Create the key inside the enclave and derive its Sui address.
+  const label = `suipump-session-${(ownerAddress ?? 'anon').slice(0, 16)}-${Date.now()}`;
+  const { signWith, publicKeyHex, suiAddress } = await provisionEd25519Key(label);
+
+  // 2. Persist the mapping FIRST (keyed by address; session_id bound lazily on
+  // first trade). If the gas transfer below fails, the row is a harmless
+  // never-bound record and the UI falls back to the shared wallet.
+  await insertSessionSigner({ suiAddress, signWith, publicKeyHex, ownerAddress });
+
+  // 3. Fund gas. Without this every trade from the fresh address would fail on
+  // gas selection. Amount is deliberately small and env-tunable; unspent gas
+  // simply stays at the session address (documented dust, never user escrow).
+  const client  = makeClient(rpcUrl);
+  const keypair = loadKeypair(); // bridge wallet pays the gas grant
+  const tx = new Transaction();
+  const [gasCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(TURNKEY_GAS_FUND_MIST)]);
+  tx.transferObjects([gasCoin], suiAddress);
+
+  let result;
+  try {
+    result = await client.signAndExecuteTransaction({ signer: keypair, transaction: tx });
+  } catch (e) {
+    throw new Error(`session key created (${suiAddress}) but gas funding failed: ${e?.message ?? e}`);
+  }
+  if (!txOk(result)) {
+    throw new Error(`session key created (${suiAddress}) but gas funding failed: ${txErrorOf(result) ?? 'transfer failed'}`);
+  }
+
+  console.log(`[turnkey] provisioned session key ${suiAddress} (owner ${ownerAddress ?? 'unknown'}), funded ${TURNKEY_GAS_FUND_MIST} MIST gas`);
+
+  return {
+    configured:     true,
+    sessionAddress: suiAddress,
+    publicKeyHex,
+    gasFundedMist:  TURNKEY_GAS_FUND_MIST.toString(),
+    gasTxDigest:    txDigestOf(result),
+    bootId:         BRIDGE_BOOT_ID,
   };
 }
 
@@ -1149,10 +1365,11 @@ const server = http.createServer(async (req, res) => {
       case '/sell':   result = await handleSell(body);   break;
       case '/session-buy':  result = await handleSessionBuy(body);  break;
       case '/session-sell': result = await handleSessionSell(body); break;
+      case '/provision-session-key': result = await handleProvisionSessionKey(body); break;
       case '/claim':  result = await handleClaim(body);  break;
       case '/launch': result = await handleLaunch(body); break;
       case '/status': result = await handleStatus(body); break;
-      case '/health': result = { status: 'ok', ts: Date.now(), bootId: BRIDGE_BOOT_ID, uptimeMs: Date.now() - BRIDGE_BOOT_TS, buyCacheSize: _buyCompleted.size, buyInflight: _buyInflight.size }; break;
+      case '/health': result = { status: 'ok', ts: Date.now(), bootId: BRIDGE_BOOT_ID, uptimeMs: Date.now() - BRIDGE_BOOT_TS, buyCacheSize: _buyCompleted.size, buyInflight: _buyInflight.size, turnkey: turnkeyConfigured(), signerDb: !!process.env.DATABASE_URL }; break;
       default:
         jsonResp(res, 404, { error: `Unknown endpoint: ${req.url}` });
         return;
@@ -1167,7 +1384,8 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`[bridge] SuiPump bridge listening on port ${PORT}`);
   console.log(`[bridge] Indexer: ${INDEXER_URL}`);
-  console.log(`[bridge] Endpoints: /buy /sell /session-buy /session-sell /claim /launch /status /health`);
+  console.log(`[bridge] Endpoints: /buy /sell /session-buy /session-sell /provision-session-key /claim /launch /status /health`);
+  console.log(`[bridge] Turnkey: ${turnkeyConfigured() ? 'CONFIGURED (per-session enclave signing active)' : 'not configured (shared-key fallback for all sessions)'}; signer DB: ${process.env.DATABASE_URL ? 'set' : 'unset'}`);
 });
 
-export { handleBuy, handleSell, handleClaim, handleLaunch, handleSessionBuy, handleSessionSell };
+export { handleBuy, handleSell, handleClaim, handleLaunch, handleSessionBuy, handleSessionSell, handleProvisionSessionKey };

@@ -918,6 +918,31 @@ function AgentSessionPanel({ account, onSessionChange }) {
     if (!(dd > 0)) { setMsg('Enter an expiry in days'); return; }
     setBusy(true); setMsg('');
     try {
+      // Per-user enclave key (Phase 1 trust minimization). Ask the bridge to
+      // provision a fresh Turnkey-held key for THIS session; its address goes
+      // on-chain as session_address, so only that enclave key can ever sign
+      // this session's trades - isolated from the shared agent wallet and from
+      // every other user's session. If provisioning is unavailable (Turnkey
+      // not configured yet, bridge down, timeout), fall back to the shared
+      // agent wallet so opening a session NEVER breaks; the on-chain caps
+      // (spend cap / expiry / revoke) protect the user on both paths.
+      let sessionAddress = AGENT_SESSION_WALLET;
+      let enclaveKey = false;
+      try {
+        setMsg('Provisioning a dedicated enclave signing key...');
+        const pr = await fetch('/api/create-session-key', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ownerAddress: account.address }),
+          signal: AbortSignal.timeout(30000),
+        });
+        const pd = await pr.json().catch(() => ({}));
+        if (pr.ok && pd.ok !== false && pd.configured !== false
+            && typeof pd.sessionAddress === 'string' && pd.sessionAddress.startsWith('0x')) {
+          sessionAddress = pd.sessionAddress;
+          enclaveKey = true;
+        }
+      } catch { /* provisioning unreachable - shared-wallet fallback below */ }
+
       const depMist = BigInt(Math.round(dep * 1e9));
       const capMist = BigInt(Math.round((cap > 0 ? cap : 0) * 1e9)); // 0 = unbounded
       const expiryMs = BigInt(Date.now() + Math.round(dd * 24 * 60 * 60 * 1000));
@@ -927,14 +952,16 @@ function AgentSessionPanel({ account, onSessionChange }) {
         target: `${PACKAGE_ID}::agent_session::open_and_share`,
         arguments: [
           coin,
-          tx.pure.address(AGENT_SESSION_WALLET),
+          tx.pure.address(sessionAddress),
           tx.pure.u64(capMist),
           tx.pure.u64(expiryMs),
         ],
       });
       const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
       if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Open failed');
-      setMsg('Session opened - the agent can now trade your escrow.');
+      setMsg(enclaveKey
+        ? 'Session opened with a dedicated enclave key - trades are signed inside a secure enclave, isolated per session.'
+        : 'Session opened - the agent can now trade your escrow.');
       setTimeout(loadSession, 1500);
     } catch (e) { setMsg(e.message || 'Open failed'); }
     finally { setBusy(false); }

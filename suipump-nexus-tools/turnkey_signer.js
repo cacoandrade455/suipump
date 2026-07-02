@@ -46,7 +46,7 @@ import { toBase64, fromHex } from '@mysten/sui/utils';
 // ---- Turnkey client (lazy singleton) ---------------------------------------
 
 let _tk = null;
-function turnkeyConfigured() {
+export function turnkeyConfigured() {
   return !!(process.env.TURNKEY_API_PUBLIC_KEY
     && process.env.TURNKEY_API_PRIVATE_KEY
     && process.env.TURNKEY_ORGANIZATION_ID);
@@ -173,4 +173,59 @@ function bytesToHex(bytes) {
   let h = '';
   for (const b of bytes) h += b.toString(16).padStart(2, '0');
   return h;
+}
+
+// ---- Provisioning ------------------------------------------------------------
+// Create a fresh Ed25519 key INSIDE Turnkey's enclave and return everything the
+// session flow needs. Called by the bridge's /provision-session-key endpoint
+// BEFORE the user's open_and_share tx: the returned suiAddress becomes that
+// session's session_address, so only this enclave-held key can ever sign its
+// trades. The private key material never exists outside the enclave.
+//
+// API shapes (verified against @turnkey/sdk-server):
+//   createPrivateKeys({ privateKeys: [{ privateKeyName, curve: 'CURVE_ED25519',
+//     privateKeyTags: [], addressFormats: ['ADDRESS_FORMAT_SUI'] }] })
+//     -> { privateKeys: [{ privateKeyId, addresses: [...] }] }
+//   getPrivateKey({ privateKeyId }) -> { privateKey: { publicKey, ... } }
+// The publicKey hex from getPrivateKey is what signAndExecute needs as
+// publicKeyHex; privateKeyId is what it needs as signWith.
+export async function provisionEd25519Key(privateKeyName) {
+  const tk = getTurnkey();
+  if (!tk) {
+    throw new Error('Turnkey not configured - set TURNKEY_API_PUBLIC_KEY, TURNKEY_API_PRIVATE_KEY, TURNKEY_ORGANIZATION_ID');
+  }
+
+  const created = await tk.createPrivateKeys({
+    privateKeys: [{
+      privateKeyName: String(privateKeyName || `suipump-session-${Date.now()}`),
+      curve: 'CURVE_ED25519',
+      privateKeyTags: [],
+      addressFormats: ['ADDRESS_FORMAT_SUI'],
+    }],
+  });
+  const pk = created?.privateKeys?.[0];
+  if (!pk?.privateKeyId) {
+    throw new Error(`Turnkey createPrivateKeys returned no privateKeyId: ${JSON.stringify(created).slice(0, 300)}`);
+  }
+
+  const fetched = await tk.getPrivateKey({ privateKeyId: pk.privateKeyId });
+  const publicKeyHex = fetched?.privateKey?.publicKey;
+  if (!publicKeyHex) {
+    throw new Error(`Turnkey getPrivateKey returned no publicKey for ${pk.privateKeyId}`);
+  }
+
+  const suiAddress = suiAddressForPublicKeyHex(publicKeyHex);
+
+  // Cross-check our local derivation against Turnkey's own ADDRESS_FORMAT_SUI
+  // address when present. A mismatch means the key material and the address we
+  // are about to authorize on-chain disagree - refuse rather than open a
+  // session no key can sign for.
+  const tkAddress = (pk.addresses ?? fetched?.privateKey?.addresses ?? [])
+    .map(a => (typeof a === 'string' ? a : a?.address))
+    .find(a => typeof a === 'string' && a.startsWith('0x'));
+  if (tkAddress && tkAddress.toLowerCase() !== suiAddress.toLowerCase()) {
+    throw new Error(`Provision address mismatch: local ${suiAddress} vs Turnkey ${tkAddress} - refusing`);
+  }
+
+  return { signWith: pk.privateKeyId, publicKeyHex, suiAddress };
 }
