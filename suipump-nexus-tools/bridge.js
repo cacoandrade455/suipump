@@ -764,7 +764,17 @@ async function handleSessionBuy(body) {
   const address = sessionKey ? suiAddressForPublicKeyHex(sessionKey.publicKeyHex) : keypair.toSuiAddress();
 
   const { pkgId, tokenType, sharedVersion } = await resolveCurve(client, curveId);
-  const { sharedVersion: sessVersion }      = await resolveSession(client, sessionId);
+  const { pkgId: sessPkgId, sharedVersion: sessVersion } = await resolveSession(client, sessionId);
+
+  // agent_session exists ONLY in the session's own package (V10+), and its
+  // buy_with_session<T> takes that package's Curve<T> type - a curve published
+  // under an older package is a DIFFERENT Move type and can never be passed.
+  // Targeting the curve's package here produced the opaque "unable to find
+  // function <V4>::agent_session::buy_with_session" - fail with the real
+  // reason instead so the strategy brain / UI can surface it.
+  if (pkgId !== sessPkgId) {
+    throw new Error(`session trading works only on curves from the session's package (${sessPkgId}); curve ${curveId} is on ${pkgId} - arm session strategies on a current (V10) token`);
+  }
   const minOut = BigInt(minTokensOut ?? 0);
 
   // buy_with_session<T>(session, curve, amount, min_tokens_out, sui_price_scaled, clock, ctx)
@@ -783,7 +793,7 @@ async function handleSessionBuy(body) {
   const clockRef   = tx.sharedObjectRef({ objectId: SUI_CLOCK_ID, initialSharedVersion: 1, mutable: false });
 
   tx.moveCall({
-    target: `${pkgId}::agent_session::buy_with_session`,
+    target: `${sessPkgId}::agent_session::buy_with_session`,
     typeArguments: [tokenType],
     arguments: [sessionRef, curveRef, tx.pure.u64(suiMist), tx.pure.u64(minOut), tx.pure.u64(suiPriceScaled), clockRef],
   });
@@ -835,7 +845,13 @@ async function handleSessionSell(body) {
   const address = sessionKey ? suiAddressForPublicKeyHex(sessionKey.publicKeyHex) : keypair.toSuiAddress();
 
   const { pkgId, tokenType, sharedVersion } = await resolveCurve(client, curveId);
-  const { sharedVersion: sessVersion }      = await resolveSession(client, sessionId);
+  const { pkgId: sessPkgId, sharedVersion: sessVersion } = await resolveSession(client, sessionId);
+
+  // Same version rule as /session-buy: sell_with_session only exists in the
+  // session's package and only accepts that package's Curve<T>.
+  if (pkgId !== sessPkgId) {
+    throw new Error(`session trading works only on curves from the session's package (${sessPkgId}); curve ${curveId} is on ${pkgId} - arm session strategies on a current (V10) token`);
+  }
 
   const tokAtomic = BigInt(Math.floor(parseFloat(tokenAmount) * 1e6));
   if (tokAtomic <= 0n) throw new Error('tokenAmount must be > 0');
@@ -849,7 +865,7 @@ async function handleSessionSell(body) {
 
   // sell_with_session<T>(session, curve, token_amount, min_sui_out, clock, ctx)
   tx.moveCall({
-    target: `${pkgId}::agent_session::sell_with_session`,
+    target: `${sessPkgId}::agent_session::sell_with_session`,
     typeArguments: [tokenType],
     arguments: [sessionRef, curveRef, tx.pure.u64(tokAtomic), tx.pure.u64(minOut), clockRef],
   });
