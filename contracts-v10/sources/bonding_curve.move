@@ -58,6 +58,7 @@ module suipump::bonding_curve {
     use sui::event;
     use sui::sui::SUI;
     use sui::table::{Self, Table};
+    use sui::dynamic_field as df;
     use std::ascii::String as AsciiString;
     use std::string::String;
 
@@ -106,6 +107,14 @@ module suipump::bonding_curve {
     const ECtoAlreadyVoted:          u64 = 47; // CTO: this wallet already voted
     const ECtoAlreadyResolved:       u64 = 48; // CTO: proposal already resolved
     const ECtoZeroWeight:            u64 = 49; // CTO: voter presented zero balance
+    // V12:
+    const ECommentGateNoop:          u64 = 50; // toggle called with the current value
+
+    /// V12 comments toggle: dynamic-field marker on the curve. Marker ABSENT =
+    /// holder-gated (the V10/V11 default, preserved); marker PRESENT = open
+    /// comments (anyone may post). Stored as a dynamic field because the
+    /// stored Curve<T> struct layout is frozen under upgrade rules.
+    const COMMENTS_UNGATED_KEY: vector<u8> = b"comments_ungated";
 
     const MAX_COMMENT_BYTES: u64 = 280;
     const MAX_NAME_BYTES:    u64 = 64;
@@ -358,6 +367,12 @@ module suipump::bonding_curve {
         // comment; otherwise the tx-digest-derived id of the parent comment.
         // The indexer reconstructs the reply tree from (id, parent_id) pairs.
         parent_id: address,
+    }
+
+    /// V12: creator toggled the holder gate for this curve's comments.
+    public struct CommentGateSet has copy, drop {
+        curve_id:     ID,
+        holder_gated: bool,
     }
 
     public struct PauseToggled has copy, drop {
@@ -1141,6 +1156,35 @@ module suipump::bonding_curve {
     }
 
     // ---------- post_comment (identical to v8) ----------
+    /// V12: the ACTIVE creator toggles whether commenting requires holding the
+    /// token. Default (marker absent) = holder-gated, exactly the V10 behavior;
+    /// setting holder_gated=false opens comments to everyone. Uses the same
+    /// active-creator authorization as every other creator control (respects
+    /// community takeovers).
+    public fun set_comment_gate<T>(
+        cap:          &CreatorCap,
+        curve:        &mut Curve<T>,
+        holder_gated: bool,
+        clock:        &Clock,
+        _ctx:         &mut TxContext,
+    ) {
+        assert_active_creator(cap, curve, clock);
+        let currently_open = df::exists_(&curve.id, COMMENTS_UNGATED_KEY);
+        if (holder_gated) {
+            assert!(currently_open, ECommentGateNoop);
+            let _: bool = df::remove(&mut curve.id, COMMENTS_UNGATED_KEY);
+        } else {
+            assert!(!currently_open, ECommentGateNoop);
+            df::add(&mut curve.id, COMMENTS_UNGATED_KEY, true);
+        };
+        event::emit(CommentGateSet { curve_id: object::id(curve), holder_gated });
+    }
+
+    /// V12: read the gate (true = commenting requires holding the token).
+    public fun comments_holder_gated<T>(curve: &Curve<T>): bool {
+        !df::exists_(&curve.id, COMMENTS_UNGATED_KEY)
+    }
+
     public fun post_comment<T>(
         curve:       &mut Curve<T>,
         text:        String,
@@ -1154,7 +1198,11 @@ module suipump::bonding_curve {
         _ctx:        &mut TxContext,
     ) {
         assert!(coin::value(&payment) == COMMENT_FEE_MIST, EWrongCommentFee);
-        assert!(coin::value(holder_coin) > 0, EHolderOnly); // V10: holder-gated
+        // V12: holder gate is now creator-togglable. Marker absent (default) =
+        // gated, preserving V10 behavior; creators can open comments to all.
+        if (comments_holder_gated(curve)) {
+            assert!(coin::value(holder_coin) > 0, EHolderOnly);
+        };
         let len = std::string::length(&text);
         assert!(len > 0,               ECommentEmpty);
         assert!(len <= MAX_COMMENT_BYTES, ECommentTooLong);

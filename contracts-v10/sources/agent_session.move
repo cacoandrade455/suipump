@@ -94,6 +94,8 @@ module suipump::agent_session {
     const ETicketSessionMismatch:   u64 = 9;  // ticket settled against a different session
     const ETicketKindMismatch:      u64 = 10; // buy ticket settled as sell or vice versa
     const EUniversalTradingDisabled:u64 = 11; // borrow_* without owner opt-in
+    // V12:
+    const EKeyNotAttested:          u64 = 12; // attested open with an unregistered key
 
     // ---------- Ticket kinds / df keys ----------
     const TICKET_BUY:  u8 = 0;
@@ -150,6 +152,8 @@ module suipump::agent_session {
         universal: bool,
     }
     public struct UniversalTradingToggled has copy, drop { session_id: ID, enabled: bool }
+    /// V12: this session's signer is a chain-verified enclave key.
+    public struct SessionAttested has copy, drop { session_id: ID, session_address: address }
 
     // ---------- Open (user's MAIN wallet, ONE signature) ----------
     public fun open_session(
@@ -192,6 +196,33 @@ module suipump::agent_session {
         ctx:             &mut TxContext,
     ) {
         let session = open_session(deposit, session_address, spend_cap, expiry_ms, ctx);
+        transfer::share_object(session);
+    }
+
+    /// V12 (Nautilus Phase 2): open a session whose signer the CHAIN has
+    /// verified to be enclave-held. session_address must be a key approved in
+    /// the EnclaveRegistry -- i.e. its attestation document was natively
+    /// verified by Sui (COSE chain to the AWS Nitro root) and its PCR
+    /// measurements matched the published enclave build. This upgrades the
+    /// trust statement from "the operator says the key is in a TEE" to "the
+    /// chain verified it". Plain open_and_share remains for the Turnkey path.
+    public fun open_and_share_attested(
+        deposit:         Coin<SUI>,
+        session_address: address,
+        spend_cap:       u64,
+        expiry_ms:       u64,
+        registry:        &suipump::enclave_registry::EnclaveRegistry,
+        ctx:             &mut TxContext,
+    ) {
+        assert!(
+            suipump::enclave_registry::is_registered(registry, session_address),
+            EKeyNotAttested
+        );
+        let session = open_session(deposit, session_address, spend_cap, expiry_ms, ctx);
+        event::emit(SessionAttested {
+            session_id: object::id(&session),
+            session_address,
+        });
         transfer::share_object(session);
     }
 
