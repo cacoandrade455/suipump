@@ -13,7 +13,7 @@ import { useTokenPageFeed } from './useRealtimeFeed.js';
 import HolderList from './HolderList.jsx';
 import Comments from './Comments.jsx';
 import AIAnalysis from './AIAnalysis.jsx';
-import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8, PACKAGE_ID_V9, PACKAGE_ID_V10, ALL_PACKAGE_IDS, MIST_PER_SUI, DRAIN_SUI_APPROX, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_SUI_V6, VIRTUAL_SUI_V7, VIRTUAL_SUI_V8, VIRTUAL_SUI_V9, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, VIRTUAL_TOKENS_V6, VIRTUAL_TOKENS_V7, VIRTUAL_TOKENS_V8, VIRTUAL_TOKENS_V9, DRAIN_SUI_V4, DRAIN_SUI_V5, DRAIN_SUI_V6, DRAIN_SUI_V7, DRAIN_SUI_V8, DRAIN_SUI_V9, isNewCurve, isV5OrLater, isV7OrLater, isV8OrLater, isV9OrLater, isV10OrLater, supportsMetadataUpdate, curveShapeFor } from './constants.js';
+import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8, PACKAGE_ID_V9, PACKAGE_ID_V10, PACKAGE_ID_V12, ALL_PACKAGE_IDS, MIST_PER_SUI, DRAIN_SUI_APPROX, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_SUI_V6, VIRTUAL_SUI_V7, VIRTUAL_SUI_V8, VIRTUAL_SUI_V9, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, VIRTUAL_TOKENS_V6, VIRTUAL_TOKENS_V7, VIRTUAL_TOKENS_V8, VIRTUAL_TOKENS_V9, DRAIN_SUI_V4, DRAIN_SUI_V5, DRAIN_SUI_V6, DRAIN_SUI_V7, DRAIN_SUI_V8, DRAIN_SUI_V9, isNewCurve, isV5OrLater, isV7OrLater, isV8OrLater, isV9OrLater, isV10OrLater, supportsMetadataUpdate, curveShapeFor } from './constants.js';
 import { buyQuote, sellQuote } from './curve.js';
 import { t } from './i18n.js';
 
@@ -1751,6 +1751,88 @@ function CommunityTakeoverPanel({ curveId, tokenType, packageId, creator, lastCr
 //   execute_buyback<T>(curve, ctx)                                    -- callable by anyone
 const BUYBACK_GQL_URL = 'https://graphql.testnet.sui.io/graphql';
 
+// -- Comment gate panel (V12) ---------------------------------------------------
+// Creator toggle for holder-gated comments. Contract: set_comment_gate<T>(cap,
+// curve, holder_gated, clock, ctx) -- V12+ ONLY, so the write MUST target the
+// ACTIVE package (PACKAGE_ID): the curve-type-derived packageId is the V10
+// defining id, whose bytecode predates this function. State is read from
+// CommentGateSet events (which define under V12); no events = holder-gated,
+// the contract default. Rendered only for V10-lineage curves -- legacy
+// publishes (V4-V9) have no gate to toggle.
+function CommentGatePanel({ curveId, tokenType, isCreator, packageId, account, initialSharedVersion }) {
+  const dAppKit = useDAppKit();
+  const [gated, setGated]   = useState(true);  // contract default
+  const [known, setKnown]   = useState(false); // becomes true once events are read
+  const [busy, setBusy]     = useState(false);
+  const [msg, setMsg]       = useState('');
+
+  const loadGate = React.useCallback(async () => {
+    if (!curveId) return;
+    try {
+      const evType = `${PACKAGE_ID_V12}::bonding_curve::CommentGateSet`;
+      const q = `{ events(filter: { type: "${evType}" }, last: 50) { nodes { contents { json } } } }`;
+      const r = await fetch(BUYBACK_GQL_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: q }),
+        signal: AbortSignal.timeout(8000),
+      });
+      const d = await r.json();
+      const mine = (d?.data?.events?.nodes ?? [])
+        .map(n => n.contents?.json)
+        .filter(j => j && (j.curve_id ?? '').toLowerCase() === curveId.toLowerCase());
+      const latest = mine.length ? mine[mine.length - 1] : null;
+      setGated(latest ? (latest.holder_gated === true || latest.holder_gated === 'true') : true);
+      setKnown(true);
+    } catch { setKnown(true); /* keep contract default */ }
+  }, [curveId]);
+
+  React.useEffect(() => { loadGate(); }, [loadGate]);
+
+  async function doToggle() {
+    if (busy || !known || !account) return;
+    setBusy(true); setMsg('');
+    try {
+      const { capId } = await resolveCreatorCap(
+        account.address, curveId, import.meta.env.VITE_INDEXER_URL || ''
+      );
+      const tx = new Transaction();
+      const curveRef = initialSharedVersion
+        ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: String(initialSharedVersion), mutable: true })
+        : tx.object(curveId);
+      tx.moveCall({
+        target: `${PACKAGE_ID}::bonding_curve::set_comment_gate`,
+        typeArguments: [tokenType],
+        arguments: [tx.object(capId), curveRef, tx.pure.bool(!gated), tx.object(SUI_CLOCK_ID)],
+      });
+      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Toggle failed');
+      setGated(!gated);
+      setMsg(!gated ? 'Comments are now HOLDER-GATED - only token holders can post.' : 'Comments are now OPEN - anyone can post.');
+      setTimeout(loadGate, 1500);
+    } catch (e) { setMsg(e.message || 'Toggle failed'); }
+    finally { setBusy(false); }
+  }
+
+  // Only lineage curves have a gate; only the creator can change it. Everyone
+  // else just sees the current mode inline in the comments section.
+  if (!isV10OrLater(packageId) || !isCreator) return null;
+
+  return (
+    <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 space-y-2">
+      <div className="text-[10px] font-mono text-lime-400/70 tracking-widest">COMMENTS ACCESS</div>
+      <div className="text-[10px] font-mono text-white/40">
+        {gated ? 'Holder-gated: only wallets holding this token can comment.' : 'Open: anyone can comment.'}
+      </div>
+      <button onClick={doToggle} disabled={busy || !known}
+        className={`w-full py-1.5 rounded-lg text-[10px] font-mono transition-colors ${busy ? 'bg-white/5 text-white/25' : 'bg-lime-400/10 text-lime-400 border border-lime-400/30 hover:bg-lime-400/20'}`}>
+        {busy ? 'WORKING...' : gated ? 'OPEN COMMENTS TO EVERYONE' : 'RESTRICT TO HOLDERS'}
+      </button>
+      {msg && <div className="text-[9px] font-mono text-white/40">{msg}</div>}
+    </div>
+  );
+}
+
 function CreatorBuybackPanel({ curveId, tokenType, packageId, isCreator, account, initialSharedVersion, lang }) {
   const dAppKit = useDAppKit();
 
@@ -2408,7 +2490,15 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
               lang={lang}
             />
           )}
-          {isV10OrLater(pkgId) && (
+          {isV10OrLater(pkgId) && (<>
+            <CommentGatePanel
+              curveId={curveId}
+              tokenType={tokenType}
+              packageId={pkgId}
+              isCreator={isCreator}
+              account={account}
+              initialSharedVersion={initialSharedVersionProp ?? curveState?.initial_shared_version ?? null}
+            />
             <CreatorBuybackPanel
               curveId={curveId}
               tokenType={tokenType}
@@ -2418,7 +2508,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
               initialSharedVersion={initialSharedVersionProp ?? curveState?.initial_shared_version ?? null}
               lang={lang}
             />
-          )}
+          </>)}
           {isCreator && (
             <div className="lg:hidden">
               <CreatorToolsPanel curveId={curveId} tokenType={tokenType} packageIdHint={pkgId} account={account} curveState={curveState} currentDesc={desc} currentTwitter={twitter} currentTelegram={telegram} currentWebsite={website} currentDex={dex} lang={lang} onMetaUpdated={handleMetaUpdated} />
