@@ -1312,6 +1312,7 @@ function HomePage({ onLaunch, lang = 'en' }) {
 function TokenPageWrapper({ lang, tradeKey }) {
   const { curveId } = useParams();
   const navigate = useNavigate();
+  const client = useCurrentClient();
   const [tokenType, setTokenType] = useState(null);
   const [packageId, setPackageId] = useState(null);
   const [initialSharedVersion, setInitialSharedVersion] = useState(null);
@@ -1322,6 +1323,8 @@ function TokenPageWrapper({ lang, tradeKey }) {
     let cancelled = false;
     async function load() {
       const IURL = import.meta.env.VITE_INDEXER_URL || '';
+
+      // 1. Indexer fast path (has metadata joined in).
       try {
         if (IURL) {
           const res = await fetch(`${IURL}/token/${curveId}`, { signal: AbortSignal.timeout(5000) });
@@ -1340,14 +1343,32 @@ function TokenPageWrapper({ lang, tradeKey }) {
             }
           }
         }
-        if (!cancelled) setError('Could not determine token type');
-      } catch (err) {
-        if (!cancelled) setError(err.message || String(err));
-      }
+      } catch { /* indexer down/slow - fall through to the chain */ }
+
+      // 2. Chain fallback - the curve object itself is the source of truth.
+      // Covers freshly launched tokens the indexer has not picked up yet (or
+      // curves on packages the indexer does not track). Same v2 read pattern
+      // as the bridge's resolveCurve: obj.object.type = "<pkg>::bonding_curve::
+      // Curve<T>", pkgId is the type's defining package, shared version from
+      // obj.object.owner.
+      try {
+        const obj = await client.getObject({ objectId: curveId });
+        const curveType = obj?.object?.type ?? '';
+        const tt = curveType.match(/Curve<(.+)>$/)?.[1];
+        if (tt && !cancelled) {
+          setTokenType(tt);
+          setPackageId(curveType.split('::')[0]);
+          const isv = obj.object.owner?.Shared?.initialSharedVersion;
+          if (isv) setInitialSharedVersion(String(isv));
+          return;
+        }
+      } catch { /* not a curve object or chain unreachable */ }
+
+      if (!cancelled) setError('Could not determine token type');
     }
     load();
     return () => { cancelled = true; };
-  }, [curveId]);
+  }, [curveId, client]);
 
   if (error) return <div className="text-xs font-mono text-red-500 p-8">Failed to load token: {error}</div>;
   if (!tokenType) return (
