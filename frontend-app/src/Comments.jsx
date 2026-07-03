@@ -14,6 +14,7 @@ import {
   PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6,
   PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8,
   COMMENT_FEE_MIST, isV7OrLater, isV9OrLater, isV10OrLater,
+  PACKAGE_ID,
 } from './constants.js';
 
 // The zero address - V10 parent_id sentinel for a top-level comment.
@@ -60,24 +61,51 @@ function timeAgo(ts) {
   return `${Math.floor(diff / 86_400_000)}d ago`;
 }
 
-// Build a V10 post_comment moveCall onto `tx`. parentId = ZERO_ADDR for a
+// Build a lineage post_comment moveCall onto `tx`. parentId = ZERO_ADDR for a
 // top-level comment, else the parent comment's tx digest (as an address).
-// Caller must have already resolved `holderCoinId` (their token coin object).
-// V10 sig: post_comment<T>(curve, text, payment, author, &holder_coin, parent_id, ctx)
-function buildV10PostComment({ tx, curveRef, packageId, tokenType, text, author, holderCoinId, parentId }) {
+// Sig (V10..V12): post_comment<T>(curve, text, payment, author, &holder_coin, parent_id, ctx)
+//
+// TARGET: the ACTIVE package (V12+), NOT the curve-derived packageId. The curve
+// type defines at V10 forever, but V10 bytecode holder-gates UNCONDITIONALLY --
+// targeting it would silently ignore the creator's V12 COMMENTS ACCESS toggle.
+//
+// holderCoinId may be null (caller holds none of the token): we mint a zero
+// coin, borrow it into post_comment, and destroy it afterwards. If the curve
+// is holder-gated the contract aborts EHolderOnly(37) -- callers map that to
+// the friendly "hold the token" message; if the creator opened comments, the
+// zero coin passes and anyone can post.
+function buildV10PostComment({ tx, curveRef, packageId: _packageId, tokenType, text, author, holderCoinId, parentId }) {
   const [feeCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(BigInt(COMMENT_FEE_MIST))]);
+  let holderArg;
+  let zeroCoin = null;
+  if (holderCoinId) {
+    holderArg = tx.object(holderCoinId);
+  } else {
+    [zeroCoin] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [tokenType], arguments: [] });
+    holderArg = zeroCoin;
+  }
   tx.moveCall({
-    target: `${packageId}::bonding_curve::post_comment`,
+    target: `${PACKAGE_ID}::bonding_curve::post_comment`,
     typeArguments: [tokenType],
     arguments: [
       curveRef,
       tx.pure.string(text),
       feeCoin,
       tx.pure.address(author),
-      tx.object(holderCoinId),
+      holderArg,
       tx.pure.address(parentId ?? ZERO_ADDR),
     ],
   });
+  if (zeroCoin) {
+    tx.moveCall({ target: '0x2::coin::destroy_zero', typeArguments: [tokenType], arguments: [zeroCoin] });
+  }
+}
+
+// Map the on-chain holder-gate abort to the friendly message. EHolderOnly = 37
+// in bonding_curve; abort strings look like "...bonding_curve...} 37) ...".
+function isHolderGateAbort(err) {
+  const t = String(err?.message ?? err ?? '');
+  return /bonding_curve/.test(t) && /\b37\b/.test(t);
 }
 
 function loadReplies(curveId) {
@@ -134,7 +162,8 @@ function CommentItem({ comment, replies, account, curveId, onReplyPosted,
       // id when it has one; otherwise fetch on demand.
       let coinId = holderCoinId;
       if (!coinId) coinId = await firstCoinObjectId(client, account.address, tokenType);
-      if (!coinId) { setReplyErr('Hold the token to reply'); onNeedHolder?.(); setReplyBusy(false); return; }
+      // Non-holders proceed via the zero-coin path (posts when the creator
+      // opened comments; clean abort mapping when holder-gated).
 
       const parentDigest = comment.digestKey ?? null;
       if (!parentDigest) { setReplyErr('Parent not yet on-chain - try again in a moment'); setReplyBusy(false); return; }
@@ -164,7 +193,7 @@ function CommentItem({ comment, replies, account, curveId, onReplyPosted,
       });
       setReplyText(''); setReplyOpen(false); setReplyErr('');
     } catch (err) {
-      setReplyErr(err.message || 'Failed to reply');
+      setReplyErr(isHolderGateAbort(err) ? 'Hold the token to reply' : (err.message || 'Failed to reply'));
     } finally {
       setReplyBusy(false);
     }
@@ -426,7 +455,9 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
         // V10: holder-gated. Resolve the caller's token coin object first.
         let coinId = holderCoinId;
         if (!coinId) coinId = await firstCoinObjectId(client, account.address, tokenType);
-        if (!coinId) { setPostErr('Hold the token to comment'); setPosting(false); return; }
+        // No coin held is no longer a hard stop: if the creator opened comments
+        // (V12 toggle) the zero-coin path posts fine; if still holder-gated the
+        // contract aborts and we surface the friendly message below.
         buildV10PostComment({
           tx, curveRef, packageId, tokenType,
           text: trimmed, author: account.address,
@@ -471,7 +502,7 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
         return [...prev, { id, digestKey: txDigest, author: account.address, text: trimmed, timestamp: Date.now(), curveId }];
       });
     } catch (err) {
-      setPostErr(err.message || 'Failed to post comment');
+      setPostErr(isHolderGateAbort(err) ? 'Hold the token to comment' : (err.message || 'Failed to post comment'));
     } finally {
       setPosting(false);
     }
