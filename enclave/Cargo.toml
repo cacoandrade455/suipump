@@ -1,0 +1,35 @@
+[package]
+name = "suipump-session-enclave"
+version = "0.1.0"
+edition = "2021"
+
+# SuiPump trust-minimization Phase 2 (Nautilus): per-session signing enclave.
+# Build with --features nsm for a real AWS Nitro enclave (or Marlin Oyster);
+# without it, /attestation returns 501 and everything else works for local dev.
+# Reproducible builds matter: the on-chain EnclaveRegistry pins this binary's
+# PCR measurements -- publish source + build steps so anyone can reproduce them.
+
+[dependencies]
+axum = "0.7"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hex = "0.4"
+rand = "0.8"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+
+aws-nitro-enclaves-nsm-api = { version = "0.4", optional = true }
+serde_bytes = { version = "0.11", optional = true }
+
+[features]
+default = []
+nsm = ["dep:aws-nitro-enclaves-nsm-api", "dep:serde_bytes"]
+
+# Transitive pins: keep the graph buildable on older stable toolchains and,
+# more importantly, DETERMINISTIC -- the EnclaveRegistry pins this binary's PCR
+# measurements, so the dependency graph must not drift between builds.
+[dependencies.zeroize]
+version = "=1.8.1"
+
+[dependencies.base64ct]
+version = "=1.6.0"
