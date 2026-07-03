@@ -28,6 +28,13 @@ const ALL_PACKAGE_IDS = [
   '0x145a1e79b83cc17680dbfe4f96839cd359c7db380ac15463ecb6dc30f9849b69', // V8_1
   '0xbb4ee050239f59dfd983501ce101698ba27857f77aff2d437cec568fe0062546', // V8
   '0x719698e5138582d78ee95317271e8bce05769569a4f58c940a7f1b424d90ffe2', // V9
+  // V10 -- was MISSING, which silently dropped every event whose type defines
+  // at this package (agent_session events, and bonding_curve events for any
+  // curve created under it): launches went un-indexed ("Not found" token
+  // pages) and session history never persisted. New event types start with a
+  // null backfill cursor, so the next boot sweeps them from the beginning --
+  // all missed launches/sessions are ingested retroactively, no manual repair.
+  '0x2deda2cade65cd5afd5ffbe799d48f2491debf08d3aef6fa11aa6e1c8afe1598', // V10
 ];
 
 const PACKAGE_IDS = process.env.PACKAGE_IDS
