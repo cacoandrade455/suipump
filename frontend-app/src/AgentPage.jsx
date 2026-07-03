@@ -822,6 +822,52 @@ function AgentSessionPanel({ account, onSessionChange }) {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy]       = useState(false);
   const [msg, setMsg]         = useState('');
+  // V11 universal trading: owner opt-in flag stored as a dynamic field on the
+  // session. null = unknown/loading. Read by scanning the session's dynamic
+  // fields for the b"universal_trading" key (tolerant across client versions:
+  // the key may render as a utf8 string, a decimal byte array, or base64).
+  const [universalTrading, setUniversalTrading] = useState(null);
+
+  useEffect(() => {
+    if (!session?.id || !client) { setUniversalTrading(null); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await client.listDynamicFields({ parentId: session.id });
+        const fields = res?.dynamicFields ?? res?.data ?? [];
+        const SIG_UTF8  = 'universal_trading';
+        const SIG_BYTES = '117,110,105,118,101,114,115,97,108,95,116,114,97,100,105,110,103';
+        const SIG_B64   = 'dW5pdmVyc2FsX3RyYWRpbmc';
+        const on = fields.some(f => {
+          const s = JSON.stringify(f) ?? '';
+          return s.includes(SIG_UTF8) || s.includes(SIG_BYTES) || s.includes(SIG_B64);
+        });
+        if (!cancelled) setUniversalTrading(on);
+      } catch { if (!cancelled) setUniversalTrading(null); }
+    })();
+    return () => { cancelled = true; };
+  }, [session?.id, client]);
+
+  async function doToggleUniversal() {
+    if (busy || !session || universalTrading === null) return;
+    setBusy(true); setMsg('');
+    try {
+      const tx = new Transaction();
+      const fn = universalTrading ? 'disable_universal_trading' : 'enable_universal_trading';
+      const ref = session.sharedVersion
+        ? tx.sharedObjectRef({ objectId: session.id, initialSharedVersion: String(session.sharedVersion), mutable: true })
+        : tx.object(session.id);
+      tx.moveCall({ target: `${PACKAGE_ID}::agent_session::${fn}`, arguments: [ref] });
+      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Toggle failed');
+      setUniversalTrading(!universalTrading);
+      setMsg(!universalTrading
+        ? 'Universal trading ENABLED - the agent can now trade legacy-version tokens from this session.'
+        : 'Universal trading disabled - the agent is restricted to current-version tokens.');
+    } catch (e) { setMsg(e.message || 'Toggle failed'); }
+    finally { setBusy(false); }
+  }
+
 
   // Open/top-up form
   const [depositSui, setDepositSui] = useState('1');
@@ -1198,6 +1244,23 @@ function AgentSessionPanel({ account, onSessionChange }) {
               </button>
             </div>
           )}
+          {/* Universal trading (V11) - owner opt-in for legacy-version tokens */}
+          <div className="flex items-center justify-between gap-3 py-1">
+            <div className="min-w-0">
+              <div className="text-[9px] font-mono text-white/50 tracking-widest">UNIVERSAL TRADING</div>
+              <div className="text-[9px] font-mono text-white/25 leading-relaxed">
+                Lets the agent trade tokens on older SuiPump versions from this
+                session. Wider trade surface: only escrow within your spend cap is
+                at risk, but coins transit outside the session module during each
+                trade. Off by default.
+              </div>
+            </div>
+            <button onClick={doToggleUniversal} disabled={busy || universalTrading === null}
+              className={`shrink-0 px-3 py-1.5 rounded-lg text-[9px] font-mono tracking-widest border transition-colors ${universalTrading ? 'text-lime-400 border-lime-400/40 bg-lime-400/10 hover:bg-lime-400/20' : 'text-white/50 border-white/20 hover:text-white/80 hover:border-white/40'} disabled:opacity-40`}>
+              {universalTrading === null ? '...' : universalTrading ? 'ON' : 'OFF'}
+            </button>
+          </div>
+
           <button onClick={doClose} disabled={busy}
             className={`w-full py-2 rounded-lg text-[10px] font-mono tracking-widest transition-colors ${busy ? 'bg-white/5 text-white/25' : 'bg-red-500/10 text-red-400 border border-red-400/30 hover:bg-red-500/20 hover:text-red-300'}`}>
             {busy ? 'WORKING...' : 'CLOSE & WITHDRAW ESCROW'}

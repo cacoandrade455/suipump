@@ -828,14 +828,20 @@ async function handleSessionBuy(body) {
   // chain (see sessionCurvePackage) - NOT assumed equal to the session's own
   // package, because upgrades keep the original defining id.
   const compatPkg = await sessionCurvePackage(client, sessTargetPkg);
-  if (compatPkg && compatPkg !== String(pkgId).toLowerCase()) {
-    throw new Error(`session trading accepts curves defined by ${compatPkg}; curve ${curveId} is defined by ${pkgId} (a separate legacy publish, so its Curve type can never be passed) - arm session strategies on a current-lineage token`);
+  // UNIVERSAL PATH DECISION: when the curve's Curve<T> type is NOT the one the
+  // session module was compiled against (legacy V4-V9 publishes), route through
+  // the V11 TradeTicket hot potato: borrow escrow SUI -> the curve's OWN
+  // version-correct bonding_curve::buy -> settle back. Requires the OWNER to
+  // have enabled universal trading on the session (Move aborts with
+  // EUniversalTradingDisabled = 11 otherwise). Unknown packages still hard-fail.
+  const universal = Boolean(compatPkg && compatPkg !== String(pkgId).toLowerCase());
+  if (universal && !ALL_PACKAGE_IDS.includes(String(pkgId).toLowerCase())) {
+    throw new Error(`curve ${curveId} is on unknown package ${pkgId} - not a SuiPump curve version`);
   }
   const minOut = BigInt(minTokensOut ?? 0);
 
-  // buy_with_session<T>(session, curve, amount, min_tokens_out, sui_price_scaled, clock, ctx)
-  // Always the V9+ shape - V10 is the only package with sessions, and it carries
-  // the oracle price arg. Fetch live SUI price (fallback 0 -> stored BASE_GRAD).
+  // Oracle price arg for V9+ buy() shapes (both the native V10-lineage path and
+  // legacy V9 curves on the universal path). Fallback 0 -> stored BASE_GRAD.
   let suiPriceScaled = 0n;
   try {
     const pr = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=SUIUSDT', { signal: AbortSignal.timeout(2000) });
@@ -848,11 +854,46 @@ async function handleSessionBuy(body) {
   const curveRef   = tx.sharedObjectRef({ objectId: curveId,   initialSharedVersion: sharedVersion, mutable: true });
   const clockRef   = tx.sharedObjectRef({ objectId: SUI_CLOCK_ID, initialSharedVersion: 1, mutable: false });
 
-  tx.moveCall({
-    target: `${sessTargetPkg}::agent_session::buy_with_session`,
-    typeArguments: [tokenType],
-    arguments: [sessionRef, curveRef, tx.pure.u64(suiMist), tx.pure.u64(minOut), tx.pure.u64(suiPriceScaled), clockRef],
-  });
+  if (!universal) {
+    // Native path: coins never leave module custody (V10 blast radius).
+    // buy_with_session<T>(session, curve, amount, min_tokens_out, sui_price_scaled, clock, ctx)
+    tx.moveCall({
+      target: `${sessTargetPkg}::agent_session::buy_with_session`,
+      typeArguments: [tokenType],
+      arguments: [sessionRef, curveRef, tx.pure.u64(suiMist), tx.pure.u64(minOut), tx.pure.u64(suiPriceScaled), clockRef],
+    });
+  } else {
+    // Universal path (owner opt-in): borrow -> legacy version-dispatched buy ->
+    // settle. Every version V4-V10 returns (Coin<T>, Coin<SUI>) from buy()
+    // (verified on-chain), so both results route into settle_buy: tokens park
+    // on the session, refund rejoins escrow and credits the cap.
+    const [funds, ticket] = tx.moveCall({
+      target: `${sessTargetPkg}::agent_session::borrow_for_buy`,
+      arguments: [sessionRef, tx.pure.u64(suiMist), clockRef],
+    });
+    // Exact per-version buy() dispatch, mirroring executeBuy:
+    //   V9:   buy(curve, payment, min_out, referral, sui_price_scaled, clock)
+    //   V5-8: buy(curve, payment, min_out, referral, clock)
+    //   V4:   buy(curve, payment, min_out)
+    let buyArgs;
+    if (V9_PLUS.has(pkgId)) {
+      buyArgs = [curveRef, funds, tx.pure.u64(minOut), tx.pure.option('address', null), tx.pure.u64(suiPriceScaled), clockRef];
+    } else if (V5_PLUS.has(pkgId)) {
+      buyArgs = [curveRef, funds, tx.pure.u64(minOut), tx.pure.option('address', null), clockRef];
+    } else {
+      buyArgs = [curveRef, funds, tx.pure.u64(minOut)];
+    }
+    const [tokens, refund] = tx.moveCall({
+      target: `${pkgId}::bonding_curve::buy`,
+      typeArguments: [tokenType],
+      arguments: buyArgs,
+    });
+    tx.moveCall({
+      target: `${sessTargetPkg}::agent_session::settle_buy`,
+      typeArguments: [tokenType],
+      arguments: [sessionRef, ticket, refund, tokens],
+    });
+  }
 
   let result;
   try {
@@ -864,7 +905,12 @@ async function handleSessionBuy(body) {
     });
   } catch (e) {
     const detail = e?.cause?.message ?? e?.cause ?? e?.message ?? String(e);
-    throw new Error(`session buy simulate/execute failed: ${typeof detail === 'string' ? detail : JSON.stringify(detail)}`);
+    const text = typeof detail === 'string' ? detail : JSON.stringify(detail);
+    // EUniversalTradingDisabled = abort code 11 in agent_session.
+    if (universal && /agent_session/.test(text) && /(\b11\b|EUniversalTradingDisabled)/.test(text)) {
+      throw new Error(`this token is on a legacy curve version - the session OWNER must enable Universal Trading on the Agent page before the agent can trade it (session ${sessionId})`);
+    }
+    throw new Error(`session buy simulate/execute failed: ${text}`);
   }
 
   if (!txOk(result)) {
@@ -876,6 +922,7 @@ async function handleSessionBuy(body) {
     sessionId,
     suiSpent:  (Number(suiMist) / Number(MIST_PER_SUI)).toFixed(9),
     tokenType,
+    path:      universal ? 'universal' : 'native',
     bootId:    BRIDGE_BOOT_ID,
   };
 }
@@ -904,10 +951,11 @@ async function handleSessionSell(body) {
   const { pkgId: sessPkgId, sharedVersion: sessVersion } = await resolveSession(client, sessionId);
   const sessTargetPkg = latestPackageFor(sessPkgId);
 
-  // Same introspected version guard as /session-buy.
+  // Same introspected version guard / universal-path decision as /session-buy.
   const compatPkg = await sessionCurvePackage(client, sessTargetPkg);
-  if (compatPkg && compatPkg !== String(pkgId).toLowerCase()) {
-    throw new Error(`session trading accepts curves defined by ${compatPkg}; curve ${curveId} is defined by ${pkgId} (a separate legacy publish, so its Curve type can never be passed) - arm session strategies on a current-lineage token`);
+  const universal = Boolean(compatPkg && compatPkg !== String(pkgId).toLowerCase());
+  if (universal && !ALL_PACKAGE_IDS.includes(String(pkgId).toLowerCase())) {
+    throw new Error(`curve ${curveId} is on unknown package ${pkgId} - not a SuiPump curve version`);
   }
 
   const tokAtomic = BigInt(Math.floor(parseFloat(tokenAmount) * 1e6));
@@ -920,12 +968,44 @@ async function handleSessionSell(body) {
   const curveRef   = tx.sharedObjectRef({ objectId: curveId,   initialSharedVersion: sharedVersion, mutable: true });
   const clockRef   = tx.sharedObjectRef({ objectId: SUI_CLOCK_ID, initialSharedVersion: 1, mutable: false });
 
-  // sell_with_session<T>(session, curve, token_amount, min_sui_out, clock, ctx)
-  tx.moveCall({
-    target: `${sessTargetPkg}::agent_session::sell_with_session`,
-    typeArguments: [tokenType],
-    arguments: [sessionRef, curveRef, tx.pure.u64(tokAtomic), tx.pure.u64(minOut), clockRef],
-  });
+  if (!universal) {
+    // sell_with_session<T>(session, curve, token_amount, min_sui_out, clock, ctx)
+    tx.moveCall({
+      target: `${sessTargetPkg}::agent_session::sell_with_session`,
+      typeArguments: [tokenType],
+      arguments: [sessionRef, curveRef, tx.pure.u64(tokAtomic), tx.pure.u64(minOut), clockRef],
+    });
+  } else {
+    // Universal path (owner opt-in): borrow parked tokens -> the curve's OWN
+    // version-correct bonding_curve::sell -> settle proceeds back to escrow
+    // (net-exposure credit). Legacy sell consumes the whole input coin and
+    // returns a single Coin<SUI>, so leftover tokens are a fresh zero coin.
+    const [toSell, ticket] = tx.moveCall({
+      target: `${sessTargetPkg}::agent_session::borrow_tokens_for_sell`,
+      typeArguments: [tokenType],
+      arguments: [sessionRef, tx.pure.u64(tokAtomic), clockRef],
+    });
+    // Per-version sell() dispatch, mirroring handleSell:
+    //   V7+: sell(curve, tokens, min_out, referral)   pre-V7: sell(curve, tokens, min_out)
+    const sellArgs = V7_PLUS.has(pkgId)
+      ? [curveRef, toSell, tx.pure.u64(minOut), tx.pure.option('address', null)]
+      : [curveRef, toSell, tx.pure.u64(minOut)];
+    const [suiOut] = tx.moveCall({
+      target: `${pkgId}::bonding_curve::sell`,
+      typeArguments: [tokenType],
+      arguments: sellArgs,
+    });
+    const [zeroTokens] = tx.moveCall({
+      target: '0x2::coin::zero',
+      typeArguments: [tokenType],
+      arguments: [],
+    });
+    tx.moveCall({
+      target: `${sessTargetPkg}::agent_session::settle_sell`,
+      typeArguments: [tokenType],
+      arguments: [sessionRef, ticket, suiOut, zeroTokens],
+    });
+  }
 
   let result;
   try {
@@ -935,7 +1015,11 @@ async function handleSessionSell(body) {
     });
   } catch (e) {
     const detail = e?.cause?.message ?? e?.cause ?? e?.message ?? String(e);
-    throw new Error(`session sell simulate/execute failed: ${typeof detail === 'string' ? detail : JSON.stringify(detail)}`);
+    const text = typeof detail === 'string' ? detail : JSON.stringify(detail);
+    if (universal && /agent_session/.test(text) && /(\b11\b|EUniversalTradingDisabled)/.test(text)) {
+      throw new Error(`this token is on a legacy curve version - the session OWNER must enable Universal Trading on the Agent page before the agent can trade it (session ${sessionId})`);
+    }
+    throw new Error(`session sell simulate/execute failed: ${text}`);
   }
 
   if (!txOk(result)) {
@@ -947,6 +1031,7 @@ async function handleSessionSell(body) {
     sessionId,
     tokensSold: (Number(tokAtomic) / 1e6).toFixed(6),
     tokenType,
+    path:       universal ? 'universal' : 'native',
     bootId:     BRIDGE_BOOT_ID,
   };
 }
