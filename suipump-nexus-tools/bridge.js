@@ -54,7 +54,7 @@ const WRITE_ENDPOINTS = new Set(['/buy', '/sell', '/launch', '/claim', '/session
 // Curves created through V11 still TYPE as V10 (defining id), so all existing
 // version dispatch keyed on curve types is unaffected.
 const ACTIVE_PACKAGE_ID = process.env.ACTIVE_PACKAGE_ID
-  ?? '0xc03817bce45ff492e5d0f40f9e46f5a075a952b50c5c6146b8fb38138bd699eb'; // V11
+  ?? '0xf5a3566ba920a3e3614e8b25da0ca3237879b6e22eb12f21ccf2bceb6520b9cd'; // V12
 const LAUNCH_FEE_MIST   = 2_000_000_000n; // 2 SUI
 
 // Compiled coin template bytecode - force-included in repo for the bridge.
@@ -133,6 +133,10 @@ const ALL_PACKAGE_IDS = [
   // (defining ids stay V10 for the lineage), listed per the read-path rule and
   // for the V2 event types that define under it.
   '0xc03817bce45ff492e5d0f40f9e46f5a075a952b50c5c6146b8fb38138bd699eb', // V11
+  // V12 -- second upgrade of the V10 lineage: comments toggle, enclave
+  // registry (Nautilus), attested session open. CommentGateSet and
+  // SessionAttested event types define under this id.
+  '0xf5a3566ba920a3e3614e8b25da0ca3237879b6e22eb12f21ccf2bceb6520b9cd', // V12
 ];
 
 // -- Package upgrade targets ------------------------------------------------------
@@ -142,9 +146,10 @@ const ALL_PACKAGE_IDS = [
 // targets must be remapped to the newest version of that lineage or the upgrade
 // never takes effect. Map: defining (original) package -> latest upgrade.
 const PACKAGE_LATEST = {
-  // V10 lineage -> V11 (net-exposure cap, TradeTicket, closed sentinel, V2 events)
+  // V10 lineage -> V12 (V11: net-exposure cap, TradeTicket, closed sentinel,
+  // V2 events; V12: comments toggle, enclave registry, attested open)
   '0x2deda2cade65cd5afd5ffbe799d48f2491debf08d3aef6fa11aa6e1c8afe1598':
-    '0xc03817bce45ff492e5d0f40f9e46f5a075a952b50c5c6146b8fb38138bd699eb',
+    '0xf5a3566ba920a3e3614e8b25da0ca3237879b6e22eb12f21ccf2bceb6520b9cd',
 };
 function latestPackageFor(pkgId) {
   return PACKAGE_LATEST[String(pkgId).toLowerCase()] ?? pkgId;

@@ -41,6 +41,9 @@ const ALL_PACKAGE_IDS = [
   // event structs (SessionBuyV2/SessionSellV2/UniversalTradingToggled) type
   // under this id. New types start with null cursors -> swept from genesis.
   '0xc03817bce45ff492e5d0f40f9e46f5a075a952b50c5c6146b8fb38138bd699eb', // V11
+  // V12 -- comments toggle + Nautilus. CommentGateSet (bonding_curve) and
+  // SessionAttested (agent_session) define under this id.
+  '0xf5a3566ba920a3e3614e8b25da0ca3237879b6e22eb12f21ccf2bceb6520b9cd', // V12
 ];
 
 const PACKAGE_IDS = process.env.PACKAGE_IDS
@@ -58,6 +61,8 @@ const EVENT_NAMES = [
   // insert + pg_notify pipeline). Older packages never emit these -- harmless.
   'BuybackConfigured', 'BuybackExecuted', 'CreatorHeartbeat',
   'ProtocolSurchargeCollected',
+  // V12: creator toggled the comments holder gate (carries curve_id).
+  'CommentGateSet',
   'TakeoverProposed', 'TakeoverVoted', 'TakeoverSucceeded', 'TakeoverFailed',
 ];
 
@@ -70,6 +75,8 @@ const EVENT_NAMES = [
 // V4-V9 (never emitted there), same as the bonding_curve V10 events above.
 const SESSION_EVENT_NAMES = [
   'SessionOpened', 'SessionToppedUp', 'SessionBuy', 'SessionSell', 'SessionClosed',
+  // V12: chain-verified enclave-key session opens.
+  'SessionAttested',
   // V11 (define under the V11 package id): richer trade events carrying
   // spent_total + escrow_after (+ universal flag), and the owner's
   // universal-trading toggle. Same session-keyed persist + pg_notify pipeline.

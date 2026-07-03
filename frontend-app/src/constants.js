@@ -42,6 +42,13 @@ export const PACKAGE_ID_V10 =
 // The UpgradeCap (UPGRADE_CAP_V10) governs the whole lineage and is unchanged.
 export const PACKAGE_ID_V11 =
   '0xc03817bce45ff492e5d0f40f9e46f5a075a952b50c5c6146b8fb38138bd699eb';
+// V12: second upgrade of the V10 lineage. bonding_curve gains the creator
+// comments toggle (set_comment_gate); NEW module enclave_registry (Nautilus
+// Phase 2: native Nitro attestation -> chain-verified enclave keys);
+// agent_session gains open_and_share_attested. Same upgrade semantics as V11:
+// types define at V10, write targets move here.
+export const PACKAGE_ID_V12 =
+  '0xf5a3566ba920a3e3614e8b25da0ca3237879b6e22eb12f21ccf2bceb6520b9cd';
 
 // ── Capabilities ─────────────────────────────────────────────────────────────
 export const ADMIN_CAP_V7 =
@@ -62,7 +69,7 @@ export const UPGRADE_CAP_V10 =
   '0xb840fc9c54271c73f9c5e8f22f42ffda3c46f93914586bf671958ad9e754a274';
 
 // ── Active package ────────────────────────────────────────────────────────────
-export const PACKAGE_ID = PACKAGE_ID_V11;
+export const PACKAGE_ID = PACKAGE_ID_V12;
 export const ADMIN_CAP  = ADMIN_CAP_V10;
 
 // ── All package IDs — READ paths must cover every version ────────────────────
@@ -76,6 +83,7 @@ export const ALL_PACKAGE_IDS = [
   PACKAGE_ID_V9,
   PACKAGE_ID_V10,
   PACKAGE_ID_V11,
+  PACKAGE_ID_V12,
 ];
 
 export const CURVE_ID    = '0xf7c137e90c5a5c9e716c91fdd3561d55e6ba3c11c37a9741b0bfde03dc9d812f';
@@ -126,6 +134,9 @@ export const DRAIN_SUI_APPROX = DRAIN_SUI_V9;
 
 // ── Per-package curve shape ───────────────────────────────────────────────────
 export function curveShapeFor(pkgId) {
+  if (pkgId === PACKAGE_ID_V12) { // defensive: lineage curves type as V10
+    return { virtualSui: VIRTUAL_SUI_V9, virtualTokens: VIRTUAL_TOKENS_V9, drainSui: DRAIN_SUI_V9 };
+  }
   if (pkgId === PACKAGE_ID_V11) { // defensive: lineage curves type as V10
     return { virtualSui: VIRTUAL_SUI_V9, virtualTokens: VIRTUAL_TOKENS_V9, drainSui: DRAIN_SUI_V9 };
   }
@@ -156,39 +167,49 @@ export function isNewCurve(pkgId) {
       || pkgId === PACKAGE_ID_V7 || pkgId === PACKAGE_ID_V8_1
       || pkgId === PACKAGE_ID_V8
       || pkgId === PACKAGE_ID_V9 || pkgId === PACKAGE_ID_V10
-      || pkgId === PACKAGE_ID_V11;
+      || pkgId === PACKAGE_ID_V11
+      || pkgId === PACKAGE_ID_V12;
 }
 export function isV5OrLater(pkgId) {
   return pkgId === PACKAGE_ID_V5 || pkgId === PACKAGE_ID_V6
       || pkgId === PACKAGE_ID_V7 || pkgId === PACKAGE_ID_V8_1
       || pkgId === PACKAGE_ID_V8 || pkgId === PACKAGE_ID_V9
-      || pkgId === PACKAGE_ID_V10 || pkgId === PACKAGE_ID_V11;
+      || pkgId === PACKAGE_ID_V10 || pkgId === PACKAGE_ID_V11
+      || pkgId === PACKAGE_ID_V12;
 }
 export function supportsMetadataUpdate(pkgId) {
   return pkgId === PACKAGE_ID_V6 || pkgId === PACKAGE_ID_V7
       || pkgId === PACKAGE_ID_V8_1 || pkgId === PACKAGE_ID_V8
       || pkgId === PACKAGE_ID_V9 || pkgId === PACKAGE_ID_V10
-      || pkgId === PACKAGE_ID_V11;
+      || pkgId === PACKAGE_ID_V11
+      || pkgId === PACKAGE_ID_V12;
 }
 export function isV7OrLater(pkgId) {
   return pkgId === PACKAGE_ID_V7 || pkgId === PACKAGE_ID_V8_1
       || pkgId === PACKAGE_ID_V8 || pkgId === PACKAGE_ID_V9
-      || pkgId === PACKAGE_ID_V10 || pkgId === PACKAGE_ID_V11;
+      || pkgId === PACKAGE_ID_V10 || pkgId === PACKAGE_ID_V11
+      || pkgId === PACKAGE_ID_V12;
 }
 export function isV8OrLater(pkgId) {
   return pkgId === PACKAGE_ID_V8_1 || pkgId === PACKAGE_ID_V8
       || pkgId === PACKAGE_ID_V9 || pkgId === PACKAGE_ID_V10
-      || pkgId === PACKAGE_ID_V11;
+      || pkgId === PACKAGE_ID_V11
+      || pkgId === PACKAGE_ID_V12;
 }
 export function isV9OrLater(pkgId) {
   return pkgId === PACKAGE_ID_V9 || pkgId === PACKAGE_ID_V10
-      || pkgId === PACKAGE_ID_V11;
+      || pkgId === PACKAGE_ID_V11
+      || pkgId === PACKAGE_ID_V12;
 }
 export function isV10OrLater(pkgId) {
-  return pkgId === PACKAGE_ID_V10 || pkgId === PACKAGE_ID_V11;
+  return pkgId === PACKAGE_ID_V10 || pkgId === PACKAGE_ID_V11
+      || pkgId === PACKAGE_ID_V12;
 }
 export function isV11OrLater(pkgId) {
-  return pkgId === PACKAGE_ID_V11;
+  return pkgId === PACKAGE_ID_V11 || pkgId === PACKAGE_ID_V12;
+}
+export function isV12OrLater(pkgId) {
+  return pkgId === PACKAGE_ID_V12;
 }
 
 // ── Graduation targets ────────────────────────────────────────────────────────
