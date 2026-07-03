@@ -50,9 +50,11 @@ const INDEXER_URL   = process.env.SUIPUMP_INDEXER_URL ?? 'https://suipump-62s2.o
 const AGENT_API_KEY = process.env.AGENT_API_KEY ?? '';
 const WRITE_ENDPOINTS = new Set(['/buy', '/sell', '/launch', '/claim', '/session-buy', '/session-sell', '/provision-session-key']);
 
-// -- Active package for NEW launches (V10) -------------------------------------
+// -- Active package for NEW launches (V11 = upgrade of V10) ----------------------
+// Curves created through V11 still TYPE as V10 (defining id), so all existing
+// version dispatch keyed on curve types is unaffected.
 const ACTIVE_PACKAGE_ID = process.env.ACTIVE_PACKAGE_ID
-  ?? '0x2deda2cade65cd5afd5ffbe799d48f2491debf08d3aef6fa11aa6e1c8afe1598'; // V10
+  ?? '0xc03817bce45ff492e5d0f40f9e46f5a075a952b50c5c6146b8fb38138bd699eb'; // V11
 const LAUNCH_FEE_MIST   = 2_000_000_000n; // 2 SUI
 
 // Compiled coin template bytecode - force-included in repo for the bridge.
@@ -127,7 +129,26 @@ const ALL_PACKAGE_IDS = [
   '0xbb4ee050239f59dfd983501ce101698ba27857f77aff2d437cec568fe0062546', // V8
   '0x719698e5138582d78ee95317271e8bce05769569a4f58c940a7f1b424d90ffe2', // V9
   '0x2deda2cade65cd5afd5ffbe799d48f2491debf08d3aef6fa11aa6e1c8afe1598', // V10
+  // V11 -- UPGRADE of V10 (0xc03817...): never appears as a curve TYPE package
+  // (defining ids stay V10 for the lineage), listed per the read-path rule and
+  // for the V2 event types that define under it.
+  '0xc03817bce45ff492e5d0f40f9e46f5a075a952b50c5c6146b8fb38138bd699eb', // V11
 ];
+
+// -- Package upgrade targets ------------------------------------------------------
+// Sui upgrades publish NEW addresses but object TYPES keep the ORIGINAL defining
+// id -- and calls to the old address run OLD bytecode. So when a package id is
+// derived from an object's type (resolveCurve / resolveSession), moveCall
+// targets must be remapped to the newest version of that lineage or the upgrade
+// never takes effect. Map: defining (original) package -> latest upgrade.
+const PACKAGE_LATEST = {
+  // V10 lineage -> V11 (net-exposure cap, TradeTicket, closed sentinel, V2 events)
+  '0x2deda2cade65cd5afd5ffbe799d48f2491debf08d3aef6fa11aa6e1c8afe1598':
+    '0xc03817bce45ff492e5d0f40f9e46f5a075a952b50c5c6146b8fb38138bd699eb',
+};
+function latestPackageFor(pkgId) {
+  return PACKAGE_LATEST[String(pkgId).toLowerCase()] ?? pkgId;
+}
 const V5_PLUS = new Set([
   '0x785c0604cb6c60a8547501e307d2b0ca7a586ff912c8abff4edfb88db65b7236', // V5
   '0x21d5b1284d5f1d4d14214654f414ffca20c757ee9f9db7701d3ffaaac62cd768', // V6
@@ -798,12 +819,15 @@ async function handleSessionBuy(body) {
 
   const { pkgId, tokenType, sharedVersion } = await resolveCurve(client, curveId);
   const { pkgId: sessPkgId, sharedVersion: sessVersion } = await resolveSession(client, sessionId);
+  // Type-derived package = the lineage's DEFINING id; remap to the newest
+  // upgrade so V11 behavior (net-exposure cap, sentinel, V2 events) executes.
+  const sessTargetPkg = latestPackageFor(sessPkgId);
 
   // Version guard: buy_with_session only accepts the Curve<T> type it was
   // compiled against. That type's defining package is introspected from the
   // chain (see sessionCurvePackage) - NOT assumed equal to the session's own
   // package, because upgrades keep the original defining id.
-  const compatPkg = await sessionCurvePackage(client, sessPkgId);
+  const compatPkg = await sessionCurvePackage(client, sessTargetPkg);
   if (compatPkg && compatPkg !== String(pkgId).toLowerCase()) {
     throw new Error(`session trading accepts curves defined by ${compatPkg}; curve ${curveId} is defined by ${pkgId} (a separate legacy publish, so its Curve type can never be passed) - arm session strategies on a current-lineage token`);
   }
@@ -825,7 +849,7 @@ async function handleSessionBuy(body) {
   const clockRef   = tx.sharedObjectRef({ objectId: SUI_CLOCK_ID, initialSharedVersion: 1, mutable: false });
 
   tx.moveCall({
-    target: `${sessPkgId}::agent_session::buy_with_session`,
+    target: `${sessTargetPkg}::agent_session::buy_with_session`,
     typeArguments: [tokenType],
     arguments: [sessionRef, curveRef, tx.pure.u64(suiMist), tx.pure.u64(minOut), tx.pure.u64(suiPriceScaled), clockRef],
   });
@@ -878,9 +902,10 @@ async function handleSessionSell(body) {
 
   const { pkgId, tokenType, sharedVersion } = await resolveCurve(client, curveId);
   const { pkgId: sessPkgId, sharedVersion: sessVersion } = await resolveSession(client, sessionId);
+  const sessTargetPkg = latestPackageFor(sessPkgId);
 
   // Same introspected version guard as /session-buy.
-  const compatPkg = await sessionCurvePackage(client, sessPkgId);
+  const compatPkg = await sessionCurvePackage(client, sessTargetPkg);
   if (compatPkg && compatPkg !== String(pkgId).toLowerCase()) {
     throw new Error(`session trading accepts curves defined by ${compatPkg}; curve ${curveId} is defined by ${pkgId} (a separate legacy publish, so its Curve type can never be passed) - arm session strategies on a current-lineage token`);
   }
@@ -897,7 +922,7 @@ async function handleSessionSell(body) {
 
   // sell_with_session<T>(session, curve, token_amount, min_sui_out, clock, ctx)
   tx.moveCall({
-    target: `${sessPkgId}::agent_session::sell_with_session`,
+    target: `${sessTargetPkg}::agent_session::sell_with_session`,
     typeArguments: [tokenType],
     arguments: [sessionRef, curveRef, tx.pure.u64(tokAtomic), tx.pure.u64(minOut), clockRef],
   });

@@ -26,6 +26,22 @@ export const PACKAGE_ID_V9 =
 // holder_coin + parent_id.
 export const PACKAGE_ID_V10 =
   '0x2deda2cade65cd5afd5ffbe799d48f2491debf08d3aef6fa11aa6e1c8afe1598';
+// V11: UPGRADE of the V10 package (not a separate publish, unlike V4..V10).
+// agent_session gains: net-exposure spend cap, TradeTicket universal trading
+// (owner opt-in), expiry_ms==0 closed sentinel, SessionBuyV2/SessionSellV2
+// events. bonding_curve republished byte-identical.
+// UPGRADE SEMANTICS -- READ BEFORE DISPATCHING:
+//   - Curve<T> and AgentSession TYPES keep their V10 defining ids forever, so
+//     V11 NEVER appears as a curve-type package: version helpers below stay
+//     keyed on V10 for the whole lineage, and V10-typed objects work with V11
+//     code directly.
+//   - Calls to the V10 address run OLD bytecode. All WRITE targets must use
+//     PACKAGE_ID (= V11) to get V11 behavior.
+//   - Events defined in V10 (SessionOpened etc.) keep V10-typed names even
+//     when emitted by V11 code; only the NEW V2 events type under V11.
+// The UpgradeCap (UPGRADE_CAP_V10) governs the whole lineage and is unchanged.
+export const PACKAGE_ID_V11 =
+  '0xc03817bce45ff492e5d0f40f9e46f5a075a952b50c5c6146b8fb38138bd699eb';
 
 // ── Capabilities ─────────────────────────────────────────────────────────────
 export const ADMIN_CAP_V7 =
@@ -46,7 +62,7 @@ export const UPGRADE_CAP_V10 =
   '0xb840fc9c54271c73f9c5e8f22f42ffda3c46f93914586bf671958ad9e754a274';
 
 // ── Active package ────────────────────────────────────────────────────────────
-export const PACKAGE_ID = PACKAGE_ID_V10;
+export const PACKAGE_ID = PACKAGE_ID_V11;
 export const ADMIN_CAP  = ADMIN_CAP_V10;
 
 // ── All package IDs — READ paths must cover every version ────────────────────
@@ -59,6 +75,7 @@ export const ALL_PACKAGE_IDS = [
   PACKAGE_ID_V8,
   PACKAGE_ID_V9,
   PACKAGE_ID_V10,
+  PACKAGE_ID_V11,
 ];
 
 export const CURVE_ID    = '0xf7c137e90c5a5c9e716c91fdd3561d55e6ba3c11c37a9741b0bfde03dc9d812f';
@@ -109,6 +126,9 @@ export const DRAIN_SUI_APPROX = DRAIN_SUI_V9;
 
 // ── Per-package curve shape ───────────────────────────────────────────────────
 export function curveShapeFor(pkgId) {
+  if (pkgId === PACKAGE_ID_V11) { // defensive: lineage curves type as V10
+    return { virtualSui: VIRTUAL_SUI_V9, virtualTokens: VIRTUAL_TOKENS_V9, drainSui: DRAIN_SUI_V9 };
+  }
   if (pkgId === PACKAGE_ID_V10) {
     return { virtualSui: VIRTUAL_SUI_V9, virtualTokens: VIRTUAL_TOKENS_V9, drainSui: DRAIN_SUI_V9 };
   }
@@ -135,33 +155,40 @@ export function isNewCurve(pkgId) {
   return pkgId === PACKAGE_ID_V5 || pkgId === PACKAGE_ID_V6
       || pkgId === PACKAGE_ID_V7 || pkgId === PACKAGE_ID_V8_1
       || pkgId === PACKAGE_ID_V8
-      || pkgId === PACKAGE_ID_V9 || pkgId === PACKAGE_ID_V10;
+      || pkgId === PACKAGE_ID_V9 || pkgId === PACKAGE_ID_V10
+      || pkgId === PACKAGE_ID_V11;
 }
 export function isV5OrLater(pkgId) {
   return pkgId === PACKAGE_ID_V5 || pkgId === PACKAGE_ID_V6
       || pkgId === PACKAGE_ID_V7 || pkgId === PACKAGE_ID_V8_1
       || pkgId === PACKAGE_ID_V8 || pkgId === PACKAGE_ID_V9
-      || pkgId === PACKAGE_ID_V10;
+      || pkgId === PACKAGE_ID_V10 || pkgId === PACKAGE_ID_V11;
 }
 export function supportsMetadataUpdate(pkgId) {
   return pkgId === PACKAGE_ID_V6 || pkgId === PACKAGE_ID_V7
       || pkgId === PACKAGE_ID_V8_1 || pkgId === PACKAGE_ID_V8
-      || pkgId === PACKAGE_ID_V9 || pkgId === PACKAGE_ID_V10;
+      || pkgId === PACKAGE_ID_V9 || pkgId === PACKAGE_ID_V10
+      || pkgId === PACKAGE_ID_V11;
 }
 export function isV7OrLater(pkgId) {
   return pkgId === PACKAGE_ID_V7 || pkgId === PACKAGE_ID_V8_1
       || pkgId === PACKAGE_ID_V8 || pkgId === PACKAGE_ID_V9
-      || pkgId === PACKAGE_ID_V10;
+      || pkgId === PACKAGE_ID_V10 || pkgId === PACKAGE_ID_V11;
 }
 export function isV8OrLater(pkgId) {
   return pkgId === PACKAGE_ID_V8_1 || pkgId === PACKAGE_ID_V8
-      || pkgId === PACKAGE_ID_V9 || pkgId === PACKAGE_ID_V10;
+      || pkgId === PACKAGE_ID_V9 || pkgId === PACKAGE_ID_V10
+      || pkgId === PACKAGE_ID_V11;
 }
 export function isV9OrLater(pkgId) {
-  return pkgId === PACKAGE_ID_V9 || pkgId === PACKAGE_ID_V10;
+  return pkgId === PACKAGE_ID_V9 || pkgId === PACKAGE_ID_V10
+      || pkgId === PACKAGE_ID_V11;
 }
 export function isV10OrLater(pkgId) {
-  return pkgId === PACKAGE_ID_V10;
+  return pkgId === PACKAGE_ID_V10 || pkgId === PACKAGE_ID_V11;
+}
+export function isV11OrLater(pkgId) {
+  return pkgId === PACKAGE_ID_V11;
 }
 
 // ── Graduation targets ────────────────────────────────────────────────────────

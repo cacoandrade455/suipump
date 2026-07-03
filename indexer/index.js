@@ -35,6 +35,12 @@ const ALL_PACKAGE_IDS = [
   // null backfill cursor, so the next boot sweeps them from the beginning --
   // all missed launches/sessions are ingested retroactively, no manual repair.
   '0x2deda2cade65cd5afd5ffbe799d48f2491debf08d3aef6fa11aa6e1c8afe1598', // V10
+  // V11 -- UPGRADE of V10 (not a separate publish). Events defined in V10
+  // (SessionOpened, TokensPurchased, ...) keep V10-typed names even when
+  // emitted by V11 code, so they are already tracked above; only the NEW V11
+  // event structs (SessionBuyV2/SessionSellV2/UniversalTradingToggled) type
+  // under this id. New types start with null cursors -> swept from genesis.
+  '0xc03817bce45ff492e5d0f40f9e46f5a075a952b50c5c6146b8fb38138bd699eb', // V11
 ];
 
 const PACKAGE_IDS = process.env.PACKAGE_IDS
@@ -64,6 +70,10 @@ const EVENT_NAMES = [
 // V4-V9 (never emitted there), same as the bonding_curve V10 events above.
 const SESSION_EVENT_NAMES = [
   'SessionOpened', 'SessionToppedUp', 'SessionBuy', 'SessionSell', 'SessionClosed',
+  // V11 (define under the V11 package id): richer trade events carrying
+  // spent_total + escrow_after (+ universal flag), and the owner's
+  // universal-trading toggle. Same session-keyed persist + pg_notify pipeline.
+  'SessionBuyV2', 'SessionSellV2', 'UniversalTradingToggled',
 ];
 
 // -- Epoch launch-with-site (partner integration) ------------------------------

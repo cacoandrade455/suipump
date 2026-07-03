@@ -17,7 +17,7 @@ import { useCurrentAccount, useDAppKit, useCurrentClient } from '@mysten/dapp-ki
 import { Transaction } from '@mysten/sui/transactions';
 import { useNavigate } from 'react-router-dom';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
-import { PACKAGE_ID, MIST_PER_SUI } from './constants.js';
+import { PACKAGE_ID, PACKAGE_ID_V10, MIST_PER_SUI } from './constants.js';
 
 // The agent's execution wallet - the session_address authorized to trade the
 // escrow. buy_with_session/sell_with_session are signed by THIS wallet
@@ -852,7 +852,10 @@ function AgentSessionPanel({ account, onSessionChange }) {
       let latest = null; // only populated if the fallback GraphQL path runs
 
       if (!sessionId) {
-        const evType = `${PACKAGE_ID}::agent_session::SessionOpened`;
+        // Event TYPES keep the lineage's DEFINING package id (V10) even when
+        // emitted by upgraded (V11+) code -- PACKAGE_ID is the WRITE target
+        // and moves with each upgrade, so it must not be used for event scans.
+        const evType = `${PACKAGE_ID_V10}::agent_session::SessionOpened`;
         const q = `{ events(filter: { type: "${evType}" }, last: 50) { nodes { contents { json } } } }`;
         const r = await fetch(GQL_URL, {
           method: 'POST',
