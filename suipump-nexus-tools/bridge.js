@@ -404,6 +404,39 @@ async function turnkeyKeyForSession(client, sessionId) {
   }
 }
 
+// -- Session <-> curve version compatibility --------------------------------------
+// Which bonding_curve Curve<T> does this session package's buy_with_session
+// actually accept? Ask the CHAIN (getMoveFunction) instead of assuming.
+// Move type identity survives package upgrades: V10 (0x2deda2...) upgrades the
+// V9 lineage, so curves launched through V10 still carry V9's defining id
+// (0x719698...) in their type - naive "curve pkg == session pkg" equality
+// wrongly rejected every valid curve. Genuinely incompatible curves (V4-V8:
+// separate publishes, therefore distinct Curve types) still fail with a clear
+// error. Cached per session package; on introspection failure the guard is
+// skipped and on-chain simulation gives the final answer.
+const _sessionCurvePkg = new Map();
+async function sessionCurvePackage(client, sessPkgId) {
+  if (_sessionCurvePkg.has(sessPkgId)) return _sessionCurvePkg.get(sessPkgId);
+  let curvePkg = null;
+  try {
+    const res = await client.getMoveFunction({
+      packageId: sessPkgId, moduleName: 'agent_session', name: 'buy_with_session',
+    });
+    for (const p of res?.function?.parameters ?? []) {
+      const tn = p?.body?.datatype?.typeName;
+      if (typeof tn === 'string' && tn.endsWith('::bonding_curve::Curve')) {
+        curvePkg = tn.split('::')[0].toLowerCase();
+        break;
+      }
+    }
+    if (curvePkg) console.log(`[bridge] agent_session at ${sessPkgId.slice(0, 12)}... accepts curves defined by ${curvePkg}`);
+  } catch (e) {
+    console.warn(`[bridge] could not introspect buy_with_session on ${sessPkgId.slice(0, 12)}...: ${e?.message ?? e} - version guard skipped`);
+  }
+  _sessionCurvePkg.set(sessPkgId, curvePkg); // cache misses too (avoid re-querying)
+  return curvePkg;
+}
+
 function jsonResp(res, status, body) {
   res.writeHead(status, {
     'Content-Type': 'application/json',
@@ -766,14 +799,13 @@ async function handleSessionBuy(body) {
   const { pkgId, tokenType, sharedVersion } = await resolveCurve(client, curveId);
   const { pkgId: sessPkgId, sharedVersion: sessVersion } = await resolveSession(client, sessionId);
 
-  // agent_session exists ONLY in the session's own package (V10+), and its
-  // buy_with_session<T> takes that package's Curve<T> type - a curve published
-  // under an older package is a DIFFERENT Move type and can never be passed.
-  // Targeting the curve's package here produced the opaque "unable to find
-  // function <V4>::agent_session::buy_with_session" - fail with the real
-  // reason instead so the strategy brain / UI can surface it.
-  if (pkgId !== sessPkgId) {
-    throw new Error(`session trading works only on curves from the session's package (${sessPkgId}); curve ${curveId} is on ${pkgId} - arm session strategies on a current (V10) token`);
+  // Version guard: buy_with_session only accepts the Curve<T> type it was
+  // compiled against. That type's defining package is introspected from the
+  // chain (see sessionCurvePackage) - NOT assumed equal to the session's own
+  // package, because upgrades keep the original defining id.
+  const compatPkg = await sessionCurvePackage(client, sessPkgId);
+  if (compatPkg && compatPkg !== String(pkgId).toLowerCase()) {
+    throw new Error(`session trading accepts curves defined by ${compatPkg}; curve ${curveId} is defined by ${pkgId} (a separate legacy publish, so its Curve type can never be passed) - arm session strategies on a current-lineage token`);
   }
   const minOut = BigInt(minTokensOut ?? 0);
 
@@ -847,10 +879,10 @@ async function handleSessionSell(body) {
   const { pkgId, tokenType, sharedVersion } = await resolveCurve(client, curveId);
   const { pkgId: sessPkgId, sharedVersion: sessVersion } = await resolveSession(client, sessionId);
 
-  // Same version rule as /session-buy: sell_with_session only exists in the
-  // session's package and only accepts that package's Curve<T>.
-  if (pkgId !== sessPkgId) {
-    throw new Error(`session trading works only on curves from the session's package (${sessPkgId}); curve ${curveId} is on ${pkgId} - arm session strategies on a current (V10) token`);
+  // Same introspected version guard as /session-buy.
+  const compatPkg = await sessionCurvePackage(client, sessPkgId);
+  if (compatPkg && compatPkg !== String(pkgId).toLowerCase()) {
+    throw new Error(`session trading accepts curves defined by ${compatPkg}; curve ${curveId} is defined by ${pkgId} (a separate legacy publish, so its Curve type can never be passed) - arm session strategies on a current-lineage token`);
   }
 
   const tokAtomic = BigInt(Math.floor(parseFloat(tokenAmount) * 1e6));
