@@ -26,7 +26,6 @@
 ///     existing approved keys remain approved (sessions in flight keep
 ///     working) unless explicitly revoked via revoke_key.
 module suipump::enclave_registry {
-    use sui::clock::Clock;
     use sui::dynamic_field as df;
     use sui::event;
     use sui::hash;
@@ -105,19 +104,23 @@ module suipump::enclave_registry {
     }
 
     // ---------- Permissionless: register an attested key ----------
-    /// Anyone may call: the gate is the attestation itself. Sui NATIVELY
-    /// verifies the Nitro document's COSE signature chain (to the AWS Nitro
-    /// root CA) and freshness inside load_nitro_attestation; this module then
-    /// checks the PCR measurements and derives the Sui address of the attested
-    /// ed25519 public key (blake2b-256 over flag(0x00) || pubkey -- the same
-    /// derivation the wallet stack uses).
+    /// Anyone may call: the gate is the attestation itself. Sui's verifier
+    /// (sui::nitro_attestation::load_nitro_attestation) is an ENTRY function --
+    /// callable only as a direct transaction command, never from another
+    /// module -- so registration is a two-command PTB:
+    ///   1. 0x2::nitro_attestation::load_nitro_attestation(bytes, clock)
+    ///      -> natively verifies the COSE signature chain to the AWS Nitro
+    ///         root CA and document freshness, returns NitroAttestationDocument
+    ///   2. register_enclave_key(registry, doc) -- this function
+    /// A NitroAttestationDocument can therefore ONLY exist if step 1's native
+    /// verification succeeded; this module checks the PCR measurements and
+    /// derives the Sui address of the attested ed25519 public key
+    /// (blake2b-256 over flag(0x00) || pubkey -- the wallet-stack derivation).
     public fun register_enclave_key(
-        registry:    &mut EnclaveRegistry,
-        attestation: vector<u8>,
-        clock:       &Clock,
-        _ctx:        &mut TxContext,
+        registry: &mut EnclaveRegistry,
+        doc:      NitroAttestationDocument,
+        _ctx:     &mut TxContext,
     ): address {
-        let doc = nitro_attestation::load_nitro_attestation(attestation, clock);
         assert_pcrs(registry, &doc);
 
         let pk_opt = nitro_attestation::public_key(&doc);
@@ -161,7 +164,7 @@ module suipump::enclave_registry {
     /// Sui address of a raw 32-byte ed25519 public key:
     /// blake2b_256( scheme_flag(0x00) || pubkey_bytes ).
     fun sui_address_for_ed25519(pk: &vector<u8>): address {
-        let mut buf = vector::empty<u8>();
+        let mut buf = vector[];
         vector::push_back(&mut buf, ED25519_FLAG);
         let mut i = 0;
         while (i < 32) {
