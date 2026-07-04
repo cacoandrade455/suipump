@@ -333,11 +333,15 @@ function HoldingsTab({ account, tokens, lang, onTotalValue }) {
             if (tt) typeMap[tt] = { ...(typeMap[tt] ?? {}), ...tk };
           }
 
-          // Every coin balance at the address (paginated: 100/page, 3 pages).
+          // Every coin balance at the address. PAGE SIZE IS 50: the RPC's
+          // GraphQL validator hard-rejects larger pages ("Page size is too
+          // large: 100 > 50"), and that rejection nulls the WHOLE read - which
+          // silently dropped holdings to the attribution fallback. 6 pages
+          // keeps the same 300-coin-type ceiling.
           const balances = [];
           let cursor = null;
-          for (let page = 0; page < 3; page++) {
-            const q = `{ address(address: "${account.address}") { balances(first: 100${cursor ? `, after: "${cursor}"` : ''}) { pageInfo { hasNextPage endCursor } nodes { coinType { repr } totalBalance } } } }`;
+          for (let page = 0; page < 6; page++) {
+            const q = `{ address(address: "${account.address}") { balances(first: 50${cursor ? `, after: "${cursor}"` : ''}) { pageInfo { hasNextPage endCursor } nodes { coinType { repr } totalBalance } } } }`;
             const r = await fetch('https://graphql.testnet.sui.io/graphql', {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ query: q }), signal: AbortSignal.timeout(8000),
