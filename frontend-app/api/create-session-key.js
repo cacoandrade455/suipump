@@ -42,6 +42,12 @@ export default async function handler(req, res) {
   // strict-allowlist policy - any other value is dropped, and the bridge
   // treats a missing mode as 'turnkey'.
   if (body.mode === 'enclave' || body.mode === 'turnkey') forward.mode = body.mode;
+  // Self-funded sessions: the owner's open PTB grants the session its gas, so
+  // the bridge must skip its treasury transfer. STRICT boolean - anything but
+  // literal true is dropped. Omitting this forward line was itself the bug
+  // class: the allowlist silently ate the flag, the bridge took the legacy
+  // treasury path, and the session got double-funded.
+  if (body.skipGasFunding === true) forward.skipGasFunding = true;
 
   const headers = { 'Content-Type': 'application/json' };
   const key = process.env.AGENT_API_KEY;

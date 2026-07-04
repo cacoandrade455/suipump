@@ -51,7 +51,7 @@ const INDEXER_URL   = process.env.SUIPUMP_INDEXER_URL ?? 'https://suipump-62s2.o
 // is OPEN (local dev) but we log a loud warning so it's never silently open in
 // production.
 const AGENT_API_KEY = process.env.AGENT_API_KEY ?? '';
-const WRITE_ENDPOINTS = new Set(['/buy', '/sell', '/launch', '/claim', '/session-buy', '/session-sell', '/provision-session-key']);
+const WRITE_ENDPOINTS = new Set(['/buy', '/sell', '/launch', '/claim', '/session-buy', '/session-sell', '/provision-session-key', '/sweep-session-gas']);
 
 // -- Active package for NEW launches (V11 = upgrade of V10) ----------------------
 // Curves created through V11 still TYPE as V10 (defining id), so all existing
@@ -1160,6 +1160,113 @@ async function handleProvisionSessionKey(body) {
   };
 }
 
+// -- Handler: /sweep-session-gas -------------------------------------------------
+// Return a closed/finished session key's LEFTOVER GAS to the session's OWNER.
+// Self-funded sessions grant the dedicated key ~0.5 SUI at open; whatever it
+// did not burn on trade gas is stranded there after close, because only the
+// Turnkey-held key can move it. This signs ONE final transfer of the entire
+// remaining SUI balance back to the owner recorded at provision time.
+//
+// Owner-directed BY CONSTRUCTION: funds always go to session_signers'
+// owner_address - the caller cannot supply a recipient, so the worst a caller
+// with the API key can do is return someone's own gas to them early.
+//
+// Refuses:
+//   - enclave-backed sessions (ONE shared enclave address serves every enclave
+//     session - sweeping it would strand gas for the live ones);
+//   - addresses that are not provisioned session keys (never sweeps the shared
+//     agent wallet or arbitrary addresses);
+//   - rows with no recorded owner (nowhere safe to send).
+// Dust guard: balances too small to cover the sweep's own gas return
+// { swept:false, reason:'dust' } instead of failing.
+//
+// Body: { sessionId? , sessionAddress?, rpcUrl? }  (one of the two ids)
+async function handleSweepSessionGas(body) {
+  const { sessionId, sessionAddress, rpcUrl } = body ?? {};
+  if (!sessionId && !sessionAddress) throw new Error('sessionId or sessionAddress required');
+
+  const pool = signerPool();
+  if (!pool) return { configured: false, reason: 'database_url_unset' };
+  await ensureSignersTable(pool);
+
+  const client = makeClient(rpcUrl);
+
+  // Resolve the signer row: by bound session_id first (survives close), then by
+  // address - reading the session object's session_address as a fallback for
+  // rows that never lazily bound (a session that never traded).
+  let row = null;
+  if (sessionId) {
+    const r = await pool.query(
+      `SELECT sui_address, sign_with, public_key_hex, owner_address, is_enclave
+       FROM session_signers WHERE session_id = $1`, [sessionId]);
+    row = r.rows[0] ?? null;
+  }
+  if (!row) {
+    let addr = typeof sessionAddress === 'string' ? sessionAddress.toLowerCase() : null;
+    if (!addr && sessionId) {
+      try { addr = await sessionAddressOf(client, sessionId); } catch { /* object gone */ }
+    }
+    if (addr) {
+      const r = await pool.query(
+        `SELECT sui_address, sign_with, public_key_hex, owner_address, is_enclave
+         FROM session_signers WHERE sui_address = $1`, [addr]);
+      row = r.rows[0] ?? null;
+    }
+  }
+  if (!row)             throw new Error('no provisioned session key found for this session - nothing to sweep');
+  if (row.is_enclave)   return { swept: false, reason: 'enclave_shared_address' };
+  if (!row.owner_address) throw new Error('session key has no recorded owner - refusing to sweep');
+
+  const address = row.sui_address;
+  const owner   = row.owner_address;
+
+  // Entire remaining SUI balance at the session key address.
+  const coinsRes = await client.listCoins({ owner: address, coinType: '0x2::sui::SUI' });
+  const coinList = coinsRes?.objects ?? coinsRes?.data ?? [];
+  const totalMist = coinList.reduce((s, c) => s + BigInt(c.balance ?? c.coinBalance ?? 0), 0n);
+  // Must cover its own gas with real margin (typical transfer ~1.1e6 MIST).
+  if (totalMist < 3_000_000n) {
+    return { swept: false, reason: 'dust', balanceMist: totalMist.toString() };
+  }
+
+  // transferObjects([tx.gas]) sends the ENTIRE gas coin (all SUI at the
+  // sender, every coin merged) minus the fee - the canonical send-all.
+  const tx = new Transaction();
+  tx.setSender(address);
+  tx.transferObjects([tx.gas], owner);
+
+  const sessionKey = { signWith: row.sign_with, publicKeyHex: row.public_key_hex };
+  const result = await signViaEnclave({
+    client, transaction: tx, sessionKey,
+    fallbackKeypair: loadKeypair(), // unused: sessionKey is always set here
+    include: { balanceChanges: true },
+  });
+  if (!txOk(result)) throw new Error(`gas sweep failed: ${txErrorOf(result) ?? 'transaction failed'}`);
+
+  // Exact amount the owner received, from balanceChanges when available.
+  let sweptMist = null;
+  const changes = result?.balanceChanges ?? result?.effects?.balanceChanges ?? [];
+  for (const ch of changes) {
+    const chOwner = ch?.owner?.AddressOwner ?? ch?.owner;
+    if (typeof chOwner === 'string' && chOwner.toLowerCase() === owner.toLowerCase()
+        && String(ch?.coinType ?? '').includes('sui::SUI') && BigInt(ch?.amount ?? 0) > 0n) {
+      sweptMist = BigInt(ch.amount).toString();
+      break;
+    }
+  }
+  if (sweptMist == null) sweptMist = totalMist.toString(); // gross-of-fee approximation
+
+  console.log(`[signer] swept ${sweptMist} MIST leftover gas from session key ${address} back to owner ${owner}`);
+  return {
+    swept:     true,
+    sweptMist,
+    owner,
+    sessionAddress: address,
+    txDigest:  txDigestOf(result),
+    bootId:    BRIDGE_BOOT_ID,
+  };
+}
+
 // -- Handler: /claim -----------------------------------------------------------
 // Body: { curveId, privateKey?, rpcUrl? }
 async function handleClaim(body) {
@@ -1581,6 +1688,7 @@ const server = http.createServer(async (req, res) => {
       case '/session-buy':  result = await handleSessionBuy(body);  break;
       case '/session-sell': result = await handleSessionSell(body); break;
       case '/provision-session-key': result = await handleProvisionSessionKey(body); break;
+      case '/sweep-session-gas': result = await handleSweepSessionGas(body); break;
       case '/claim':  result = await handleClaim(body);  break;
       case '/launch': result = await handleLaunch(body); break;
       case '/status': result = await handleStatus(body); break;

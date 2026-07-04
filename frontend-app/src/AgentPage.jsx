@@ -1207,7 +1207,24 @@ function AgentSessionPanel({ account, onSessionChange }) {
       const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
       if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Close failed');
       rememberClosedSession(session.id);
-      setMsg('Session closed - unspent escrow returned to your wallet.');
+      // Best-effort leftover-gas sweep: the session's dedicated key still holds
+      // the unburned remainder of its self-funded gas grant, and only that key
+      // can move it. The bridge signs one final transfer back to this wallet
+      // (owner-directed on the bridge side). Never blocks the close - a failed
+      // or dust-skipped sweep just omits the note.
+      let sweepNote = '';
+      try {
+        const sr = await fetch('/api/sweep-session-gas', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId: session.id }),
+          signal: AbortSignal.timeout(30000),
+        });
+        const sd = await sr.json().catch(() => ({}));
+        if (sr.ok && sd.swept === true && sd.sweptMist) {
+          sweepNote = ` Leftover gas (${(Number(sd.sweptMist) / 1e9).toFixed(4)} SUI) swept back to your wallet.`;
+        }
+      } catch { /* non-fatal */ }
+      setMsg('Session closed - unspent escrow returned to your wallet.' + sweepNote);
       setSession(null);
       setTimeout(loadSession, 1500);
     } catch (e) { setMsg(e.message || 'Close failed'); }
