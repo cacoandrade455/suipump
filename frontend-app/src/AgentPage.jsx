@@ -27,6 +27,13 @@ const AGENT_SESSION_WALLET = import.meta.env.VITE_AGENT_SESSION_WALLET
   || '0x877af0fae3fa4f8ea936943b59bcd66104f67cf1895302e97761a28b3c3a5906';
 const AGENT_SUI_CLOCK_ID = '0x6';
 
+// Nautilus Phase 2: the live EnclaveRegistry pinning the enclave build's PCRs.
+// open_and_share_attested requires session_address to be a key this registry
+// approved via Sui's NATIVE Nitro attestation verification - "the signer is
+// enclave-held" becomes a chain-verified fact instead of an operator claim.
+const ENCLAVE_REGISTRY_ID = import.meta.env.VITE_ENCLAVE_REGISTRY_ID
+  || '0xf001bf6b078879b95c969ea11ef07dd53ffed364c62d8832990077f67d4996a1';
+
 const RUNNER_URL  = import.meta.env.VITE_AGENT_RUNNER_URL || 'https://suipump-agent-runner.onrender.com';
 const BRIDGE_URL  = import.meta.env.VITE_SUIPUMP_BRIDGE_URL || 'https://suipump-bridge.onrender.com';
 const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || 'https://suipump-62s2.onrender.com';
@@ -875,6 +882,38 @@ function AgentSessionPanel({ account, onSessionChange }) {
   const [days, setDays]             = useState('7');
   const [now, setNow]               = useState(Date.now());
 
+  // Signing-key mode for NEW sessions. TURNKEY (default): per-session key in
+  // Turnkey's TEE, operator-attested, always available. ENCLAVE (Nautilus):
+  // key born in a Nitro enclave and CHAIN-attested via
+  // open_and_share_attested - selectable only while the bridge reports a live
+  // enclave signer (ENCLAVE_SIGNER_URL set); greyed out otherwise so users
+  // can never pick a mode that cannot sign.
+  const [signerMode, setSignerMode] = useState('turnkey');
+  const [enclaveAvailable, setEnclaveAvailable] = useState(false);
+
+  useEffect(() => {
+    let dead = false;
+    (async () => {
+      try {
+        const r = await fetch(`${BRIDGE_URL}/health`, { signal: AbortSignal.timeout(8000) });
+        const h = await r.json().catch(() => ({}));
+        // Tolerant feature detection over the health blob (field naming has
+        // varied). Unknown or missing => unavailable: the safe default is the
+        // ENCLAVE option greying out, never a session that cannot sign.
+        const up = h?.enclave === true
+          || h?.enclave?.configured === true
+          || h?.enclave?.up === true
+          || h?.enclaveConfigured === true;
+        if (!dead) setEnclaveAvailable(!!up);
+      } catch { /* bridge unreachable - leave enclave mode greyed */ }
+    })();
+    return () => { dead = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!enclaveAvailable && signerMode === 'enclave') setSignerMode('turnkey');
+  }, [enclaveAvailable, signerMode]);
+
   // Resolve the user's most-recent session object by reading SessionOpened
   // events for this owner, then fetching that object's live state on-chain.
   const loadSession = useCallback(async () => {
@@ -1015,12 +1054,15 @@ function AgentSessionPanel({ account, onSessionChange }) {
       // agent wallet so opening a session NEVER breaks; the on-chain caps
       // (spend cap / expiry / revoke) protect the user on both paths.
       let sessionAddress = AGENT_SESSION_WALLET;
-      let enclaveKey = false;
+      let enclaveKey = false;   // per-session Turnkey-held key provisioned
+      let attested = false;     // Nautilus: chain-attested enclave key
       try {
-        setMsg('Provisioning a dedicated enclave signing key...');
+        setMsg(signerMode === 'enclave'
+          ? 'Requesting the chain-attested enclave signing key...'
+          : 'Provisioning a dedicated enclave signing key...');
         const pr = await fetch('/api/create-session-key', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ownerAddress: account.address }),
+          body: JSON.stringify({ ownerAddress: account.address, mode: signerMode }),
           signal: AbortSignal.timeout(30000),
         });
         const pd = await pr.json().catch(() => ({}));
@@ -1028,28 +1070,66 @@ function AgentSessionPanel({ account, onSessionChange }) {
             && typeof pd.sessionAddress === 'string' && pd.sessionAddress.startsWith('0x')) {
           sessionAddress = pd.sessionAddress;
           enclaveKey = true;
+          attested = signerMode === 'enclave';
         }
-      } catch { /* provisioning unreachable - shared-wallet fallback below */ }
+      } catch { /* provisioning unreachable - handled per mode below */ }
+
+      // ENCLAVE mode is an explicit trust upgrade the user selected: NEVER
+      // silently downgrade it to the shared wallet (that would hand back the
+      // exact trust claim they asked to remove). TURNKEY mode keeps the
+      // always-works shared-wallet fallback; on-chain caps protect both.
+      if (signerMode === 'enclave' && !attested) {
+        throw new Error('Enclave key unavailable - the enclave signer may be offline. Retry, or open in TURNKEY mode.');
+      }
 
       const depMist = BigInt(Math.round(dep * 1e9));
       const capMist = BigInt(Math.round((cap > 0 ? cap : 0) * 1e9)); // 0 = unbounded
       const expiryMs = BigInt(Date.now() + Math.round(dd * 24 * 60 * 60 * 1000));
       const tx = new Transaction();
       const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(depMist)]);
-      tx.moveCall({
-        target: `${PACKAGE_ID}::agent_session::open_and_share`,
-        arguments: [
-          coin,
-          tx.pure.address(sessionAddress),
-          tx.pure.u64(capMist),
-          tx.pure.u64(expiryMs),
-        ],
-      });
+      if (attested) {
+        // V12 Nautilus path: the CHAIN verifies session_address is a key the
+        // EnclaveRegistry approved (aborts with err 12 EKeyNotAttested
+        // otherwise). The registry is a shared object, read immutably.
+        tx.moveCall({
+          target: `${PACKAGE_ID}::agent_session::open_and_share_attested`,
+          arguments: [
+            coin,
+            tx.pure.address(sessionAddress),
+            tx.pure.u64(capMist),
+            tx.pure.u64(expiryMs),
+            tx.object(ENCLAVE_REGISTRY_ID),
+          ],
+        });
+      } else {
+        tx.moveCall({
+          target: `${PACKAGE_ID}::agent_session::open_and_share`,
+          arguments: [
+            coin,
+            tx.pure.address(sessionAddress),
+            tx.pure.u64(capMist),
+            tx.pure.u64(expiryMs),
+          ],
+        });
+      }
       const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Open failed');
-      setMsg(enclaveKey
-        ? 'Session opened with a dedicated enclave key - trades are signed inside a secure enclave, isolated per session.'
-        : 'Session opened - the agent can now trade your escrow.');
+      if (res.FailedTransaction) {
+        const raw = res.FailedTransaction.status?.error;
+        const errStr = typeof raw === 'string' ? raw : JSON.stringify(raw ?? {});
+        // err 12 EKeyNotAttested: the enclave restarted since its key was
+        // registered (keys die with the instance by design), so the address
+        // the bridge handed out is no longer the registered one.
+        if (/EKeyNotAttested/i.test(errStr)
+            || (/abort/i.test(errStr) && /agent_session/i.test(errStr) && /(\D|^)12(\D|$)/.test(errStr))) {
+          throw new Error('The enclave key is not registered on-chain - the enclave likely restarted since registration. Re-register its key, or open in TURNKEY mode.');
+        }
+        throw new Error(errStr || 'Open failed');
+      }
+      setMsg(attested
+        ? 'Session opened with a CHAIN-ATTESTED enclave key - Sui itself verified the signer is enclave-held (Nautilus).'
+        : enclaveKey
+          ? 'Session opened with a dedicated enclave key - trades are signed inside a secure enclave, isolated per session.'
+          : 'Session opened - the agent can now trade your escrow.');
       setTimeout(loadSession, 1500);
     } catch (e) { setMsg(e.message || 'Open failed'); }
     finally { setBusy(false); }
@@ -1201,6 +1281,26 @@ function AgentSessionPanel({ account, onSessionChange }) {
               <input value={days} onChange={e => setDays(e.target.value)} inputMode="decimal"
                 className="mt-1 w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-violet-400/40" />
             </label>
+          </div>
+          <div>
+            <span className="text-[8px] font-mono text-white/30 tracking-widest">SIGNING KEY</span>
+            <div className="mt-1 grid grid-cols-2 gap-2">
+              <button type="button" onClick={() => setSignerMode('turnkey')}
+                title="Per-session key held in Turnkey's TEE; isolated from every other session"
+                className={`py-1.5 rounded-lg text-[9px] font-mono tracking-widest border transition-colors ${signerMode === 'turnkey' ? 'bg-violet-500/20 text-violet-200 border-violet-400/40' : 'bg-white/5 text-white/40 border-white/10 hover:bg-white/10'}`}>
+                TURNKEY
+                <span className="block text-[7px] tracking-normal opacity-60 mt-0.5">per-session TEE key</span>
+              </button>
+              <button type="button" onClick={() => enclaveAvailable && setSignerMode('enclave')}
+                disabled={!enclaveAvailable}
+                title={enclaveAvailable
+                  ? 'Key born inside a Nitro enclave; Sui natively verified its attestation on-chain'
+                  : 'No live enclave signer right now - Turnkey secures this session instead'}
+                className={`py-1.5 rounded-lg text-[9px] font-mono tracking-widest border transition-colors ${!enclaveAvailable ? 'bg-white/[0.02] text-white/15 border-white/5 cursor-not-allowed' : signerMode === 'enclave' ? 'bg-lime-400/15 text-lime-300 border-lime-400/40' : 'bg-white/5 text-white/40 border-white/10 hover:bg-white/10'}`}>
+                ENCLAVE
+                <span className="block text-[7px] tracking-normal opacity-60 mt-0.5">{enclaveAvailable ? 'chain-attested (Nautilus)' : 'offline'}</span>
+              </button>
+            </div>
           </div>
           <button onClick={doOpen} disabled={busy}
             className={`w-full py-2 rounded-lg text-[11px] font-mono tracking-widest transition-colors ${busy ? 'bg-white/5 text-white/25' : 'bg-violet-500/80 hover:bg-violet-500 text-white'}`}>

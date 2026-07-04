@@ -63,6 +63,84 @@ function getTurnkey() {
   return _tk;
 }
 
+// ---- Nautilus enclave backend (Phase 2) ------------------------------------
+// A per-session key can be held by EITHER Turnkey (Phase 1) OR a Nitro enclave
+// running our signer (Phase 2). The enclave exposes the SAME {r,s} sign shape
+// as Turnkey's signRawPayload, so only the transport differs. Selection is per
+// session key: a key tagged { enclave: true } routes to ENCLAVE_SIGNER_URL.
+//
+// ENCLAVE_SIGNER_URL points at the parent instance's TCP->vsock bridge
+// (e.g. http://10.0.0.5:7746). When unset, enclave keys cannot be used and the
+// bridge falls back exactly as it does when Turnkey is unconfigured.
+export function enclaveConfigured() {
+  return !!process.env.ENCLAVE_SIGNER_URL;
+}
+function enclaveUrl() {
+  const u = process.env.ENCLAVE_SIGNER_URL;
+  return u ? u.replace(/\/+$/, '') : null;
+}
+
+// Fetch the enclave's ed25519 public key (hex). Its Sui address becomes the
+// session_address, exactly like a Turnkey key's. Used by the provisioning
+// path for attested sessions.
+export async function enclavePublicKeyHex() {
+  const base = enclaveUrl();
+  if (!base) throw new Error('ENCLAVE_SIGNER_URL not set');
+  const r = await fetch(`${base}/public_key`, { signal: AbortSignal.timeout(8000) });
+  if (!r.ok) throw new Error(`enclave /public_key failed: HTTP ${r.status}`);
+  const d = await r.json();
+  const pk = d?.public_key ?? d?.publicKey;
+  if (!pk) throw new Error('enclave /public_key returned no key');
+  return String(pk).replace(/^0x/i, '').toLowerCase();
+}
+
+// Fetch the enclave's raw Nitro attestation document (hex) for on-chain
+// registration. Returns null when the enclave is built without --features nsm
+// (dev mode): the caller can still provision/sign, just not register on-chain.
+export async function enclaveAttestationHex() {
+  const base = enclaveUrl();
+  if (!base) throw new Error('ENCLAVE_SIGNER_URL not set');
+  const r = await fetch(`${base}/attestation`, { signal: AbortSignal.timeout(15000) });
+  if (r.status === 501) return null; // built without nsm
+  if (!r.ok) throw new Error(`enclave /attestation failed: HTTP ${r.status}`);
+  const d = await r.json();
+  return (d?.attestation ?? '').replace(/^0x/i, '').toLowerCase() || null;
+}
+
+// Sign a 32-byte digest (hex) with the enclave key -> { r, s } hex, matching
+// Turnkey's signRawPayload output shape.
+async function enclaveSignDigest(digestHex) {
+  const base = enclaveUrl();
+  if (!base) throw new Error('ENCLAVE_SIGNER_URL not set');
+  const r = await fetch(`${base}/sign`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ payload: digestHex }),
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!r.ok) throw new Error(`enclave /sign failed: HTTP ${r.status}`);
+  const d = await r.json();
+  if (!d?.r || !d?.s) throw new Error('enclave /sign returned no r/s');
+  return { r: d.r, s: d.s };
+}
+
+// Produce { r, s } for a digest from whichever backend this session key names.
+// enclave key  -> ENCLAVE_SIGNER_URL /sign
+// turnkey key  -> signRawPayload (HASH_FUNCTION_NOT_APPLICABLE; pre-hashed)
+async function signRawDigest(sessionKey, digestHex) {
+  if (sessionKey?.enclave) {
+    return await enclaveSignDigest(digestHex);
+  }
+  const tk = getTurnkey();
+  if (!tk) throw new Error('Turnkey not configured for a non-enclave session key');
+  return await tk.signRawPayload({
+    signWith: sessionKey.signWith,
+    payload: digestHex,
+    encoding: 'PAYLOAD_ENCODING_HEXADECIMAL',
+    hashFunction: 'HASH_FUNCTION_NOT_APPLICABLE',
+  });
+}
+
 // Serialize a raw 64-byte Ed25519 signature + public key into Sui's
 // flag || sig || pk base64 form. Mirrors Turnkey's documented Sui helper.
 function toSerializedSignature(rawSig64, pubKey) {
@@ -92,20 +170,27 @@ function toSerializedSignature(rawSig64, pubKey) {
 // bridge's existing txOk / txDigestOf helpers keep working unchanged.
 export async function signAndExecute({ client, transaction, sessionKey, fallbackKeypair, include }) {
   const tk = getTurnkey();
+  // A usable session key is either a Turnkey key (needs Turnkey configured) or
+  // an enclave key (needs ENCLAVE_SIGNER_URL). Anything else -> local fallback.
+  const isEnclaveKey = !!(sessionKey?.enclave && sessionKey?.publicKeyHex && enclaveConfigured());
+  const isTurnkeyKey = !!(tk && sessionKey?.signWith && sessionKey?.publicKeyHex);
 
-  // Fallback path: no per-session Turnkey key, or Turnkey not configured.
-  // Identical behavior to the pre-Turnkey bridge -- local keypair signs.
-  if (!tk || !sessionKey?.signWith || !sessionKey?.publicKeyHex) {
+  // Fallback path: no usable per-session key. Identical to the pre-Turnkey
+  // bridge -- local keypair signs.
+  if (!isEnclaveKey && !isTurnkeyKey) {
     if (!fallbackKeypair) {
-      throw new Error('No Turnkey session key and no fallback keypair available to sign');
+      throw new Error('No usable session key (turnkey/enclave) and no fallback keypair available to sign');
     }
-    console.log(`[turnkey] signing via LOCAL fallback keypair${tk ? ' (no session key mapped)' : ' (Turnkey not configured)'}`);
+    const why = sessionKey?.enclave
+      ? (enclaveConfigured() ? 'enclave key incomplete' : 'enclave not configured')
+      : (tk ? 'no session key mapped' : 'Turnkey not configured');
+    console.log(`[signer] signing via LOCAL fallback keypair (${why})`);
     return await client.signAndExecuteTransaction({
       signer: fallbackKeypair, transaction, include,
     });
   }
 
-  // Turnkey path: sign the intent digest inside the enclave.
+  // Enclave/Turnkey path: sign the intent digest with the session's held key.
   // 1. Build the transaction to canonical bytes against this client.
   const txBytes = await transaction.build({ client });
 
@@ -113,15 +198,10 @@ export async function signAndExecute({ client, transaction, sessionKey, fallback
   const intentMessage = messageWithIntent('TransactionData', txBytes);
   const digest = blake2b(intentMessage, { dkLen: 32 });
 
-  // 3. Ask Turnkey to sign the 32-byte digest with the session's key. The
-  //    private key never leaves the enclave. HASH_FUNCTION_NOT_APPLICABLE
-  //    because we pre-hashed (Sui's external blake2b), exactly as Sui requires.
-  const { r, s } = await tk.signRawPayload({
-    signWith: sessionKey.signWith,
-    payload: bytesToHex(digest),
-    encoding: 'PAYLOAD_ENCODING_HEXADECIMAL',
-    hashFunction: 'HASH_FUNCTION_NOT_APPLICABLE',
-  });
+  // 3. Ask the session's backend to sign the 32-byte digest. The private key
+  //    never leaves Turnkey's TEE / the Nitro enclave. Pre-hashed (Sui's
+  //    external blake2b), so Turnkey uses HASH_FUNCTION_NOT_APPLICABLE.
+  const { r, s } = await signRawDigest(sessionKey, bytesToHex(digest));
 
   // 4. Ed25519 raw signature is r||s => 64 bytes.
   //    Turnkey's signRawPayload returns { r, s, v } -- fields named for ECDSA,
@@ -146,7 +226,7 @@ export async function signAndExecute({ client, transaction, sessionKey, fallback
     throw new Error('Turnkey signature failed local verification against session pubkey; refusing to broadcast');
   }
 
-  console.log(`[turnkey] signing via enclave key ${sessionKey.signWith.slice(0, 10)}...`);
+  console.log(`[signer] signing via ${sessionKey.enclave ? 'ENCLAVE' : 'enclave key ' + String(sessionKey.signWith).slice(0, 10)}...`);
 
   // 6. Execute with the externally-produced signature.
   //    NOTE: SuiGraphQLClient.executeTransaction expects `signatures: string[]`

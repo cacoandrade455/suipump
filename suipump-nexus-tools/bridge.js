@@ -32,6 +32,9 @@ import {
   suiAddressForPublicKeyHex,
   turnkeyConfigured,
   provisionEd25519Key,
+  enclaveConfigured,
+  enclavePublicKeyHex,
+  enclaveAttestationHex,
 } from './turnkey_signer.js';
 
 const __dirname     = path.dirname(fileURLToPath(import.meta.url));
@@ -342,22 +345,24 @@ async function ensureSignersTable(pool) {
       public_key_hex TEXT NOT NULL,
       owner_address  TEXT,
       session_id     TEXT UNIQUE,
+      is_enclave     BOOLEAN DEFAULT false,
       created_at     TIMESTAMPTZ DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS idx_session_signers_session ON session_signers (session_id);
   `);
+  await pool.query(`ALTER TABLE session_signers ADD COLUMN IF NOT EXISTS is_enclave BOOLEAN DEFAULT false;`);
   _signersTableReady = true;
 }
 
-async function insertSessionSigner({ suiAddress, signWith, publicKeyHex, ownerAddress }) {
+async function insertSessionSigner({ suiAddress, signWith, publicKeyHex, ownerAddress, isEnclave }) {
   const pool = signerPool();
   if (!pool) throw new Error('DATABASE_URL not set - cannot persist session signer mapping');
   await ensureSignersTable(pool);
   await pool.query(
-    `INSERT INTO session_signers (sui_address, sign_with, public_key_hex, owner_address)
-     VALUES ($1, $2, $3, $4)
+    `INSERT INTO session_signers (sui_address, sign_with, public_key_hex, owner_address, is_enclave)
+     VALUES ($1, $2, $3, $4, $5)
      ON CONFLICT (sui_address) DO NOTHING`,
-    [suiAddress.toLowerCase(), signWith, publicKeyHex, ownerAddress ?? null]
+    [suiAddress.toLowerCase(), signWith, publicKeyHex, ownerAddress ?? null, !!isEnclave]
   );
 }
 
@@ -384,10 +389,10 @@ async function sessionAddressOf(client, sessionId) {
 }
 
 async function turnkeyKeyForSession(client, sessionId) {
-  // Without Turnkey creds NO enclave key is usable - returning one anyway would
-  // set the tx sender to the enclave address while the fallback signs with the
-  // shared keypair, guaranteeing an on-chain sender/signature mismatch.
-  if (!turnkeyConfigured()) return null;
+  // Without a configured backend NO session key is usable - returning one would
+  // set the tx sender to that address while the fallback signs with the shared
+  // keypair, guaranteeing an on-chain sender/signature mismatch.
+  if (!turnkeyConfigured() && !enclaveConfigured()) return null;
 
   // Layer 1: interim env map.
   const envKey = envMapKeyForSession(sessionId);
@@ -405,7 +410,10 @@ async function turnkeyKeyForSession(client, sessionId) {
       [sessionId]
     );
     if (bound.rows[0]) {
-      return { signWith: bound.rows[0].sign_with, publicKeyHex: bound.rows[0].public_key_hex };
+      const row = bound.rows[0];
+      return row.is_enclave
+        ? { enclave: true, publicKeyHex: row.public_key_hex }
+        : { signWith: row.sign_with, publicKeyHex: row.public_key_hex };
     }
 
     // Lazy bind: match the session's on-chain session_address to a provisioned
@@ -416,12 +424,15 @@ async function turnkeyKeyForSession(client, sessionId) {
     const byAddr = await pool.query(
       `UPDATE session_signers SET session_id = $1
        WHERE sui_address = $2 AND (session_id IS NULL OR session_id = $1)
-       RETURNING sign_with, public_key_hex`,
+       RETURNING sign_with, public_key_hex, is_enclave`,
       [sessionId, sessAddr]
     );
     if (byAddr.rows[0]) {
-      console.log(`[turnkey] bound session ${sessionId.slice(0, 12)}... to enclave key at ${sessAddr.slice(0, 12)}...`);
-      return { signWith: byAddr.rows[0].sign_with, publicKeyHex: byAddr.rows[0].public_key_hex };
+      const row = byAddr.rows[0];
+      console.log(`[signer] bound session ${sessionId.slice(0, 12)}... to ${row.is_enclave ? 'ENCLAVE' : 'turnkey'} key at ${sessAddr.slice(0, 12)}...`);
+      return row.is_enclave
+        ? { enclave: true, publicKeyHex: row.public_key_hex }
+        : { signWith: row.sign_with, publicKeyHex: row.public_key_hex };
     }
     return null; // session_address is not a provisioned key (e.g. shared agent wallet)
   } catch (e) {
@@ -1059,29 +1070,48 @@ async function handleSessionSell(body) {
 const TURNKEY_GAS_FUND_MIST = BigInt(process.env.TURNKEY_GAS_FUND_MIST ?? '500000000'); // 0.5 SUI
 
 async function handleProvisionSessionKey(body) {
-  const { ownerAddress, rpcUrl } = body ?? {};
+  const { ownerAddress, rpcUrl, mode } = body ?? {};
 
-  if (!turnkeyConfigured()) {
-    return { configured: false, reason: 'turnkey_env_unset' };
-  }
   if (!signerPool()) {
     return { configured: false, reason: 'database_url_unset' };
   }
 
-  // 1. Create the key inside the enclave and derive its Sui address.
-  const label = `suipump-session-${(ownerAddress ?? 'anon').slice(0, 16)}-${Date.now()}`;
-  const { signWith, publicKeyHex, suiAddress } = await provisionEd25519Key(label);
+  // Backend selection: mode:'enclave' provisions against the Nautilus enclave
+  // (Phase 2, chain-attestable); otherwise Turnkey (Phase 1). The enclave holds
+  // ONE key, so provisioning reads its public key rather than minting a new
+  // one -- every enclave-mode session shares that attested key (isolation still
+  // holds on-chain via each session's own caps/expiry/revoke; per-user key
+  // isolation is the Turnkey path's property, chain-attestation is the
+  // enclave path's). A future multi-key enclave can mint per session here.
+  const useEnclave = mode === 'enclave';
+
+  if (useEnclave) {
+    if (!enclaveConfigured()) return { configured: false, reason: 'enclave_url_unset' };
+  } else {
+    if (!turnkeyConfigured()) return { configured: false, reason: 'turnkey_env_unset' };
+  }
+
+  // 1. Obtain the session key's address.
+  let signWith = null;
+  let publicKeyHex;
+  let suiAddress;
+  if (useEnclave) {
+    publicKeyHex = await enclavePublicKeyHex();
+    suiAddress   = suiAddressForPublicKeyHex(publicKeyHex);
+  } else {
+    const label = `suipump-session-${(ownerAddress ?? 'anon').slice(0, 16)}-${Date.now()}`;
+    ({ signWith, publicKeyHex, suiAddress } = await provisionEd25519Key(label));
+  }
 
   // 2. Persist the mapping FIRST (keyed by address; session_id bound lazily on
-  // first trade). If the gas transfer below fails, the row is a harmless
-  // never-bound record and the UI falls back to the shared wallet.
-  await insertSessionSigner({ suiAddress, signWith, publicKeyHex, ownerAddress });
+  // first trade). Harmless never-bound record if gas funding below fails.
+  await insertSessionSigner({ suiAddress, signWith: signWith ?? suiAddress, publicKeyHex, ownerAddress, isEnclave: useEnclave });
 
-  // 3. Fund gas. Without this every trade from the fresh address would fail on
-  // gas selection. Amount is deliberately small and env-tunable; unspent gas
-  // simply stays at the session address (documented dust, never user escrow).
+  // 3. Fund gas from the bridge wallet (a fresh session address holds none; the
+  // enclave address may already be funded from a prior session, in which case
+  // this is a harmless top-up).
   const client  = makeClient(rpcUrl);
-  const keypair = loadKeypair(); // bridge wallet pays the gas grant
+  const keypair = loadKeypair();
   const tx = new Transaction();
   const [gasCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(TURNKEY_GAS_FUND_MIST)]);
   tx.transferObjects([gasCoin], suiAddress);
@@ -1090,16 +1120,17 @@ async function handleProvisionSessionKey(body) {
   try {
     result = await client.signAndExecuteTransaction({ signer: keypair, transaction: tx });
   } catch (e) {
-    throw new Error(`session key created (${suiAddress}) but gas funding failed: ${e?.message ?? e}`);
+    throw new Error(`session key ready (${suiAddress}) but gas funding failed: ${e?.message ?? e}`);
   }
   if (!txOk(result)) {
-    throw new Error(`session key created (${suiAddress}) but gas funding failed: ${txErrorOf(result) ?? 'transfer failed'}`);
+    throw new Error(`session key ready (${suiAddress}) but gas funding failed: ${txErrorOf(result) ?? 'transfer failed'}`);
   }
 
-  console.log(`[turnkey] provisioned session key ${suiAddress} (owner ${ownerAddress ?? 'unknown'}), funded ${TURNKEY_GAS_FUND_MIST} MIST gas`);
+  console.log(`[signer] provisioned ${useEnclave ? 'ENCLAVE' : 'turnkey'} session key ${suiAddress} (owner ${ownerAddress ?? 'unknown'}), funded ${TURNKEY_GAS_FUND_MIST} MIST gas`);
 
   return {
     configured:     true,
+    backend:        useEnclave ? 'enclave' : 'turnkey',
     sessionAddress: suiAddress,
     publicKeyHex,
     gasFundedMist:  TURNKEY_GAS_FUND_MIST.toString(),
@@ -1532,7 +1563,7 @@ const server = http.createServer(async (req, res) => {
       case '/claim':  result = await handleClaim(body);  break;
       case '/launch': result = await handleLaunch(body); break;
       case '/status': result = await handleStatus(body); break;
-      case '/health': result = { status: 'ok', ts: Date.now(), bootId: BRIDGE_BOOT_ID, uptimeMs: Date.now() - BRIDGE_BOOT_TS, buyCacheSize: _buyCompleted.size, buyInflight: _buyInflight.size, turnkey: turnkeyConfigured(), signerDb: !!process.env.DATABASE_URL }; break;
+      case '/health': result = { status: 'ok', ts: Date.now(), bootId: BRIDGE_BOOT_ID, uptimeMs: Date.now() - BRIDGE_BOOT_TS, buyCacheSize: _buyCompleted.size, buyInflight: _buyInflight.size, turnkey: turnkeyConfigured(), enclave: enclaveConfigured(), signerDb: !!process.env.DATABASE_URL }; break;
       default:
         jsonResp(res, 404, { error: `Unknown endpoint: ${req.url}` });
         return;
@@ -1548,7 +1579,7 @@ server.listen(PORT, () => {
   console.log(`[bridge] SuiPump bridge listening on port ${PORT}`);
   console.log(`[bridge] Indexer: ${INDEXER_URL}`);
   console.log(`[bridge] Endpoints: /buy /sell /session-buy /session-sell /provision-session-key /claim /launch /status /health`);
-  console.log(`[bridge] Turnkey: ${turnkeyConfigured() ? 'CONFIGURED (per-session enclave signing active)' : 'not configured (shared-key fallback for all sessions)'}; signer DB: ${process.env.DATABASE_URL ? 'set' : 'unset'}`);
+  console.log(`[bridge] Turnkey: ${turnkeyConfigured() ? 'CONFIGURED' : 'not configured'}; Enclave: ${enclaveConfigured() ? 'CONFIGURED (' + process.env.ENCLAVE_SIGNER_URL + ')' : 'not configured'}; signer DB: ${process.env.DATABASE_URL ? 'set' : 'unset'}`);
 });
 
 export { handleBuy, handleSell, handleClaim, handleLaunch, handleSessionBuy, handleSessionSell, handleProvisionSessionKey };
