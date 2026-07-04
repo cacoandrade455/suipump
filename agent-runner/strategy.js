@@ -100,6 +100,10 @@ function normalizeRemote(R) {
     id: R.id,
     curveId: R.curveId,
     tokenType: R.tokenType ?? null,
+    // Owner attribution must SURVIVE normalization - recordFire/notifyBell
+    // read order.wallet, and this rebuild is the only path orders take into
+    // the brain (the third allowlist-drops-the-new-field bug of its kind).
+    wallet: R.wallet ?? null,
     packageId: null,
     entryPriceSui: R.entryPriceSui != null ? Number(R.entryPriceSui) : null,
     minSuiOut: Number(R.minSuiOut ?? 0),
@@ -963,6 +967,8 @@ function scaffoldNormalize(R) {
     id: R.id,
     curveId: R.curveId ?? null,
     tokenType: R.tokenType ?? null,
+    // Owner attribution must survive normalization (see normalizeRemote).
+    wallet: R.wallet ?? null,
     params,
     done: false,
     _cooldownUntil: 0,
