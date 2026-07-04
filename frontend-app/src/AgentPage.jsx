@@ -1242,10 +1242,24 @@ function AgentSessionPanel({ account, onSessionChange }) {
   const [sweepType, setSweepType] = useState('');
   async function doSweep() {
     if (busy || !lastSessionRef) return;
-    const coinType = sweepType.trim();
-    if (!coinType) { setMsg('Enter the stuck token\'s coin type'); return; }
+    let coinType = sweepType.trim();
+    if (!coinType) { setMsg('Enter the stuck token\'s coin type or curve id'); return; }
     setBusy(true); setMsg('');
     try {
+      // Accept EITHER a full coin type (0x..::module::TOKEN) or a bare curve
+      // id. A curve id is what users actually have on hand, but it is an
+      // OBJECT id, not a Move type - passing it as a type argument makes the
+      // wallet fail with "unexpected token when parsing type args". Resolve it
+      // on-chain: the Curve<T> object's type string carries T, same extraction
+      // the bridge's resolveCurve uses.
+      if (!coinType.includes('::') && /^0x[0-9a-fA-F]+$/.test(coinType)) {
+        setMsg('Resolving the curve\'s token type...');
+        const obj = await client.getObject({ objectId: coinType });
+        const curveType = obj?.object?.type ?? '';
+        const inner = curveType.match(/Curve<(.+)>$/)?.[1];
+        if (!inner) throw new Error('That id is not a SuiPump curve - paste the token\'s coin type (0x...::module::TOKEN) instead');
+        coinType = inner;
+      }
       const tx = new Transaction();
       const targetRef = lastSessionRef.sharedVersion
         ? tx.sharedObjectRef({ objectId: lastSessionRef.id, initialSharedVersion: String(lastSessionRef.sharedVersion), mutable: true })
@@ -1414,12 +1428,13 @@ function AgentSessionPanel({ account, onSessionChange }) {
           <div className="mt-2 space-y-2">
             <p className="text-[9px] font-mono text-white/25 leading-relaxed">
               If a token was bought via this session and never sold back, it can
-              be left parked here after close/revoke/expiry. Enter its coin type
-              (e.g. {'{package}::{module}::{TOKEN}'}) to recover it to your wallet.
-              A wrong type simply fails on-chain -- no funds are at risk.
+              be left parked here after close/revoke/expiry. Paste the token's
+              CURVE ID (0x...) or its coin type ({'{package}::{module}::{TOKEN}'})
+              to recover it to your wallet. A wrong value simply fails on-chain
+              -- no funds are at risk.
             </p>
             <div className="flex gap-2">
-              <input value={sweepType} onChange={e => setSweepType(e.target.value)} placeholder="0x...::token::TOKEN"
+              <input value={sweepType} onChange={e => setSweepType(e.target.value)} placeholder="curve id or 0x...::token::TOKEN"
                 className="flex-1 bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-[11px] text-white placeholder-white/20 font-mono focus:outline-none focus:border-violet-400/40" />
               <button onClick={doSweep} disabled={busy || !sweepType.trim()}
                 className={`px-3 py-1.5 rounded-lg text-[10px] font-mono transition-colors ${busy || !sweepType.trim() ? 'bg-white/5 text-white/25 cursor-not-allowed' : 'bg-violet-500/15 text-violet-300 border border-violet-400/30 hover:bg-violet-500/25'}`}>
