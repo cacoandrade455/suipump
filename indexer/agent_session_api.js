@@ -30,6 +30,60 @@
 //     would show, just sourced from history instead of a live read.
 
 export function mountAgentSession(app, pool) {
+  // Owner-history index (mainnet scale): /agent/sessions filters SessionOpened
+  // rows by owner, which without this is a sequential scan of the whole events
+  // table. Partial expression index keeps it tiny (SessionOpened rows only)
+  // and matches the route's LOWER() comparison exactly. Fire-and-forget: a
+  // failure only costs speed, never correctness.
+  pool.query(
+    `CREATE INDEX IF NOT EXISTS idx_events_session_opened_owner
+       ON events (LOWER(data->>'owner'), timestamp_ms DESC)
+     WHERE event_type LIKE '%SessionOpened'`
+  ).catch(e => console.warn('[agent_session] owner index create failed:', e.message));
+
+  // Full session history for a wallet -- every AgentSession this owner ever
+  // opened, deduped by session_id, newest first. Powers the frontend's
+  // SWEEP ALL cross-session discovery (replacing its testnet-era live GraphQL
+  // scan of the last 200 SessionOpened events, which caps out at chain-RPC
+  // pagination limits and third-party availability).
+  //
+  //   GET /agent/sessions?owner=0x...[&limit=50]
+  //     -> [{ session_id, session_address, deposit, spend_cap, expiry_ms,
+  //           opened_at_ms, tx_digest }]  (possibly empty)
+  app.get('/agent/sessions', async (req, res) => {
+    const owner = typeof req.query.owner === 'string' ? req.query.owner.trim() : '';
+    if (!/^0x[0-9a-fA-F]{1,64}$/.test(owner)) {
+      return res.status(400).json({ error: 'owner query param required (0x... address)' });
+    }
+    const limit = Math.min(Math.max(parseInt(req.query.limit ?? '50', 10) || 50, 1), 200);
+    try {
+      const r = await pool.query(
+        `SELECT DISTINCT ON (data->>'session_id')
+                data->>'session_id'      AS session_id,
+                data->>'session_address' AS session_address,
+                data->>'deposit'         AS deposit,
+                data->>'spend_cap'       AS spend_cap,
+                data->>'expiry_ms'       AS expiry_ms,
+                timestamp_ms             AS opened_at_ms,
+                tx_digest
+           FROM events
+          WHERE event_type LIKE '%SessionOpened'
+            AND LOWER(data->>'owner') = LOWER($1)
+          ORDER BY data->>'session_id', timestamp_ms DESC NULLS LAST
+          LIMIT $2`,
+        [owner, limit]
+      );
+      // DISTINCT ON orders by session_id; re-sort newest first for the caller.
+      const rows = r.rows
+        .filter(x => x.session_id)
+        .sort((a, b) => Number(b.opened_at_ms ?? 0) - Number(a.opened_at_ms ?? 0));
+      res.json(rows);
+    } catch (err) {
+      console.error('[agent_session] /agent/sessions error:', err.message);
+      res.status(500).json({ error: 'sessions lookup failed' });
+    }
+  });
+
   app.get('/agent/session', async (req, res) => {
     const owner = typeof req.query.owner === 'string' ? req.query.owner : null;
     if (!owner) return res.status(400).json({ error: 'owner query param required' });

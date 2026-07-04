@@ -54,7 +54,7 @@ function TokenRow({ token, iconUrl, right, onClick }) {
   );
 }
 
-// ── Canvas PnL card helpers ───────────────────────────────────────────────────
+// -- Canvas PnL card helpers ---------------------------------------------------
 
 function drawMascotOnCanvas(ctx, img, x, y, size) {
   if (!img) return;
@@ -93,7 +93,7 @@ function drawPnlCard({ canvas, name, symbol, pnlSui, pnlPct, spent, entryPrice, 
   ctx.lineTo(0, r); ctx.quadraticCurveTo(0, 0, r, 0);
   ctx.closePath(); ctx.stroke();
 
-  // Header — logo + name
+  // Header -- logo + name
   ctx.font = 'bold 14px monospace'; ctx.fillStyle = '#a3e635';
   ctx.fillText('🔥 SUIPUMP', 42, 52);
   ctx.font = 'bold 28px monospace'; ctx.fillStyle = '#ffffff';
@@ -169,7 +169,7 @@ _preloadMascot('/mascot_dump.png');
 
 // True only on real mobile devices. Desktop Windows Edge/Chrome also support
 // file sharing, so a plain canShare check wrongly routes desktop into the OS
-// share dialog — we do not want that. Desktop must just download.
+// share dialog -- we do not want that. Desktop must just download.
 function _isMobileDevice() {
   if (typeof navigator === 'undefined') return false;
   if (navigator.userAgentData && typeof navigator.userAgentData.mobile === 'boolean') return navigator.userAgentData.mobile;
@@ -200,7 +200,7 @@ async function sharePngFromCanvas(canvas, filename, shareText) {
         await navigator.share({ files: [file], title: '', text: shareText });
         return 'shared';
       } catch (err) {
-        // User dismissed the sheet — do NOT then dump a download on them.
+        // User dismissed the sheet -- do NOT then dump a download on them.
         if (err && err.name === 'AbortError') return 'cancelled';
         // Any other error (notably Android's NotAllowedError when transient
         // activation was spent by the await above) falls through to download.
@@ -272,12 +272,12 @@ function PnlShareButton({ tk, unrealizedPnl, currentPrice }) {
   );
 }
 
-// ── PFP storage ───────────────────────────────────────────────────────────────
+// -- PFP storage ---------------------------------------------------------------
 function pfpKey(addr) { return `suipump_pfp_${addr}`; }
 function getPfp(addr) { try { return localStorage.getItem(pfpKey(addr)) || ''; } catch { return ''; } }
 function setPfp(addr, url) { try { localStorage.setItem(pfpKey(addr), url); } catch {} }
 
-// ── HOLDINGS tab ──────────────────────────────────────────────────────────────
+// -- HOLDINGS tab --------------------------------------------------------------
 
 function HoldingsTab({ account, tokens, lang, onTotalValue }) {
   const navigate = useNavigate();
@@ -286,13 +286,13 @@ function HoldingsTab({ account, tokens, lang, onTotalValue }) {
   const [iconUrls, setIconUrls] = useState({});
 
   useEffect(() => {
-    if (!account?.address || !tokens.length) { setLoading(false); return; }
+    if (!account?.address) { setLoading(false); return; }
     let cancelled = false;
 
     async function load() {
       setLoading(true);
       try {
-        // Step 1: Fetch all curve stats — has correct last_price per curve
+        // Step 1: Fetch all curve stats -- has correct last_price per curve
         let tokenStats = {};
         if (INDEXER_URL) {
           try {
@@ -304,11 +304,83 @@ function HoldingsTab({ account, tokens, lang, onTotalValue }) {
           } catch {}
         }
 
-        // Step 2: Fetch trader positions — balance per token
+        // Step 2: ON-CHAIN balances -- the source of truth for holdings.
+        // The old /trader/:address derivation only counted trades the indexer
+        // attributed to THIS wallet, so tokens that arrived any other way --
+        // swept back from an agent session (bought by the SESSION address),
+        // airdropped, transferred in, swapped elsewhere -- never showed. The
+        // chain does not care how a coin arrived: read the wallet's actual
+        // coin balances and intersect with the known SuiPump token types.
         let results = [];
-        if (INDEXER_URL) {
+        let chainOk = false;
+        try {
+          // token_type -> curve row map. /tokens carries tokenType per curve;
+          // the richer `tokens` prop entry (app shape) wins when present.
+          const typeMap = {};
+          if (INDEXER_URL) {
+            try {
+              const tr = await fetch(`${INDEXER_URL}/tokens`, { signal: AbortSignal.timeout(8000) });
+              if (tr.ok) {
+                for (const row of await tr.json()) {
+                  const tt = (row.tokenType ?? row.token_type ?? '').toLowerCase();
+                  if (tt) typeMap[tt] = row;
+                }
+              }
+            } catch {}
+          }
+          for (const tk of tokens) {
+            const tt = (tk.tokenType ?? tk.token_type ?? '').toLowerCase();
+            if (tt) typeMap[tt] = { ...(typeMap[tt] ?? {}), ...tk };
+          }
+
+          // Every coin balance at the address (paginated: 100/page, 3 pages).
+          const balances = [];
+          let cursor = null;
+          for (let page = 0; page < 3; page++) {
+            const q = `{ address(address: "${account.address}") { balances(first: 100${cursor ? `, after: "${cursor}"` : ''}) { pageInfo { hasNextPage endCursor } nodes { coinType { repr } totalBalance } } } }`;
+            const r = await fetch('https://graphql.testnet.sui.io/graphql', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ query: q }), signal: AbortSignal.timeout(8000),
+            });
+            const d = await r.json();
+            const b = d?.data?.address?.balances;
+            if (!b) break;
+            balances.push(...(b.nodes ?? []));
+            chainOk = true;
+            if (!b.pageInfo?.hasNextPage) break;
+            cursor = b.pageInfo.endCursor;
+          }
+
+          for (const b of balances) {
+            const tt = (b?.coinType?.repr ?? '').toLowerCase();
+            const row = typeMap[tt];
+            if (!row) continue; // not a SuiPump token
+            const curveId = row.curveId ?? row.curve_id;
+            if (!curveId) continue;
+            const balance = Number(BigInt(b.totalBalance ?? 0)) / 1e6; // TOKEN_DECIMALS = 6 across all SuiPump tokens
+            if (!(balance > 0)) continue;
+            const token = tokens.find(t => t.curveId === curveId) ?? {
+              curveId,
+              name:      row.name,
+              symbol:    row.symbol,
+              iconUrl:   row.iconUrl ?? row.icon_url,
+              packageId: row.packageId ?? row.package_id,
+            };
+            const stats = tokenStats[curveId];
+            let valueSui = 0;
+            if (stats?.last_price && stats.last_price > 0) {
+              valueSui = balance * stats.last_price;
+            }
+            results.push({ ...token, balance, valueSui, graduated: row.graduated ?? false });
+          }
+        } catch { chainOk = false; }
+
+        // FALLBACK ONLY: the pre-chain-truth derivation (indexer trade
+        // attribution) -- used solely when the balance read failed outright,
+        // so the tab never blanks on an RPC hiccup. By design it misses
+        // non-platform acquisitions.
+        if (!chainOk && INDEXER_URL) {
           try {
-            // FIX: use account.address, not undefined `viewAddress`
             const tradRes = await fetch(`${INDEXER_URL}/trader/${account.address}`, { signal: AbortSignal.timeout(8000) });
             if (tradRes.ok) {
               const positions = await tradRes.json();
@@ -318,16 +390,11 @@ function HoldingsTab({ account, tokens, lang, onTotalValue }) {
                   const balance = p.net_tokens ?? p.balance ?? 0;
                   const token = tokens.find(t => t.curveId === p.curve_id);
                   if (!token) return null;
-
-                  // FIX: use last_price from /tokens/stats — correct (vSui+reserve)/1B formula
-                  // Fall back to priceMistPerToken only if stats missing
                   const stats = tokenStats[p.curve_id];
                   let valueSui = 0;
                   if (stats?.last_price && stats.last_price > 0) {
-                    // last_price is in SUI per token (e.g. 0.0000035)
                     valueSui = balance * stats.last_price;
                   } else {
-                    // Fallback: manual calc using reserve from indexer stats
                     const reserveSui = stats?.reserve_sui ?? 0;
                     const reserveMist = BigInt(Math.round(reserveSui * MIST_PER_SUI));
                     const tokensRemaining = BigInt(Math.round((stats?.token_reserve ?? 800_000_000) * 1e6));
@@ -337,13 +404,7 @@ function HoldingsTab({ account, tokens, lang, onTotalValue }) {
                     const valueInMist = (rawBalance * priceMist) / BigInt(1e6);
                     valueSui = Number(valueInMist) / MIST_PER_SUI;
                   }
-
-                  return {
-                    ...token,
-                    balance: balance,
-                    valueSui,
-                    graduated: p.graduated ?? false,
-                  };
+                  return { ...token, balance, valueSui, graduated: p.graduated ?? false };
                 })
                 .filter(Boolean);
             }
@@ -395,7 +456,7 @@ function HoldingsTab({ account, tokens, lang, onTotalValue }) {
   );
 }
 
-// ── TRADED tab ────────────────────────────────────────────────────────────────
+// -- TRADED tab ----------------------------------------------------------------
 
 function TradedTab({ account, tokens, lang }) {
   const navigate = useNavigate();
@@ -461,7 +522,7 @@ function TradedTab({ account, tokens, lang }) {
           } catch {}
         }
 
-        // RPC fallback removed (CORS blocked) — empty state
+        // RPC fallback removed (CORS blocked) -- empty state
         if (!cancelled) { setTradedTokens([]); setLoading(false); }
       } catch { if (!cancelled) setLoading(false); }
     }
@@ -499,7 +560,7 @@ function TradedTab({ account, tokens, lang }) {
   );
 }
 
-// ── CREATED tab ───────────────────────────────────────────────────────────────
+// -- CREATED tab ---------------------------------------------------------------
 
 function CreatedTab({ account, tokens, lang, tradeKeypair }) {
   const navigate = useNavigate();
@@ -514,7 +575,7 @@ function CreatedTab({ account, tokens, lang, tradeKeypair }) {
 
   const [createdTokens, setCreatedTokens] = useState([]);
 
-  // Fetch all tokens created by this wallet directly from indexer — avoids pagination limits
+  // Fetch all tokens created by this wallet directly from indexer -- avoids pagination limits
   useEffect(() => {
     if (!account?.address || !INDEXER_URL) { setLoading(false); return; }
     let cancelled = false;
@@ -624,7 +685,7 @@ function CreatedTab({ account, tokens, lang, tradeKeypair }) {
     try {
       // Find all CreatorCaps owned by this wallet across all package versions
       const capsByPkg = {};
-      // Direct fetch to Sui GraphQL — bypasses dapp-kit-react wrapper
+      // Direct fetch to Sui GraphQL -- bypasses dapp-kit-react wrapper
       const GRAPHQL_URL_CA = 'https://graphql.testnet.sui.io/graphql';
       for (const pkgId of ALL_PACKAGE_IDS) {
         try {
@@ -646,7 +707,7 @@ function CreatedTab({ account, tokens, lang, tradeKeypair }) {
         const capId = capsByPkg[tk.curveId];
         if (!capId) continue; // skip tokens where we don't own the creator cap
 
-        // Check on-chain creator_fees — skip if zero to avoid ENoFees abort
+        // Check on-chain creator_fees -- skip if zero to avoid ENoFees abort
         let onChainFeesMist = 0n;
         try {
           const feeGql = `{ object(address: "${tk.curveId}") { asMoveObject { contents { json } } } }`;
@@ -678,7 +739,7 @@ function CreatedTab({ account, tokens, lang, tradeKeypair }) {
           arguments: [tx.object(capId), curveRef],
         });
         if (tradeKeypair) {
-          // Autonomous path — no wallet popup
+          // Autonomous path -- no wallet popup
           const autoClient = new SuiGraphQLClient({ url: '/api/rpc' });
           tx.setSender(account.address);
           const builtTx = await tx.build({ client: autoClient });
@@ -738,7 +799,7 @@ function CreatedTab({ account, tokens, lang, tradeKeypair }) {
                   ? <div className="text-[9px] font-mono text-emerald-400">GRAD</div>
                   : <div className="text-[9px] font-mono text-white/20">{fmt(stats.progress, 1)}%</div>
                 }
-    {/* claimable fees hidden — indexer estimate is unreliable, use token page to claim */}
+    {/* claimable fees hidden -- indexer estimate is unreliable, use token page to claim */}
               </div>
             }
           />
@@ -748,7 +809,7 @@ function CreatedTab({ account, tokens, lang, tradeKeypair }) {
   );
 }
 
-// ── Main ──────────────────────────────────────────────────────────────────────
+// -- Main ----------------------------------------------------------------------
 
 export default function PortfolioPage({ onBack, lang = 'en', tradeKeypair = null }) {
   const account    = useCurrentAccount();
@@ -907,7 +968,7 @@ export default function PortfolioPage({ onBack, lang = 'en', tradeKeypair = null
           {/* PFP edit */}
           {editingPfp && isOwnWallet && (
             <div className="px-5 py-3 border-b border-white/5 space-y-2">
-              {/* File upload — primary */}
+              {/* File upload -- primary */}
               <label className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-lg px-3 py-2 cursor-pointer hover:border-lime-400/40 transition-colors">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-white/40 shrink-0"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                 <span className="text-xs font-mono text-white/40 flex-1">

@@ -1308,6 +1308,20 @@ function AgentSessionPanel({ account, onSessionChange }) {
   // GraphQL, up to 20 sessions probed); mainnet moves discovery behind an
   // indexer route.
   async function discoverMySessions() {
+    // Mainnet path: the indexer's /agent/sessions route -- SessionOpened is
+    // synced into its events table and owner-indexed, so history depth is not
+    // capped by chain-RPC event pagination. The direct GraphQL scan below
+    // stays as the FALLBACK so token recovery never depends on our own infra
+    // being up.
+    try {
+      const r = await fetch(`${INDEXER_URL}/agent/sessions?owner=${account.address}`, { signal: AbortSignal.timeout(8000) });
+      if (r.ok) {
+        const rows = await r.json();
+        if (Array.isArray(rows) && rows.length > 0) {
+          return [...new Set(rows.map(x => x.session_id).filter(Boolean))].slice(0, 50);
+        }
+      }
+    } catch { /* indexer unreachable - fall through to the chain scan */ }
     const evType = `${PACKAGE_ID_V10}::agent_session::SessionOpened`;
     const q = `{ events(filter: { type: "${evType}" }, last: 200) { nodes { contents { json } } } }`;
     const r = await fetch(GQL_URL, {
@@ -1342,17 +1356,21 @@ function AgentSessionPanel({ account, onSessionChange }) {
       }
 
       // Probe each session for parked tokens and resolve its shared version.
+      // Parallel in bounded batches: 50 sessions sequentially would be a long
+      // wait; unbounded parallelism hammers the RPC.
       setMsg(`Scanning ${sessionIds.length} session${sessionIds.length > 1 ? 's' : ''} for parked tokens...`);
       const targets = [];
-      for (const sid of sessionIds) {
-        try {
+      const CHUNK = 5;
+      for (let i = 0; i < sessionIds.length; i += CHUNK) {
+        const settled = await Promise.allSettled(sessionIds.slice(i, i + CHUNK).map(async (sid) => {
           const types = await listParkedTokenTypes(sid);
-          if (types.length === 0) continue;
+          if (types.length === 0) return null;
           const obj = await client.getObject({ objectId: sid });
           const sv = obj?.object?.owner?.Shared?.initialSharedVersion;
-          if (!sv) continue;
-          targets.push({ id: sid, sharedVersion: sv, types });
-        } catch { /* unreadable session - skip */ }
+          if (!sv) return null;
+          return { id: sid, sharedVersion: sv, types };
+        }));
+        for (const s of settled) if (s.status === 'fulfilled' && s.value) targets.push(s.value);
       }
       if (targets.length === 0) {
         setMsg(overrideId ? 'No parked tokens found on that session.' : 'No parked tokens found on any of your sessions.');
