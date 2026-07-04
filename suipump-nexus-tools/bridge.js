@@ -1070,7 +1070,7 @@ async function handleSessionSell(body) {
 const TURNKEY_GAS_FUND_MIST = BigInt(process.env.TURNKEY_GAS_FUND_MIST ?? '500000000'); // 0.5 SUI
 
 async function handleProvisionSessionKey(body) {
-  const { ownerAddress, rpcUrl, mode } = body ?? {};
+  const { ownerAddress, rpcUrl, mode, skipGasFunding } = body ?? {};
 
   if (!signerPool()) {
     return { configured: false, reason: 'database_url_unset' };
@@ -1107,9 +1107,30 @@ async function handleProvisionSessionKey(body) {
   // first trade). Harmless never-bound record if gas funding below fails.
   await insertSessionSigner({ suiAddress, signWith: signWith ?? suiAddress, publicKeyHex, ownerAddress, isEnclave: useEnclave });
 
-  // 3. Fund gas from the bridge wallet (a fresh session address holds none; the
-  // enclave address may already be funded from a prior session, in which case
-  // this is a harmless top-up).
+  // 3. Gas funding. SELF-FUNDED flow (current frontend): the owner's open PTB
+  // grants the session address its gas in the same transaction as the escrow
+  // deposit, so the bridge spends NOTHING here. This removes the gas-treasury
+  // dependency that caused the 2026-07-03 dry-treasury -> silent shared-wallet
+  // fallback incident, and stops subsidizing gas that bots would farm.
+  if (skipGasFunding === true) {
+    console.log(`[signer] provisioned ${useEnclave ? 'ENCLAVE' : 'turnkey'} session key ${suiAddress} (owner ${ownerAddress ?? 'unknown'}), gas SELF-FUNDED by owner in the open PTB`);
+    return {
+      configured:     true,
+      backend:        useEnclave ? 'enclave' : 'turnkey',
+      sessionAddress: suiAddress,
+      publicKeyHex,
+      gasFundedMist:  '0',
+      gasFundedBy:    'owner',
+      bootId:         BRIDGE_BOOT_ID,
+    };
+  }
+
+  // LEGACY treasury funding (older frontends only): fund gas from the bridge
+  // wallet (a fresh session address holds none; the enclave address may
+  // already be funded from a prior session, in which case this is a harmless
+  // top-up). Logged loudly - this path spends protocol funds and should
+  // disappear from logs once every client sends skipGasFunding.
+  console.log(`[signer] LEGACY TREASURY gas funding requested for ${suiAddress} (owner ${ownerAddress ?? 'unknown'}) - client did not send skipGasFunding`);
   const client  = makeClient(rpcUrl);
   const keypair = loadKeypair();
   const tx = new Transaction();

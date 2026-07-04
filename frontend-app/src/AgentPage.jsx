@@ -27,6 +27,15 @@ const AGENT_SESSION_WALLET = import.meta.env.VITE_AGENT_SESSION_WALLET
   || '0x877af0fae3fa4f8ea936943b59bcd66104f67cf1895302e97761a28b3c3a5906';
 const AGENT_SUI_CLOCK_ID = '0x6';
 
+// Self-funded sessions: the OWNER's open transaction grants the fresh session
+// address its gas (rides in the same PTB as the escrow deposit - one
+// signature). This removes the bridge gas-treasury dependency entirely: a dry
+// treasury can no longer fail provisioning into the silent shared-wallet
+// fallback (2026-07-03 incident), and the protocol stops subsidizing gas that
+// mainnet bots would farm. 0.5 SUI covers ~450 trades at ~0.0011 SUI each.
+// Keep in sync with the bridge's TURNKEY_GAS_FUND_MIST (its legacy path).
+const SESSION_GAS_GRANT_MIST = 500_000_000n; // 0.5 SUI
+
 // Nautilus Phase 2: the live EnclaveRegistry pinning the enclave build's PCRs.
 // open_and_share_attested requires session_address to be a key this registry
 // approved via Sui's NATIVE Nitro attestation verification - "the signer is
@@ -1060,7 +1069,9 @@ function AgentSessionPanel({ account, onSessionChange }) {
           : 'Provisioning a dedicated enclave signing key...');
         const pr = await fetch('/api/create-session-key', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ownerAddress: account.address, mode: signerMode }),
+          // skipGasFunding: the owner's open PTB below grants the session its
+          // gas, so the bridge must NOT spend its treasury (self-funded flow).
+          body: JSON.stringify({ ownerAddress: account.address, mode: signerMode, skipGasFunding: true }),
           signal: AbortSignal.timeout(30000),
         });
         const pd = await pr.json().catch(() => ({}));
@@ -1085,6 +1096,14 @@ function AgentSessionPanel({ account, onSessionChange }) {
       const expiryMs = BigInt(Date.now() + Math.round(dd * 24 * 60 * 60 * 1000));
       const tx = new Transaction();
       const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(depMist)]);
+      // Self-funded gas grant: only when a DEDICATED session key was
+      // provisioned (a fresh address holds zero SUI and pays its own gas per
+      // trade). The shared-wallet fallback carries its own gas - no grant.
+      // For the enclave's single shared address this is a harmless top-up.
+      if (enclaveKey) {
+        const [gasGrant] = tx.splitCoins(tx.gas, [tx.pure.u64(SESSION_GAS_GRANT_MIST)]);
+        tx.transferObjects([gasGrant], sessionAddress);
+      }
       if (attested) {
         // V12 Nautilus path: the CHAIN verifies session_address is a key the
         // EnclaveRegistry approved (aborts with err 12 EKeyNotAttested
@@ -1124,9 +1143,9 @@ function AgentSessionPanel({ account, onSessionChange }) {
         throw new Error(errStr || 'Open failed');
       }
       setMsg(attested
-        ? 'Session opened with a CHAIN-ATTESTED enclave key - Sui itself verified the signer is enclave-held (Nautilus).'
+        ? 'Session opened with a CHAIN-ATTESTED enclave key - Sui itself verified the signer is enclave-held (Nautilus). Gas grant (0.5 SUI) funded from your wallet.'
         : enclaveKey
-          ? 'Session opened with a dedicated enclave key - trades are signed inside a secure enclave, isolated per session.'
+          ? 'Session opened with a dedicated enclave key - trades are signed inside a secure enclave, isolated per session. Gas grant (0.5 SUI) funded from your wallet.'
           : 'Session opened - the agent can now trade your escrow.');
       setTimeout(loadSession, 1500);
     } catch (e) { setMsg(e.message || 'Open failed'); }
