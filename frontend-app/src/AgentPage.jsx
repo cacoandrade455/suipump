@@ -1292,54 +1292,91 @@ function AgentSessionPanel({ account, onSessionChange }) {
   // object fields aren't queryable that way), so the user supplies the
   // coin type of the token they believe is stuck; a wrong guess simply aborts
   // on-chain with no funds at risk.
-  // Optional override: sweep a DIFFERENT session than the last one this tab
-  // saw (e.g. an older, already-closed session still holding parked tokens).
+  // Optional narrowing: with an id here, SWEEP ALL targets just that session;
+  // left empty, it discovers and sweeps EVERY session this wallet opened.
   // Safe by construction: sweep_token is owner-gated on-chain, so a wrong or
   // foreign id simply aborts (ENotOwner) with no funds at risk.
   const [sweepSession, setSweepSession] = useState('');
 
-  // Resolve the sweep target: the override id when given (sharedVersion read
-  // on-chain), else the last session this wallet had.
-  async function resolveSweepTarget() {
-    const overrideId = sweepSession.trim();
-    if (overrideId) {
-      if (!/^0x[0-9a-fA-F]+$/.test(overrideId)) throw new Error('Session id must be a 0x... object id');
-      const obj = await client.getObject({ objectId: overrideId });
-      const sv = obj?.object?.owner?.Shared?.initialSharedVersion;
-      if (!sv) throw new Error('That id is not a live shared AgentSession object');
-      return { id: overrideId, sharedVersion: sv };
-    }
-    if (!lastSessionRef) throw new Error('No session known - paste the session id to sweep');
-    return lastSessionRef;
+  // SWEEP ALL: "all" means ALL SESSIONS. With the id field empty, discover
+  // every AgentSession this wallet ever opened (SessionOpened events define
+  // under V10; V11/V12 code keeps emitting the V10-typed name, so one query
+  // covers the whole lineage), probe each for parked Coin<T> dynamic fields,
+  // and sweep everything in ONE transaction. Pasting an id narrows to that
+  // session. Owner-gated on-chain (sweep_token), so the scan can only ever
+  // return this wallet's own funds. Testnet-scale event read (last 200 via
+  // GraphQL, up to 20 sessions probed); mainnet moves discovery behind an
+  // indexer route.
+  async function discoverMySessions() {
+    const evType = `${PACKAGE_ID_V10}::agent_session::SessionOpened`;
+    const q = `{ events(filter: { type: "${evType}" }, last: 200) { nodes { contents { json } } } }`;
+    const r = await fetch(GQL_URL, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: q }), signal: AbortSignal.timeout(10000),
+    });
+    const d = await r.json();
+    return [...new Set((d?.data?.events?.nodes ?? [])
+      .map(n => n.contents?.json)
+      .filter(j => j && (j.owner ?? '').toLowerCase() === account.address.toLowerCase())
+      .map(j => j.session_id)
+      .filter(Boolean))].slice(0, 20);
   }
 
-  const sweepRefFor = (tx, target) => (target.sharedVersion
-    ? tx.sharedObjectRef({ objectId: target.id, initialSharedVersion: String(target.sharedVersion), mutable: true })
-    : tx.object(target.id));
-
-  // SWEEP ALL: enumerate every parked Coin<T> on the target session and sweep
-  // them in ONE transaction. This is "everything to the owner" for any
-  // session, open or closed, without knowing the types in advance.
   async function doSweepAll() {
-    if (busy || (!lastSessionRef && !sweepSession.trim())) return;
+    if (busy || !account) return;
     setBusy(true); setMsg('');
     try {
-      const target = await resolveSweepTarget();
-      setMsg('Scanning the session for parked tokens...');
-      const parked = await listParkedTokenTypes(target.id);
-      if (parked.length === 0) { setMsg('No parked tokens found on that session.'); return; }
+      // Build the target list: one explicit session, or every discovered one.
+      const overrideId = sweepSession.trim();
+      let sessionIds;
+      if (overrideId) {
+        if (!/^0x[0-9a-fA-F]+$/.test(overrideId)) throw new Error('Session id must be a 0x... object id');
+        sessionIds = [overrideId];
+      } else {
+        setMsg('Finding your sessions...');
+        sessionIds = await discoverMySessions();
+        // The event scan can lag a just-opened session - make sure the last
+        // session this tab knows about is always covered.
+        if (lastSessionRef?.id && !sessionIds.includes(lastSessionRef.id)) sessionIds.push(lastSessionRef.id);
+        if (sessionIds.length === 0) throw new Error('No sessions found for this wallet');
+      }
+
+      // Probe each session for parked tokens and resolve its shared version.
+      setMsg(`Scanning ${sessionIds.length} session${sessionIds.length > 1 ? 's' : ''} for parked tokens...`);
+      const targets = [];
+      for (const sid of sessionIds) {
+        try {
+          const types = await listParkedTokenTypes(sid);
+          if (types.length === 0) continue;
+          const obj = await client.getObject({ objectId: sid });
+          const sv = obj?.object?.owner?.Shared?.initialSharedVersion;
+          if (!sv) continue;
+          targets.push({ id: sid, sharedVersion: sv, types });
+        } catch { /* unreadable session - skip */ }
+      }
+      if (targets.length === 0) {
+        setMsg(overrideId ? 'No parked tokens found on that session.' : 'No parked tokens found on any of your sessions.');
+        return;
+      }
+
+      // ONE PTB, one signature: sweep_token<T> per parked type per session.
+      // Each coin is transferred to the owner inside sweep_token itself.
       const tx = new Transaction();
-      const ref = sweepRefFor(tx, target);
-      for (const t of parked) {
-        tx.moveCall({
-          target: `${PACKAGE_ID}::agent_session::sweep_token`,
-          typeArguments: [t],
-          arguments: [ref],
-        });
+      let n = 0;
+      for (const t of targets) {
+        const ref = tx.sharedObjectRef({ objectId: t.id, initialSharedVersion: String(t.sharedVersion), mutable: true });
+        for (const ct of t.types) {
+          tx.moveCall({
+            target: `${PACKAGE_ID}::agent_session::sweep_token`,
+            typeArguments: [ct],
+            arguments: [ref],
+          });
+          n++;
+        }
       }
       const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
       if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Sweep failed');
-      setMsg(`Swept ${parked.length} token type${parked.length > 1 ? 's' : ''} - all sent to your wallet.`);
+      setMsg(`Swept ${n} token balance${n > 1 ? 's' : ''} from ${targets.length} session${targets.length > 1 ? 's' : ''} - everything sent to your wallet.`);
     } catch (e) { setMsg(e.message || 'Sweep failed'); }
     finally { setBusy(false); }
   }
@@ -1496,15 +1533,16 @@ function AgentSessionPanel({ account, onSessionChange }) {
             <p className="text-[9px] font-mono text-white/25 leading-relaxed">
               Tokens bought via a session are parked ON the session until sold
               back or swept - including after close/revoke/expiry. SWEEP ALL
-              finds and recovers every parked token in one transaction. To
-              target an older session, paste its id below. A wrong id simply
-              fails on-chain -- no funds are at risk.
+              finds every session this wallet has opened and recovers every
+              parked token in one transaction. To limit it to one session,
+              paste its id below. A wrong id simply fails on-chain -- no funds
+              are at risk.
             </p>
             <input value={sweepSession} onChange={e => setSweepSession(e.target.value)}
-              placeholder={lastSessionRef ? `session id (default: ${lastSessionRef.id.slice(0, 10)}...${lastSessionRef.id.slice(-4)})` : 'session id (0x...)'}
+              placeholder="session id (optional - empty sweeps ALL your sessions)"
               className="w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-[11px] text-white placeholder-white/20 font-mono focus:outline-none focus:border-violet-400/40" />
-            <button onClick={doSweepAll} disabled={busy || (!lastSessionRef && !sweepSession.trim())}
-              className={`w-full py-1.5 rounded-lg text-[10px] font-mono transition-colors ${busy || (!lastSessionRef && !sweepSession.trim()) ? 'bg-white/5 text-white/25 cursor-not-allowed' : 'bg-violet-500/15 text-violet-300 border border-violet-400/30 hover:bg-violet-500/25'}`}>
+            <button onClick={doSweepAll} disabled={busy}
+              className={`w-full py-1.5 rounded-lg text-[10px] font-mono transition-colors ${busy ? 'bg-white/5 text-white/25 cursor-not-allowed' : 'bg-violet-500/15 text-violet-300 border border-violet-400/30 hover:bg-violet-500/25'}`}>
               SWEEP ALL PARKED TOKENS
             </button>
           </div>
