@@ -9,6 +9,10 @@
 // that address to open_and_share as session_address, so ONLY that enclave-held
 // key can ever sign the session's trades.
 //
+// Nautilus (Phase 2): the UI may request mode:'enclave', which the bridge
+// serves from the live Nitro enclave's /public_key (a CHAIN-attested key,
+// used with open_and_share_attested) instead of minting a Turnkey key.
+//
 // When the bridge reports { configured: false } (Turnkey env or DATABASE_URL
 // not set) or is unreachable, the UI falls back to the shared agent wallet -
 // this route passes the bridge's answer through unchanged so the UI can decide.
@@ -34,6 +38,10 @@ export default async function handler(req, res) {
   // to a wallet-spending endpoint.
   const forward = {};
   if (typeof body.ownerAddress === 'string') forward.ownerAddress = body.ownerAddress;
+  // Signing-key mode: 'turnkey' (default) or 'enclave' (Nautilus). Same
+  // strict-allowlist policy - any other value is dropped, and the bridge
+  // treats a missing mode as 'turnkey'.
+  if (body.mode === 'enclave' || body.mode === 'turnkey') forward.mode = body.mode;
 
   const headers = { 'Content-Type': 'application/json' };
   const key = process.env.AGENT_API_KEY;
