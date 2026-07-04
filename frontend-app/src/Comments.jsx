@@ -14,8 +14,12 @@ import {
   PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6,
   PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8,
   COMMENT_FEE_MIST, isV7OrLater, isV9OrLater, isV10OrLater,
-  PACKAGE_ID,
+  PACKAGE_ID, PACKAGE_ID_V12,
 } from './constants.js';
+
+// Sui GraphQL endpoint - same one CommentGatePanel (TokenPage.jsx) reads
+// CommentGateSet events from.
+const SUI_GQL_URL = 'https://graphql.testnet.sui.io/graphql';
 
 // The zero address - V10 parent_id sentinel for a top-level comment.
 const ZERO_ADDR = '0x0000000000000000000000000000000000000000000000000000000000000000';
@@ -123,7 +127,7 @@ function saveReply(curveId, reply) {
 
 function CommentItem({ comment, replies, account, curveId, onReplyPosted,
                       isV10, packageId, tokenType, initialSharedVersion,
-                      client, dAppKit, holderCoinId, onNeedHolder }) {
+                      client, dAppKit, holderCoinId, holderGated, onNeedHolder }) {
   const [showReplies, setShowReplies] = useState(false);
   const [replyOpen, setReplyOpen] = useState(false);
   const [replyText, setReplyText] = useState('');
@@ -239,7 +243,7 @@ function CommentItem({ comment, replies, account, curveId, onReplyPosted,
           </div>
           {replyOpen && (
             <div className="mt-2 space-y-1.5">
-              {isV10 && !holderCoinId ? (
+              {isV10 && holderGated && !holderCoinId ? (
                 <p className="text-[10px] font-mono text-white/30 pl-1">Hold the token to reply.</p>
               ) : (
                 <>
@@ -300,6 +304,13 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
   const [postErr, setPostErr] = useState('');
   // V10 holder gate: the caller's token coin object id (null = holds none).
   const [holderCoinId, setHolderCoinId] = useState(null);
+  // V12 creator toggle: whether comments are holder-gated on this curve.
+  // Contract default = TRUE (holder-gated); CommentGateSet events (defined
+  // under V12) override it, latest wins. Mirrors CommentGatePanel's read in
+  // TokenPage.jsx. On read failure we keep the safe default - the composer
+  // then behaves exactly like pre-toggle V10, and the on-chain abort mapping
+  // remains the backstop either way.
+  const [holderGated, setHolderGated] = useState(true);
   const bottomRef = useRef(null);
   const esRef = useRef(null);
   const timerRef = useRef(null);
@@ -315,6 +326,36 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
     })();
     return () => { cancelled = true; };
   }, [isV10, account?.address, tokenType, client, comments.length]);
+
+  // V10-lineage only: read the creator's COMMENTS ACCESS toggle so the composer
+  // gates only when the curve is actually holder-gated. Same event read as
+  // CommentGatePanel: CommentGateSet types under V12, filter to this curve,
+  // latest event wins; no events = holder-gated (the contract default).
+  useEffect(() => {
+    if (!isV10 || !curveId) { setHolderGated(true); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const evType = `${PACKAGE_ID_V12}::bonding_curve::CommentGateSet`;
+        const q = `{ events(filter: { type: "${evType}" }, last: 50) { nodes { contents { json } } } }`;
+        const r = await fetch(SUI_GQL_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: q }),
+          signal: AbortSignal.timeout(8000),
+        });
+        const d = await r.json();
+        const mine = (d?.data?.events?.nodes ?? [])
+          .map(n => n.contents?.json)
+          .filter(j => j && (j.curve_id ?? '').toLowerCase() === curveId.toLowerCase());
+        const latest = mine.length ? mine[mine.length - 1] : null;
+        if (!cancelled) {
+          setHolderGated(latest ? (latest.holder_gated === true || latest.holder_gated === 'true') : true);
+        }
+      } catch { /* keep the safe contract default */ }
+    })();
+    return () => { cancelled = true; };
+  }, [isV10, curveId]);
 
   useEffect(() => {
     if (!curveId) return;
@@ -375,6 +416,13 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
       es.onmessage = (e) => {
         try {
           const event = JSON.parse(e.data);
+          // Live COMMENTS ACCESS toggle: the indexer streams CommentGateSet, so
+          // the composer opens/locks the moment the creator flips the gate.
+          if (event.type === 'CommentGateSet') {
+            const g = event.data ?? {};
+            setHolderGated(g.holder_gated === true || g.holder_gated === 'true');
+            return;
+          }
           if (event.type === 'Comment') {
             const d = event.data ?? {};
             // ID format matches indexer: txDigest + '_0'
@@ -557,6 +605,7 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
               client={client}
               dAppKit={dAppKit}
               holderCoinId={holderCoinId}
+              holderGated={holderGated}
               onNeedHolder={() => {}}
             />
           ))}
@@ -565,7 +614,7 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
       )}
       {account && (
         <div className="border-t border-white/10 p-3 space-y-2">
-          {isV10 && !holderCoinId ? (
+          {isV10 && holderGated && !holderCoinId ? (
             <div className="py-2 text-center text-[11px] font-mono text-white/30">
               Hold the token to comment.
             </div>
