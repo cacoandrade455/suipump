@@ -1208,10 +1208,23 @@ function AgentSessionPanel({ account, onSessionChange }) {
     for (const f of fields) {
       const s = JSON.stringify(f) ?? '';
       if (s.includes('universal_trading') || s.includes('dW5pdmVyc2FsX3RyYWRpbmc')) continue;
-      let m = s.match(/Coin<(0x[0-9a-fA-F]+::[A-Za-z0-9_]+::[A-Za-z0-9_]+)>/);
+      const m = s.match(/Coin<(0x[0-9a-fA-F]+::[A-Za-z0-9_]+::[A-Za-z0-9_]+)>/);
       if (m) { types.add(m[1]); continue; }
-      m = s.match(/(0x)?([0-9a-fA-F]{16,})::([A-Za-z_][A-Za-z0-9_]*)::([A-Za-z_][A-Za-z0-9_]*)/);
-      if (m) types.add(`0x${m[2]}::${m[3]}::${m[4]}`);
+      // TypeName KEY fallback (renders without 0x). Guard against the field's
+      // own plumbing types leaking in as "parked tokens" - 0x1::type_name::
+      // TypeName and 0x2::dynamic_object_field::Wrapper render with 64-char
+      // ZERO-PADDED addresses in some client versions, and one garbage
+      // sweep_token<T> would abort the whole atomic sweep PTB. Stripping
+      // leading zeros and requiring 16+ significant hex digits excludes every
+      // framework short id (0x1/0x2/0x3); the module blocklist catches the
+      // rest. Short-form addresses parse identically on Sui.
+      const all = [...s.matchAll(/(?:0x)?0*([1-9a-fA-F][0-9a-fA-F]{15,})::([A-Za-z_][A-Za-z0-9_]*)::([A-Za-z_][A-Za-z0-9_]*)/g)];
+      for (const mm of all) {
+        const mod = mm[2];
+        if (mod === 'type_name' || mod === 'dynamic_object_field' || mod === 'dynamic_field'
+            || mod === 'coin' || mod === 'balance' || mod === 'agent_session' || mod === 'bonding_curve') continue;
+        types.add(`0x${mm[1]}::${mm[2]}::${mm[3]}`);
+      }
     }
     return [...types];
   }
@@ -1336,7 +1349,12 @@ function AgentSessionPanel({ account, onSessionChange }) {
       if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Sweep failed - check the coin type is correct');
       setMsg('Swept - tokens sent to your wallet.');
       setSweepType('');
-    } catch (e) { setMsg(e.message || 'Sweep failed'); }
+    } catch (e) {
+      const t = String(e?.message ?? e ?? '');
+      setMsg(/dynamic_field/.test(t) && /\b1\b/.test(t)
+        ? 'No parked balance of that token on the TARGET session. If it was bought under an older session, paste that session id in the field above and retry.'
+        : (e.message || 'Sweep failed'));
+    }
     finally { setBusy(false); }
   }
 
