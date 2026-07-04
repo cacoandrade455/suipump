@@ -231,7 +231,10 @@ async function recordFire(order, fire) {
     settledVia:           fire.settle ? (leaderSettled ? 'leader' : 'bridge') : null,
     leaderSender:         leaderSettled ? (fire.leaderSender ?? null) : null,
     status:               fire.settle ? 'settled' : 'pending',
-    wallet:               INVOKER_ADDRESS,
+    // Attribution: the USER who armed the strategy, not the runner. The
+    // invoker is only the legacy fallback for orders armed before wallet
+    // attribution existed (those rows are hidden by the per-user UI anyway).
+    wallet:               order.wallet ?? INVOKER_ADDRESS,
   }).catch(() => {});
 }
 
@@ -271,7 +274,7 @@ async function notifyBell(payload) {
 // child for a buy-strategy is `tpsl` (an auto-exit on the position just bought),
 // so that is what is implemented. The dispatch is structured so additional child
 // types can be added without touching any caller. Returns the child id or null.
-async function spawnChild(parentId, curveId, tokenType, entryPrice, then) {
+async function spawnChild(parentId, curveId, tokenType, entryPrice, then, parent = null) {
   if (!then || typeof then !== 'object') return null;
 
   // ---- child: tpsl (auto take-profit / stop-loss on the bought position) ----
@@ -290,6 +293,11 @@ async function spawnChild(parentId, curveId, tokenType, entryPrice, then) {
       entryPriceSui: (entryPrice != null && Number.isFinite(entryPrice) && entryPrice > 0) ? entryPrice : null,
       takeProfit:    tp,
       stopLoss:      sl,
+      // Children INHERIT the parent's owner and session: the auto-exit belongs
+      // to the same user, and a session-bought position must exit through the
+      // SAME session (custody consistency), not the shared agent wallet.
+      wallet:        parent?.wallet ?? null,
+      sessionId:     parent?.params?.sessionId ?? undefined,
     };
     try {
       const headers = { 'Content-Type': 'application/json' };
@@ -310,7 +318,7 @@ async function spawnChild(parentId, curveId, tokenType, entryPrice, then) {
 // armThen - shared helper: after a buy-strategy settles a buy on `curveId`, read
 // the REAL post-buy price and arm whatever the parent's `then` block specifies.
 // Used by sniper, dca, and copytrade so chaining is identical across all three.
-async function armThen(parentId, curveId, then) {
+async function armThen(parentId, curveId, then, parent = null) {
   if (!then || typeof then !== 'object') return null;
   let entryPrice = null, childTokenType = null;
   try {
@@ -320,7 +328,7 @@ async function armThen(parentId, curveId, then) {
   } catch (e) {
     err(`${parentId}: could not read post-buy price for child (${e.message}); arming on observe`);
   }
-  const childId = await spawnChild(parentId, curveId, childTokenType, entryPrice, then);
+  const childId = await spawnChild(parentId, curveId, childTokenType, entryPrice, then, parent);
   if (childId) {
     log(`${parentId}: armed child ${childId} on ${curveId.slice(0, 10)}... entry=${entryPrice != null ? entryPrice.toExponential(3) : 'observe'} SUI`);
   }
@@ -331,9 +339,9 @@ async function armThen(parentId, curveId, then) {
 // than reading the curve fresh. DCA uses this to arm the child (e.g. TP/SL) on
 // the blended AVERAGE cost across all fills, so profit/loss is measured against
 // what was actually paid - not a single fill or a fresh spot read.
-async function armThenAt(parentId, curveId, tokenType, entryPrice, then) {
+async function armThenAt(parentId, curveId, tokenType, entryPrice, then, parent = null) {
   if (!then || typeof then !== 'object') return null;
-  const childId = await spawnChild(parentId, curveId, tokenType, entryPrice, then);
+  const childId = await spawnChild(parentId, curveId, tokenType, entryPrice, then, parent);
   if (childId) {
     log(`${parentId}: armed child ${childId} on ${curveId.slice(0, 10)}... entry(avg)=${entryPrice != null ? entryPrice.toExponential(3) : 'observe'} SUI`);
   }
@@ -832,6 +840,9 @@ async function processOrder(order) {
     // Surface the fire in the notification bell, labelled by WHY it fired
     // (TP vs SL) - only known here. tokens = confirmed on-chain amount moved.
     await notifyBell({
+      // Bell is keyed by wallet: notify the ORDER OWNER, not the runner
+      // (payload.wallet overrides notifyBell's invoker default via spread).
+      wallet:  order.wallet ?? undefined,
       type:    'tpsl',
       trigger: action.kind,                 // 'TP' | 'SL'
       curveId: order.curveId,
@@ -1091,7 +1102,7 @@ const HANDLERS = {
         // COMPOSE: if this sniper carries a `then` block, arm the child strategy
         // (e.g. TP/SL) on the curve we just bought, seeded at the REAL post-buy
         // price. Shared with dca/copytrade via armThen so chaining is identical.
-        if (p.then) await armThen(order.id, curveId, p.then);
+        if (p.then) await armThen(order.id, curveId, p.then, order);
 
         // Count the fire (settlement succeeded) and persist.
         p.fired = num2(p.fired, 0) + 1;
@@ -1252,7 +1263,7 @@ const HANDLERS = {
       //    basis. We pass the average cost as the entry so a then.tpsl targets
       //    profit/loss relative to what was actually paid across all fills.
       if (order.done && p.then) {
-        await armThenAt(order.id, curveId, tokenType, p.avgPriceSui, p.then);
+        await armThenAt(order.id, curveId, tokenType, p.avgPriceSui, p.then, order);
       }
     },
   },
@@ -1519,7 +1530,7 @@ const HANDLERS = {
       p._lastSettleDigest = settleDigest;
       order.params        = p;
 
-      if (p.then) await armThen(order.id, curveId, p.then);
+      if (p.then) await armThen(order.id, curveId, p.then, order);
 
       if (p.spentSui + perEntrySui > spendCapSui + 1e-9) {
         order.done = true;

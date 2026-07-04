@@ -1440,11 +1440,20 @@ export default function AgentPage({ onBack }) {
   // through the /api/cancel-order proxy so the key never reaches the browser).
   const loadOrders = useCallback(async () => {
     setOrdersError(null);
+    // Per-user view: strategies belong to the wallet that armed them. No
+    // connected wallet => nothing to show (never the platform-wide firehose).
+    if (!account?.address) { setOrders([]); setOrdersL(false); return; }
+    const me = account.address.toLowerCase();
     try {
-      const r = await fetch(`${INDEXER_URL}/orders?status=active`, { signal: AbortSignal.timeout(8000) });
+      const r = await fetch(`${INDEXER_URL}/orders?status=active&wallet=${encodeURIComponent(account.address)}`,
+        { signal: AbortSignal.timeout(8000) });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const d = await r.json();
-      const all = Array.isArray(d) ? d : [];
+      // Belt over the server filter: only rows attributed to THIS wallet pass,
+      // even against a stale indexer that ignores the param. Legacy ownerless
+      // orders (armed before attribution existed) drop out by design.
+      const all = (Array.isArray(d) ? d : [])
+        .filter(o => (o.wallet ?? '').toLowerCase() === me);
       // Ids of autopilot mandates in this batch -> hide their _tp_ children.
       const autopilotIds = new Set(all.filter(o => o.type === 'autopilot').map(o => o.id));
       const visible = all.filter((o) => {
@@ -1458,7 +1467,7 @@ export default function AgentPage({ onBack }) {
     } finally {
       setOrdersL(false);
     }
-  }, []);
+  }, [account?.address]);
 
   useEffect(() => {
     loadOrders();
@@ -1508,13 +1517,21 @@ export default function AgentPage({ onBack }) {
   const [tickerByCurve, setTickerByCurve] = useState({});
 
   const loadHistory = useCallback(async () => {
+    // Per-user view: the history is YOUR fires, not the platform firehose.
+    if (!account?.address) { setHistory([]); return; }
+    const me = account.address.toLowerCase();
     try {
-      const r = await fetch(`/api/agent-actions?limit=50`, { signal: AbortSignal.timeout(8000) });
+      const r = await fetch(`/api/agent-actions?limit=50&wallet=${encodeURIComponent(account.address)}`,
+        { signal: AbortSignal.timeout(8000) });
       if (!r.ok) return;
       const d = await r.json();
-      setHistory(Array.isArray(d) ? d : []);
+      // Belt over the server filter (see loadOrders). Legacy autonomous rows
+      // stamped with the shared runner wallet drop out for everyone - they
+      // were misattributed and carry no per-user meaning.
+      setHistory((Array.isArray(d) ? d : [])
+        .filter(a => (a.wallet ?? '').toLowerCase() === me));
     } catch { /* non-fatal */ }
-  }, []);
+  }, [account?.address]);
 
   useEffect(() => {
     loadHistory();
@@ -2106,6 +2123,7 @@ export default function AgentPage({ onBack }) {
               takeProfit: payload.tpsl.takeProfit,
               stopLoss: payload.tpsl.stopLoss,
               sessionId: activeSessionId,
+              wallet: account?.address ?? null,
             }),
           });
           const d = await r.json().catch(() => ({}));
@@ -2145,6 +2163,7 @@ export default function AgentPage({ onBack }) {
               takeProfit: payload.tpsl.takeProfit,
               stopLoss: payload.tpsl.stopLoss,
               sessionId: activeSessionId,
+              wallet: account?.address ?? null,
             }),
           });
           const d = await r.json().catch(() => ({}));
@@ -2171,7 +2190,7 @@ export default function AgentPage({ onBack }) {
           const r = await fetch(`/api/create-order`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ type: 'sniper', params: payload.sniper, sessionId: activeSessionId }),
+            body: JSON.stringify({ type: 'sniper', params: payload.sniper, sessionId: activeSessionId, wallet: account?.address ?? null }),
           });
           const d = await r.json().catch(() => ({}));
           if (!r.ok) throw new Error(d.error || `order create failed (${r.status})`);
@@ -2204,6 +2223,7 @@ export default function AgentPage({ onBack }) {
               tokenType: payload.dca.tokenType,
               params: payload.dca,
               sessionId: activeSessionId,
+              wallet: account?.address ?? null,
             }),
           });
           const d = await r.json().catch(() => ({}));
@@ -2230,7 +2250,7 @@ export default function AgentPage({ onBack }) {
           const r = await fetch(`/api/create-order`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ type: 'copytrade', params: payload.copytrade, sessionId: activeSessionId }),
+            body: JSON.stringify({ type: 'copytrade', params: payload.copytrade, sessionId: activeSessionId, wallet: account?.address ?? null }),
           });
           const d = await r.json().catch(() => ({}));
           if (!r.ok) throw new Error(d.error || `order create failed (${r.status})`);
@@ -2257,7 +2277,7 @@ export default function AgentPage({ onBack }) {
           const r = await fetch(`/api/create-order`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ type: 'autopilot', params: payload.autopilot, sessionId: activeSessionId }),
+            body: JSON.stringify({ type: 'autopilot', params: payload.autopilot, sessionId: activeSessionId, wallet: account?.address ?? null }),
           });
           const d = await r.json().catch(() => ({}));
           if (!r.ok) throw new Error(d.error || `order create failed (${r.status})`);

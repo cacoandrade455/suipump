@@ -37,6 +37,8 @@ function ensureSchema() {
       );
       ALTER TABLE strategy_orders ADD COLUMN IF NOT EXISTS type   TEXT  NOT NULL DEFAULT 'tpsl';
       ALTER TABLE strategy_orders ADD COLUMN IF NOT EXISTS params JSONB NOT NULL DEFAULT '{}'::jsonb;
+      ALTER TABLE strategy_orders ADD COLUMN IF NOT EXISTS wallet TEXT;
+      CREATE INDEX IF NOT EXISTS idx_strategy_orders_wallet ON strategy_orders (wallet);
       ALTER TABLE strategy_orders ALTER COLUMN curve_id DROP NOT NULL;
       CREATE INDEX IF NOT EXISTS idx_strategy_orders_status ON strategy_orders (status);
       CREATE INDEX IF NOT EXISTS idx_strategy_orders_curve  ON strategy_orders (curve_id);
@@ -60,6 +62,7 @@ function rowToOrder(r) {
     minSuiOut:     Number(r.min_sui_out ?? 0),
     takeProfit:    Array.isArray(r.take_profit) ? r.take_profit : [],
     stopLoss:      r.stop_loss ?? null,
+    wallet:        r.wallet ?? null,
     status:        r.status,
     createdAt:     r.created_at != null ? Number(r.created_at) : null,
     updatedAt:     r.updated_at != null ? Number(r.updated_at) : null,
@@ -300,9 +303,15 @@ export function mountOrders(app) {
     try {
       await ensureSchema();
       const status = String(req.query.status ?? 'active');
-      const r = status === 'all'
-        ? await pool.query('SELECT * FROM strategy_orders ORDER BY created_at DESC')
-        : await pool.query('SELECT * FROM strategy_orders WHERE status = $1 ORDER BY created_at DESC', [status]);
+      const wallet = isHex(req.query.wallet) ? String(req.query.wallet) : null;
+      const where = [], vals = [];
+      let i = 1;
+      if (status !== 'all') { where.push(`status = $${i++}`); vals.push(status); }
+      // Per-user view: only orders attributed to this wallet. Case-insensitive
+      // (Sui addresses are hex; clients may differ in casing).
+      if (wallet) { where.push(`LOWER(wallet) = LOWER($${i++})`); vals.push(wallet); }
+      const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+      const r = await pool.query(`SELECT * FROM strategy_orders ${clause} ORDER BY created_at DESC`, vals);
       res.json(r.rows.map(rowToOrder));
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
@@ -357,12 +366,18 @@ export function mountOrders(app) {
         params = { ...params, sessionId: b.sessionId };
       }
 
+      // Owner attribution - validated once here (outside the per-type
+      // sanitizeParams allowlists, same reasoning as sessionId). The armer's
+      // wallet: powers the per-user strategies list and flows into every
+      // agent_actions row the brain records for this order's fires.
+      const wallet = isHex(b.wallet) ? b.wallet : null;
+
       await pool.query(
         `INSERT INTO strategy_orders
-           (id, curve_id, token_type, type, params, entry_price, min_sui_out, take_profit, stop_loss, status, created_at, updated_at)
-         VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8::jsonb,$9::jsonb,'active',$10,$10)
+           (id, curve_id, token_type, type, params, entry_price, min_sui_out, take_profit, stop_loss, wallet, status, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8::jsonb,$9::jsonb,$10,'active',$11,$11)
          ON CONFLICT (id) DO NOTHING`,
-        [id, curveId, tokenType, type, JSON.stringify(params), entry, minSuiOut, JSON.stringify(tp), sl ? JSON.stringify(sl) : null, now]
+        [id, curveId, tokenType, type, JSON.stringify(params), entry, minSuiOut, JSON.stringify(tp), sl ? JSON.stringify(sl) : null, wallet, now]
       );
       const r = await pool.query('SELECT * FROM strategy_orders WHERE id = $1', [id]);
       res.status(201).json(rowToOrder(r.rows[0]));
