@@ -1299,6 +1299,80 @@ function AgentSessionPanel({ account, onSessionChange }) {
   // foreign id simply aborts (ENotOwner) with no funds at risk.
   const [sweepSession, setSweepSession] = useState('');
 
+  // -- Cross-session parked-token recovery ------------------------------------
+  // "Where did my tokens go?" answered automatically. Every AgentSession this
+  // wallet ever opened is discoverable from SessionOpened events (the event
+  // defines under V10; V11/V12 code keeps emitting the V10-typed name), and
+  // each session's parked Coin<T>s are enumerable off-chain via its dynamic
+  // fields. On load we scan, and when anything is found we surface a one-click
+  // RECOVER ALL that sweeps every parked token from every session in ONE
+  // transaction. sweep_token is owner-gated on-chain, so the scan can only
+  // ever recover this wallet's own funds. Testnet-scale event read (last 200
+  // via GraphQL, up to 20 sessions probed); mainnet moves this behind an
+  // indexer route.
+  const [recoverables, setRecoverables] = useState(null); // null = scanning
+
+  const scanAllSessions = useCallback(async () => {
+    if (!account || !client) { setRecoverables([]); return; }
+    try {
+      const evType = `${PACKAGE_ID_V10}::agent_session::SessionOpened`;
+      const q = `{ events(filter: { type: "${evType}" }, last: 200) { nodes { contents { json } } } }`;
+      const r = await fetch(GQL_URL, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: q }), signal: AbortSignal.timeout(10000),
+      });
+      const d = await r.json();
+      const mine = [...new Set((d?.data?.events?.nodes ?? [])
+        .map(n => n.contents?.json)
+        .filter(j => j && (j.owner ?? '').toLowerCase() === account.address.toLowerCase())
+        .map(j => j.session_id)
+        .filter(Boolean))];
+      const found = [];
+      for (const sid of mine.slice(0, 20)) {
+        try {
+          const types = await listParkedTokenTypes(sid);
+          if (types.length === 0) continue;
+          const obj = await client.getObject({ objectId: sid });
+          const sv = obj?.object?.owner?.Shared?.initialSharedVersion;
+          if (!sv) continue;
+          found.push({ id: sid, sharedVersion: sv, types });
+        } catch { /* unreadable session - skip */ }
+      }
+      setRecoverables(found);
+    } catch { setRecoverables([]); }
+  }, [account?.address, client]);
+
+  useEffect(() => { setRecoverables(null); scanAllSessions(); }, [scanAllSessions]);
+
+  // One PTB, one signature: sweep_token<T> for every parked type on every
+  // session found. All coins land in the owner wallet (transfer is inside
+  // sweep_token itself).
+  async function doRecoverAll() {
+    if (busy || !recoverables || recoverables.length === 0) return;
+    setBusy(true); setMsg('');
+    try {
+      const tx = new Transaction();
+      let n = 0;
+      for (const s of recoverables) {
+        const ref = tx.sharedObjectRef({ objectId: s.id, initialSharedVersion: String(s.sharedVersion), mutable: true });
+        for (const t of s.types) {
+          tx.moveCall({
+            target: `${PACKAGE_ID}::agent_session::sweep_token`,
+            typeArguments: [t],
+            arguments: [ref],
+          });
+          n++;
+        }
+      }
+      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Recovery failed');
+      setMsg(`Recovered ${n} parked token balance${n > 1 ? 's' : ''} across ${recoverables.length} session${recoverables.length > 1 ? 's' : ''} - everything sent to your wallet.`);
+      setRecoverables([]);
+      setTimeout(scanAllSessions, 2500);
+    } catch (e) { setMsg(e.message || 'Recovery failed'); }
+    finally { setBusy(false); }
+  }
+
   // Resolve the sweep target: the override id when given (sharedVersion read
   // on-chain), else the last session this wallet had.
   async function resolveSweepTarget() {
@@ -1349,6 +1423,7 @@ function AgentSessionPanel({ account, onSessionChange }) {
       if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Sweep failed - check the coin type is correct');
       setMsg('Swept - tokens sent to your wallet.');
       setSweepType('');
+      setTimeout(scanAllSessions, 2500);
     } catch (e) {
       const t = String(e?.message ?? e ?? '');
       setMsg(/dynamic_field/.test(t) && /\b1\b/.test(t)
@@ -1382,6 +1457,7 @@ function AgentSessionPanel({ account, onSessionChange }) {
       if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Sweep failed');
       setMsg(`Swept ${parked.length} token type${parked.length > 1 ? 's' : ''} - all sent to your wallet.`);
       setSweepType('');
+      setTimeout(scanAllSessions, 2500);
     } catch (e) { setMsg(e.message || 'Sweep failed'); }
     finally { setBusy(false); }
   }
@@ -1523,6 +1599,24 @@ function AgentSessionPanel({ account, onSessionChange }) {
             {busy ? 'WORKING...' : 'CLOSE & WITHDRAW ESCROW'}
           </button>
         </>
+      )}
+
+      {/* Auto-detected parked tokens across ALL of this wallet's sessions -
+          the one-click answer to "where did my purchased tokens go?". The
+          manual STUCK TOKENS panel below remains as the escape hatch for
+          sessions older than the event scan window. */}
+      {recoverables && recoverables.length > 0 && (
+        <div className="bg-lime-400/5 border border-lime-400/25 rounded-xl p-3 space-y-2">
+          <div className="text-[10px] font-mono text-lime-400 tracking-widest">PARKED TOKENS FOUND</div>
+          <p className="text-[9px] font-mono text-white/40 leading-relaxed">
+            {recoverables.reduce((s, r) => s + r.types.length, 0)} token balance{recoverables.reduce((s, r) => s + r.types.length, 0) > 1 ? 's' : ''} across {recoverables.length} of your session{recoverables.length > 1 ? 's' : ''} {recoverables.length > 1 ? 'are' : 'is'} still parked on-chain
+            (bought by the agent, never swept back). One click returns everything to your wallet in a single transaction.
+          </p>
+          <button onClick={doRecoverAll} disabled={busy}
+            className={`w-full py-2 rounded-lg text-[11px] font-mono transition-colors ${busy ? 'bg-white/5 text-white/25' : 'bg-lime-400 hover:bg-lime-300 text-black'}`}>
+            {busy ? 'WORKING...' : 'RECOVER ALL TO MY WALLET'}
+          </button>
+        </div>
       )}
 
       {/* Sweep a stuck token -- independent of the SUI escrow above. Always
