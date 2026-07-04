@@ -13,7 +13,7 @@
 #   -> prints PCR0, PCR1, PCR2  (save these: they go on-chain)
 
 # ---- build stage ----
-FROM rust:1.83-slim-bookworm AS build
+FROM rust:1.83-slim-bookworm@sha256:540c902e99c384163b688bbd8b5b8520e94e7731b27f7bd0eaa56ae1960627ab AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock* ./
 COPY src ./src
@@ -21,8 +21,9 @@ COPY src ./src
 RUN cargo build --release --features nsm
 
 # ---- runtime stage ----
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends socat \
+FROM debian:bookworm-slim@sha256:60eac759739651111db372c07be67863818726f754804b8707c90979bda511df
+# iproute2: enclaves boot with loopback DOWN; entrypoint must `ip link set lo up`
+RUN apt-get update && apt-get install -y --no-install-recommends socat iproute2 \
   && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/target/release/suipump-session-enclave /usr/local/bin/enclave
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh

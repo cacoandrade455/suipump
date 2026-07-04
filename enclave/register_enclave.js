@@ -15,6 +15,11 @@
 //         (0x2::nitro_attestation::load_nitro_attestation -> register_enclave_key),
 //         prints the approved session_address
 //
+//   3) update-pcrs  (AdminCap-gated; PCR rotation after any enclave rebuild)
+//      PRIVATE_KEY=suiprivkey1... ADMIN_CAP=0x... REGISTRY_ID=0x... \
+//      PCR0=<96-hex> PCR1=<96-hex> PCR2=<96-hex> \
+//        node register_enclave.js update-pcrs
+//
 // Env:
 //   PRIVATE_KEY  required; suiprivkey1... bech32 (Ed25519)
 //   PACKAGE_ID   optional; defaults to the V12 package below
@@ -41,7 +46,7 @@ function signer() {
 
 function client() {
   return new SuiGraphQLClient({
-    url: process.env.RPC_URL ?? 'https://sui-testnet.mystenlabs.com/graphql',
+    url: process.env.RPC_URL ?? 'https://graphql.testnet.sui.io/graphql',
   });
 }
 
@@ -115,6 +120,38 @@ async function createRegistry() {
   }
 }
 
+async function updatePcrs() {
+  const adminCap = process.env.ADMIN_CAP;
+  if (!adminCap) throw new Error('ADMIN_CAP required');
+  const registryId = process.env.REGISTRY_ID;
+  if (!registryId) throw new Error('REGISTRY_ID required');
+  const pcr0 = hexBytes(process.env.PCR0, 'PCR0');
+  const pcr1 = hexBytes(process.env.PCR1, 'PCR1');
+  const pcr2 = hexBytes(process.env.PCR2, 'PCR2');
+
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${PACKAGE_ID}::enclave_registry::update_pcrs`,
+    arguments: [
+      tx.object(adminCap),
+      tx.object(registryId),
+      tx.pure.vector('u8', Array.from(pcr0)),
+      tx.pure.vector('u8', Array.from(pcr1)),
+      tx.pure.vector('u8', Array.from(pcr2)),
+    ],
+  });
+  tx.setGasBudget(GAS_BUDGET);
+
+  const result = unwrap(await client().signAndExecuteTransaction({
+    transaction: tx,
+    signer: signer(),
+    include: { effects: true, events: true },
+  }));
+
+  console.log('digest:', result.digest);
+  console.log('PCRs updated on registry:', registryId);
+}
+
 async function register() {
   const registryId = process.env.REGISTRY_ID;
   if (!registryId) throw new Error('REGISTRY_ID required (from create-registry)');
@@ -166,10 +203,11 @@ async function register() {
 const mode = process.argv[2];
 const run = mode === 'create-registry' ? createRegistry
   : mode === 'register' ? register
+  : mode === 'update-pcrs' ? updatePcrs
   : null;
 
 if (!run) {
-  console.log('usage: node register_enclave.js <create-registry|register>');
+  console.log('usage: node register_enclave.js <create-registry|register|update-pcrs>');
   process.exit(2);
 }
 
