@@ -1,4 +1,4 @@
-// api.js — REST API + SSE stream for SuiPump indexer
+// api.js -- REST API + SSE stream for SuiPump indexer
 import express from 'express';
 import pg from 'pg';
 import cors from 'cors';
@@ -19,29 +19,29 @@ const app  = express();
 app.use(cors());
 app.use(express.json());
 
-// Strategy order store — self-contained module, owns its own strategy_orders
+// Strategy order store -- self-contained module, owns its own strategy_orders
 // table; does not touch db.js. Adds GET/POST/PATCH/DELETE /orders.
 mountOrders(app);
 
-// Agent action history — self-contained module, owns its own agent_actions
+// Agent action history -- self-contained module, owns its own agent_actions
 // table; does not touch db.js. Adds GET/POST/PATCH /agent-actions.
 mountAgentActions(app);
 
-// Airdrop points — self-contained module, owns NO table (points are computed
+// Airdrop points -- self-contained module, owns NO table (points are computed
 // on read from the events table). Adds GET /points/:address and
 // GET /leaderboard/points.
 mountPoints(app);
 
-// Epoch launch-with-site accounting — self-contained, owns NO table (reads the
+// Epoch launch-with-site accounting -- self-contained, owns NO table (reads the
 // PartnerLaunch event from the events table). Adds GET /partner-launches.
 mountPartnerLaunches(app);
 
-// Game progress store — self-contained module, owns its own game_progress
+// Game progress store -- self-contained module, owns its own game_progress
 // table; does not touch db.js. Adds GET/POST /game-progress. Wallet is used
 // purely as an identity key; never moves funds or signs a tx.
 mountGameProgress(app);
 
-// V10 community takeover (CTO) — self-contained module, owns NO table (reads the
+// V10 community takeover (CTO) -- self-contained module, owns NO table (reads the
 // Takeover*/CreatorHeartbeat events from the events table). Adds
 // GET /token/:id/takeover. Passed `pool` since it queries events directly.
 mountTakeover(app, pool);
@@ -51,11 +51,11 @@ mountTakeover(app, pool);
 // since the SESSION_EVENT_NAMES addition). Adds GET /agent/session?owner=.
 mountAgentSession(app, pool);
 
-// ── Virtual reserves per package — must match frontend constants.js ─────────
+// -- Virtual reserves per package -- must match frontend constants.js ---------
 const MIST = 1_000_000_000;
 
-// vTok = virtual token reserve (same across all versions — defines curve shape)
-// vSui = virtual SUI reserve (varies per version — sets launch price)
+// vTok = virtual token reserve (same across all versions -- defines curve shape)
+// vSui = virtual SUI reserve (varies per version -- sets launch price)
 function getVirtuals(packageId) {
   const vTok = 1_073_000_000; // all versions
   if (!packageId) return { vSui: 3500, vTok };
@@ -64,10 +64,13 @@ function getVirtuals(packageId) {
   if (packageId.startsWith('0x21d5')) return { vSui:  9000, vTok }; // V6: contract VIRTUAL_SUI_RESERVE = 9_000
   if (packageId.startsWith('0xfb8f')) return { vSui:  3500, vTok }; // V7: contract VIRTUAL_SUI_RESERVE = 3_500 (lowered from 9k)
   if (packageId.startsWith('0x7196')) return { vSui:  4369, vTok }; // V9: contract VIRTUAL_SUI_RESERVE = 4_369
+  if (packageId.startsWith('0x2ded')) return { vSui:  4369, vTok }; // V10: same shape as V9 (VIRTUAL_SUI_RESERVE = 4_369)
+  if (packageId.startsWith('0xc038')) return { vSui:  4369, vTok }; // V11 (upgrade of V10 -- defensive: curves type as V10)
+  if (packageId.startsWith('0xf5a3')) return { vSui:  4369, vTok }; // V12 (upgrade of V10 -- defensive: curves type as V10)
   return { vSui: 3500, vTok };                                        // V8, V8_1: contract VIRTUAL_SUI_RESERVE = 3_500
 }
 
-// Spot price in SUI per whole token — constant-product formula.
+// Spot price in SUI per whole token -- constant-product formula.
 // price = (vSui + realSui)^2 / (vSui x vTok)
 // Matches TokenPage header exactly. new_sui_reserve is in MIST.
 function priceFromReserve(vSui, vTok, newSuiReserveMist) {
@@ -76,7 +79,7 @@ function priceFromReserve(vSui, vTok, newSuiReserveMist) {
   return k > 0 ? (vSui + realSui) * (vSui + realSui) / k : 0;
 }
 
-// ── SSE client registry ───────────────────────────────────────────────────────
+// -- SSE client registry -------------------------------------------------------
 
 const sseClients = new Map();
 let   sseNextId  = 0;
@@ -107,11 +110,11 @@ export function emitEvent(eventType, parsedJson, curveId, digest = null) {
   }
 }
 
-// ── Health ────────────────────────────────────────────────────────────────────
+// -- Health --------------------------------------------------------------------
 
 app.get('/health', (req, res) => res.json({ status: 'ok', ts: Date.now() }));
 
-// ── SSE stream ────────────────────────────────────────────────────────────────
+// -- SSE stream ----------------------------------------------------------------
 
 
 
@@ -188,7 +191,15 @@ app.get('/tokens/stats', async (req, res) => {
       const { vSui, vTok } = getVirtuals(s.package_id);
       const startPrice = vSui / vTok;
       const lastPrice = s.reserve_sui > 0 ? priceFromReserve(vSui, vTok, s.reserve_sui * MIST) : (s.last_price ?? startPrice);
-      return { ...s, start_price: startPrice, last_price: lastPrice, sparkline24h: sparklineMap[s.curve_id] || [] };
+      // first_price MUST use the same definition + same curve shape as
+      // last_price, or pctChange compares apples to oranges (the -20% bug:
+      // execution-price first vs reserve-price last, at mismatched vSui).
+      // Definition: earliest reserve-derived price in the 24h window ->
+      // pctChange is an honest 24h change, consistent with the sparkline.
+      // No trades in 24h -> first = last -> 0.0% (flat, never fabricated).
+      const spark = sparklineMap[s.curve_id] || [];
+      const firstPrice = spark.length > 0 ? spark[0].p : lastPrice;
+      return { ...s, start_price: startPrice, last_price: lastPrice, first_price: firstPrice, sparkline24h: spark };
     }));
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -203,7 +214,7 @@ app.get('/token/:curveId', async (req, res) => {
     const row = result.rows[0];
     // Read metadata_updated DIRECTLY from the Curve object on-chain. The
     // curves TABLE has no such column, and the MetadataUpdated event is not
-    // reliably indexed — but the Curve Move object carries `metadata_updated:
+    // reliably indexed -- but the Curve Move object carries `metadata_updated:
     // bool` as a real field that the contract flips (once, enforced on-chain).
     // The object always exists and the chain is the source of truth, so this
     // can't silently miss the way an event-existence check did. Same GraphQL
@@ -219,7 +230,7 @@ app.get('/token/:curveId', async (req, res) => {
       const dGql = await rGql.json();
       const cj = dGql?.data?.object?.asMoveObject?.contents?.json;
       if (cj && cj.metadata_updated != null) metadataUpdated = cj.metadata_updated === true;
-    } catch { /* chain read failed — default false, never wrongly lock */ }
+    } catch { /* chain read failed -- default false, never wrongly lock */ }
     res.json({
       ...row,
       metadata_updated: metadataUpdated,
@@ -232,7 +243,33 @@ app.get('/token/:curveId', async (req, res) => {
 });
 
 app.get('/token/:curveId/stats', async (req, res) => {
-  try { const stats = await getTokenStats(req.params.curveId); if (!stats) return res.status(404).json({ error: 'Not found' }); res.json(stats); }
+  try {
+    const stats = await getTokenStats(req.params.curveId);
+    if (!stats) return res.status(404).json({ error: 'Not found' });
+    // Package-aware price overrides -- SAME definitions as /tokens/stats.
+    // This route is refetched by the frontend after every live SSE trade;
+    // serving the raw token_stats row here (execution-price first/last, no
+    // curve shape, no sparkline) re-poisoned the pct badge and wiped the
+    // card sparkline on the first live trade even with /tokens/stats fixed.
+    const pkgRes = await pool.query('SELECT package_id FROM curves WHERE curve_id = $1', [req.params.curveId]);
+    const { vSui, vTok } = getVirtuals(pkgRes.rows[0]?.package_id);
+    const oneDayAgo = Date.now() - 86_400_000;
+    const sparkRes = await pool.query(
+      `SELECT timestamp_ms, (data->>'new_sui_reserve')::float AS r FROM events
+       WHERE curve_id = $1
+         AND (event_type LIKE '%TokensPurchased' OR event_type LIKE '%TokensBought' OR event_type LIKE '%TokensSold')
+         AND timestamp_ms > $2 AND data->>'new_sui_reserve' IS NOT NULL
+       ORDER BY timestamp_ms ASC`,
+      [req.params.curveId, oneDayAgo]
+    );
+    const sparkline24h = sparkRes.rows
+      .map(row => ({ t: Number(row.timestamp_ms), p: priceFromReserve(vSui, vTok, row.r) }))
+      .filter(p => p.p > 0 && p.t > 0);
+    const startPrice = vSui / vTok;
+    const lastPrice  = stats.reserve_sui > 0 ? priceFromReserve(vSui, vTok, stats.reserve_sui * MIST) : (stats.last_price ?? startPrice);
+    const firstPrice = sparkline24h.length > 0 ? sparkline24h[0].p : lastPrice;
+    res.json({ ...stats, start_price: startPrice, last_price: lastPrice, first_price: firstPrice, sparkline24h });
+  }
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -263,8 +300,8 @@ app.get('/token/:curveId/holders', async (req, res) => {
       pool.query(`SELECT data->>'seller' AS address, SUM((data->>'tokens_in')::float) AS tokens FROM events WHERE curve_id = $1 AND event_type LIKE '%TokensSold' GROUP BY data->>'seller'`, [req.params.curveId]),
       pool.query(`SELECT creator FROM curves WHERE curve_id = $1`, [req.params.curveId]),
       // Locked balance per beneficiary for this curve. total_amount/claimed are
-      // ATOMIC (×1e6); convert to whole tokens to match the netted balances below.
-      // Table may not exist on older deploys — tolerated via catch returning [].
+      // ATOMIC (x1e6); convert to whole tokens to match the netted balances below.
+      // Table may not exist on older deploys -- tolerated via catch returning [].
       pool.query(`SELECT beneficiary, SUM(total_amount - claimed) AS locked_atomic FROM vesting_locks WHERE curve_id = $1 GROUP BY beneficiary`, [req.params.curveId]).catch(() => ({ rows: [] })),
     ]);
     const creator = creatorRes.rows[0]?.creator ?? null;
@@ -281,7 +318,7 @@ app.get('/token/:curveId/holders', async (req, res) => {
         .map(([address, balance]) => {
           const locked = Math.min(balance, lockedByWallet[address] ?? 0); // never exceed held
           const liquid = Math.max(0, balance - locked);
-          // additive fields only — `address` and `balance` unchanged so existing
+          // additive fields only -- `address` and `balance` unchanged so existing
           // consumers (HolderList) keep working untouched.
           return { address, balance, locked, liquid, isCreator: creator != null && address === creator };
         })
@@ -298,12 +335,12 @@ app.get('/trades/recent', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Trending feed — 1h rolling momentum score.
-// score = (volume_1h × buy_ratio) + (unique_buyers_1h × K) + price_change_bonus
+// Trending feed -- 1h rolling momentum score.
+// score = (volume_1h x buy_ratio) + (unique_buyers_1h x K) + price_change_bonus
 //   volume_1h        = sum of sui_in (buys) + sui_out (sells) over last hour, in SUI
 //   buy_ratio        = buy_volume / total_volume  (rewards buy pressure)
 //   unique_buyers_1h = distinct buyer addresses last hour (hardest signal to fake)
-//   price_change_bonus = (last_reserve - first_reserve) / first_reserve, capped, ×weight
+//   price_change_bonus = (last_reserve - first_reserve) / first_reserve, capped, xweight
 app.get('/trending', async (req, res) => {
   try {
     const limit   = Math.min(parseInt(req.query.limit || '10'), 50);
@@ -378,7 +415,7 @@ app.get('/leaderboard/traders', async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit || '20'), 100);
     const MIST_L = 1_000_000_000;
-    // COUNT(*) per wallet — the previous version did `buys++` once per GROUPED
+    // COUNT(*) per wallet -- the previous version did `buys++` once per GROUPED
     // row, which is always 1 row per wallet, so every trader showed exactly
     // "2 trades" (1 buy + 1 sell) regardless of real activity. Count real trades.
     const [buysRes, sellsRes] = await Promise.all([
@@ -407,7 +444,7 @@ app.get('/trader/:address', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ── /token/:id/locks?owner=:address ──────────────────────────────────────────
+// -- /token/:id/locks?owner=:address ------------------------------------------
 // Returns lock_ids for a beneficiary on a specific curve.
 app.get('/token/:id/locks', async (req, res) => {
   try {
@@ -426,12 +463,12 @@ app.get('/token/:id/locks', async (req, res) => {
     );
     res.json(result.rows);
   } catch (err) {
-    // Table may not exist yet — return empty array gracefully
+    // Table may not exist yet -- return empty array gracefully
     res.json([]);
   }
 });
 
-// ── /lock/:lockId ─────────────────────────────────────────────────────────────
+// -- /lock/:lockId -------------------------------------------------------------
 // Returns details for a single VestingLock by its object ID.
 app.get('/lock/:lockId', async (req, res) => {
   try {
@@ -455,7 +492,7 @@ app.get('/lock/:lockId', async (req, res) => {
 
 
 
-// ── /internal/store-metadata-isv (POST) ──────────────────────────────────────
+// -- /internal/store-metadata-isv (POST) --------------------------------------
 app.post('/internal/store-metadata-isv', async (req, res) => {
   try {
     const { curveId, metadataObjectId, initialSharedVersion } = req.body;
@@ -468,10 +505,10 @@ app.post('/internal/store-metadata-isv', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ── Agent DAG runs (in-memory; demo-scale) ────────────────────────────────────
-// The operator runs `nexus dag execute … --json | curl … /internal/agent-run`.
+// -- Agent DAG runs (in-memory; demo-scale) ------------------------------------
+// The operator runs `nexus dag execute ... --json | curl ... /internal/agent-run`.
 // AgentPage.jsx polls /internal/agent-run/latest (and /:id) to render the real
-// on-chain Nexus DAGExecution. Stored in memory — fine for a demo, resets on
+// on-chain Nexus DAGExecution. Stored in memory -- fine for a demo, resets on
 // redeploy. No DB schema change required.
 const agentRuns = [];                 // newest-last
 const MAX_AGENT_RUNS = 50;
@@ -489,7 +526,7 @@ function normalizeAgentRun(raw) {
   // `nexus dag execute --json` returns the submission receipt:
   //   { digest, execution_id, tx_checkpoint }
   // Per-vertex Ok/Err lives on the DAGExecution object / `nexus dag inspect`,
-  // not here — so we record the on-chain execution id + digest and mark it
+  // not here -- so we record the on-chain execution id + digest and mark it
   // submitted. The UI reads vertex detail from chain (or shows it submitted).
   rec.executionId = raw.execution_id ?? raw.executionId ?? raw.dag_execution_id
                  ?? raw.dagExecutionId ?? raw.objectId ?? null;
@@ -524,7 +561,7 @@ function normalizeAgentRun(raw) {
   return rec;
 }
 
-// POST /internal/agent-run — operator's CLI output lands here.
+// POST /internal/agent-run -- operator's CLI output lands here.
 app.post('/internal/agent-run', async (req, res) => {
   try {
     const rec = normalizeAgentRun(req.body);
@@ -534,7 +571,7 @@ app.post('/internal/agent-run', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// GET /internal/agent-run/latest?since=<ms> — newest run (optionally newer than `since`).
+// GET /internal/agent-run/latest?since=<ms> -- newest run (optionally newer than `since`).
 app.get('/internal/agent-run/latest', async (req, res) => {
   const since = Number(req.query.since ?? 0);
   for (let i = agentRuns.length - 1; i >= 0; i--) {
@@ -543,14 +580,14 @@ app.get('/internal/agent-run/latest', async (req, res) => {
   res.json(null);
 });
 
-// GET /internal/agent-run/:id — a specific DAGExecution by id (paste fallback).
+// GET /internal/agent-run/:id -- a specific DAGExecution by id (paste fallback).
 app.get('/internal/agent-run/:id', async (req, res) => {
   const { id } = req.params;
   const found = [...agentRuns].reverse().find(r => r.executionId === id);
   res.json(found ?? null);
 });
 
-// ── /debug/isv/:id ────────────────────────────────────────────────────────────
+// -- /debug/isv/:id ------------------------------------------------------------
 app.get('/debug/isv/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -598,7 +635,7 @@ app.get('/debug/isv/:id', async (req, res) => {
   }
 });
 
-// ── /debug/clear-metadata-isv/:id ────────────────────────────────────────────
+// -- /debug/clear-metadata-isv/:id --------------------------------------------
 app.get('/debug/clear-metadata-isv/:id', async (req, res) => {
   try {
     await pool.query('UPDATE curves SET metadata_shared_version = NULL WHERE curve_id = $1', [req.params.id]);
@@ -606,7 +643,7 @@ app.get('/debug/clear-metadata-isv/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ── /token/:id/metadata-object ────────────────────────────────────────────────
+// -- /token/:id/metadata-object ------------------------------------------------
 app.get('/token/:id/metadata-object', async (req, res) => {
   try {
     const { id } = req.params;
@@ -638,14 +675,14 @@ app.get('/token/:id/metadata-object', async (req, res) => {
     if (!objectId) return res.status(404).json({ error: 'CoinMetadata not found on-chain' });
 
     // Get the CoinMetadata's initialSharedVersion DIRECTLY from the object's
-    // owner. For a shared object the owner carries `initialSharedVersion` — the
+    // owner. For a shared object the owner carries `initialSharedVersion` -- the
     // version at the moment it was shared. This is authoritative regardless of
     // how many transactions the launch took to publish + share the metadata.
     //
     // (The previous implementation walked the package PUBLISH tx looking for the
     // metadata's version there. That is the wrong tx: the SuiPump launch shares
     // the CoinMetadata in a LATER transaction (public_share_object), so the
-    // publish-tx walk either found nothing — returning isv=null — or found the
+    // publish-tx walk either found nothing -- returning isv=null -- or found the
     // pre-share version, which is wrong for a sharedObjectRef. This is the root
     // cause of `initialSharedVersion: null` from this endpoint.)
     let isv = null;
@@ -682,21 +719,21 @@ async function startPgListener() {
     await client.query('LISTEN suipump_events');
     client.on('notification', (msg) => { try { const event = JSON.parse(msg.payload); emitEvent(event.eventType, event.data, event.curveId, event.digest ?? null); } catch {} });
     client.on('error', (err) => { console.error('  PG listener error:', err.message); client.end().catch(() => {}); setTimeout(startPgListener, 5_000); });
-    console.log('  ✓ PostgreSQL LISTEN active — suipump_events');
+    console.log('  ✓ PostgreSQL LISTEN active -- suipump_events');
   } catch (err) { console.error('  PG listener connect failed:', err.message); setTimeout(startPgListener, 5_000); }
 }
 
-// ── Agent notifications ───────────────────────────────────────────────────────
+// -- Agent notifications -------------------------------------------------------
 // Two sources feed the notification bell:
-//   (1) /wallet/:address/activity — buy/sell/launch events read straight from the
+//   (1) /wallet/:address/activity -- buy/sell/launch events read straight from the
 //       events table (these carry amounts + symbol natively, no extra store).
-//   (2) POST /notify + GET /wallet/:address/notifications — a small in-memory
+//   (2) POST /notify + GET /wallet/:address/notifications -- a small in-memory
 //       store for events whose MEANING isn't on-chain: TP/SL fires (the trigger
 //       reason TP vs SL is only known to the strategy runner) and claim amounts
 //       (computed by the bridge from balanceChanges, forwarded by the claim proxy).
 // The bell merges (1) + (2) with the existing comment/graduation notifications.
 
-// GET /wallet/:address/activity?limit= — an address's own buy/sell/launch events,
+// GET /wallet/:address/activity?limit= -- an address's own buy/sell/launch events,
 // newest first, joined to symbol/name. Used with the AGENT wallet to surface
 // "agent bought/sold/launched" with real amounts.
 app.get('/wallet/:address/activity', async (req, res) => {
@@ -764,14 +801,14 @@ app.get('/wallet/:address/activity', async (req, res) => {
 
 // In-memory notification store for agent fires whose meaning isn't on-chain
 // (TP/SL trigger reason; claim amount). Keyed by wallet, capped, newest-last.
-// Mirrors the agentRuns pattern — self-contained, no schema change.
+// Mirrors the agentRuns pattern -- self-contained, no schema change.
 const agentNotifs = new Map();   // wallet(lowercase) -> [ {id,type,...} ]
 const MAX_NOTIFS_PER_WALLET = 60;
 
-// POST /notify — agent processes (strategy runner, claim proxy) push events here.
+// POST /notify -- agent processes (strategy runner, claim proxy) push events here.
 // Body: { wallet, type, curveId?, symbol?, trigger?, tokens?, sui?, digest?, id? }
-//   type 'tpsl'  → trigger 'TP'|'SL', tokens sold
-//   type 'claim' → sui claimed
+//   type 'tpsl'  -> trigger 'TP'|'SL', tokens sold
+//   type 'claim' -> sui claimed
 app.post('/notify', (req, res) => {
   try {
     const b = req.body ?? {};
@@ -798,20 +835,20 @@ app.post('/notify', (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// GET /wallet/:address/notifications — the stored tpsl/claim fires for a wallet.
+// GET /wallet/:address/notifications -- the stored tpsl/claim fires for a wallet.
 app.get('/wallet/:address/notifications', (req, res) => {
   const list = agentNotifs.get(String(req.params.address).toLowerCase()) ?? [];
   res.json([...list].sort((a, b) => b.timestamp - a.timestamp));
 });
 
-// ── Agent ticker disambiguation ───────────────────────────────────────────────
-// GET /search/by-symbol/:symbol — all non-graduated curves whose symbol matches
+// -- Agent ticker disambiguation -----------------------------------------------
+// GET /search/by-symbol/:symbol -- all non-graduated curves whose symbol matches
 // (case-insensitive), each with the stats the agent's token picker needs: market
 // cap (same getVirtuals + priceFromReserve math as the token header), 24h-ish
 // volume, and a live holder count. Used when an agent goal names a token by
-// ticker ("$TEST") instead of pasting a curve id — the UI resolves the real
+// ticker ("$TEST") instead of pasting a curve id -- the UI resolves the real
 // curve from the candidates here. Returned newest-first; mcap/volume break ties
-// client-side. Holder count is computed per candidate (netted buys − sells).
+// client-side. Holder count is computed per candidate (netted buys - sells).
 const TOTAL_SUPPLY_WHOLE = 1_000_000_000;
 app.get('/search/by-symbol/:symbol', async (req, res) => {
   try {

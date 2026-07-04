@@ -1,8 +1,8 @@
 // useTokenStats.js
 // Loads all token stats from indexer on mount, then updates in real-time
-// via SSE — only re-fetches stats for the specific curve that traded.
+// via SSE -- only re-fetches stats for the specific curve that traded.
 import { useState, useEffect, useRef } from 'react';
-import { curveShapeFor } from './constants.js';
+import { curveShapeFor, PACKAGE_ID } from './constants.js';
 
 
 const INDEXER_URL  = import.meta.env.VITE_INDEXER_URL || '';
@@ -38,7 +38,7 @@ export function useTokenStats(tokens) {
   const esRef           = useRef(null);
   const timerRef        = useRef(null);
 
-  // ── Initial load ──────────────────────────────────────────────────────────
+  // -- Initial load ----------------------------------------------------------
   useEffect(() => {
     if (!tokens || tokens.length === 0) return;
     if (!INDEXER_URL) return;
@@ -55,7 +55,7 @@ export function useTokenStats(tokens) {
       .catch(() => {});
   }, [tokens?.length]);
 
-  // ── SSE: update stats for any curve that gets a new trade ─────────────────
+  // -- SSE: update stats for any curve that gets a new trade -----------------
   useEffect(() => {
     if (!INDEXER_URL) return;
 
@@ -87,12 +87,21 @@ export function useTokenStats(tokens) {
               volume24h: 0, commentCount: 0, pctChange: null,
               sparkline24h: [], holderCount: 0, devBuyMist: 0,
             };
-            // Use (vSui + new_sui_reserve) / 1B — matches OHLC chart exactly
+            // Spot price = (vSui + realSui)^2 / (vSui * vTok) -- the SAME
+            // constant-product formula api.js priceFromReserve and the OHLC
+            // chart use. The old linear (vSui + reserve) / 1e9 disagreed with
+            // it by ~7% at low reserve, so the pct badge jumped on every live
+            // trade. Fallback for tokens not in the list yet (fresh launch
+            // mid-session): the ACTIVE package shape -- every new launch is
+            // V10-lineage; falling through to the V4 shape (vSui 30,000) gave
+            // wildly wrong prices for exactly the newest tokens.
             const token = tokens?.find(t => t.curveId === curveId);
-            const { virtualSui: vSui } = curveShapeFor(token?.packageId);
+            const { virtualSui: vSui, virtualTokens: vTok } = curveShapeFor(token?.packageId ?? PACKAGE_ID);
             const newReserveMist = Number(d.new_sui_reserve ?? 0);
-            const price = newReserveMist > 0
-              ? (vSui + newReserveMist / MIST_PER_SUI) / 1_000_000_000
+            const k = vSui * vTok;
+            const realSui = newReserveMist / MIST_PER_SUI;
+            const price = newReserveMist > 0 && k > 0
+              ? ((vSui + realSui) * (vSui + realSui)) / k
               : cur.lastPrice;
             const now        = Date.now();
             const oneDayAgo  = now - 86_400_000;
