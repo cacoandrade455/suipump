@@ -895,16 +895,14 @@ function AgentSessionPanel({ account, onSessionChange }) {
     let dead = false;
     (async () => {
       try {
-        const r = await fetch(`${BRIDGE_URL}/health`, { signal: AbortSignal.timeout(8000) });
+        // Bridge /health is POST-only (GET returns 405) and reports a flat
+        // { enclave: boolean } - enclaveConfigured() means ENCLAVE_SIGNER_URL
+        // is set on Render, i.e. a live enclave signer exists. Missing or
+        // unreachable => unavailable: the safe default is the ENCLAVE option
+        // greying out, never a session that cannot sign.
+        const r = await fetch(`${BRIDGE_URL}/health`, { method: 'POST', signal: AbortSignal.timeout(8000) });
         const h = await r.json().catch(() => ({}));
-        // Tolerant feature detection over the health blob (field naming has
-        // varied). Unknown or missing => unavailable: the safe default is the
-        // ENCLAVE option greying out, never a session that cannot sign.
-        const up = h?.enclave === true
-          || h?.enclave?.configured === true
-          || h?.enclave?.up === true
-          || h?.enclaveConfigured === true;
-        if (!dead) setEnclaveAvailable(!!up);
+        if (!dead) setEnclaveAvailable(h?.enclave === true);
       } catch { /* bridge unreachable - leave enclave mode greyed */ }
     })();
     return () => { dead = true; };
