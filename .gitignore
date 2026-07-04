@@ -66,3 +66,5 @@ contracts-v*/build/
 # Shell-accident files (literal brace/quote names from bad redirects)
 \{
 \'
+*.pem
+suipump-nexus-tools/register_enclave.js
