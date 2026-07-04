@@ -63,10 +63,13 @@ process.on('uncaughtException',  (e) => err('uncaughtException:',  e?.message ??
 function getVSui(packageId) {
   if (!packageId) return 3500;
   if (packageId.startsWith('0x2154')) return 30000; // V4
-  if (packageId.startsWith('0x785c')) return 10000; // V5
-  if (packageId.startsWith('0x21d5')) return 10000; // V6
-  if (packageId.startsWith('0xfb8f')) return 5000;  // V7
+  if (packageId.startsWith('0x785c')) return 9000;  // V5: contract VIRTUAL_SUI_RESERVE = 9_000
+  if (packageId.startsWith('0x21d5')) return 9000;  // V6: contract VIRTUAL_SUI_RESERVE = 9_000
+  if (packageId.startsWith('0xfb8f')) return 3500;  // V7: contract VIRTUAL_SUI_RESERVE = 3_500
   if (packageId.startsWith('0x7196')) return 4369;  // V9
+  if (packageId.startsWith('0x2ded')) return 4369;  // V10: same shape as V9
+  if (packageId.startsWith('0xc038')) return 4369;  // V11 (upgrade of V10 - defensive: curves type as V10)
+  if (packageId.startsWith('0xf5a3')) return 4369;  // V12 (upgrade of V10 - defensive: curves type as V10)
   return 3500;                                       // V8 / V8_1
 }
 
@@ -459,18 +462,13 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const STALE_OBJECT_RE = /unavailable for consumption|needs to be rebuilt|rejected as invalid by more than|not available for consumption|equivocat/i;
 
 async function fireSell(curveId, tokenWhole, minSuiOut, sellAll = false, sessionId = null) {
-  // SELL = two layers, mirroring how buy already settles on these surfaces:
-  //   1. EMIT the Nexus DAG request (/run-dag) - produces a real on-chain
-  //      DAGExecution digest (the agentic-decision proof). This NEVER blocks the
-  //      sell: if it errors, we log and still settle. The leader does not execute
-  //      it (no leader executes any walk - proven on-chain), so it is emission
-  //      only, by design.
-  //   2. SETTLE via the bridge /sell - the proven path that actually moves the
-  //      tokens (same bridge every working trade on SuiPump uses; the Nexus sell
-  //      tool itself calls this exact endpoint). The bridge resolves
-  //      tokenType/version/coins and signs with its own SUI_PRIVATE_KEY, so we
-  //      pass only curve + amount.
-  // Returns { ok, txDigest (settlement), nexusDigest, nexusExecutionId, ... }.
+  // SELL = bridge settle, SOLE executor (see SINGLE-EXECUTOR RULE below).
+  //   - session sells  -> /session-sell (spends the session's parked tokens)
+  //   - non-session    -> /sell (agent wallet)
+  // The bridge resolves tokenType/version/coins and signs; we pass only
+  // curve + amount. Returns { ok, txDigest (settlement), nexusDigest,
+  // nexusExecutionId, ... } - the nexus fields are null until the sell DAG
+  // rebuild reintroduces Leader-executed sells.
   //
   // WHOLE-BALANCE SELLS use tokenAmount:"all" - the bridge's proven path that
   // merges ALL of the wallet's coin objects for this type and sells the lot.
@@ -480,58 +478,22 @@ async function fireSell(curveId, tokenWhole, minSuiOut, sellAll = false, session
   // is what every working manual/agent sell this project has used. Partial sells
   // (sellPct < 100) still pass a specific integer amount.
   const tokenAmount = sellAll ? 'all' : Math.floor(tokenWhole);
-  // The Nexus /run-dag emit validates sell.tokenAmount > 0 and rejects "all"
-  // (only the bridge settle path resolves "all" to the on-chain balance). The
-  // emit is the agentic-decision PROOF, not the money path, so we always send it
-  // a positive integer derived from the known balance. The bridge settle below
-  // still uses `tokenAmount` ("all" for whole sells) so coin-selection stays
-  // robust across multiple coin objects.
-  const emitTokenAmount = Math.max(1, Math.floor(tokenWhole));
 
-  // -- 1. Emit the Nexus DAG request (non-blocking) ---------------------------
-  let nexusDigest = null, nexusExecutionId = null;
-  let leaderSettlement = null, leaderEndState = null, leaderSender = null;
-  try {
-    const rr = await fetch(`${RUNNER_URL}/run-dag`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...(AGENT_API_KEY ? { 'x-agent-key': AGENT_API_KEY } : {}) },
-      body: JSON.stringify({ workflow: 'sell', sell: { curveId, tokenAmount: emitTokenAmount, minSuiOut: minSuiOut ?? 0 }, ...(DEMO_MODE ? { confirm: true } : {}) }),
-      signal: AbortSignal.timeout(190000),
-    });
-    const rd = await rr.json().catch(() => ({}));
-    if (rr.ok && rd.ok) {
-      nexusDigest      = rd.digest ?? null;
-      nexusExecutionId = rd.executionId ?? null;
-      leaderSettlement = rd.settlementDigest ?? null;
-      leaderEndState   = rd.endState ?? null;
-      leaderSender     = rd.leaderSender ?? null;
-      log(`sell: Nexus DAG emitted execution=${nexusExecutionId} digest=${nexusDigest}` +
-          (DEMO_MODE ? ` endState=${leaderEndState} settlement=${leaderSettlement}` : ''));
-    } else {
-      err(`sell: Nexus DAG emit returned ${rd.error ?? rr.status} (continuing to settle)`);
-    }
-  } catch (e) {
-    err(`sell: Nexus DAG emit failed: ${e.message} (continuing to settle)`);
-  }
-
-  // -- DEMO MODE: if the leader settled the walk on-chain (Ok/Empty), the leader
-  // path already executed the sell (the Nexus sell tool calls the same bridge
-  // endpoint). Return the LEADER settlement as the proof and skip the redundant
-  // bridge-direct settle, so the leader is the sole, provable executor.
-  if (DEMO_MODE && (leaderEndState === 'Ok' || leaderEndState === 'Empty') && leaderSettlement) {
-    log(`sell: DEMO leader-settled endState=${leaderEndState} leader=${leaderSender} digest=${leaderSettlement} (skipping bridge)`);
-    return {
-      ok: true,
-      txDigest: leaderSettlement,   // surface the LEADER settlement as the trade proof
-      leaderSettled: true,
-      endState: leaderEndState,
-      leaderSender,
-      nexusDigest, nexusExecutionId,
-    };
-  }
-  // DEMO MODE fallback note: if we reach here in demo mode, the leader path did
-  // not confirm in time - we fall through to the bridge settle below so the demo
-  // still completes. (Logged as a normal settle.)
+  // -- SINGLE-EXECUTOR RULE: the bridge is the SOLE executor for ALL sells ----
+  // (post 2026-07-03 DAG fix). Leaders now DO consume walks and occurrences,
+  // and the Nexus tools execute through the SHARED agent wallet - emitting a
+  // walk AND settling via the bridge produces TWO on-chain trades (the
+  // C3yGhm.../2Xm4KGbi... AGNTSESH double-buy incident, 2026-07-04).
+  // The old sell-walk emit here is REMOVED, not gated, because:
+  //   - the sell DAG has NOT been rebuilt yet (on_chain vertices, walks stick
+  //     Active forever), so a pending-walk guard would stall TP/SL sells
+  //     indefinitely - and a sell that protects a position must NEVER stall;
+  //   - the moment the sell DAG IS rebuilt, a fire-and-forget emit becomes a
+  //     guaranteed double-sell through the shared wallet.
+  // Leader-executed sells return with the sell DAG rebuild (queue item):
+  // off_chain vertices + session-aware sell tool (/session-sell on sessionId,
+  // TODO(nexus-session) Option B), Leader as sole executor with confirm.
+  const nexusDigest = null, nexusExecutionId = null;
 
   // -- 2. Settle the swap via the bridge (the path that moves tokens) ---------
   // Whole tokens; the bridge converts to base units itself. 3-try retry for the
@@ -576,6 +538,12 @@ async function fireSell(curveId, tokenWhole, minSuiOut, sellAll = false, session
 }
 
 // -- Fire any workflow as a Nexus scheduler TASK (server.js /schedule-task) -----
+// !! DO NOT CALL THIS FROM STRATEGY FIRE PATHS !! Since the 2026-07-03 DAG fix,
+// Leaders CONSUME scheduler occurrences and execute them through the Nexus
+// tools, which sign with the SHARED agent wallet. Emitting an occurrence for a
+// fire that the runner also settles produces a second on-chain trade (the
+// AGNTSESH double-buy incident). This wrapper remains ONLY for genuine
+// scheduling features where the Leader is the sole, intended executor.
 // The /schedule-task analog of fireSell: emits a real, persistent, on-chain
 // Nexus scheduler Task + RequestScheduledOccurrence for the given workflow,
 // returning { taskId, detail:{digest, schedule_digest, ...} }. Used by the
@@ -623,6 +591,7 @@ async function fireScheduleTask(workflow, payload, schedule) {
 // Returns { settleDigest, leaderSettled, nexusExecutionId } shaped like the
 // sniper/dca call sites expect (they read the digest).
 async function fireNexusBuy(curveId, amountSui) {
+  let walkDigest = null, walkExecutionId = null;
   try {
     const rr = await fetch(`${RUNNER_URL}/run-dag`, {
       method: 'POST',
@@ -631,15 +600,25 @@ async function fireNexusBuy(curveId, amountSui) {
       signal: AbortSignal.timeout(190000),
     });
     const rd = await rr.json().catch(() => ({}));
+    walkDigest      = rd.digest ?? null;
+    walkExecutionId = rd.executionId ?? null;
     if (rr.ok && rd.ok && (rd.endState === 'Ok' || rd.endState === 'Empty') && rd.settlementDigest) {
-      log(`buy: DEMO leader-settled endState=${rd.endState} leader=${rd.leaderSender} digest=${rd.settlementDigest} (skipping bridge)`);
+      log(`buy: DEMO leader-settled endState=${rd.endState} leader=${rd.leaderSender} digest=${rd.settlementDigest} (sole executor)`);
       return { settleDigest: rd.settlementDigest, leaderSettled: true, leaderSender: rd.leaderSender ?? null, nexusExecutionId: rd.executionId ?? null };
     }
-    err(`buy: DEMO leader path did not confirm (endState=${rd.endState ?? rd.error ?? rr.status}); falling back to bridge`);
+    err(`buy: DEMO leader path did not confirm (endState=${rd.endState ?? rd.error ?? rr.status})`);
   } catch (e) {
-    err(`buy: DEMO leader emit failed: ${e.message}; falling back to bridge`);
+    err(`buy: DEMO leader emit failed: ${e.message}`);
   }
-  // Fallback: the proven bridge buy.
+  // SINGLE-EXECUTOR RULE: if a walk EXISTS but did not terminally settle in the
+  // confirm window, the Leader can still execute it after we return - a bridge
+  // buy now would double-buy (the C3yGhm.../2Xm4KGbi... incident class). Fail
+  // this fire; the caller's cooldown/next tick retries.
+  if (walkDigest || walkExecutionId) {
+    throw new Error(`buy walk pending (execution ${walkExecutionId ?? '?'} digest ${walkDigest ?? '?'}) - refusing bridge settle to avoid a double-buy; will retry`);
+  }
+  // No walk was created (emit itself failed before an on-chain request
+  // existed) - the proven bridge buy is safe and becomes the sole executor.
   const settleDigest = await fireBridgeBuyRaw(curveId, amountSui);
   return { settleDigest, leaderSettled: false, leaderSender: null, nexusExecutionId: null };
 }
@@ -1086,21 +1065,16 @@ const HANDLERS = {
       const amountSui = num2(p.amountSui, 0.1);
       log(`${order.id}: SNIPE launch ${curveId.slice(0, 10)}... (${symbol || name || 'unknown'}) buy ${amountSui} SUI`);
       try {
-        // 1) EMIT the Nexus scheduler task - the on-chain agentic-decision PROOF.
-        //    Best-effort: a leader may not consume it on testnet, so this never
-        //    blocks settlement. We keep the task id/digest for the demo trail.
-        let taskId = null, emitDigest = null;
-        try {
-          const r = await fireScheduleTask('buy', { buy: { curveId, amountSui } }, { generator: 'queue' });
-          taskId = r.taskId ?? null;
-          emitDigest = r.detail?.digest ?? null;
-          log(`${order.id}: sniper task ${taskId} (emit digest ${emitDigest ?? '?'})`);
-        } catch (e) {
-          err(`${order.id}: sniper emit failed: ${e.message} (continuing to settle)`);
-        }
+        // SINGLE-EXECUTOR RULE: the old "proof" scheduler-task emit is GONE.
+        // Leaders now consume occurrences (post 2026-07-03 DAG fix), so the
+        // emit became a real second buy executed by the Leader through the
+        // SHARED agent wallet ~15s after the settle below (double-spend +
+        // custody violation for session orders). The settle digest IS the
+        // fire's proof. taskId stays null for the recordFire shape.
+        const taskId = null;
 
-        // 2) SETTLE the buy through the bridge - the path that actually moves
-        //    tokens. THIS is what makes the snipe real; the task above is proof.
+        // SETTLE the buy through the bridge - the path that actually moves
+        // tokens. Sole executor for this fire.
         const buyResult = await fireBridgeBuy(curveId, amountSui, order.params?.sessionId ?? null);
         const settleDigest = buyResult.settleDigest;
         log(`${order.id}: sniper settled buy digest=${settleDigest} via=${buyResult.leaderSettled ? 'leader' : 'bridge'}`);
@@ -1206,15 +1180,15 @@ const HANDLERS = {
         if (done > 0 && sinceLast < intervalMs) return;
       }
 
-      // -- Fire one buy: Nexus proof task + bridge settle ---------------------
+      // -- Fire one buy: bridge settle, sole executor --------------------------
       if (onCooldown(order)) return;   // guard against double-fire within a tick window
-      let taskId = null;
-      try {
-        const d = await fireScheduleTask("buy", { buy: { curveId, amountSui: thisBuySui } }, { generator: 'queue' });
-        taskId = d?.taskId ?? null;
-      } catch (e) {
-        err(`${order.id}: dca emit failed: ${e.message} (continuing to settle)`);
-      }
+      // SINGLE-EXECUTOR RULE: the old "proof" scheduler-task emit is GONE.
+      // Leaders now consume occurrences (post 2026-07-03 DAG fix); the emit
+      // here is what produced the AGNTSESH double-buy (session settle C3yGhm...
+      // + Leader shared-wallet buy 2Xm4KGbi... ~15s later, 2026-07-04). The
+      // settle digest below IS the fire's proof. taskId stays null for the
+      // recordFire shape.
+      const taskId = null;
 
       let settleDigest, dcaBuyResult;
       try {
@@ -1329,11 +1303,9 @@ const HANDLERS = {
         const suiPerTrade = num2(p.suiPerTrade, 0);
         if (!(suiPerTrade > 0)) { if (!order._warned) { err(`${order.id}: copytrade needs suiPerTrade`); order._warned = true; } return; }
         log(`${order.id}: COPYTRADE target BUY -> agent buy ${suiPerTrade} SUI on ${curveId.slice(0, 10)}...`);
-        let taskId = null;
-        try {
-          const d = await fireScheduleTask('buy', { buy: { curveId, amountSui: suiPerTrade } }, { generator: 'queue' });
-          taskId = d?.taskId ?? null;
-        } catch (e) { err(`${order.id}: copytrade buy emit failed: ${e.message} (continuing to settle)`); }
+        // SINGLE-EXECUTOR RULE: no scheduler-task emit (Leaders now consume
+        // occurrences = second shared-wallet buy). Settle digest is the proof.
+        const taskId = null;
         try {
           const cpBuy = await fireBridgeBuy(curveId, suiPerTrade, order.params?.sessionId ?? null);
           const settle = cpBuy.settleDigest;
@@ -1499,17 +1471,13 @@ const HANDLERS = {
 
       if (!pick) return; // nothing cleared the policy this tick
 
-      // -- Act: enter exactly like dca (Nexus proof + bridge settle) -----------
+      // -- Act: enter exactly like dca (bridge settle, sole executor) ----------
       if (onCooldown(order)) return;
       const { curveId } = pick;
 
-      let taskId = null;
-      try {
-        const d = await fireScheduleTask('buy', { buy: { curveId, amountSui: perEntrySui } }, { generator: 'queue' });
-        taskId = d?.taskId ?? null;
-      } catch (e) {
-        err(`${order.id}: autopilot emit failed: ${e.message} (continuing to settle)`);
-      }
+      // SINGLE-EXECUTOR RULE: no scheduler-task emit (Leaders now consume
+      // occurrences = second shared-wallet buy). Settle digest is the proof.
+      const taskId = null;
 
       let settleDigest, buyResult;
       try {
