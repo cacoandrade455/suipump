@@ -1576,6 +1576,12 @@ function AgentSessionPanel({ account, onSessionChange }) {
 
 export default function AgentPage({ onBack }) {
   const account = useCurrentAccount();
+  // Needed by the just-in-time universal-trading consent path (ensureUniversalIfNeeded).
+  // These hooks were previously only pulled inside AgentSessionPanel; approve()
+  // lives here in AgentPage, so without these the helper referenced an
+  // undefined `client`/`dAppKit` and crashed the whole page on load.
+  const dAppKit = useDAppKit();
+  const client  = useCurrentClient();
   const navigate = useNavigate();
 
   // Reported by AgentSessionPanel below -- the user's active, spendable
