@@ -1,23 +1,34 @@
 // api/token-og.js
-// Vercel Edge Function — injects page-specific OG meta tags for:
-//   /token/:curveId  — token name, symbol, image, price, mcap, curve progress
-//   /stats           — protocol volume & fee stats
-//   /leaderboard     — top tokens & traders
+// Vercel Edge Function -- server-rendered OG/Twitter meta for social crawlers:
+//   /token/:curveId  -- token name, symbol, image, price, mcap, curve progress
+//   /stats           -- protocol volume & trade stats
+//   /leaderboard     -- top tokens by volume
 //
-// Crawlers get server-rendered meta. Real users get index.html as normal.
+// WIRING: vercel.json routes ONLY crawler user-agents here (ordered rewrites
+// with a `has` UA match, ahead of the SPA catch-all). Humans never hit this
+// function via site links; a direct hit gets a 302 back to the SPA route.
 //
-// NOTE: Edge runtime has no Node.js — cannot use @mysten/sui SDK.
-// All Sui data is fetched via raw GraphQL queries to graphql.testnet.sui.io.
+// DATA STRATEGY (post 2026-07-04 price fixes): the indexer's /token/:id
+// last_price is reserve-derived and version-correct, so it is the PRIMARY
+// source for everything (name/symbol/icon/price/reserve/graduated). The raw
+// GraphQL curve read is the FALLBACK for indexer outages only.
+//
+// NOTE: Edge runtime has no Node.js -- no @mysten/sui SDK. Fallback Sui data
+// comes from raw GraphQL queries to graphql.testnet.sui.io. GraphQL page
+// sizes are CAPPED AT 50 by the RPC validator (larger pages null the whole
+// read -- the PortfolioPage holdings incident).
 
 export const config = { runtime: 'edge' };
 
 const GRAPHQL_URL    = 'https://graphql.testnet.sui.io/graphql';
 const INDEXER_URL    = 'https://suipump-62s2.onrender.com';
-const APP_URL        = 'https://suipump.vercel.app';
-const FALLBACK_IMAGE = 'https://i.imgur.com/qS6SGc7.jpeg';
+const APP_URL        = 'https://suipump.org';
+const FALLBACK_IMAGE = 'https://i.imgur.com/qS6SGc7.jpeg'; // TODO: swap to a suipump.org-hosted card asset
 const MIST_PER_SUI   = 1_000_000_000n;
 
-// All package IDs — used for event queries
+// Defining package ids -- event TYPES define here forever (V11/V12 are
+// upgrades of V10, so lineage events keep typing under V10; they never get
+// their own event-type namespace for the legacy events used below).
 const ALL_PACKAGE_IDS = [
   '0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8', // V4
   '0x785c0604cb6c60a8547501e307d2b0ca7a586ff912c8abff4edfb88db65b7236', // V5
@@ -25,9 +36,11 @@ const ALL_PACKAGE_IDS = [
   '0xfb8f3f3e4e8d53130ac140906eebea6b6740bfaf0c971aec607fbc723be951f0', // V7
   '0x145a1e79b83cc17680dbfe4f96839cd359c7db380ac15463ecb6dc30f9849b69', // V8_1
   '0xbb4ee050239f59dfd983501ce101698ba27857f77aff2d437cec568fe0062546', // V8
+  '0x719698e5138582d78ee95317271e8bce05769569a4f58c940a7f1b424d90ffe2', // V9
+  '0x2deda2cade65cd5afd5ffbe799d48f2491debf08d3aef6fa11aa6e1c8afe1598', // V10 (whole V10/V11/V12 lineage)
 ];
 
-// ── GraphQL helpers ───────────────────────────────────────────────────────────
+// -- GraphQL helpers ----------------------------------------------------------
 
 async function gql(query, variables = {}) {
   const res = await fetch(GRAPHQL_URL, {
@@ -76,8 +89,10 @@ async function getCoinMetadata(coinType) {
   } catch { return null; }
 }
 
-async function queryRecentEvents(eventType, limit = 50) {
+async function queryRecentEvents(eventType, limit = 20) {
   try {
+    // RPC hard-caps GraphQL pages at 50 -- never request more.
+    const capped = Math.min(limit, 50);
     const data = await gql(`
       query GetEvents($type: String!, $limit: Int!) {
         events(filter: { type: $type }, first: $limit) {
@@ -86,7 +101,7 @@ async function queryRecentEvents(eventType, limit = 50) {
           }
         }
       }
-    `, { type: eventType, limit });
+    `, { type: eventType, limit: capped });
     return (data?.events?.nodes ?? []).map(n => {
       const j = n.contents?.json;
       return typeof j === 'string' ? JSON.parse(j) : (j ?? {});
@@ -94,54 +109,80 @@ async function queryRecentEvents(eventType, limit = 50) {
   } catch { return []; }
 }
 
-// ── Bonding curve math ────────────────────────────────────────────────────────
+// -- Bonding curve math (GraphQL FALLBACK path only) ---------------------------
 
 const TOKEN_DECIMALS = 6;
-const TOTAL_SUPPLY   = 1_000_000_000;
+const TOTAL_SUPPLY   = 1_000_000_000; // 800M curve + 200M reserve
 
-// Per-package virtual reserves for accurate price
+// Per-package virtual reserves + graduation drain -- MUST match the contracts
+// and frontend constants.js. Every new package version needs a row here or
+// prices silently fall through to a wrong shape (the -20% badge incident).
 const VIRTUAL_PARAMS = {
-  '0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8': { vSui: 30_000n,  vTok: 1_073_000_000n, drain: 87_912n  }, // V4
-  '0x785c0604cb6c60a8547501e307d2b0ca7a586ff912c8abff4edfb88db65b7236': { vSui: 10_000n,  vTok: 1_073_000_000n, drain: 30_000n  }, // V5
-  '0x21d5b1284d5f1d4d14214654f414ffca20c757ee9f9db7701d3ffaaac62cd768': { vSui: 10_000n,  vTok: 1_073_000_000n, drain: 30_000n  }, // V6
-  '0xfb8f3f3e4e8d53130ac140906eebea6b6740bfaf0c971aec607fbc723be951f0': { vSui: 5_000n,   vTok: 1_073_000_000n, drain: 9_000n   }, // V7
-  '0x145a1e79b83cc17680dbfe4f96839cd359c7db380ac15463ecb6dc30f9849b69': { vSui: 3_500n,   vTok: 1_073_000_000n, drain: 9_000n   }, // V8_1
-  '0xbb4ee050239f59dfd983501ce101698ba27857f77aff2d437cec568fe0062546': { vSui: 3_500n,   vTok: 1_073_000_000n, drain: 9_000n   }, // V8
+  '0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8': { vSui: 30_000n, vTok: 1_073_000_000n, drain: 35_000n }, // V4
+  '0x785c0604cb6c60a8547501e307d2b0ca7a586ff912c8abff4edfb88db65b7236': { vSui: 9_000n,  vTok: 1_073_000_000n, drain: 17_000n }, // V5
+  '0x21d5b1284d5f1d4d14214654f414ffca20c757ee9f9db7701d3ffaaac62cd768': { vSui: 9_000n,  vTok: 1_073_000_000n, drain: 17_000n }, // V6
+  '0xfb8f3f3e4e8d53130ac140906eebea6b6740bfaf0c971aec607fbc723be951f0': { vSui: 3_500n,  vTok: 1_073_000_000n, drain: 9_000n  }, // V7
+  '0x145a1e79b83cc17680dbfe4f96839cd359c7db380ac15463ecb6dc30f9849b69': { vSui: 3_500n,  vTok: 1_073_000_000n, drain: 9_000n  }, // V8_1
+  '0xbb4ee050239f59dfd983501ce101698ba27857f77aff2d437cec568fe0062546': { vSui: 3_500n,  vTok: 1_073_000_000n, drain: 9_000n  }, // V8
+  '0x719698e5138582d78ee95317271e8bce05769569a4f58c940a7f1b424d90ffe2': { vSui: 4_369n,  vTok: 1_073_000_000n, drain: 12_305n }, // V9
+  '0x2deda2cade65cd5afd5ffbe799d48f2491debf08d3aef6fa11aa6e1c8afe1598': { vSui: 4_369n,  vTok: 1_073_000_000n, drain: 12_305n }, // V10 lineage (curves type as V10)
+  '0xc03817bce45ff492e5d0f40f9e46f5a075a952b50c5c6146b8fb38138bd699eb': { vSui: 4_369n,  vTok: 1_073_000_000n, drain: 12_305n }, // V11 (defensive)
+  '0xf5a3566ba920a3e3614e8b25da0ca3237879b6e22eb12f21ccf2bceb6520b9cd': { vSui: 4_369n,  vTok: 1_073_000_000n, drain: 12_305n }, // V12 (defensive)
 };
 const DEFAULT_PARAMS = { vSui: 3_500n, vTok: 1_073_000_000n, drain: 9_000n };
 
-function getParams(typeRepr) {
-  const pkgId = typeRepr?.split('::')?.[0];
-  return VIRTUAL_PARAMS[pkgId] ?? DEFAULT_PARAMS;
+function paramsForPackage(pkgId) {
+  return VIRTUAL_PARAMS[pkgId ?? ''] ?? DEFAULT_PARAMS;
 }
 
 function calcPriceAndProgress(fields, typeRepr) {
-  if (!fields) return { priceStr: null, mcapStr: null, progress: null };
-  const { vSui, vTok, drain } = getParams(typeRepr);
-  const suiReserve  = BigInt(fields.sui_reserve  ?? 0);
-  const tokReserve  = BigInt(fields.token_reserve ?? 0);
-  const tokensSold  = BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS) - tokReserve;
-  const vs          = vSui * MIST_PER_SUI + suiReserve;
-  const vt          = vTok * 10n ** BigInt(TOKEN_DECIMALS) - tokensSold;
-  if (vt <= 0n) return { priceStr: null, mcapStr: null, progress: null };
-  const priceMist   = (vs * 10n ** BigInt(TOKEN_DECIMALS)) / vt;
-  const priceSui    = Number(priceMist) / 1e9;
-  const mcapSui     = priceSui * TOTAL_SUPPLY;
-  const progressPct = Math.min(100, (Number(suiReserve) / 1e9 / Number(drain)) * 100);
-  return {
-    priceStr: priceSui.toFixed(8),
-    mcapStr:  fmtSui(mcapSui),
-    progress: progressPct.toFixed(1),
-  };
+  if (!fields) return { priceSui: null, progress: null };
+  const { vSui, vTok, drain } = paramsForPackage(typeRepr?.split('::')?.[0]);
+  const suiReserve = BigInt(fields.sui_reserve   ?? 0);
+  const tokReserve = BigInt(fields.token_reserve ?? 0);
+  const tokensSold = BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS) - tokReserve;
+  const vs = vSui * MIST_PER_SUI + suiReserve;                 // MIST
+  const vt = vTok * 10n ** BigInt(TOKEN_DECIMALS) - tokensSold; // atomic tokens
+  if (vt <= 0n) return { priceSui: null, progress: null };
+  // Spot price of the x*y=k curve: virtual SUI over virtual tokens.
+  const priceMist = (vs * 10n ** BigInt(TOKEN_DECIMALS)) / vt;
+  const priceSui  = Number(priceMist) / 1e9;
+  const progress  = Math.min(100, (Number(suiReserve) / 1e9 / Number(drain)) * 100);
+  return { priceSui, progress };
 }
+
+// -- Formatting ----------------------------------------------------------------
 
 function fmtSui(n) {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000)     return `${(n / 1_000).toFixed(1)}k`;
-  return n.toFixed(0);
+  return n.toFixed(n >= 10 ? 0 : 2);
 }
 
-// ── HTML helpers ──────────────────────────────────────────────────────────────
+function fmtPrice(p) {
+  if (!(p > 0)) return null;
+  return p < 0.001 ? p.toFixed(8) : p.toFixed(4);
+}
+
+function buildTokenDesc({ priceSui, reserveSui, drain, graduated, description, symbol }) {
+  const parts = [];
+  const price = fmtPrice(priceSui);
+  if (price) {
+    parts.push(`Price ${price} SUI`);
+    parts.push(`MCap ${fmtSui(priceSui * TOTAL_SUPPLY)} SUI`);
+  }
+  if (graduated) {
+    parts.push('Graduated to DEX');
+  } else if (reserveSui != null && drain) {
+    parts.push(`Curve ${Math.min(100, (reserveSui / drain) * 100).toFixed(1)}%`);
+  }
+  // Creator description: text before the '||' metadata separator, trimmed.
+  const blurb = String(description ?? '').split('||')[0].trim();
+  if (blurb) parts.push(blurb.length > 90 ? `${blurb.slice(0, 87)}...` : blurb);
+  return parts.join(' | ') || `Trade $${symbol} on SuiPump.`;
+}
+
+// -- HTML helpers ---------------------------------------------------------------
 
 function escHtml(str) {
   return String(str)
@@ -151,20 +192,8 @@ function escHtml(str) {
     .replace(/>/g, '&gt;');
 }
 
-function isCrawler(ua = '') {
-  const bots = [
-    'twitterbot', 'discordbot', 'telegrambot', 'slackbot',
-    'facebot', 'linkedinbot', 'whatsapp', 'applebot',
-    'googlebot', 'bingbot', 'ia_archiver', 'embedly',
-    'outbrain', 'pinterest', 'rogerbot', 'showyoubot',
-    'vkshare', 'w3c_validator', 'facebookexternalhit',
-  ];
-  const lower = ua.toLowerCase();
-  return bots.some(b => lower.includes(b));
-}
-
 function injectMeta(html, { title, desc, img, pageUrl }) {
-  let out = html
+  const out = html
     .replace(/<title>[^<]*<\/title>/i, '')
     .replace(/<meta\s+(?:property|name)="(?:og:|twitter:)[^"]*"[^>]*\/?>/gi, '')
     .replace(/<meta\s+name="description"[^>]*\/?>/gi, '');
@@ -195,76 +224,76 @@ async function fetchIndexHtml() {
     const res = await fetch(`${APP_URL}/index.html`);
     return await res.text();
   } catch {
-    return `<!doctype html><html><head></head><body></body></html>`;
+    return '<!doctype html><html><head></head><body></body></html>';
   }
 }
 
-// ── Page meta builders ────────────────────────────────────────────────────────
+function cleanIcon(raw) {
+  const s = String(raw ?? '').trim();
+  return /^https?:\/\//.test(s) ? s : null;
+}
+
+// -- Page meta builders ----------------------------------------------------------
 
 async function tokenMeta(curveId) {
-  // Try indexer first — faster and has name/symbol/icon already resolved
+  const pageUrl = `${APP_URL}/token/${curveId}`;
+
+  // PRIMARY: the indexer -- one round trip, and last_price is reserve-derived
+  // and version-correct since the 2026-07-04 getVirtuals fixes.
   try {
     const r = await fetch(`${INDEXER_URL}/token/${curveId}`, { signal: AbortSignal.timeout(3000) });
     if (r.ok) {
       const d = await r.json();
-      const name   = d.name   ?? 'Unknown Token';
       const symbol = d.symbol ?? '???';
-      const img    = d.iconUrl ?? FALLBACK_IMAGE;
-
-      // Still need curve fields for price/progress
-      const { fields, type } = await getCurveFields(curveId);
-      const { priceStr, mcapStr, progress } = calcPriceAndProgress(fields, type);
-      const graduated = fields?.graduated ?? false;
-
-      const descParts = [];
-      if (priceStr)  descParts.push(`Price: ${priceStr} SUI`);
-      if (mcapStr)   descParts.push(`MCap: ${mcapStr} SUI`);
-      if (progress)  descParts.push(`Curve: ${progress}%`);
-      if (graduated) descParts.push('✅ Graduated');
-      const desc = descParts.join(' · ') || `Trade $${symbol} on SuiPump.`;
-
-      return { title: `$${symbol} — ${name} on SuiPump`, desc, img, pageUrl: `${APP_URL}/token/${curveId}` };
+      const name   = d.name   ?? 'Unknown Token';
+      const img    = cleanIcon(d.icon_url ?? d.iconUrl) ?? FALLBACK_IMAGE;
+      const drain  = Number(paramsForPackage(d.package_id).drain);
+      const desc   = buildTokenDesc({
+        priceSui:    Number(d.last_price ?? 0),
+        reserveSui:  Number(d.reserve_sui ?? 0),
+        drain,
+        graduated:   d.graduated === true,
+        description: d.description,
+        symbol,
+      });
+      return { title: `$${symbol} -- ${name} on SuiPump`, desc, img, pageUrl };
     }
-  } catch {}
+  } catch { /* indexer down -- fall through to chain */ }
 
-  // Fallback: GraphQL
+  // FALLBACK: raw chain read.
   const { fields, type } = await getCurveFields(curveId);
   const tokenType = type?.match(/Curve<(.+)>$/)?.[1] ?? null;
   const coinMeta  = tokenType ? await getCoinMetadata(tokenType) : null;
 
-  const name        = coinMeta?.name   ?? fields?.name   ?? 'Unknown Token';
-  const symbol      = coinMeta?.symbol ?? fields?.symbol ?? '???';
-  const img         = coinMeta?.iconUrl ?? FALLBACK_IMAGE;
-  const graduated   = fields?.graduated ?? false;
+  const name   = coinMeta?.name   ?? fields?.name   ?? 'Unknown Token';
+  const symbol = coinMeta?.symbol ?? fields?.symbol ?? '???';
+  const img    = cleanIcon(coinMeta?.iconUrl) ?? FALLBACK_IMAGE;
+  const { priceSui, progress } = calcPriceAndProgress(fields, type);
 
-  const { priceStr, mcapStr, progress } = calcPriceAndProgress(fields, type);
+  const parts = [];
+  const price = fmtPrice(priceSui);
+  if (price)    { parts.push(`Price ${price} SUI`); parts.push(`MCap ${fmtSui(priceSui * TOTAL_SUPPLY)} SUI`); }
+  if (fields?.graduated) parts.push('Graduated to DEX');
+  else if (progress != null) parts.push(`Curve ${progress.toFixed(1)}%`);
+  const desc = parts.join(' | ') || `Trade $${symbol} on SuiPump.`;
 
-  const descParts = [];
-  if (priceStr)  descParts.push(`Price: ${priceStr} SUI`);
-  if (mcapStr)   descParts.push(`MCap: ${mcapStr} SUI`);
-  if (progress)  descParts.push(`Curve: ${progress}%`);
-  if (graduated) descParts.push('✅ Graduated');
-  const desc = descParts.join(' · ') || `Trade $${symbol} on SuiPump.`;
-
-  return { title: `$${symbol} — ${name} on SuiPump`, desc, img, pageUrl: `${APP_URL}/token/${curveId}` };
+  return { title: `$${symbol} -- ${name} on SuiPump`, desc, img, pageUrl };
 }
 
 async function statsMeta() {
-  // Try indexer first
   try {
     const r = await fetch(`${INDEXER_URL}/stats`, { signal: AbortSignal.timeout(3000) });
     if (r.ok) {
       const d = await r.json();
-      const vol    = d.totalVolume ?? 0;
-      const trades = d.totalTrades ?? 0;
+      const vol    = Number(d.totalVolume ?? d.total_volume ?? 0);
+      const trades = Number(d.totalTrades ?? d.total_trades ?? 0);
       const desc   = vol > 0
-        ? `${fmtSui(vol)} SUI traded across ${trades}+ trades on SuiPump. 1% fee — 40% to creators, 50% protocol, 10% LP.`
-        : 'Live protocol metrics for SuiPump — permissionless token launchpad on Sui.';
+        ? `${fmtSui(vol)} SUI traded across ${trades}+ trades on SuiPump. 1% fee -- 40% to creators, 50% protocol, 10% LP.`
+        : 'Live protocol metrics for SuiPump -- permissionless token launchpad on Sui.';
       return { title: 'SuiPump Protocol Stats', desc, img: FALLBACK_IMAGE, pageUrl: `${APP_URL}/stats` };
     }
   } catch {}
 
-  // Fallback: GraphQL events across all packages
   let volumeMist = 0n;
   let trades = 0;
   await Promise.all(ALL_PACKAGE_IDS.flatMap(pkg => [
@@ -278,28 +307,25 @@ async function statsMeta() {
 
   const volumeSui = Number(volumeMist) / 1e9;
   const desc = volumeSui > 0
-    ? `${fmtSui(volumeSui)} SUI traded across ${trades}+ trades on SuiPump. 1% fee — 40% to creators, 50% protocol, 10% LP.`
-    : 'Live protocol metrics for SuiPump — permissionless token launchpad on Sui.';
+    ? `${fmtSui(volumeSui)} SUI traded across ${trades}+ recent trades on SuiPump. 1% fee -- 40% to creators, 50% protocol, 10% LP.`
+    : 'Live protocol metrics for SuiPump -- permissionless token launchpad on Sui.';
 
   return { title: 'SuiPump Protocol Stats', desc, img: FALLBACK_IMAGE, pageUrl: `${APP_URL}/stats` };
 }
 
 async function leaderboardMeta() {
-  // Try indexer first
   try {
     const r = await fetch(`${INDEXER_URL}/leaderboard/volume?limit=1`, { signal: AbortSignal.timeout(3000) });
     if (r.ok) {
       const rows = await r.json();
-      const topVolume  = rows[0]?.volume_sui ?? 0;
-      const tokenCount = rows.length;
-      const desc = tokenCount > 0
+      const topVolume = Number(rows?.[0]?.volume_sui ?? 0);
+      const desc = topVolume > 0
         ? `Top tokens and traders on SuiPump. #1 token: ${fmtSui(topVolume)} SUI volume.`
         : 'Top tokens and traders ranked by volume on SuiPump.';
-      return { title: 'SuiPump Leaderboard — Top Tokens & Traders', desc, img: FALLBACK_IMAGE, pageUrl: `${APP_URL}/leaderboard` };
+      return { title: 'SuiPump Leaderboard -- Top Tokens & Traders', desc, img: FALLBACK_IMAGE, pageUrl: `${APP_URL}/leaderboard` };
     }
   } catch {}
 
-  // Fallback: GraphQL events
   const volByCurve = {};
   await Promise.all(ALL_PACKAGE_IDS.flatMap(pkg => [
     queryRecentEvents(`${pkg}::bonding_curve::TokensPurchased`, 20).then(evts => {
@@ -314,52 +340,48 @@ async function leaderboardMeta() {
     }),
   ]));
 
-  const sorted     = Object.entries(volByCurve).sort((a, b) => b[1] - a[1]);
-  const topVolume  = sorted[0]?.[1] ?? 0;
-  const tokenCount = sorted.length;
-  const desc = tokenCount > 0
-    ? `Top tokens and traders on SuiPump. #1 token: ${fmtSui(topVolume)} SUI volume. ${tokenCount} tokens ranked.`
-    : 'Top tokens and traders ranked by volume on SuiPump — permissionless token launchpad on Sui.';
+  const sorted    = Object.entries(volByCurve).sort((a, b) => b[1] - a[1]);
+  const topVolume = sorted[0]?.[1] ?? 0;
+  const desc = sorted.length > 0
+    ? `Top tokens and traders on SuiPump. #1 token: ${fmtSui(topVolume)} SUI volume. ${sorted.length} tokens ranked.`
+    : 'Top tokens and traders ranked by volume on SuiPump -- permissionless token launchpad on Sui.';
 
-  return { title: 'SuiPump Leaderboard — Top Tokens & Traders', desc, img: FALLBACK_IMAGE, pageUrl: `${APP_URL}/leaderboard` };
+  return { title: 'SuiPump Leaderboard -- Top Tokens & Traders', desc, img: FALLBACK_IMAGE, pageUrl: `${APP_URL}/leaderboard` };
 }
 
-// ── Main handler ──────────────────────────────────────────────────────────────
+// -- Main handler -----------------------------------------------------------------
 
 export default async function handler(req) {
   const url     = new URL(req.url);
-  const ua      = req.headers.get('user-agent') || '';
   const page    = url.searchParams.get('page') || 'token';
   const curveId = url.searchParams.get('curveId') || '';
 
-  // Real users: serve index.html directly
-  if (!isCrawler(ua)) {
-    const html = await fetchIndexHtml();
-    return new Response(html, {
-      status: 200,
-      headers: { 'Content-Type': 'text/html; charset=utf-8' },
-    });
+  // vercel.json only routes crawler user-agents here. A human hitting the
+  // function URL directly gets bounced to the real SPA route -- never a
+  // proxied copy of index.html from a /api/* address.
+  const spaPath = page === 'token' && curveId ? `/token/${curveId}` : `/${page === 'token' ? '' : page}`;
+  const ua = (req.headers.get('user-agent') || '').toLowerCase();
+  const looksLikeBot = /bot|whatsapp|facebookexternalhit|embedly|pinterest|vkshare|validator|ia_archiver/.test(ua);
+  if (!looksLikeBot) {
+    return Response.redirect(`${APP_URL}${spaPath}`, 302);
   }
 
-  // Crawlers: build page-specific meta
   let meta = {
-    title:   'SuiPump — Permissionless Token Launchpad on Sui',
+    title:   'SuiPump -- Permissionless Token Launchpad on Sui',
     desc:    'Launch a token on Sui in 2 wallet signatures. Fair launch, no pre-mine, 40% creator fees.',
     img:     FALLBACK_IMAGE,
     pageUrl: APP_URL,
   };
 
   try {
-    if (page === 'token' && curveId) {
+    if (page === 'token' && /^0x[0-9a-fA-F]{1,64}$/.test(curveId)) {
       meta = await tokenMeta(curveId);
     } else if (page === 'stats') {
       meta = await statsMeta();
     } else if (page === 'leaderboard') {
       meta = await leaderboardMeta();
     }
-  } catch {
-    // fallback meta already set
-  }
+  } catch { /* default meta already set */ }
 
   const html = injectMeta(await fetchIndexHtml(), meta);
 
@@ -367,7 +389,7 @@ export default async function handler(req) {
     status: 200,
     headers: {
       'Content-Type': 'text/html; charset=utf-8',
-      'Cache-Control': 'public, max-age=30, stale-while-revalidate=60',
+      'Cache-Control': 'public, max-age=60, stale-while-revalidate=300',
     },
   });
 }
