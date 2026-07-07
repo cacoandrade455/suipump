@@ -389,7 +389,15 @@ export default async function handler(req) {
     status: 200,
     headers: {
       'Content-Type': 'text/html; charset=utf-8',
-      'Cache-Control': 'public, max-age=60, stale-while-revalidate=300',
+      // NO shared caching. Vercel's CDN keys on the URL, not the user-agent,
+      // so a cacheable crawler response gets served to HUMANS hitting the
+      // same /token/:id within the TTL - observed live: plain curl received
+      // the OG page for a minute after a Twitterbot fetch, BEFORE the
+      // rewrites were even evaluated. Crawler fetches are rare; correctness
+      // beats cache here. Vary is belt-and-suspenders for any cache that
+      // does honor it.
+      'Cache-Control': 'private, no-store',
+      'Vary': 'User-Agent',
     },
   });
 }
