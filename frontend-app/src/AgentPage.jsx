@@ -17,7 +17,7 @@ import { useCurrentAccount, useDAppKit, useCurrentClient } from '@mysten/dapp-ki
 import { Transaction } from '@mysten/sui/transactions';
 import { useNavigate } from 'react-router-dom';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
-import { PACKAGE_ID, PACKAGE_ID_V10, MIST_PER_SUI } from './constants.js';
+import { PACKAGE_ID, PACKAGE_ID_V10, PACKAGE_ID_V11, PACKAGE_ID_V12, MIST_PER_SUI } from './constants.js';
 
 // The agent's execution wallet - the session_address authorized to trade the
 // escrow. buy_with_session/sell_with_session are signed by THIS wallet
@@ -1520,9 +1520,11 @@ function AgentSessionPanel({ account, onSessionChange }) {
               <div className="text-[9px] font-mono text-white/50 tracking-widest">UNIVERSAL TRADING</div>
               <div className="text-[9px] font-mono text-white/25 leading-relaxed">
                 Lets the agent trade tokens on older SuiPump versions from this
-                session. Wider trade surface: only escrow within your spend cap is
-                at risk, but coins transit outside the session module during each
-                trade. Off by default.
+                session. You don't need to touch this - if a strategy targets a
+                legacy-version token, we'll ask for one-tap approval right then.
+                Enable it here to pre-approve, or disable anytime. Wider trade
+                surface: risk is bounded by your spend cap, but coins transit
+                outside the session module during each trade. Off by default.
               </div>
             </div>
             <button onClick={doToggleUniversal} disabled={busy || universalTrading === null}
@@ -2237,6 +2239,76 @@ export default function AgentPage({ onBack }) {
     return d.txDigest ?? null;
   }
 
+  // -- Just-in-time universal-trading consent ---------------------------------
+  // Native buy_with_session/sell_with_session only reach V10-lineage curves.
+  // Trading a LEGACY curve (V4..V9) or a graduated DEX pool goes through the
+  // borrow/settle path, which the module gates behind an explicit owner-signed
+  // enable_universal_trading (OFF by default: it is a strictly wider risk
+  // envelope - a compromised session key can exfiltrate up to remaining
+  // spend-cap headroom, per agent_session.move). Rather than a global toggle
+  // the user must remember, we prompt for that one signature JUST IN TIME:
+  // only when a session-bound strategy actually targets a pre-lineage curve
+  // and the marker is not already set. Returns true to proceed, false to abort
+  // the arm (user rejected, or the enable failed).
+  //
+  // curveIdForArm: the strategy's target curve, or null for market-scanning
+  // strategies (sniper/autopilot) that have no single fixed target at arm time
+  // - those trade whatever launches/scans surface, which on mainnet is
+  // V10-lineage, so they never need this at arm time; a legacy target that
+  // somehow arises still hard-fails safely on-chain rather than silently
+  // downgrading.
+  const ensureUniversalIfNeeded = useCallback(async (curveIdForArm) => {
+    if (!activeSessionId || !curveIdForArm) return true; // no session bind, or no fixed target
+    try {
+      // 1. Resolve the target curve's package. Lineage curves (V10/V11/V12)
+      //    use the native path - no universal trading required.
+      const tr = await fetch(`${INDEXER_URL}/token/${curveIdForArm}`, { signal: AbortSignal.timeout(6000) });
+      if (!tr.ok) return true; // cannot classify -> let the on-chain path decide (fails safe)
+      const td = await tr.json();
+      const pkg = td.package_id ?? td.packageId ?? '';
+      const isLineage = pkg === PACKAGE_ID_V10 || pkg === PACKAGE_ID_V11 || pkg === PACKAGE_ID_V12;
+      if (isLineage) return true; // native path covers it
+
+      // 2. Legacy curve. Read the session object: is the marker already set,
+      //    and what is its shared version (needed to build the enable tx)?
+      const obj = await client.getObject({ objectId: activeSessionId });
+      const sv = obj?.object?.owner?.Shared?.initialSharedVersion;
+      if (!sv) { setError('Could not read the session to enable legacy-token trading.'); return false; }
+
+      let enabled = false;
+      try {
+        const dfs = await client.listDynamicFields({ parentId: activeSessionId });
+        const fields = dfs?.dynamicFields ?? dfs?.data ?? [];
+        enabled = fields.some(f => {
+          const s = JSON.stringify(f) ?? '';
+          return s.includes('universal_trading') || s.includes('dW5pdmVyc2FsX3RyYWRpbmc');
+        });
+      } catch { /* treat as not enabled; the enable call is idempotent-safe to attempt */ }
+      if (enabled) return true;
+
+      // 3. Prompt for the one-time consent signature. This is the plain-language
+      //    tradeoff the contract's comment requires the UI to present.
+      const ticker = td.symbol ? `$${td.symbol}` : 'this token';
+      const ok = window.confirm(
+        `${ticker} runs on an older SuiPump version.\n\n` +
+        `To let the agent trade it from your session, you'll approve UNIVERSAL TRADING for this session (one signature).\n\n` +
+        `Tradeoff: this widens what the session can do - coins briefly leave the session module during each trade, so the risk envelope is your remaining spend cap rather than only named-curve trades. It stays bounded by your spend cap, expiry, and revoke, and you can disable it anytime.\n\n` +
+        `Approve universal trading for this session?`
+      );
+      if (!ok) { setError('Universal trading not approved - strategy not armed. Pick a current-version token, or approve when prompted.'); return false; }
+
+      const tx = new Transaction();
+      const ref = tx.sharedObjectRef({ objectId: activeSessionId, initialSharedVersion: String(sv), mutable: true });
+      tx.moveCall({ target: `${PACKAGE_ID}::agent_session::enable_universal_trading`, arguments: [ref] });
+      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'enable failed');
+      return true;
+    } catch (e) {
+      setError(`Could not enable universal trading: ${e.message || e}`);
+      return false;
+    }
+  }, [activeSessionId, client, dAppKit]);
+
   const approve = useCallback(async () => {
     if (!plan || phase === 'running') return;
     setError(null); setResult(null); setPhase('running');
@@ -2260,6 +2332,10 @@ export default function AgentPage({ onBack }) {
       // fill price so "+X%" is measured from what we actually paid. Two real
       // actions from one instruction.
       if (payload.workflow === 'buy_then_tpsl') {
+        // Preflight: if this session-bound compound targets a legacy curve,
+        // get universal-trading consent BEFORE the buy settles (the buy is the
+        // first thing that touches the curve).
+        if (!(await ensureUniversalIfNeeded(payload.buy?.curveId))) { clearAnim(); setPhase('idle'); return; }
         // 1) BUY - settle through the bridge (the path that moves tokens).
         let buyDigest = null;
         try {
@@ -2322,6 +2398,7 @@ export default function AgentPage({ onBack }) {
       // through the bridge automatically when a trigger is hit. Nothing settles
       // now; settlement happens later when the price crosses a rung.
       if (payload.workflow === 'tpsl') {
+        if (!(await ensureUniversalIfNeeded(payload.tpsl?.curveId))) { clearAnim(); setPhase('idle'); return; }
         try {
           // Create via the same-origin Vercel proxy (/api/create-order), which
           // injects the STRATEGY_API_KEY server-side. The key never ships to the
@@ -2386,6 +2463,7 @@ export default function AgentPage({ onBack }) {
       // (Nexus task + bridge settle) on its schedule / dip trigger, tracks the
       // average cost, and arms the `then` exit on that average after the final buy.
       if (payload.workflow === 'dca') {
+        if (!(await ensureUniversalIfNeeded(payload.dca?.curveId))) { clearAnim(); setPhase('idle'); return; }
         try {
           const r = await fetch(`/api/create-order`, {
             method: 'POST',
