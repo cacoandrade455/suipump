@@ -356,14 +356,23 @@ export default async function handler(req) {
   const page    = url.searchParams.get('page') || 'token';
   const curveId = url.searchParams.get('curveId') || '';
 
-  // vercel.json only routes crawler user-agents here. A human hitting the
-  // function URL directly gets bounced to the real SPA route -- never a
-  // proxied copy of index.html from a /api/* address.
-  const spaPath = page === 'token' && curveId ? `/token/${curveId}` : `/${page === 'token' ? '' : page}`;
+  // vercel.json only routes crawler user-agents here, but if a human request
+  // reaches this function for any reason, we must serve the SPA shell DIRECTLY
+  // -- NEVER redirect. Redirecting to the same /token/:id that routed here
+  // produces an infinite loop (ERR_TOO_MANY_REDIRECTS). Serving index.html
+  // returns the normal SPA and the client router takes over.
   const ua = (req.headers.get('user-agent') || '').toLowerCase();
   const looksLikeBot = /bot|whatsapp|facebookexternalhit|embedly|pinterest|vkshare|validator|ia_archiver/.test(ua);
   if (!looksLikeBot) {
-    return Response.redirect(`${APP_URL}${spaPath}`, 302);
+    const html = await fetchIndexHtml();
+    return new Response(html, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'private, no-store',
+        'Vary': 'User-Agent',
+      },
+    });
   }
 
   let meta = {
