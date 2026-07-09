@@ -2271,7 +2271,6 @@ export default function AgentPage({ onBack }) {
     const suiPriceScaled = await suiPriceScaledArg();
 
     const tx = new Transaction();
-    tx.setSender(account.address);
     const curveRef = tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: String(sharedVersion), mutable: true });
     const clockRef = tx.sharedObjectRef({ objectId: AGENT_SUI_CLOCK_ID, initialSharedVersion: 1, mutable: false });
     const [payment] = tx.splitCoins(tx.gas, [tx.pure.u64(suiMist)]);
@@ -2308,7 +2307,6 @@ export default function AgentPage({ onBack }) {
     if (!wantAll && tokAtomic > totalAtomic) throw new Error(`You hold ${(Number(totalAtomic) / 1e6).toFixed(6)} tokens - cannot sell ${tokenAmount}`);
 
     const tx = new Transaction();
-    tx.setSender(account.address);
     const curveRef = tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: String(sharedVersion), mutable: true });
     const coinObjs = coinList.map(c => tx.object(c.objectId ?? c.id ?? c.coinObjectId));
     if (coinObjs.length > 1) tx.mergeCoins(coinObjs[0], coinObjs.slice(1));
