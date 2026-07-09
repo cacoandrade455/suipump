@@ -820,6 +820,18 @@ function describeOrder(o) {
 // sell_with_session are signed server-side by the agent wallet, not here.
 const GQL_URL = 'https://graphql.testnet.sui.io/graphql';
 
+// UNIVERSAL TRADING is SCOPED OUT of mainnet v1. It exists only to trade LEGACY
+// (V4-V9) or graduated-pool curves from a session, via the borrow/settle path -
+// the widest session risk envelope (a compromised key can exfiltrate up to
+// remaining spend-cap headroom, per agent_session.move) and NOT needed on a
+// clean mainnet where every curve launches on the current lineage and trades
+// natively (buy_with_session/sell_with_session). With this false, arming a
+// strategy on a lineage curve proceeds on the native path with NO prompt; a
+// legacy curve is refused with a plain message instead of the deprecated
+// enable-universal popup. Flip to true (and confirm the enable-tx result read)
+// to bring legacy/graduated-pool session trading back for a future package.
+const UNIVERSAL_TRADING_ENABLED = false;
+
 function fmtSui(mist) {
   if (mist == null) return '-';
   const n = Number(BigInt(mist)) / 1e9;
@@ -1514,7 +1526,10 @@ function AgentSessionPanel({ account, onSessionChange }) {
               </button>
             </div>
           )}
-          {/* Universal trading (V11) - owner opt-in for legacy-version tokens */}
+          {/* Universal trading (V11) - owner opt-in for legacy-version tokens.
+              Scoped OUT of v1 (see UNIVERSAL_TRADING_ENABLED): hidden until a
+              future package brings legacy/graduated-pool session trading back. */}
+          {UNIVERSAL_TRADING_ENABLED && (
           <div className="flex items-center justify-between gap-3 py-1">
             <div className="min-w-0">
               <div className="text-[9px] font-mono text-white/50 tracking-widest">UNIVERSAL TRADING</div>
@@ -1532,6 +1547,7 @@ function AgentSessionPanel({ account, onSessionChange }) {
               {universalTrading === null ? '...' : universalTrading ? 'ON' : 'OFF'}
             </button>
           </div>
+          )}
 
           <button onClick={doClose} disabled={busy}
             className={`w-full py-2 rounded-lg text-[10px] font-mono tracking-widest transition-colors ${busy ? 'bg-white/5 text-white/25' : 'bg-red-500/10 text-red-400 border border-red-400/30 hover:bg-red-500/20 hover:text-red-300'}`}>
@@ -2336,6 +2352,16 @@ export default function AgentPage({ onBack }) {
       const pkg = td.package_id ?? td.packageId ?? '';
       const isLineage = pkg === PACKAGE_ID_V10 || pkg === PACKAGE_ID_V11 || pkg === PACKAGE_ID_V12;
       if (isLineage) return true; // native path covers it
+
+      // v1: universal trading is scoped out (see UNIVERSAL_TRADING_ENABLED). A
+      // non-lineage curve has no supported session path, so refuse cleanly here
+      // rather than prompting the deprecated enable flow. The borrow/settle
+      // prompt+enable below stays for a future package but is unreachable now.
+      if (!UNIVERSAL_TRADING_ENABLED) {
+        const ticker = td.symbol ? `$${td.symbol}` : 'this token';
+        setError(`${ticker} runs on an older curve version that agent sessions do not trade in this release. Pick a current-version token.`);
+        return false;
+      }
 
       // 2. Legacy curve. Read the session object: is the marker already set,
       //    and what is its shared version (needed to build the enable tx)?
