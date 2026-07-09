@@ -1026,6 +1026,15 @@ function AgentSessionPanel({ account, onSessionChange }) {
       const deadAndEmpty = (revoked || expiredNow) && Number(escrowVal ?? 0) <= 0;
       if (deadAndEmpty) { setSession(null); setLoading(false); return; }
 
+      // A5.2 - custody visibility. The session's on-chain session_address is the
+      // ONLY address that can sign its trades. When it equals the shared agent
+      // wallet, this session signs via the SHARED keypair (Turnkey-mode fallback,
+      // or a legacy open) rather than a per-user enclave/Turnkey key - a weaker
+      // custody statement the user should be able to SEE. Read it here so the
+      // badge is accurate and survives a refresh (not just the open flow).
+      const sessAddr = typeof fields.session_address === 'string' ? fields.session_address.toLowerCase() : null;
+      const isSharedWallet = sessAddr != null && sessAddr === AGENT_SESSION_WALLET.toLowerCase();
+
       setSession({
         id:            sessionId,
         sharedVersion,
@@ -1034,6 +1043,8 @@ function AgentSessionPanel({ account, onSessionChange }) {
         spendCap:      spendCapVal != null ? String(spendCapVal) : '0',
         expiryMs:      Number(expiryVal ?? 0),
         revoked,
+        sessionAddress: sessAddr,
+        isSharedWallet,
       });
     } catch (e) {
       // Degrade to "no session" rather than blocking the open flow.
@@ -1092,8 +1103,22 @@ function AgentSessionPanel({ account, onSessionChange }) {
           sessionAddress = pd.sessionAddress;
           enclaveKey = true;
           attested = signerMode === 'enclave';
+        } else {
+          // A5.1 loud fallback: provisioning responded but did NOT yield a
+          // per-user key (Turnkey/DB not configured, or an unexpected shape).
+          // In turnkey mode this silently downgrades to the shared wallet -
+          // exactly the "looks like success" class that bit us. Make it visible.
+          console.warn('[agent] session key provisioning did not return a dedicated key; ' +
+            (signerMode === 'enclave' ? 'enclave mode will hard-fail below' : 'TURNKEY mode falling back to the SHARED agent wallet'),
+            { status: pr.status, reason: pd?.reason ?? pd?.error ?? null, configured: pd?.configured });
         }
-      } catch { /* provisioning unreachable - handled per mode below */ }
+      } catch (e) {
+        // A5.1 loud fallback: provisioning unreachable (bridge down / timeout).
+        // Same silent-downgrade risk in turnkey mode - warn loudly.
+        console.warn('[agent] session key provisioning unreachable; ' +
+          (signerMode === 'enclave' ? 'enclave mode will hard-fail below' : 'TURNKEY mode falling back to the SHARED agent wallet'),
+          e?.message ?? e);
+      }
 
       // ENCLAVE mode is an explicit trust upgrade the user selected: NEVER
       // silently downgrade it to the shared wallet (that would hand back the
@@ -1511,6 +1536,29 @@ function AgentSessionPanel({ account, onSessionChange }) {
             </div>
           </div>
           <div className="text-[9px] font-mono text-white/30">Spend cap: <span className="text-white/60">{capLabel}</span></div>
+
+          {/* A5.2 - custody visibility. Which key signs this session's trades:
+              a dedicated per-user key (enclave/Turnkey, isolated) or the shared
+              agent wallet (Turnkey-mode provisioning fell back, or a legacy
+              open). On-chain caps/expiry/revoke protect the escrow either way,
+              but the trust statement differs and the user should see it. */}
+          {session.sessionAddress && (
+            session.isSharedWallet ? (
+              <div className="rounded-lg bg-amber-400/[0.06] border border-amber-400/20 px-2.5 py-1.5">
+                <div className="text-[8px] font-mono text-amber-300/90 tracking-widest">SIGNER: SHARED AGENT WALLET</div>
+                <div className="text-[8px] font-mono text-amber-200/50 leading-relaxed mt-0.5">
+                  This session signs via the shared agent key, not a dedicated per-user key.
+                  Your funds stay protected by the on-chain spend cap, expiry, and revoke - but
+                  for isolated per-user custody, close and reopen once enclave signing is available.
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center gap-1.5 text-[8px] font-mono text-lime-400/80">
+                <span className="inline-block w-1 h-1 rounded-full bg-lime-400" />
+                SIGNER: DEDICATED PER-USER KEY (isolated)
+              </div>
+            )
+          )}
 
           {!session.revoked && !expired && (
             <div className="flex gap-2">
@@ -2096,7 +2144,12 @@ export default function AgentPage({ onBack }) {
             return { tokenAmount: 'ALL', sessionId: activeSessionId };
           }
         }
-      } catch { /* fall through to the no-balance error */ }
+      } catch (e) {
+        // A5.1 loud fallback: the session parked-balance read failed, so we fall
+        // through to "no balance" even though the session MIGHT hold the token.
+        // This silent path cost a full debug session; make it visible.
+        console.warn('[agent] session parked-balance read failed; treating as no balance for this curve', e?.message ?? e);
+      }
     }
     throw new Error('No token balance to sell for this curve');
   }
