@@ -2272,19 +2272,21 @@ export default function AgentPage({ onBack }) {
 
     const tx = new Transaction();
     const curveRef = tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: String(sharedVersion), mutable: true });
-    const clockRef = tx.sharedObjectRef({ objectId: AGENT_SUI_CLOCK_ID, initialSharedVersion: 1, mutable: false });
     const [payment] = tx.splitCoins(tx.gas, [tx.pure.u64(suiMist)]);
     // V9+: buy(curve, payment, min_out, referral, sui_price_scaled, clock) -> (Coin<T>, Coin<SUI>)
+    // Clock is passed via tx.object(0x6) - the SDK resolves it. (tx.sharedObjectRef
+    // for the clock produced a malformed input that made the wallet SDK throw
+    // "reading 'txSignatures'" AFTER signing. TokenPage's working buy uses tx.object.)
     const [tokens, refund] = tx.moveCall({
       target: `${packageId}::bonding_curve::buy`,
       typeArguments: [tokenType],
-      arguments: [curveRef, payment, tx.pure.u64(0), tx.pure.option('address', null), tx.pure.u64(suiPriceScaled), clockRef],
+      arguments: [curveRef, payment, tx.pure.u64(0), tx.pure.option('address', null), tx.pure.u64(suiPriceScaled), tx.object(AGENT_SUI_CLOCK_ID)],
     });
     tx.transferObjects([tokens, refund], account.address);
 
     const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-    if (res.FailedTransaction) throw new Error(res.FailedTransaction.status?.error ?? 'buy failed');
-    return res.Transaction?.digest ?? res.transaction?.digest ?? res.digest ?? null;
+    if (res.$kind === 'FailedTransaction') throw new Error(res.FailedTransaction?.status?.error ?? 'buy failed');
+    return res.digest ?? res.Transaction?.digest ?? null;
   }
 
   // userSell - user-wallet-signed sell on a V10-lineage curve. Sources the user's
@@ -2320,8 +2322,8 @@ export default function AgentPage({ onBack }) {
     tx.transferObjects([suiOut], account.address);
 
     const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-    if (res.FailedTransaction) throw new Error(res.FailedTransaction.status?.error ?? 'sell failed');
-    return res.Transaction?.digest ?? res.transaction?.digest ?? res.digest ?? null;
+    if (res.$kind === 'FailedTransaction') throw new Error(res.FailedTransaction?.status?.error ?? 'sell failed');
+    return res.digest ?? res.Transaction?.digest ?? null;
   }
 
   // Settle the swap through the bridge - the path that actually moves tokens
