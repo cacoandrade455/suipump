@@ -2290,9 +2290,23 @@ export default function AgentPage({ onBack }) {
     });
     tx.transferObjects([tokens, refund], account.address);
 
-    const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-    if (res.$kind === 'FailedTransaction') throw new Error(res.FailedTransaction?.status?.error ?? 'buy failed');
-    return res.digest ?? res.Transaction?.digest ?? null;
+    let res;
+    try {
+      res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+    } catch (e) {
+      // The wallet SDK can throw AFTER broadcasting (a result-assembly bug that
+      // reads 'txSignatures' off an undefined response) even though the tx landed
+      // on-chain. Log the full detail so the true source is visible, and surface a
+      // precise message instead of the raw undefined-read.
+      console.error('[userBuy] signAndExecute threw:', e, '\nstack:', e?.stack);
+      const msg = String(e?.message ?? e);
+      if (/txSignatures/.test(msg)) {
+        throw new Error('Wallet returned an unexpected response after signing (the buy may have gone through - check your balance/history). If it did not, retry.');
+      }
+      throw e;
+    }
+    if (res?.$kind === 'FailedTransaction') throw new Error(res.FailedTransaction?.status?.error ?? 'buy failed');
+    return res?.digest ?? res?.Transaction?.digest ?? null;
   }
 
   // userSell - user-wallet-signed sell on a V10-lineage curve. Sources the user's
@@ -2327,9 +2341,19 @@ export default function AgentPage({ onBack }) {
     });
     tx.transferObjects([suiOut], account.address);
 
-    const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-    if (res.$kind === 'FailedTransaction') throw new Error(res.FailedTransaction?.status?.error ?? 'sell failed');
-    return res.digest ?? res.Transaction?.digest ?? null;
+    let res;
+    try {
+      res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+    } catch (e) {
+      console.error('[userSell] signAndExecute threw:', e, '\nstack:', e?.stack);
+      const msg = String(e?.message ?? e);
+      if (/txSignatures/.test(msg)) {
+        throw new Error('Wallet returned an unexpected response after signing (the sell may have gone through - check your balance/history). If it did not, retry.');
+      }
+      throw e;
+    }
+    if (res?.$kind === 'FailedTransaction') throw new Error(res.FailedTransaction?.status?.error ?? 'sell failed');
+    return res?.digest ?? res?.Transaction?.digest ?? null;
   }
 
   // Settle the swap through the bridge - the path that actually moves tokens
