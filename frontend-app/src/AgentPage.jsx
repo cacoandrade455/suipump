@@ -2257,6 +2257,31 @@ export default function AgentPage({ onBack }) {
   // and the marker is not already set. Returns true to proceed, false to abort
   // the arm (user rejected, or the enable failed).
   //
+  // -- Pre-arm affordability read ---------------------------------------------
+  // Reads the active session's live on-chain escrow / spent / spend_cap so an
+  // arm path can refuse to queue a strategy the session cannot actually fund
+  // (the drained-session class: a 2nd DCA rung that aborts EInsufficientEscrow /
+  // ESpendCapExceeded on-chain and used to fail silently). Mirrors the exact
+  // getObject json parsing AgentSessionPanel.loadSession uses (Balance<SUI>
+  // renders as {value} or a bare string; tolerate both). Returns MIST BigInts,
+  // or null when there is nothing to check (no session bound / unreadable) - the
+  // caller then simply skips the gate and lets the on-chain path decide.
+  const readSessionFunds = useCallback(async (sessionId) => {
+    if (!sessionId) return null;
+    try {
+      const obj = await client.getObject({ objectId: sessionId, include: { json: true } }).catch(() => null);
+      const fields = obj?.object?.json;
+      if (!fields) return null;
+      const escrowRaw = (fields.escrow && typeof fields.escrow === 'object') ? fields.escrow.value : fields.escrow;
+      const escrow   = BigInt(escrowRaw ?? 0);
+      const spent    = BigInt(fields.spent ?? 0);
+      const spendCap = BigInt(fields.spend_cap ?? 0);
+      return { escrow, spent, spendCap };
+    } catch {
+      return null; // unreadable -> skip the gate (fails open, on-chain still guards)
+    }
+  }, [client]);
+
   // curveIdForArm: the strategy's target curve, or null for market-scanning
   // strategies (sniper/autopilot) that have no single fixed target at arm time
   // - those trade whatever launches/scans surface, which on mainnet is
@@ -2470,6 +2495,38 @@ export default function AgentPage({ onBack }) {
       // average cost, and arms the `then` exit on that average after the final buy.
       if (payload.workflow === 'dca') {
         if (!(await ensureUniversalIfNeeded(payload.dca?.curveId))) { clearAnim(); setPhase('idle'); return; }
+        // PRE-ARM AFFORDABILITY: only when bound to a session (a session-less DCA
+        // spends the agent wallet, which this session read does not describe).
+        // need = anchor rung + suiPerBuy x remaining rungs. Must fit BOTH the
+        // escrow AND the remaining spend-cap headroom (capRemaining = cap - spent;
+        // spendCap == 0 means unbounded, per agent_session.move). Blocks the arm
+        // with the concrete shortfall rather than letting a later rung abort
+        // on-chain and vanish (the drained-session silent-failure class).
+        if (activeSessionId) {
+          const funds = await readSessionFunds(activeSessionId);
+          if (funds) {
+            const suiPerBuy = Number(payload.dca?.suiPerBuy) || 0;
+            const buys      = Math.max(1, Math.trunc(Number(payload.dca?.buys) || 1));
+            const anchor    = Number(payload.dca?.anchorSui) || 0;
+            const needSui   = anchor > 0 ? anchor + suiPerBuy * (buys - 1) : suiPerBuy * buys;
+            const needMist  = BigInt(Math.ceil(needSui * 1e9));
+            const capRemaining = funds.spendCap > 0n
+              ? (funds.spendCap > funds.spent ? funds.spendCap - funds.spent : 0n)
+              : null; // null = unbounded
+            const escrowShort = needMist > funds.escrow;
+            const capShort    = capRemaining != null && needMist > capRemaining;
+            if (escrowShort || capShort) {
+              const capText = capRemaining == null ? 'unbounded' : `${fmtSui(String(capRemaining))} SUI`;
+              setError(
+                `This DCA needs ${fmtSui(String(needMist))} SUI (${anchor > 0 ? `${anchor} + ${suiPerBuy} x ${buys - 1}` : `${suiPerBuy} x ${buys}`}), ` +
+                `but the session has ${fmtSui(String(funds.escrow))} SUI escrow and ${capText} spend-cap headroom. ` +
+                `Top up the escrow${capShort ? ' or raise the spend cap' : ''}, or lower the buy size / count.`
+              );
+              clearAnim(); setNodeState({ arm: 'error' }); setPhase('failed');
+              return;
+            }
+          }
+        }
         try {
           const r = await fetch(`/api/create-order`, {
             method: 'POST',
@@ -3362,6 +3419,17 @@ export default function AgentPage({ onBack }) {
                             settle {String(o.params._lastFire.settle).slice(0, 10)}... <ExternalLink size={8} />
                           </a>
                         )}
+                      </div>
+                    )}
+                    {o.params?._lastError && o.params._lastError.reason && (
+                      <div className="mt-1.5 flex items-center gap-1.5 text-[9px] font-mono">
+                        <span className="text-red-400/80 tracking-wider">
+                          LAST {String(o.params._lastError.kind || 'fire').toUpperCase()} FAILED
+                        </span>
+                        <span className="text-red-300/70">
+                          {o.params._lastError.reason}
+                          {o.params._lastError.code != null ? ` (code ${o.params._lastError.code})` : ''}
+                        </span>
                       </div>
                     )}
                   </div>

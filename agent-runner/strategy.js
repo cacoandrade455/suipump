@@ -245,6 +245,96 @@ async function recordFire(order, fire) {
   }).catch(() => {});
 }
 
+// classifyAbort - map a thrown fire error (bridge settle failure text) to a
+// stable { code, reason } the UI can render on a strategy card. The agent_session
+// abort codes are authoritative (see contracts-v10/sources/agent_session.move
+// Errors block): 2 ESessionRevoked, 3 ESessionExpired, 4 ESpendCapExceeded,
+// 5 EInsufficientEscrow, 11 EUniversalTradingDisabled. Match on the Move error
+// NAME first (unambiguous), then the bare numeric code within an agent_session
+// abort, mirroring bridge.js's `/(\b11\b|EUniversalTradingDisabled)/` approach.
+// bridge.js already rewrites code 11 into a friendly sentence, so also match the
+// legacy-token phrasing it emits. Anything unclassified returns a generic reason
+// carrying a trimmed tail of the original message.
+function classifyAbort(msg) {
+  const text = String(msg ?? '');
+  const inSession = /agent_session/.test(text);
+  const has = (n) => new RegExp(`(^|\\D)${n}(\\D|$)`).test(text);
+  if (/ESpendCapExceeded/.test(text) || (inSession && has(4))) {
+    return { code: 4, reason: 'spend cap reached' };
+  }
+  if (/EInsufficientEscrow/.test(text) || (inSession && has(5))) {
+    return { code: 5, reason: 'insufficient escrow' };
+  }
+  if (/EUniversalTradingDisabled/.test(text) || /legacy curve version/i.test(text)
+      || (inSession && has(11))) {
+    return { code: 11, reason: 'legacy token - universal trading not enabled' };
+  }
+  if (/ESessionRevoked/.test(text) || (inSession && has(2))) {
+    return { code: 2, reason: 'session revoked' };
+  }
+  if (/ESessionExpired/.test(text) || (inSession && has(3))) {
+    return { code: 3, reason: 'session expired' };
+  }
+  const tail = text.length > 80 ? `${text.slice(0, 77)}...` : text;
+  return { code: null, reason: tail || 'fire failed' };
+}
+
+// recordError - stamp the reason a fire ABORTED onto the order so the agent page
+// can surface it on the strategy card (the drained/capped-session silent-failure
+// class: a DCA whose 2nd fire aborts on-chain used to vanish into a log line).
+// Stored under params._lastError. Loud by design (console.warn - the mainnet
+// "loud fallbacks" rule): a silent degradation must be visible in the runner
+// log too, not only on the card.
+//
+// PARAMS-PRESERVING WRITE: the PATCH route REPLACES params wholesale, and the
+// tpsl in-memory order (normalizeRemote) does NOT carry `params`, so calling
+// persistParams on a tpsl order would blank its stored sessionId. We therefore
+// GET the order's current stored params, merge _lastError, and PATCH just
+// `{ params }` - the same read-merge-write pattern pruneParentEntered uses. Safe
+// for every strategy type regardless of what the in-memory order holds.
+async function recordError(order, kind, errMsg) {
+  const { code, reason } = classifyAbort(errMsg);
+  console.warn(`${order.id}: fire ABORTED (${kind}) - ${reason}${code != null ? ` [code ${code}]` : ''}: ${errMsg}`);
+  try {
+    const gr = await fetch(`${INDEXER_URL}/orders/${order.id}`, { signal: AbortSignal.timeout(8000) });
+    if (!gr.ok) return;
+    const cur = await gr.json().catch(() => null);
+    const params = (cur && cur.params && typeof cur.params === 'object' && !Array.isArray(cur.params)) ? cur.params : {};
+    const nextParams = { ...params, _lastError: { at: Date.now(), kind, reason, code } };
+    const headers = { 'Content-Type': 'application/json' };
+    if (STRATEGY_API_KEY) headers['x-strategy-key'] = STRATEGY_API_KEY;
+    const pr = await fetch(`${INDEXER_URL}/orders/${order.id}`, {
+      method: 'PATCH', headers, body: JSON.stringify({ params: nextParams }), signal: AbortSignal.timeout(8000),
+    });
+    if (!pr.ok) { const d = await pr.json().catch(() => ({})); err(`${order.id}: recordError ${pr.status} ${d.error ?? ''}`); }
+    // Keep the in-memory copy consistent when the order carries params (dca/
+    // copytrade/autopilot); harmless for tpsl (undefined -> object).
+    if (order.params && typeof order.params === 'object') order.params._lastError = nextParams._lastError;
+  } catch (e) { err(`${order.id}: recordError error ${e.message}`); }
+}
+
+// clearError - drop a stale _lastError after a SUCCESSFUL fire so a recovered
+// order (escrow topped up, cap raised, session re-opened) stops showing an old
+// abort. Same params-preserving read-merge-write as recordError. No-op when
+// there is nothing stored to clear (avoids a needless PATCH every fire).
+async function clearError(order) {
+  try {
+    const gr = await fetch(`${INDEXER_URL}/orders/${order.id}`, { signal: AbortSignal.timeout(8000) });
+    if (!gr.ok) return;
+    const cur = await gr.json().catch(() => null);
+    const params = (cur && cur.params && typeof cur.params === 'object' && !Array.isArray(cur.params)) ? cur.params : {};
+    if (!params._lastError) return; // nothing to clear
+    const nextParams = { ...params };
+    delete nextParams._lastError;
+    const headers = { 'Content-Type': 'application/json' };
+    if (STRATEGY_API_KEY) headers['x-strategy-key'] = STRATEGY_API_KEY;
+    await fetch(`${INDEXER_URL}/orders/${order.id}`, {
+      method: 'PATCH', headers, body: JSON.stringify({ params: nextParams }), signal: AbortSignal.timeout(8000),
+    });
+    if (order.params && typeof order.params === 'object') delete order.params._lastError;
+  } catch (e) { err(`${order.id}: clearError error ${e.message}`); }
+}
+
 // recordAgentAction - POST a row to the indexer's agent_actions history. Used by
 // recordFire (autonomous). Best-effort, never throws. Mirrors persistParams's
 // key/guard handling (x-strategy-key when STRATEGY_API_KEY is set).
@@ -776,6 +866,7 @@ async function processOrder(order) {
       receipt = await fireSell(order.curveId, sellWhole, order.minSuiOut, isWholeSell, order.params?.sessionId ?? null);
     } catch (e) {
       err(`${order.id}: sell failed: ${e.message}`);
+      await recordError(order, 'sell', e.message); // surface WHY on the card
       order._cooldownUntil = Date.now() + ERROR_COOLDOWN_MS;
       return; // leave trigger unfired; retry after cooldown
     }
@@ -820,6 +911,7 @@ async function processOrder(order) {
     await persistOrder(order); // persist immediately so a restart resumes correctly
     if (order.done) await pruneParentEntered(order); // autopilot: drop fully-closed position from parent entered[]
     await recordFire(order, { kind: 'sell', curveId: order.curveId, nexusExec: receipt.nexusExecutionId ?? null, nexusDigest: receipt.nexusDigest ?? null, settle: receipt.txDigest ?? null, leaderSettled: receipt.leaderSettled === true, leaderSender: receipt.leaderSender ?? null });
+    await clearError(order); // a confirmed sell clears any prior abort on the card
     // Surface the fire in the notification bell, labelled by WHY it fired
     // (TP vs SL) - only known here. tokens = confirmed on-chain amount moved.
     await notifyBell({
@@ -1091,12 +1183,14 @@ const HANDLERS = {
         if (p.maxSnipes > 0 && p.fired >= p.maxSnipes) order.done = true;
         await persistParams(order);
         await recordFire(order, { kind: 'buy', curveId, nexusTask: taskId, nexusExec: buyResult.nexusExecutionId ?? null, settle: settleDigest, leaderSettled: buyResult.leaderSettled === true, leaderSender: buyResult.leaderSender ?? null });
+        await clearError(order);
         log(`${order.id}: SNIPE COMPLETE ${curveId.slice(0, 10)}... task=${taskId ?? 'n/a'} settle=${settleDigest} fired=${p.fired}${p.maxSnipes > 0 ? `/${p.maxSnipes}` : ''}${order.done ? ' - cap reached, closing' : ''}`);
       } catch (e) {
         // Settlement failed - release the claim so a genuine retry can re-attempt
         // this curve (no tokens moved, so it must not count as a snipe).
         order._sniped.delete(curveId);
         err(`${order.id}: sniper settle failed: ${e.message}`);
+        await recordError(order, 'buy', e.message); // surface WHY on the card
       }
     },
   },
@@ -1196,6 +1290,12 @@ const HANDLERS = {
         settleDigest = dcaBuyResult.settleDigest;
       } catch (e) {
         err(`${order.id}: dca settle failed: ${e.message}`);
+        // Surface WHY on the strategy card (drained/capped/legacy-token abort).
+        // Space out the retry so a hard abort (cap reached) doesn't hot-loop.
+        await recordError(order, 'buy', e.message);
+        p.lastFireMs = now;
+        order.params = p;
+        await persistParams(order);
         return; // do not count a fill that didn't settle
       }
 
@@ -1236,6 +1336,7 @@ const HANDLERS = {
       if (p.done >= buys) order.done = true;
       await persistParams(order);
       await recordFire(order, { kind: 'buy', curveId, nexusTask: taskId, nexusExec: dcaBuyResult.nexusExecutionId ?? null, settle: settleDigest, leaderSettled: dcaBuyResult.leaderSettled === true, leaderSender: dcaBuyResult.leaderSender ?? null });
+      await clearError(order); // a real fill clears any prior abort on the card
 
       log(`${order.id}: DCA buy ${p.done}/${buys} ${thisBuySui} SUI @ ${price.toExponential(3)} (avg ${p.avgPriceSui.toExponential(3)}) task=${taskId ?? 'n/a'} settle=${settleDigest}${order.done ? ' - complete' : ''}`);
 
@@ -1311,7 +1412,8 @@ const HANDLERS = {
           const settle = cpBuy.settleDigest;
           log(`${order.id}: copytrade BUY settled ${suiPerTrade} SUI on ${curveId.slice(0, 10)}... task=${taskId ?? 'n/a'} settle=${settle} via=${cpBuy.leaderSettled ? 'leader' : 'bridge'}`);
           await recordFire(order, { kind: 'buy', curveId, nexusTask: taskId, nexusExec: cpBuy.nexusExecutionId ?? null, settle, leaderSettled: cpBuy.leaderSettled === true, leaderSender: cpBuy.leaderSender ?? null });
-        } catch (e) { err(`${order.id}: copytrade buy settle failed: ${e.message}`); }
+          await clearError(order);
+        } catch (e) { err(`${order.id}: copytrade buy settle failed: ${e.message}`); await recordError(order, 'buy', e.message); }
         return;
       }
 
@@ -1338,7 +1440,8 @@ const HANDLERS = {
         const receipt = await fireSell(curveId, sellWhole, 0, sellAll, order.params?.sessionId ?? null);
         log(`${order.id}: copytrade SELL settled on ${curveId.slice(0, 10)}... settle=${receipt?.txDigest ?? '?'} nexus=${receipt?.nexusDigest ?? '?'}`);
         await recordFire(order, { kind: 'sell', curveId, nexusExec: receipt?.nexusExecutionId ?? null, nexusDigest: receipt?.nexusDigest ?? null, settle: receipt?.txDigest ?? null, leaderSettled: receipt?.leaderSettled === true, leaderSender: receipt?.leaderSender ?? null });
-      } catch (e) { err(`${order.id}: copytrade sell settle failed: ${e.message}`); }
+        await clearError(order);
+      } catch (e) { err(`${order.id}: copytrade sell settle failed: ${e.message}`); await recordError(order, 'sell', e.message); }
     },
   },
 
@@ -1485,6 +1588,7 @@ const HANDLERS = {
         settleDigest = buyResult.settleDigest;
       } catch (e) {
         err(`${order.id}: autopilot settle failed on ${curveId.slice(0, 10)}...: ${e.message}`);
+        await recordError(order, 'buy', e.message); // surface WHY on the card
         return; // do not count an entry that didn't settle
       }
 
@@ -1513,6 +1617,7 @@ const HANDLERS = {
 
       await persistParams(order);
       await recordFire(order, { kind: 'buy', curveId, nexusTask: taskId, nexusExec: buyResult.nexusExecutionId ?? null, settle: settleDigest, leaderSettled: buyResult.leaderSettled === true, leaderSender: buyResult.leaderSender ?? null });
+      await clearError(order);
       log(`${order.id}: AUTOPILOT ENTRY ${curveId.slice(0, 10)}... momentum=${pick.momentum.toFixed(1)} size=${perEntrySui} SUI task=${taskId ?? 'n/a'} settle=${settleDigest} via=${buyResult.leaderSettled ? 'leader' : 'bridge'} deployed=${p.spentSui.toFixed(2)}/${spendCapSui}${order.done ? ' - cap reached, closing' : ''}`);
     },
   },
