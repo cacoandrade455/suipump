@@ -2043,14 +2043,16 @@ export default function AgentPage({ onBack }) {
 
   // -- Runtime resolvers (browser supplies what the planner can't) -----------
 
-  // Resolve curve -> { tokenType, pkgId } from the indexer.
+  // Resolve curve -> { tokenType, packageId, sharedVersion } from the indexer.
   async function fetchCurveMeta(curveId) {
     const r = await fetch(`${INDEXER_URL}/token/${curveId}`, { signal: AbortSignal.timeout(6000) });
     if (!r.ok) throw new Error('Could not fetch curve from indexer');
     const d = await r.json();
     const tokenType = d.token_type ?? d.tokenType ?? null;
     if (!tokenType) throw new Error('Curve has no token type yet (indexer not enriched)');
-    return { tokenType };
+    const packageId = d.package_id ?? d.packageId ?? null;
+    const sharedVersion = d.initial_shared_version ?? d.initialSharedVersion ?? null;
+    return { tokenType, packageId, sharedVersion };
   }
 
   // Resolve a sell amount. Concrete amount -> pass through. "ALL" -> whole-token
@@ -2228,6 +2230,102 @@ export default function AgentPage({ onBack }) {
     }
   }
 
+  // -- User-signed manual trades (buy / sell) ---------------------------------
+  // A MANUAL trade belongs to the USER: it must be signed by their connected
+  // wallet, spend their SUI, and deliver tokens/proceeds to THEIR address - the
+  // same custody rule the agent sessions already follow (each user owns their
+  // own trades). The bridge's /buy /sell sign with the SHARED agent keypair and
+  // send everything to the agent wallet; those are ONLY for the autonomous agent,
+  // never for a user's manual trade. Routing a manual buy through /buy sent the
+  // user's bought tokens to the shared agent wallet - the bug this replaces.
+  //
+  // Mainnet curves are all V10-lineage (V10/V11/V12 share the V10 defining pkg
+  // and use the V9+ buy shape + V7+ sell shape), so we build that shape directly,
+  // mirroring the bridge's proven executeBuy/handleSell PTBs. A non-lineage
+  // (legacy V4-V9) curve is refused here rather than silently mis-signed - legacy
+  // manual trading is out of scope for v1 (same call as universal trading).
+  function isLineagePkg(pkg) {
+    return pkg === PACKAGE_ID_V10 || pkg === PACKAGE_ID_V11 || pkg === PACKAGE_ID_V12;
+  }
+
+  async function suiPriceScaledArg() {
+    // Oracle price for the V9+ buy() (u64 scaled x1000). Fallback 0 -> stored BASE_GRAD.
+    try {
+      const pr = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=SUIUSDT', { signal: AbortSignal.timeout(2000) });
+      if (pr.ok) { const pd = await pr.json(); const p = parseFloat(pd.price ?? '0'); if (p > 0) return BigInt(Math.floor(p * 1000)); }
+    } catch { /* fall through */ }
+    return 0n;
+  }
+
+  // userBuy - user-wallet-signed buy on a V10-lineage curve. Splits payment from
+  // the user's gas coin, calls bonding_curve::buy (V9+ shape), transfers the
+  // bought tokens + refund to the USER. Returns the tx digest.
+  async function userBuy({ curveId, amountSui }) {
+    if (!account?.address) throw new Error('Connect your wallet to buy');
+    const { tokenType, packageId, sharedVersion } = await fetchCurveMeta(curveId);
+    if (!packageId || !sharedVersion) throw new Error('Curve not resolvable yet (indexer not enriched)');
+    if (!isLineagePkg(packageId)) throw new Error('This token is on an older curve version that manual trading does not support in this release. Pick a current-version token.');
+
+    const suiMist = BigInt(Math.floor(parseFloat(amountSui) * Number(MIST_PER_SUI)));
+    if (suiMist <= 0n) throw new Error('Buy amount must be > 0');
+    const suiPriceScaled = await suiPriceScaledArg();
+
+    const tx = new Transaction();
+    tx.setSender(account.address);
+    const curveRef = tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: String(sharedVersion), mutable: true });
+    const clockRef = tx.sharedObjectRef({ objectId: AGENT_SUI_CLOCK_ID, initialSharedVersion: 1, mutable: false });
+    const [payment] = tx.splitCoins(tx.gas, [tx.pure.u64(suiMist)]);
+    // V9+: buy(curve, payment, min_out, referral, sui_price_scaled, clock) -> (Coin<T>, Coin<SUI>)
+    const [tokens, refund] = tx.moveCall({
+      target: `${packageId}::bonding_curve::buy`,
+      typeArguments: [tokenType],
+      arguments: [curveRef, payment, tx.pure.u64(0), tx.pure.option('address', null), tx.pure.u64(suiPriceScaled), clockRef],
+    });
+    tx.transferObjects([tokens, refund], account.address);
+
+    const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+    if (res.FailedTransaction) throw new Error(res.FailedTransaction.status?.error ?? 'buy failed');
+    return res.Transaction?.digest ?? res.transaction?.digest ?? res.digest ?? null;
+  }
+
+  // userSell - user-wallet-signed sell on a V10-lineage curve. Sources the user's
+  // own coins of the type (merges them), sells the whole balance (ALL) or an exact
+  // amount, and transfers the SUI proceeds to the USER. Returns the tx digest.
+  async function userSell({ curveId, tokenAmount }) {
+    if (!account?.address) throw new Error('Connect your wallet to sell');
+    const { tokenType, packageId, sharedVersion } = await fetchCurveMeta(curveId);
+    if (!packageId || !sharedVersion) throw new Error('Curve not resolvable yet (indexer not enriched)');
+    if (!isLineagePkg(packageId)) throw new Error('This token is on an older curve version that manual trading does not support in this release. Pick a current-version token.');
+
+    const wantAll = tokenAmount === 'ALL' || (typeof tokenAmount === 'string' && /^(all|max)$/i.test(tokenAmount));
+    const rpc = new SuiGraphQLClient({ url: '/api/rpc' });
+    const coinsRes = await rpc.listCoins({ owner: account.address, coinType: tokenType });
+    const coinList = coinsRes?.objects ?? coinsRes?.data ?? [];
+    if (!coinList.length) throw new Error('No token balance to sell for this curve');
+    const totalAtomic = coinList.reduce((s, c) => s + BigInt(c.balance ?? c.coinBalance ?? 0), 0n);
+    const tokAtomic = wantAll ? totalAtomic : BigInt(Math.floor(parseFloat(tokenAmount) * 1e6));
+    if (tokAtomic <= 0n) throw new Error('No token balance to sell for this curve');
+    if (!wantAll && tokAtomic > totalAtomic) throw new Error(`You hold ${(Number(totalAtomic) / 1e6).toFixed(6)} tokens - cannot sell ${tokenAmount}`);
+
+    const tx = new Transaction();
+    tx.setSender(account.address);
+    const curveRef = tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: String(sharedVersion), mutable: true });
+    const coinObjs = coinList.map(c => tx.object(c.objectId ?? c.id ?? c.coinObjectId));
+    if (coinObjs.length > 1) tx.mergeCoins(coinObjs[0], coinObjs.slice(1));
+    const tokenCoin = wantAll ? coinObjs[0] : tx.splitCoins(coinObjs[0], [tx.pure.u64(tokAtomic)])[0];
+    // V7+: sell(curve, tokens, min_out, referral) -> Coin<SUI>
+    const [suiOut] = tx.moveCall({
+      target: `${packageId}::bonding_curve::sell`,
+      typeArguments: [tokenType],
+      arguments: [curveRef, tokenCoin, tx.pure.u64(0), tx.pure.option('address', null)],
+    });
+    tx.transferObjects([suiOut], account.address);
+
+    const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+    if (res.FailedTransaction) throw new Error(res.FailedTransaction.status?.error ?? 'sell failed');
+    return res.Transaction?.digest ?? res.transaction?.digest ?? res.digest ?? null;
+  }
+
   // Settle the swap through the bridge - the path that actually moves tokens
   // (the Nexus DAG request emits the on-chain execution digest but does not
   // settle, so we settle here, the same bridge every working SuiPump trade uses).
@@ -2240,21 +2338,31 @@ export default function AgentPage({ onBack }) {
   // workflows the bridge doesn't settle (claim/alerts go DAG-only).
   async function settleViaBridge(payload) {
     const wf = payload.workflow;
-    let path, body;
+
+    // MANUAL buy/sell are USER-signed (their wallet, their funds) - NOT the shared
+    // agent wallet. Session-parked sells still go through /session-sell (the
+    // session key signs those). Everything else below stays on the bridge.
     if (wf === 'buy') {
-      path = '/buy';
-      body = { curveId: payload.buy.curveId, suiAmount: payload.buy.amountSui };
-    } else if (wf === 'sell') {
-      // Session-parked position -> /session-sell with sellAll (bridge resolves
-      // the exact parked amount on-chain). Otherwise the wallet /sell path.
+      return await userBuy({ curveId: payload.buy.curveId, amountSui: payload.buy.amountSui });
+    }
+    if (wf === 'sell') {
       if (payload.sell.sessionId) {
-        path = '/session-sell';
-        body = { sessionId: payload.sell.sessionId, curveId: payload.sell.curveId, sellAll: true, minSuiOut: 0 };
-      } else {
-        path = '/sell';
-        body = { curveId: payload.sell.curveId, tokenAmount: payload.sell.tokenAmount, minSuiOut: 0 };
+        // Session-parked position: the SESSION key sells via the bridge with
+        // sellAll (bridge resolves the exact parked amount on-chain).
+        const r = await fetch(`/api/agent-bridge`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: '/session-sell', sessionId: payload.sell.sessionId, curveId: payload.sell.curveId, sellAll: true, minSuiOut: 0 }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok || d.ok === false) throw new Error(d.error || `bridge sell failed (${r.status})`);
+        return d.txDigest ?? null;
       }
-    } else if (wf === 'launch_and_buy') {
+      // Plain manual sell: user-signed from their own wallet.
+      return await userSell({ curveId: payload.sell.curveId, tokenAmount: payload.sell.tokenAmount });
+    }
+
+    let path, body;
+    if (wf === 'launch_and_buy') {
       path = '/launch';
       body = {
         name: payload.launch.name,
