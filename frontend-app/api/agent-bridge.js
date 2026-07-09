@@ -6,10 +6,10 @@
 // proxy, can reach the bridge's write endpoints. A direct browser/curl to the
 // bridge without the key gets 401.
 //
-// Body: { path: '/buy'|'/sell'|'/launch'|'/claim', ...bridgeBody }
+// Body: { path: '/buy'|'/sell'|'/session-buy'|'/session-sell'|'/launch'|'/claim', ...bridgeBody }
 
 const BRIDGE_URL = process.env.SUIPUMP_BRIDGE_URL ?? 'https://suipump-bridge.onrender.com';
-const ALLOWED = new Set(['/buy', '/sell', '/launch', '/claim']);
+const ALLOWED = new Set(['/buy', '/sell', '/session-buy', '/session-sell', '/launch', '/claim']);
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');

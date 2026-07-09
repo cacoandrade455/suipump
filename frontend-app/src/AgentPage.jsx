@@ -2049,20 +2049,50 @@ export default function AgentPage({ onBack }) {
     return { tokenType };
   }
 
-  // Resolve "ALL" -> whole-token balance held by the connected wallet.
+  // Resolve a sell amount. Concrete amount -> pass through. "ALL" -> whole-token
+  // balance to sell, checking the connected WALLET first and then, if the wallet
+  // holds none, the active session's PARKED balance (a session-bought position
+  // lives inside the session object, not at the wallet - listCoins returns empty
+  // for it, which is why "sell all X" used to fail with "no balance"). When the
+  // position is on the session, returns { sessionId } so the settle routes to
+  // /session-sell with sellAll (the bridge resolves the exact parked amount).
   async function resolveSellAmount(curveId, tokenAmount) {
     if (tokenAmount !== 'ALL' && Number(tokenAmount) > 0) {
       return { tokenAmount: Number(tokenAmount) };
     }
     if (!account?.address) throw new Error('Connect your wallet to sell ALL (need the balance)');
     const { tokenType } = await fetchCurveMeta(curveId);
-    const client = new SuiGraphQLClient({ url: '/api/rpc' });
-    const coinsRes = await client.listCoins({ owner: account.address, coinType: tokenType });
+    const rpc = new SuiGraphQLClient({ url: '/api/rpc' });
+    const coinsRes = await rpc.listCoins({ owner: account.address, coinType: tokenType });
     const coins = coinsRes?.objects ?? coinsRes?.data ?? [];
     const atomic = coins.reduce((s, c) => s + BigInt(c.balance ?? c.coinBalance ?? 0), 0n);
     const whole = Number(atomic) / 10 ** TOKEN_DECIMALS;
-    if (!(whole > 0)) throw new Error('No token balance to sell for this curve');
-    return { tokenAmount: whole };
+    if (whole > 0) return { tokenAmount: whole };
+
+    // Wallet holds none - check the active session's parked balance for this type.
+    if (activeSessionId) {
+      const want = String(tokenType).toLowerCase();
+      const q = `{ object(address: "${activeSessionId}") { dynamicFields { nodes { value { __typename ... on MoveObject { contents { type { repr } json } } } } } }`;
+      try {
+        const r = await fetch(GQL_URL, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: q }), signal: AbortSignal.timeout(8000),
+        });
+        const d = await r.json();
+        const nodes = d?.data?.object?.dynamicFields?.nodes ?? [];
+        for (const n of nodes) {
+          const c = n?.value?.contents;
+          const repr = String(c?.type?.repr ?? '').toLowerCase();
+          if (!repr.includes('::coin::coin<') || !repr.includes(want)) continue;
+          const bal = c?.json?.balance;
+          if (bal != null && BigInt(bal) > 0n) {
+            // Session sell: amount is resolved on-chain by the bridge (sellAll).
+            return { tokenAmount: 'ALL', sessionId: activeSessionId };
+          }
+        }
+      } catch { /* fall through to the no-balance error */ }
+    }
+    throw new Error('No token balance to sell for this curve');
   }
 
   // Build the { workflow, ... } payload the runner expects.
@@ -2109,8 +2139,8 @@ export default function AgentPage({ onBack }) {
         return { workflow: 'buy', buy: { curveId: p.buy.curveId, amountSui: p.buy.amountSui } };
       case 'sell': {
         if (!p.sell?.curveId) throw new Error('No curve id for sell - paste the token CA in your goal');
-        const { tokenAmount } = await resolveSellAmount(p.sell.curveId, p.sell.tokenAmount);
-        return { workflow: 'sell', sell: { curveId: p.sell.curveId, tokenAmount } };
+        const { tokenAmount, sessionId } = await resolveSellAmount(p.sell.curveId, p.sell.tokenAmount);
+        return { workflow: 'sell', sell: { curveId: p.sell.curveId, tokenAmount, sessionId: sessionId ?? null } };
       }
       case 'claim': {
         if (!p.claim?.curveId) throw new Error('No curve id for claim - paste the token CA in your goal');
@@ -2211,8 +2241,15 @@ export default function AgentPage({ onBack }) {
       path = '/buy';
       body = { curveId: payload.buy.curveId, suiAmount: payload.buy.amountSui };
     } else if (wf === 'sell') {
-      path = '/sell';
-      body = { curveId: payload.sell.curveId, tokenAmount: payload.sell.tokenAmount, minSuiOut: 0 };
+      // Session-parked position -> /session-sell with sellAll (bridge resolves
+      // the exact parked amount on-chain). Otherwise the wallet /sell path.
+      if (payload.sell.sessionId) {
+        path = '/session-sell';
+        body = { sessionId: payload.sell.sessionId, curveId: payload.sell.curveId, sellAll: true, minSuiOut: 0 };
+      } else {
+        path = '/sell';
+        body = { curveId: payload.sell.curveId, tokenAmount: payload.sell.tokenAmount, minSuiOut: 0 };
+      }
     } else if (wf === 'launch_and_buy') {
       path = '/launch';
       body = {

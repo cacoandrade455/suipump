@@ -388,6 +388,54 @@ async function sessionAddressOf(client, sessionId) {
   return typeof addr === 'string' ? addr.toLowerCase() : null;
 }
 
+// The GraphQL endpoint a raw query should hit - mirrors makeClient's url choice
+// (honor a GraphQL rpcUrl, else the configured/default testnet GraphQL).
+function graphqlUrlFor(rpcUrl) {
+  const GQL_DEFAULT = process.env.SUI_GRAPHQL_URL ?? 'https://graphql.testnet.sui.io/graphql';
+  return (typeof rpcUrl === 'string' && /graphql/i.test(rpcUrl)) ? rpcUrl : GQL_DEFAULT;
+}
+
+// sessionParkedAtomic - the ATOMIC balance of the session's parked Coin<tokenType>,
+// read straight from chain. A session buy parks bought tokens as a dynamic OBJECT
+// field on the session keyed by TypeName (park_tokens in agent_session.move), so
+// the position is NOT at any address's coin balance - it lives inside the session
+// object. This is what makes a whole-position session sell exact: /session-sell
+// with sellAll resolves the true parked amount here, at execution time, so no
+// plan-time/confirm-time drift and no leftover dust.
+//
+// Query shape verified on testnet (2026-07-08): object(address).dynamicFields.nodes[]
+// where the parked coin node is a MoveObject whose contents.type.repr is
+// 0x..2::coin::Coin<tokenType> and contents.json.balance is the atomic amount.
+// The universal_trading marker rides as a separate bool MoveValue field and is
+// skipped by requiring a ::coin::Coin< value carrying our tokenType. Address
+// padding differs by node (0x000..2 vs short), so we match on the inner
+// tokenType substring rather than an exact Coin<> repr. Returns a BigInt (0n if
+// no parked coin of this type).
+async function sessionParkedAtomic(sessionId, tokenType, rpcUrl) {
+  const url = graphqlUrlFor(rpcUrl);
+  // normalize the tokenType so a padded/short address inside the Coin<> still matches
+  const wantType = String(tokenType).toLowerCase();
+  const q = `{ object(address: "${sessionId}") { dynamicFields { nodes { value { __typename ... on MoveObject { contents { type { repr } json } } } } } } }`;
+  const r = await fetch(url, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query: q }), signal: AbortSignal.timeout(8000),
+  });
+  if (!r.ok) throw new Error(`graphql ${r.status} reading parked balance`);
+  const d = await r.json();
+  if (d.errors?.length) throw new Error(`graphql: ${d.errors[0].message}`);
+  const nodes = d?.data?.object?.dynamicFields?.nodes ?? [];
+  for (const n of nodes) {
+    const c = n?.value?.contents;
+    const repr = String(c?.type?.repr ?? '').toLowerCase();
+    if (!repr.includes('::coin::coin<')) continue;      // not a parked coin (skips the bool marker)
+    if (!repr.includes(wantType)) continue;             // different token type
+    const bal = c?.json?.balance;
+    if (bal == null) continue;
+    return BigInt(bal);
+  }
+  return 0n;
+}
+
 async function turnkeyKeyForSession(client, sessionId) {
   // Without a configured backend NO session key is usable - returning one would
   // set the tx sender to that address while the fallback signs with the shared
@@ -947,15 +995,23 @@ async function handleSessionBuy(body) {
 // Sell session-held tokens of a curve back into the session's escrow, signed by
 // the SESSION key. No coin sourcing: the contract sells from tokens already
 // parked on the session by prior session-buys. Proceeds compound into escrow.
-// Body: { sessionId, curveId, tokenAmount, minSuiOut?, privateKey?, rpcUrl? }
-//   tokenAmount is whole tokens (scaled by 1e6 to atomic on-chain). Signer
+// Body: { sessionId, curveId, tokenAmount|sellAll, minSuiOut?, privateKey?, rpcUrl? }
+//   tokenAmount is whole tokens (scaled by 1e6 to atomic on-chain) for a partial
+//   sell; sellAll:true (or tokenAmount:"all"/"max") sells the WHOLE parked
+//   position, resolved to the true parked balance at execution time. Signer
 //   selection is identical to /session-buy: per-session Turnkey enclave key
 //   when mapped, shared-keypair fallback otherwise.
 async function handleSessionSell(body) {
   const { sessionId, curveId, tokenAmount, minSuiOut, privateKey, rpcUrl } = body;
   if (!sessionId)   throw new Error('sessionId required');
   if (!curveId)     throw new Error('curveId required');
-  if (!tokenAmount) throw new Error('tokenAmount required (whole tokens, e.g. 1000)');
+  // Whole-position sell: sellAll:true OR tokenAmount "all"/"max" (case-insensitive).
+  // The contract splits an EXACT amount from the single parked coin (it has no
+  // "sell the whole coin" entry), so "all" is resolved here to the true parked
+  // balance at execution time - no plan/confirm drift, no leftover dust.
+  const wantAll = body.sellAll === true
+    || (typeof tokenAmount === 'string' && /^(all|max)$/i.test(tokenAmount.trim()));
+  if (!wantAll && !tokenAmount) throw new Error('tokenAmount required (whole tokens, e.g. 1000) or sellAll:true / tokenAmount:"all"');
 
   const client  = makeClient(rpcUrl);
   const keypair = loadKeypair(privateKey);
@@ -974,8 +1030,16 @@ async function handleSessionSell(body) {
     throw new Error(`curve ${curveId} is on unknown package ${pkgId} - not a SuiPump curve version`);
   }
 
-  const tokAtomic = BigInt(Math.floor(parseFloat(tokenAmount) * 1e6));
-  if (tokAtomic <= 0n) throw new Error('tokenAmount must be > 0');
+  // Resolve the atomic amount to sell. sellAll -> read the true parked Coin<T>
+  // balance on the session; partial -> the exact requested whole-token amount.
+  let tokAtomic;
+  if (wantAll) {
+    tokAtomic = await sessionParkedAtomic(sessionId, tokenType, rpcUrl);
+    if (tokAtomic <= 0n) throw new Error(`session holds no parked ${tokenType} to sell`);
+  } else {
+    tokAtomic = BigInt(Math.floor(parseFloat(tokenAmount) * 1e6));
+    if (tokAtomic <= 0n) throw new Error('tokenAmount must be > 0');
+  }
   const minOut = BigInt(minSuiOut ?? 0);
 
   const tx = new Transaction();

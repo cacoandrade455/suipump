@@ -107,6 +107,14 @@ function normalizeRemote(R) {
     // read order.wallet, and this rebuild is the only path orders take into
     // the brain (the third allowlist-drops-the-new-field bug of its kind).
     wallet: R.wallet ?? null,
+    // params must SURVIVE too: the stored order carries sessionId (and _lastFire/
+    // _lastError) in params, and the sell path reads order.params.sessionId to
+    // route a session-bought position's exit through /session-sell (the SAME
+    // session that custodies the parked tokens) instead of the shared agent
+    // wallet. Dropping it here silently downgraded every session-bound tpsl to a
+    // shared-wallet /sell that holds none of the parked tokens - the auto-armed
+    // session exit (spawnChild sets sessionId at line ~307) never actually fired.
+    params: (R.params && typeof R.params === 'object' && !Array.isArray(R.params)) ? R.params : {},
     packageId: null,
     entryPriceSui: R.entryPriceSui != null ? Number(R.entryPriceSui) : null,
     minSuiOut: Number(R.minSuiOut ?? 0),
@@ -542,6 +550,37 @@ async function getBalanceWhole(tokenType, addr = INVOKER_ADDRESS) {
   return Number(BigInt(atomic)) / 10 ** TOKEN_DECIMALS;
 }
 
+// getSessionParkedWhole - whole-token balance of a session's PARKED Coin<T>.
+// A session-bought position lives INSIDE the session object as a dynamic object
+// field (park_tokens keys it by TypeName), NOT at any address's coin balance, so
+// getBalanceWhole (which reads an address) returns ~0 for it and the tpsl exit
+// would false-trip its dust guard and never sell. This reads the parked coin
+// straight from chain, matching the query shape verified against testnet
+// (2026-07-08): object(address).dynamicFields.nodes[] where the parked node is a
+// MoveObject whose contents.type.repr is 0x..2::coin::Coin<tokenType> and
+// contents.json.balance is the atomic amount. The universal_trading marker rides
+// as a separate bool field and is skipped by requiring ::coin::Coin< carrying
+// our tokenType (matched on the inner tokenType substring, tolerant of address
+// zero-padding). Returns whole tokens (0 when nothing is parked).
+async function getSessionParkedWhole(sessionId, tokenType) {
+  const want = String(tokenType).toLowerCase();
+  const data = await gql(
+    `query($id: SuiAddress!) { object(address: $id) { dynamicFields { nodes { value { __typename ... on MoveObject { contents { type { repr } json } } } } } }`,
+    { id: sessionId },
+  );
+  const nodes = data?.object?.dynamicFields?.nodes ?? [];
+  for (const n of nodes) {
+    const c = n?.value?.contents;
+    const repr = String(c?.type?.repr ?? '').toLowerCase();
+    if (!repr.includes('::coin::coin<')) continue; // skip the bool universal_trading marker
+    if (!repr.includes(want)) continue;            // different token type
+    const bal = c?.json?.balance;
+    if (bal == null) continue;
+    return Number(BigInt(bal)) / 10 ** TOKEN_DECIMALS;
+  }
+  return 0;
+}
+
 // -- Fire a sell via the proven runner path (server.js signs) ------------------
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -594,12 +633,20 @@ async function fireSell(curveId, tokenWhole, minSuiOut, sellAll = false, session
   // Leader). The session holds its tokens as a single coin, so "all" is not
   // supported there: we pass a concrete integer amount. For a whole-balance
   // session sell, tokenWhole already carries the full known balance.
+  // Session sells go to /session-sell, spending from the session's parked tokens
+  // (Option A - interim until the Nexus sell tool routes /session-sell under the
+  // Leader). For a WHOLE-position session sell, send sellAll:true - the bridge
+  // resolves the exact parked balance on-chain at execution time (no plan/tick
+  // drift, no leftover dust). Partial session sells pass a concrete whole-token
+  // amount.
   // TODO(nexus-session): when sell.rs branches to /session-sell on a sessionId in
   // the walk, emit the sell with the sessionId so the Leader executes it (Option B).
   const endpoint = sessionId ? '/session-sell' : '/sell';
   const sessionTokenAmount = Math.max(0, Math.floor(tokenWhole));
   const body = sessionId
-    ? { sessionId, curveId, tokenAmount: sessionTokenAmount, minSuiOut: minSuiOut ?? 0 }
+    ? (sellAll
+        ? { sessionId, curveId, sellAll: true, minSuiOut: minSuiOut ?? 0 }
+        : { sessionId, curveId, tokenAmount: sessionTokenAmount, minSuiOut: minSuiOut ?? 0 })
     : { curveId, tokenAmount, minSuiOut: minSuiOut ?? 0 };
   let lastErr;
   for (let attempt = 1; attempt <= 3; attempt++) {
@@ -836,8 +883,12 @@ async function processOrder(order) {
 
   if (!nextAction(order)) return;
 
+  // Session-bound positions are parked ON the session object, not at any wallet
+  // address, so read the parked balance for those; non-session positions read the
+  // agent wallet as before.
+  const sessId = order.params?.sessionId ?? null;
   let balWhole;
-  try { balWhole = await getBalanceWhole(order.tokenType); }
+  try { balWhole = sessId ? await getSessionParkedWhole(sessId, order.tokenType) : await getBalanceWhole(order.tokenType); }
   catch (e) { err(`${order.id}: balance read failed: ${e.message}`); order._cooldownUntil = Date.now() + ERROR_COOLDOWN_MS; return; }
 
   while (!order.done) {
@@ -881,7 +932,7 @@ async function processOrder(order) {
     let balAfter = balBefore, moved = 0, confirmed = false;
     for (let i = 1; i <= 10; i++) {
       await sleep(2500);
-      try { balAfter = await getBalanceWhole(order.tokenType); }
+      try { balAfter = sessId ? await getSessionParkedWhole(sessId, order.tokenType) : await getBalanceWhole(order.tokenType); }
       catch (e) { err(`${order.id}: post-sell balance read failed (try ${i}): ${e.message}`); continue; }
       moved = balBefore - balAfter;
       if (moved >= sellWhole * 0.9) { confirmed = true; break; }
@@ -1428,8 +1479,12 @@ const HANDLERS = {
       if (!(fraction > 0)) { log(`${order.id}: copytrade sell - computed zero fraction, skipping`); return; }
 
       // 2) agent sells the same fraction of ITS OWN balance of this curve.
+      //    Session-bound copytrade positions are parked on the session; read
+      //    there (not the shared agent wallet) so the mirror sells the real
+      //    position and exits through the session that holds it.
+      const cpSessId = order.params?.sessionId ?? null;
       let agentBal = 0;
-      try { agentBal = await getBalanceWhole(tokenType, INVOKER_ADDRESS); }
+      try { agentBal = cpSessId ? await getSessionParkedWhole(cpSessId, tokenType) : await getBalanceWhole(tokenType, INVOKER_ADDRESS); }
       catch (e) { err(`${order.id}: copytrade agent balance read failed (${e.message})`); return; }
       if (!(agentBal > 0)) { log(`${order.id}: copytrade sell - agent holds none of ${curveId.slice(0, 10)}..., nothing to mirror`); return; }
 
