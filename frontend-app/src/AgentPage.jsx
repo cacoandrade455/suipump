@@ -30,7 +30,7 @@ const AGENT_SUI_CLOCK_ID = '0x6';
 // Build stamp - lets us confirm in the browser console which AgentPage build is
 // actually live (deploy/CDN cache can serve a stale bundle). If the console does
 // NOT show this line, the running code is older than this file.
-const AGENTPAGE_BUILD = 'agentpage-2026-07-09-usersigned-clock-object-v7';
+const AGENTPAGE_BUILD = 'agentpage-2026-07-09-signTransaction-execute-v8';
 if (typeof console !== 'undefined') console.log('[AgentPage build]', AGENTPAGE_BUILD);
 
 // Self-funded sessions: the OWNER's open transaction grants the fresh session
@@ -2277,7 +2277,12 @@ export default function AgentPage({ onBack }) {
     const suiPriceScaled = await suiPriceScaledArg();
 
     const tx = new Transaction();
-    const curveRef = tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: String(sharedVersion), mutable: true });
+    // Match TokenPage's proven curveRef construction exactly: raw ISV (no
+    // String() wrapper - the SuiGrpcClient-backed wallet build is sensitive to
+    // it), with a tx.object fallback when ISV is unresolved.
+    const curveRef = sharedVersion
+      ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: sharedVersion, mutable: true })
+      : tx.object(curveId);
     const [payment] = tx.splitCoins(tx.gas, [tx.pure.u64(suiMist)]);
     // V9+: buy(curve, payment, min_out, referral, sui_price_scaled, clock) -> (Coin<T>, Coin<SUI>)
     // Clock is passed via tx.object(0x6) - the SDK resolves it. (tx.sharedObjectRef
@@ -2290,23 +2295,30 @@ export default function AgentPage({ onBack }) {
     });
     tx.transferObjects([tokens, refund], account.address);
 
-    let res;
+    // Build -> wallet-sign -> execute, the SAME pattern the autonomous paths use
+    // (useDCA / useLimitOrder / turnkey_signer): build the tx to bytes against a
+    // client, get the signature, execute via the client. This is what avoids the
+    // Slush "reading 'txSignatures'" crash: signAndExecuteTransaction makes the
+    // WALLET build/serialize the tx itself (its SuiGrpcClient-backed build chokes
+    // on the shared-object refs and throws inside dapp-interface.js), whereas
+    // signTransaction just signs already-built bytes. tx.setSender is required so
+    // the build can resolve gas for the connected wallet.
+    tx.setSender(account.address);
+    const execClient = new SuiGraphQLClient({ url: '/api/rpc' });
+    let digest = null;
     try {
-      res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const built = await tx.build({ client: execClient });
+      const { signature } = await dAppKit.signTransaction({ transaction: tx });
+      const res = await execClient.executeTransaction({ transaction: built, signatures: [signature] });
+      if (res?.errors) throw new Error(Array.isArray(res.errors) ? (res.errors[0]?.message ?? JSON.stringify(res.errors)) : String(res.errors));
+      digest = res?.digest ?? res?.data?.executeTransaction?.digest ?? res?.Transaction?.digest ?? null;
     } catch (e) {
-      // The wallet SDK can throw AFTER broadcasting (a result-assembly bug that
-      // reads 'txSignatures' off an undefined response) even though the tx landed
-      // on-chain. Log the full detail so the true source is visible, and surface a
-      // precise message instead of the raw undefined-read.
-      console.error('[userBuy] signAndExecute threw:', e, '\nstack:', e?.stack);
+      console.error('[userBuy] build/sign/execute threw:', e, '\nstack:', e?.stack);
       const msg = String(e?.message ?? e);
-      if (/txSignatures/.test(msg)) {
-        throw new Error('Wallet returned an unexpected response after signing (the buy may have gone through - check your balance/history). If it did not, retry.');
-      }
+      if (/txSignatures/.test(msg)) throw new Error('Wallet returned an unexpected response after signing (the buy may have gone through - check your balance/history). If it did not, retry.');
       throw e;
     }
-    if (res?.$kind === 'FailedTransaction') throw new Error(res.FailedTransaction?.status?.error ?? 'buy failed');
-    return res?.digest ?? res?.Transaction?.digest ?? null;
+    return digest;
   }
 
   // userSell - user-wallet-signed sell on a V10-lineage curve. Sources the user's
@@ -2329,7 +2341,9 @@ export default function AgentPage({ onBack }) {
     if (!wantAll && tokAtomic > totalAtomic) throw new Error(`You hold ${(Number(totalAtomic) / 1e6).toFixed(6)} tokens - cannot sell ${tokenAmount}`);
 
     const tx = new Transaction();
-    const curveRef = tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: String(sharedVersion), mutable: true });
+    const curveRef = sharedVersion
+      ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: sharedVersion, mutable: true })
+      : tx.object(curveId);
     const coinObjs = coinList.map(c => tx.object(c.objectId ?? c.id ?? c.coinObjectId));
     if (coinObjs.length > 1) tx.mergeCoins(coinObjs[0], coinObjs.slice(1));
     const tokenCoin = wantAll ? coinObjs[0] : tx.splitCoins(coinObjs[0], [tx.pure.u64(tokAtomic)])[0];
@@ -2341,19 +2355,23 @@ export default function AgentPage({ onBack }) {
     });
     tx.transferObjects([suiOut], account.address);
 
-    let res;
+    // Build -> wallet-sign -> execute (see userBuy for why this avoids the Slush
+    // txSignatures crash). Reuse the rpc client built above for coin lookup.
+    tx.setSender(account.address);
+    let digest = null;
     try {
-      res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const built = await tx.build({ client: rpc });
+      const { signature } = await dAppKit.signTransaction({ transaction: tx });
+      const res = await rpc.executeTransaction({ transaction: built, signatures: [signature] });
+      if (res?.errors) throw new Error(Array.isArray(res.errors) ? (res.errors[0]?.message ?? JSON.stringify(res.errors)) : String(res.errors));
+      digest = res?.digest ?? res?.data?.executeTransaction?.digest ?? res?.Transaction?.digest ?? null;
     } catch (e) {
-      console.error('[userSell] signAndExecute threw:', e, '\nstack:', e?.stack);
+      console.error('[userSell] build/sign/execute threw:', e, '\nstack:', e?.stack);
       const msg = String(e?.message ?? e);
-      if (/txSignatures/.test(msg)) {
-        throw new Error('Wallet returned an unexpected response after signing (the sell may have gone through - check your balance/history). If it did not, retry.');
-      }
+      if (/txSignatures/.test(msg)) throw new Error('Wallet returned an unexpected response after signing (the sell may have gone through - check your balance/history). If it did not, retry.');
       throw e;
     }
-    if (res?.$kind === 'FailedTransaction') throw new Error(res.FailedTransaction?.status?.error ?? 'sell failed');
-    return res?.digest ?? res?.Transaction?.digest ?? null;
+    return digest;
   }
 
   // Settle the swap through the bridge - the path that actually moves tokens
