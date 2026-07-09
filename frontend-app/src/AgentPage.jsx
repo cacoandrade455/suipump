@@ -2799,35 +2799,18 @@ export default function AgentPage({ onBack }) {
         return;
       }
 
-      // STEP 1 - Emit the Nexus DAG request (agentic-decision proof). BEST-EFFORT:
-      // the on-chain walk request is an orchestration paper trail, NOT the
-      // settlement path. A slow/failed /run-dag must NEVER block or replace the
-      // trade. Demo mode (leader-as-sole-executor poll) is REMOVED: every manual
-      // trade now settles synchronously through the bridge in STEP 2 below, and
-      // history is recorded on the real settle digest. The old demo path could
-      // show the card "done" on a pending row that never committed if no leader
-      // settled - the "said ok but nothing registered" failure. Gone.
-      let data = {};
-      try {
-        const res = await fetch(`/api/agent-run`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
-        data = await res.json().catch(() => ({}));
-        if (!res.ok || data.ok === false) {
-          console.warn('[agent] Nexus emit failed, settling anyway:', data.error || res.status);
-          data = {};
-        }
-      } catch (e) {
-        console.warn('[agent] Nexus emit threw, settling anyway:', e.message);
-        data = {};
-      }
+      // MANUAL TRADES ARE USER-SIGNED AND USER-EXECUTED. There is NO Nexus DAG
+      // emit here: emitting /api/agent-run handed the trade to the Talus Leader,
+      // which executed it from the SHARED AGENT WALLET - so every manual buy/sell
+      // fired TWICE (once user-signed from the user's wallet in STEP 2 below, once
+      // Leader-executed from the agent wallet). That is the agent-wallet duplicate.
+      // The user's wallet is the sole executor of a manual trade; the autonomous
+      // agent (sessions/strategies) is the only thing that runs through the Leader.
+      const data = {};
       clearAnim();
 
-      // STEP 2 - Settle the swap through the bridge so the tokens actually move.
-      // This is the money path and runs REGARDLESS of whether the Nexus emit
-      // above succeeded. Only this step's failure fails the action.
+      // Settle the swap - user-signed (userBuy/userSell) for buy/sell, bridge for
+      // launch. This is the money path and the ONLY execution of a manual trade.
       let settleDigest = null;
       try {
         settleDigest = await settleViaBridge(payload);
