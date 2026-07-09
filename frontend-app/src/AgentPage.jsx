@@ -27,6 +27,12 @@ const AGENT_SESSION_WALLET = import.meta.env.VITE_AGENT_SESSION_WALLET
   || '0x877af0fae3fa4f8ea936943b59bcd66104f67cf1895302e97761a28b3c3a5906';
 const AGENT_SUI_CLOCK_ID = '0x6';
 
+// Build stamp - lets us confirm in the browser console which AgentPage build is
+// actually live (deploy/CDN cache can serve a stale bundle). If the console does
+// NOT show this line, the running code is older than this file.
+const AGENTPAGE_BUILD = 'agentpage-2026-07-09-usersigned-clock-object-v7';
+if (typeof console !== 'undefined') console.log('[AgentPage build]', AGENTPAGE_BUILD);
+
 // Self-funded sessions: the OWNER's open transaction grants the fresh session
 // address its gas (rides in the same PTB as the escrow deposit - one
 // signature). This removes the bridge gas-treasury dependency entirely: a dry
