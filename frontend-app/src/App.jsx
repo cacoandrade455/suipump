@@ -22,7 +22,7 @@ import GamePage from './GamePage.jsx';
 import { LANGUAGES, translations, t } from './i18n.js';
 import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8, ALL_PACKAGE_IDS, DRAIN_SUI_APPROX, DRAIN_SUI_V4, DRAIN_SUI_V5, DRAIN_SUI_V6, DRAIN_SUI_V7, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_SUI_V6, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, VIRTUAL_TOKENS_V6, TOKEN_DECIMALS, isNewCurve, isV7OrLater, curveShapeFor } from './constants.js';
 import { mistToSui, priceMistPerToken } from './curve.js';
-import { paginateEvents, paginateMultipleEvents } from './paginateEvents.js';
+import { paginateEvents, paginateMultipleEvents, fetchRecentTrades } from './paginateEvents.js';
 import LiveFeedSidebar from './LiveFeedSidebar.jsx';
 import { useWatchlist } from './useWatchlist.js';
 import StrategiesModal from './StrategiesModal.jsx';
@@ -530,6 +530,42 @@ function useLiveTrades(tokens) {
     const tk = tokens.find(x => x.curveId === curveId);
     return tk?.symbol || null;
   }, [tokens]);
+
+  // Backfill: seed the ticker/rail from the indexer so it is alive on first
+  // paint instead of waiting for the next live trade. Defensive mapping - the
+  // /trades/recent row shape may carry amounts in mist or SUI and the trader
+  // under different keys; live SSE rows always win (never clobbered).
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await fetchRecentTrades(20);
+        if (!rows || !Array.isArray(rows) || cancelled) return;
+        const mapped = rows.map(r => {
+          const d = r.data ?? r;
+          const curveId = r.curve_id ?? r.curveId ?? d.curve_id;
+          if (!curveId) return null;
+          const isSell = r.side === 'sell' || String(r.event_type ?? r.type ?? '').includes('Sold');
+          let sui = Number(d.sui_in ?? d.sui_out ?? d.sui ?? r.sui ?? 0);
+          if (sui > 1e6) sui = sui / 1e9; // mist heuristic
+          const trader = d.buyer ?? d.seller ?? r.trader ?? '';
+          return {
+            id: (r.tx_digest ?? '') + '_bf_' + (r.event_seq ?? Math.random()),
+            side: isSell ? 'SELL' : 'BUY',
+            sym: r.symbol || d.symbol || symbolFor(curveId) || (curveId.slice(0, 6) + '\u2026'),
+            curveId,
+            sui,
+            addr: trader ? trader.slice(0, 6) + '\u2026' + trader.slice(-4) : '-',
+            ts: Number(r.timestamp_ms ?? Date.now()),
+          };
+        }).filter(Boolean);
+        if (!cancelled && mapped.length) {
+          setTrades(prev => (prev.length ? prev : mapped.slice(0, 30)));
+        }
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [symbolFor]);
 
   React.useEffect(() => {
     if (!INDEXER_URL) return;
