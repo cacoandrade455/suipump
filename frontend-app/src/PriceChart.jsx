@@ -264,24 +264,24 @@ export default function PriceChart({ ohlc = [], connected = false, suiUsd = 0, l
   const latestPrice = candles.length > 0 ? candles[candles.length - 1].close : null;
 
   return (
-    <div className="bg-black border border-lime-950 rounded-2xl p-4">
+    <div className="bg-white/[0.015] border border-white/[0.08] rounded-2xl p-4">
       {/* Header: views + live dot + intervals */}
       <div className="flex items-center justify-between mb-2">
-        <div className="flex gap-1">
+        <div className="flex gap-1.5">
           {VIEWS.map(v => (
             <button key={v} onClick={() => setView(v)}
-              className={`px-2 py-0.5 text-[10px] font-mono rounded transition-colors ${
-                view === v ? 'bg-lime-950 text-lime-400 border border-lime-600' : 'text-lime-900 border border-lime-950 hover:border-lime-800'
+              className={`px-2.5 py-1.5 text-[10px] font-mono font-semibold rounded-[7px] transition-colors ${
+                view === v ? 'bg-lime-400/[0.12] text-lime-400 border border-lime-400/30' : 'text-white/40 hover:text-white/60'
               }`}>{v}</button>
           ))}
         </div>
         <div className="flex items-center gap-2">
           <div className={`w-1.5 h-1.5 rounded-full ${connected ? 'bg-lime-400' : 'bg-white/20'}`} title={connected ? 'Live' : 'Connecting…'} />
-          <div className="flex gap-1">
+          <div className="flex gap-1.5">
             {INTERVALS.map((iv, i) => (
               <button key={iv.label} onClick={() => setIntervalIdx(i)}
-                className={`px-2 py-0.5 text-[10px] font-mono rounded transition-colors ${
-                  intervalIdx === i ? 'bg-lime-950 text-lime-400 border border-lime-600' : 'text-lime-900 border border-lime-950 hover:border-lime-800'
+                className={`px-2.5 py-1.5 text-[10px] font-mono font-semibold rounded-[7px] transition-colors ${
+                  intervalIdx === i ? 'bg-lime-400/[0.12] text-lime-400 border border-lime-400/30' : 'text-white/40 hover:text-white/60'
                 }`}>{iv.label}</button>
             ))}
           </div>
@@ -303,13 +303,13 @@ export default function PriceChart({ ohlc = [], connected = false, suiUsd = 0, l
       )}
 
       {/* Indicator toggles */}
-      <div className="flex gap-1 mb-2">
+      <div className="flex gap-1.5 mb-2">
         {INDICATORS.map(({ key }) => (
           <button key={key} onClick={() => toggleIndicator(key)}
-            className={`px-2 py-0.5 text-[9px] font-mono rounded transition-colors ${
+            className={`px-2.5 py-1.5 text-[9px] font-mono font-semibold rounded-[7px] transition-colors ${
               activeIndicators.includes(key)
-                ? 'bg-lime-950 text-lime-400 border border-lime-700'
-                : 'text-lime-900 border border-lime-950 hover:border-lime-800'
+                ? 'bg-lime-400/[0.12] text-lime-400 border border-lime-400/30'
+                : 'text-white/40 border border-white/[0.06] hover:text-white/60 hover:border-white/15'
             }`}>{key}</button>
         ))}
       </div>

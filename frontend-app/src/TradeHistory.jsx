@@ -26,9 +26,9 @@ export default function TradeHistory({ trades = [], connected = false, loading =
   );
 
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+    <div className="rounded-2xl border border-white/[0.08] bg-white/[0.015] p-4">
       <div className="flex items-center justify-between mb-3">
-        <div className="text-[10px] font-mono text-white/30 tracking-widest">
+        <div className="text-[10px] font-mono font-semibold text-white/30 tracking-[0.12em]">
           TRADE HISTORY · {trades.length} TRADE{trades.length !== 1 ? 'S' : ''}
         </div>
         <div className={`w-1.5 h-1.5 rounded-full ${connected ? 'bg-lime-400' : 'bg-white/20'}`} title={connected ? 'Live' : 'Connecting…'} />
@@ -36,9 +36,9 @@ export default function TradeHistory({ trades = [], connected = false, loading =
       {trades.length === 0 ? (
         <div className="text-xs font-mono text-white/20 text-center py-4">No trades yet</div>
       ) : (
-        <div className="space-y-1 max-h-64 overflow-y-auto">
+        <div className="max-h-64 overflow-y-auto -mx-4">
           {trades.slice(0, MAX_TRADES).map((t, i) => (
-            <div key={t.id ?? i} className="flex items-center justify-between text-xs font-mono py-1.5 border-b border-white/5 last:border-0">
+            <div key={t.id ?? i} className="flex items-center justify-between text-xs font-mono px-4 py-2 border-b border-white/[0.04] last:border-0 hover:bg-white/[0.025] transition-colors">
               <div className="flex items-center gap-2">
                 {t.kind === 'buy'
                   ? <ArrowUpRight size={12} className="text-lime-400" />

@@ -814,10 +814,10 @@ function TradePanelContent({
   }, [showReturnCalc, side, amount, reserveMist, tokensRemaining, vSui, vTok, suiUsd]);
 
   return (
-    <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 space-y-4">
+    <div className="bg-white/[0.02] border border-white/[0.09] rounded-2xl p-4 space-y-4">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <div className="text-[10px] font-mono text-lime-400/70 tracking-widest">{t(lang, 'trade')}</div>
+        <div className="text-[10px] font-mono font-bold text-lime-400/70 tracking-[0.16em]">{t(lang, 'trade').toUpperCase()}</div>
         <button onClick={() => setShowSlippage(s => !s)} className={`flex items-center gap-1.5 px-2 py-1 rounded-lg text-[10px] font-mono transition-colors ${showSlippage ? 'bg-lime-400/10 border border-lime-400/30 text-lime-400' : 'text-white/35 hover:text-white/60'}`}>
           <Settings size={10} />
           {isAuto ? 'AUTO SLIPPAGE' : slippageNum === 0 ? 'NO SLIPPAGE' : `${slippage}% ${t(lang, 'slippage')}`}
@@ -877,9 +877,9 @@ function TradePanelContent({
       ) : (
         <>
           {/* Buy / Sell toggle */}
-          <div className="flex rounded-lg overflow-hidden border border-white/10">
-            <button onClick={() => setSide('buy')}  className={`flex-1 py-2.5 text-xs font-mono font-bold transition-colors ${side === 'buy'  ? 'bg-lime-400 text-black' : 'text-white/50 hover:text-white/80'}`}>{t(lang, 'buy')}</button>
-            <button onClick={() => setSide('sell')} className={`flex-1 py-2.5 text-xs font-mono font-bold transition-colors ${side === 'sell' ? 'bg-red-500 text-white' : 'text-white/50 hover:text-white/80'}`}>{t(lang, 'sell')}</button>
+          <div className="flex gap-1.5">
+            <button onClick={() => setSide('buy')}  className={`flex-1 py-2.5 rounded-[10px] text-xs font-mono font-extrabold transition-colors ${side === 'buy'  ? 'bg-lime-400 text-black' : 'border border-white/10 text-white/50 hover:text-white/80'}`}>{t(lang, 'buy').toUpperCase()}</button>
+            <button onClick={() => setSide('sell')} className={`flex-1 py-2.5 rounded-[10px] text-xs font-mono font-bold transition-colors ${side === 'sell' ? 'bg-red-500 text-white' : 'border border-red-400/30 text-red-400 hover:text-red-300'}`}>{t(lang, 'sell').toUpperCase()}</button>
           </div>
 
           {/* Amount input + preset buttons */}
@@ -1022,10 +1022,10 @@ function TradePanelContent({
 
           {/* Execute button */}
           <button onClick={onExecute} disabled={!account || isPending || !amount || parseFloat(amount) <= 0}
-            className={`w-full py-3 rounded-xl text-sm font-mono font-bold transition-colors ${
+            className={`w-full h-11 rounded-xl text-[13px] font-mono font-extrabold transition-colors ${
               !account || isPending || !amount || parseFloat(amount) <= 0
                 ? 'bg-white/5 text-white/20 cursor-not-allowed'
-                : side === 'buy' ? 'bg-lime-400 text-black hover:bg-lime-300' : 'bg-red-500 text-white hover:bg-red-400'
+                : side === 'buy' ? 'bg-lime-400 text-black hover:bg-lime-300 shadow-[0_8px_28px_rgba(132,204,22,.25)]' : 'bg-red-500 text-white hover:bg-red-400'
             }`}>
             {isPending ? '⏳ ...' : !account ? 'Connect wallet' : side === 'buy' ? t(lang, 'buy') : t(lang, 'sell')}
           </button>
@@ -1448,9 +1448,9 @@ function TradesHoldersBlock({ curveId, tokenType, suiUsd, lang, creator, trades,
   const [tab, setTab] = useState('trades');
   return (
     <div className="space-y-0">
-      <div className="flex bg-white/[0.03] border border-white/10 rounded-t-xl overflow-hidden">
-        <button onClick={() => setTab('trades')}  className={`flex-1 py-3 text-xs font-mono font-bold tracking-wider transition-colors ${tab === 'trades'  ? 'text-lime-400 bg-lime-400/5 border-b-2 border-lime-400' : 'text-white/40 hover:text-white/70'}`}>TRADES</button>
-        <button onClick={() => setTab('holders')} className={`flex-1 py-3 text-xs font-mono font-bold tracking-wider transition-colors ${tab === 'holders' ? 'text-lime-400 bg-lime-400/5 border-b-2 border-lime-400' : 'text-white/40 hover:text-white/70'}`}>{t(lang, 'holders')}</button>
+      <div className="flex bg-white/[0.015] border border-white/[0.08] rounded-t-2xl overflow-hidden">
+        <button onClick={() => setTab('trades')}  className={`flex-1 py-3 text-[11px] font-mono font-bold tracking-[0.1em] transition-colors ${tab === 'trades'  ? 'text-lime-400 bg-lime-400/[0.06] border-b-2 border-lime-400' : 'text-white/40 hover:text-white/70'}`}>TRADES</button>
+        <button onClick={() => setTab('holders')} className={`flex-1 py-3 text-[11px] font-mono font-bold tracking-[0.1em] transition-colors ${tab === 'holders' ? 'text-lime-400 bg-lime-400/[0.06] border-b-2 border-lime-400' : 'text-white/40 hover:text-white/70'}`}>{t(lang, 'holders').toUpperCase()}</button>
       </div>
       <div className="[&>div]:rounded-t-none [&>div]:border-t-0">
         {tab === 'trades'
@@ -2008,6 +2008,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   const [linkCopied,      setLinkCopied]      = useState(false);
   const [mTpslOpen,       setMTpslOpen]       = useState(false); // mobile-only TP/SL accordion (right column hidden <lg)
   const [mVestOpen,       setMVestOpen]       = useState(false); // mobile-only Vesting accordion (right column hidden <lg)
+  const [mTradeSheet,     setMTradeSheet]     = useState(false); // mobile-only trade bottom-sheet open state (5b thumb-zone BUY/SELL)
   const [volumeSui,       setVolumeSui]       = useState(null);  // authoritative all-time volume (token_stats.volume_sui - same as leaderboard/Crown)
 
   // -- data loading ----------------------------------------------------------
@@ -2394,7 +2395,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   // -- render ----------------------------------------------------------------
 
   return (
-    <div className="min-h-screen" style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}>
+    <div className="min-h-screen pb-[env(safe-area-inset-bottom)] lg:pb-0" style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}>
       <button onClick={onBack || (() => navigate('/'))} className="flex items-center gap-2 text-white/50 hover:text-lime-400 transition-colors text-xs font-mono mb-4 group">
         <ArrowLeft size={14} className="group-hover:-translate-x-0.5 transition-transform" />
         {t(lang, 'backToHome')}
@@ -2407,20 +2408,20 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-4">
         {/* Left column */}
-        <div className="space-y-4">
+        <div className="space-y-3.5">
           {/* Token header */}
-          <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4">
-            <div className="flex items-start gap-3">
-              <div className="w-12 h-12 rounded-xl overflow-hidden flex-shrink-0 bg-white/5 flex items-center justify-center text-xl">
+          <div className="bg-white/[0.015] border border-white/[0.08] rounded-2xl p-4">
+            <div className="flex items-start gap-3.5">
+              <div className="w-[52px] h-[52px] rounded-[15px] overflow-hidden flex-shrink-0 border border-lime-400/40 bg-gradient-to-br from-lime-500/40 to-lime-900/30 flex items-center justify-center text-xl">
                 {(_overrideIcon || iconUrl) ? <img src={_overrideIcon || iconUrl} alt={symbol} className="w-full h-full object-cover" onError={e => { e.target.style.display='none'; e.target.nextSibling.style.display='flex'; }} /> : null}
                 <span style={{ display: (_overrideIcon || iconUrl) ? 'none' : 'flex' }} className="text-2xl items-center justify-center w-full h-full">🔥</span>
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <h1 className="text-white font-bold text-lg">{name}</h1>
-                  <span className="text-lime-400 text-sm font-mono">${symbol}</span>
+                  <h1 className="text-white font-extrabold text-xl font-mono">{name}</h1>
+                  <span className="text-white/40 text-xs font-mono font-medium">${symbol}</span>
                 </div>
                 <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
                   <span className="text-white/35 text-[10px] font-mono truncate max-w-[180px]">{curveId ? `${curveId.slice(0, 6)}...${curveId.slice(-4)}` : ''}</span>
@@ -2434,47 +2435,62 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
                   {website  && <a href={website.startsWith('http')  ? website  : `https://${website}`}  target="_blank" rel="noreferrer" className="flex items-center gap-1 text-[10px] font-mono text-white/35 hover:text-lime-400 transition-colors"><ExternalLink size={9} /> Website</a>}
                 </div>
               </div>
-              <div className="text-right shrink-0">
-                <div className="text-white text-sm font-mono font-bold">{suiUsd > 0 ? `$${priceUsd.toFixed(6)}` : `${fmt(priceSui, 6)} SUI`}</div>
-                <div className="text-white/35 text-[10px] font-mono">{t(lang, 'price')}</div>
-                <div className="text-white/70 text-xs font-mono mt-1">{suiUsd > 0 ? fmtUsd(marketCapSui, suiUsd) : `${fmt(marketCapSui)} SUI`}</div>
-                <div className="text-white/35 text-[10px] font-mono">{t(lang, 'mcap')}</div>
+              {/* Stats - desktop horizontal group (2b: PRICE / MKT CAP / VOL) */}
+              <div className="ml-auto hidden lg:flex gap-5 xl:gap-6 text-right shrink-0">
+                <div>
+                  <div className="text-[9px] font-mono font-semibold tracking-[0.14em] text-white/30">{t(lang, 'price').toUpperCase()}</div>
+                  <div className="mt-1.5 text-[17px] leading-none font-mono font-bold text-white">{suiUsd > 0 ? `$${priceUsd.toFixed(6)}` : `${fmt(priceSui, 6)} SUI`}</div>
+                </div>
+                <div>
+                  <div className="text-[9px] font-mono font-semibold tracking-[0.14em] text-white/30">{t(lang, 'mcap').toUpperCase()}</div>
+                  <div className="mt-1.5 text-[17px] leading-none font-mono font-bold text-white">{suiUsd > 0 ? fmtUsd(marketCapSui, suiUsd) : `${fmt(marketCapSui)} SUI`}</div>
+                </div>
                 {volumeSui != null && volumeSui > 0 && (
-                  <>
-                    <div className="text-white/70 text-xs font-mono mt-1">{suiUsd > 0 ? fmtUsd(volumeSui, suiUsd) : `${fmt(volumeSui)} SUI`}</div>
-                    <div className="text-white/35 text-[10px] font-mono">{t(lang, 'volume')}</div>
-                  </>
+                  <div>
+                    <div className="text-[9px] font-mono font-semibold tracking-[0.14em] text-white/30">{t(lang, 'volume').toUpperCase()}</div>
+                    <div className="mt-1.5 text-[17px] leading-none font-mono font-bold text-white">{suiUsd > 0 ? fmtUsd(volumeSui, suiUsd) : `${fmt(volumeSui)} SUI`}</div>
+                  </div>
                 )}
               </div>
             </div>
+            {/* Mobile price hero + meta line (5b: 30px/800 hero, mcap . vol) */}
+            <div className="lg:hidden mt-3.5">
+              <div className="text-[30px] leading-none font-extrabold font-mono text-white">{suiUsd > 0 ? `$${priceUsd.toFixed(6)}` : `${fmt(priceSui, 6)} SUI`}</div>
+              <div className="mt-2.5 text-[10px] font-mono font-medium text-white/40">
+                {t(lang, 'mcap')} {suiUsd > 0 ? fmtUsd(marketCapSui, suiUsd) : `${fmt(marketCapSui)} SUI`}
+                {volumeSui != null && volumeSui > 0 && <> {'·'} {t(lang, 'volume')} {suiUsd > 0 ? fmtUsd(volumeSui, suiUsd) : `${fmt(volumeSui)} SUI`}</>}
+              </div>
+            </div>
             {desc && <p className="mt-3 text-xs font-mono text-white/40 leading-relaxed">{desc}</p>}
-            <div className="mt-4">
-              <div className="flex justify-between text-[10px] font-mono text-white/35 mb-1.5">
-                <span>{t(lang, 'bondingCurveProgress')}</span>
-                <span className="text-lime-400">{progress.toFixed(1)}%</span>
+            {/* Bonding curve card (2b: lime border + tint, gradient bar) */}
+            <div className="mt-4 border border-lime-400/25 rounded-2xl p-4 bg-gradient-to-b from-lime-400/[0.07] to-white/[0.015]">
+              <div className="flex justify-between items-center mb-2.5">
+                <span className="text-[9.5px] font-mono font-bold tracking-[0.14em] text-lime-400">
+                  {t(lang, 'bondingCurveProgress').toUpperCase()}
+                  {!graduated && <span className="text-lime-400/70"> {'·'} {dex === 'deepbook' ? 'DEEPBOOK' : dex === 'turbos' ? 'TURBOS' : 'CETUS'}</span>}
+                </span>
+                <span className="text-[15px] leading-none font-mono font-extrabold text-lime-400">{progress.toFixed(1)}%</span>
               </div>
-              <div className="h-2 bg-white/5 rounded-full overflow-hidden">
-                <div className="h-full bg-gradient-to-r from-lime-600 to-lime-400 rounded-full transition-all duration-500" style={{ width: `${progress}%` }} />
+              <div className="h-2 bg-white/[0.07] rounded-[5px] overflow-hidden">
+                <div className="h-full bg-gradient-to-r from-lime-800 to-lime-400 rounded-[5px] transition-all duration-500" style={{ width: `${progress}%` }} />
               </div>
-              <div className="flex items-center justify-between text-[10px] font-mono text-white/25 mt-1">
+              <div className="flex items-center justify-between text-[10px] font-mono text-white/40 mt-2.5">
                 <span>{fmt(mistToSui(reserveMist))} {t(lang, 'suiRaised')}</span>
                 <span>{fmt(drainSui)} {t(lang, 'suiTarget')}</span>
               </div>
+              {!graduated && (
+                <div className="mt-2.5 pt-2.5 border-t border-lime-400/15 flex items-center gap-1.5">
+                  <span className="text-[8px] font-mono text-white/25 tracking-widest">GRADUATES TO</span>
+                  <span className={`text-[9px] font-mono px-2 py-0.5 rounded-full border ${dex === 'deepbook' ? 'border-blue-400/30 text-blue-400/70 bg-blue-400/5' : dex === 'turbos' ? 'border-purple-400/30 text-purple-400/70 bg-purple-400/5' : 'border-lime-400/30 text-lime-400/70 bg-lime-400/5'}`}>
+                    {dex === 'deepbook' ? '⚡ DeepBook' : dex === 'turbos' ? '🔄 Turbos' : '🌊 Cetus'}
+                  </span>
+                </div>
+              )}
             </div>
-            {!graduated && (
-              <div className="mt-3 flex items-center gap-1.5">
-                <span className="text-[8px] font-mono text-white/20 tracking-widest">GRADUATES TO</span>
-                <span className={`text-[9px] font-mono px-2 py-0.5 rounded-full border ${dex === 'deepbook' ? 'border-blue-400/30 text-blue-400/70 bg-blue-400/5' : dex === 'turbos' ? 'border-purple-400/30 text-purple-400/70 bg-purple-400/5' : 'border-lime-400/30 text-lime-400/70 bg-lime-400/5'}`}>
-                  {dex === 'deepbook' ? '⚡ DeepBook' : dex === 'turbos' ? '🔄 Turbos' : '🌊 Cetus'}
-                </span>
-              </div>
-            )}
           </div>
 
           <PriceChart ohlc={feedOhlc} connected={feedConnected} suiUsd={suiUsd} loading={feedLoading} />
           <AIAnalysis curveId={curveId} tokenType={tokenType} name={name} symbol={symbol} progress={progress} reserveSui={mistToSui(reserveMist)} creatorFeesSui={Number(creatorFeesMist) / 1e9} graduated={graduated} tokensSoldWhole={Number(tokensSold) / 10 ** TOKEN_DECIMALS} creator={creatorAddr} />
-
-          <div className="lg:hidden"><TradePanelContent {...tradePanelProps} /></div>
 
           <TradesHoldersBlock curveId={curveId} tokenType={tokenType} suiUsd={suiUsd} lang={lang} creator={creatorAddr} trades={feedTrades} connected={feedConnected} loading={feedLoading} symbol={symbol} />
           <CommentsBlock curveId={curveId} packageId={pkgId} lang={lang} initialSharedVersion={initialSharedVersionProp ?? curveState?.initial_shared_version ?? null} tokenType={tokenType} />
@@ -2557,7 +2573,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
         </div>
 
         {/* Right column */}
-        <div className="hidden lg:block space-y-4">
+        <div className="hidden lg:block space-y-3.5">
           <TradePanelContent {...tradePanelProps} />
           <TPSLPanel
             account={account}
@@ -2581,7 +2597,30 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
         </div>
       </div>
 
-      <div className="sm:hidden fixed bottom-6 right-4 z-50">
+      {/* Mobile pinned trade thumb bar (5b): fixed bottom-0, full-width. BUY flex 1.4 lime +
+          shadow / SELL flex 1 red-outline, 52px. The App.jsx global MobileTabBar is suppressed
+          on /token so this is the only fixed bottom bar here. Sits below the sheet (z-[60]). */}
+      <div className="lg:hidden fixed inset-x-0 bottom-0 z-40 bg-sp-panel/95 backdrop-blur-md border-t border-white/[0.08] px-4 pt-3 pb-[max(7px,env(safe-area-inset-bottom))] flex gap-2.5">
+        <button onClick={() => { setSide('buy'); setMTradeSheet(true); }} style={{ flex: '1.4' }} className="h-[52px] rounded-[14px] bg-lime-400 text-black font-mono font-extrabold text-sm shadow-[0_8px_24px_rgba(132,204,22,.25)]">{t(lang, 'buy').toUpperCase()}</button>
+        <button onClick={() => { setSide('sell'); setMTradeSheet(true); }} style={{ flex: '1' }} className="h-[52px] rounded-[14px] border border-red-400/35 bg-transparent text-red-400 font-mono font-extrabold text-sm">{t(lang, 'sell').toUpperCase()}</button>
+      </div>
+
+      {/* Mobile trade bottom-sheet (5b): reuses the exact desktop TradePanelContent + handlers */}
+      {mTradeSheet && (
+        <div className="lg:hidden fixed inset-0 z-[60] flex flex-col justify-end">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setMTradeSheet(false)} />
+          <div className="relative bg-sp-void border-t border-white/[0.08] rounded-t-2xl max-h-[90vh] overflow-y-auto px-4 pt-3 pb-[max(16px,env(safe-area-inset-bottom))]">
+            <div className="w-[42px] h-1 rounded-full bg-white/25 mx-auto mb-3" />
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[10px] font-mono font-bold tracking-[0.16em] text-lime-400/70">{name}{symbol ? ` · $${symbol}` : ''}</span>
+              <button onClick={() => setMTradeSheet(false)} className="text-[10px] font-mono text-white/40 hover:text-lime-400 transition-colors">CLOSE</button>
+            </div>
+            <TradePanelContent {...tradePanelProps} />
+          </div>
+        </div>
+      )}
+
+      <div className="sm:hidden fixed bottom-[86px] right-4 z-50">
         <button onClick={scrollToTop} className="bg-white/10 hover:bg-white/20 border border-white/20 rounded-full p-3 text-white/60 hover:text-white transition-colors backdrop-blur-sm">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="18 15 12 9 6 15"/></svg>
         </button>

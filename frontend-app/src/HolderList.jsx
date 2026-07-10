@@ -138,15 +138,15 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = n
   const TOTAL_SUPPLY = 1_000_000_000 * TOKEN_SCALE;
 
   return (
-    <div className="bg-white/[0.03] border border-white/10 rounded-xl overflow-hidden">
-      <div className="flex border-b border-white/10">
-        <button onClick={() => setTab('holders')} className={`flex-1 py-2.5 text-[10px] font-mono tracking-wider transition-colors flex items-center justify-center gap-1.5 ${tab === 'holders' ? 'text-lime-400 bg-lime-400/5' : 'text-white/30 hover:text-white/60'}`}>
+    <div className="bg-white/[0.015] border border-white/[0.08] rounded-xl overflow-hidden">
+      <div className="flex border-b border-white/[0.07]">
+        <button onClick={() => setTab('holders')} className={`flex-1 py-3 text-[10px] font-mono font-bold tracking-[0.1em] transition-colors flex items-center justify-center gap-1.5 ${tab === 'holders' ? 'text-lime-400 bg-lime-400/[0.06] border-b-2 border-lime-400' : 'text-white/40 hover:text-white/70'}`}>
           <Users size={10} /> HOLDERS
         </button>
-        <button onClick={() => setTab('traders')} className={`flex-1 py-2.5 text-[10px] font-mono tracking-wider transition-colors flex items-center justify-center gap-1.5 ${tab === 'traders' ? 'text-lime-400 bg-lime-400/5' : 'text-white/30 hover:text-white/60'}`}>
+        <button onClick={() => setTab('traders')} className={`flex-1 py-3 text-[10px] font-mono font-bold tracking-[0.1em] transition-colors flex items-center justify-center gap-1.5 ${tab === 'traders' ? 'text-lime-400 bg-lime-400/[0.06] border-b-2 border-lime-400' : 'text-white/40 hover:text-white/70'}`}>
           <BarChart2 size={10} /> TRADERS
         </button>
-        <button onClick={() => setTab('vesting')} className={`flex-1 py-2.5 text-[10px] font-mono tracking-wider transition-colors flex items-center justify-center gap-1.5 ${tab === 'vesting' ? 'text-lime-400 bg-lime-400/5' : 'text-white/30 hover:text-white/60'}`}>
+        <button onClick={() => setTab('vesting')} className={`flex-1 py-3 text-[10px] font-mono font-bold tracking-[0.1em] transition-colors flex items-center justify-center gap-1.5 ${tab === 'vesting' ? 'text-lime-400 bg-lime-400/[0.06] border-b-2 border-lime-400' : 'text-white/40 hover:text-white/70'}`}>
           <Lock size={10} /> VESTING
         </button>
       </div>

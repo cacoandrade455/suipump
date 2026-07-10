@@ -633,6 +633,11 @@ function MobileTabBar({ onLaunch }) {
   const { pathname } = useLocation();
   const account = useCurrentAccount();
   const [connectOpen, setConnectOpen] = useState(false);
+  // 5b: the token detail route owns the fixed bottom thumb zone (pinned BUY/SELL
+  // bar in TokenPage). Suppress the global tab bar there so only one fixed bottom
+  // bar exists on /token/:curveId. All other routes are unaffected.
+  const onTokenPage = pathname.startsWith('/token/');
+  if (onTokenPage) return null;
   const item = (label, glyph, to, active) => (
     <button onClick={() => navigate(to)} className="flex flex-col items-center gap-1 min-w-[56px]">
       <span className={`text-[15px] font-mono font-extrabold leading-[21px] ${active ? 'text-lime-400' : 'text-white/40'}`}>{glyph}</span>
