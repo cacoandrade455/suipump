@@ -256,7 +256,7 @@ function TokenCard({ token, stats, curveState: curveStateProp, isCrown, suiUsd =
   return (
     <div
       onClick={() => navigate(`/token/${token.curveId}`)}
-      className={`grid grid-cols-[26px_minmax(0,1.4fr)_92px_150px_74px] sm:grid-cols-[26px_minmax(0,1.4fr)_92px_92px_150px_74px] gap-3 items-center px-4 py-3 border-b border-white/5 cursor-pointer transition-colors group ${
+      className={`grid grid-cols-[22px_minmax(0,1fr)_84px] sm:grid-cols-[26px_minmax(0,1.4fr)_92px_92px_150px_74px] gap-3 items-center px-4 py-3 border-b border-white/5 cursor-pointer transition-colors group ${
         isCrown ? 'bg-lime-400/[0.04] hover:bg-lime-400/[0.07]' : 'hover:bg-white/[0.03]'
       }`}
     >
@@ -293,6 +293,14 @@ function TokenCard({ token, stats, curveState: curveStateProp, isCrown, suiUsd =
             {stats?.commentCount > 0 && <span> · <MessageCircle size={7} className="inline -mt-px" /> {stats.commentCount}</span>}
             {devBuySui > 0 && <span className="text-white/20"> · dev {fmt(devBuySui, 2)}</span>}
           </div>
+          {/* mobile fold: volume + bonded, desktop shows these as columns */}
+          <div className="sm:hidden mt-1.5 flex items-center gap-2">
+            <span className="text-[9px] font-mono text-white/40 shrink-0">{(stats?.volume ?? 0) > 0 ? `${fmt(stats.volume, 1)} SUI` : ' - '}</span>
+            <div className="flex-1 h-1 rounded-full bg-white/[0.06] overflow-hidden">
+              <div className="h-full rounded-full" style={{ width: `${Math.max(progress, 1)}%`, background: graduated ? '#34d399' : 'linear-gradient(90deg,#3f6212,#84cc16)' }} />
+            </div>
+            <span className="text-[9px] font-mono text-white/30 shrink-0">{progress.toFixed(0)}%</span>
+          </div>
         </div>
       </div>
 
@@ -306,12 +314,12 @@ function TokenCard({ token, stats, curveState: curveStateProp, isCrown, suiUsd =
       </div>
 
       {/* volume */}
-      <div className="text-right">
+      <div className="text-right hidden sm:block">
         <div className="text-[11px] font-mono font-semibold text-white/60">{(stats?.volume ?? 0) > 0 ? `${fmt(stats.volume, 1)}` : ' - '}<span className="text-white/25 text-[9px]"> SUI</span></div>
       </div>
 
       {/* bonded bar + grad caption */}
-      <div className="min-w-0">
+      <div className="min-w-0 hidden sm:block">
         <div className="flex items-center justify-between mb-1">
           <span className="text-[9px] font-mono text-white/40">{progress.toFixed(0)}%</span>
           {suiUntilGrad > 0 && !graduated && (
@@ -346,15 +354,15 @@ function TokenCard({ token, stats, curveState: curveStateProp, isCrown, suiUsd =
 
 function SkeletonCard() {
   return (
-    <div className="grid grid-cols-[26px_minmax(0,1.4fr)_92px_92px_150px_74px] gap-3 items-center px-4 py-3 border-b border-white/5 animate-pulse">
+    <div className="grid grid-cols-[22px_minmax(0,1fr)_84px] sm:grid-cols-[26px_minmax(0,1.4fr)_92px_92px_150px_74px] gap-3 items-center px-4 py-3 border-b border-white/5 animate-pulse">
       <div className="w-3 h-3 rounded bg-white/5" />
       <div className="flex items-center gap-2.5">
         <div className="w-[34px] h-[34px] rounded-[10px] bg-white/5" />
         <div className="flex-1"><div className="h-2.5 bg-white/5 rounded w-24 mb-1.5" /><div className="h-2 bg-white/5 rounded w-16" /></div>
       </div>
-      <div className="h-2.5 bg-white/5 rounded w-12 justify-self-end" />
-      <div className="h-2.5 bg-white/5 rounded w-12 justify-self-end" />
-      <div className="h-1.5 bg-white/5 rounded-full" />
+      <div className="h-2.5 bg-white/5 rounded w-12 justify-self-end hidden sm:block" />
+      <div className="h-2.5 bg-white/5 rounded w-12 justify-self-end hidden sm:block" />
+      <div className="h-1.5 bg-white/5 rounded-full hidden sm:block" />
       <div className="h-2.5 bg-white/5 rounded w-10 justify-self-end" />
     </div>
   );
