@@ -126,3 +126,26 @@ Ported the design 3a STYLE onto the CURRENT page's real content (D-4.2: keep rep
 **Open flags:**
 1. Phase content is hardcoded (as before) — only the header/subtitle/target/back strings use i18n. Item text was English-only pre-reskin; preserved. Full i18n of phase items is a separate enhancement.
 2. Phase 2 lists "Nexus/Talus 24/7 agent execution" as a pending item — the Nexus path is scoped out of v1 (Bucket B-1), but this is existing repo CONTENT (a roadmap item, not a live chip), left as-is per D-4.2. Flag for Carlos if the roadmap wording should drop "Nexus".
+
+---
+
+## 3b whitepaper + 6e — SHIPPED
+
+Ported the design 3b STYLE (sticky TOC + Terminal section cards) onto the current page's rich 10-section content, FROZEN verbatim (D-4.2). Content was already fee-correct (five-way split in section 04). Delegated the restyle to a redesign-porter, then orchestrator-verified content integrity.
+
+**Files changed (named `git add` only):**
+- `frontend-app/src/WhitepaperPage.jsx` — Terminal restyle + 250px sticky TOC sidebar (desktop; `hidden lg:block`, `lg:grid-cols-[250px_1fr]`); mobile (6e) = full-width stacked sections, no sidebar. Restyled cover (lime radial hero), Section cards (kept collapse behavior + added `id` anchors + `scroll-mt-4`), bordered five-way-highlighted Tables (`overflow-x-auto` so wide tables scroll on mobile), P/H/Bullet Terminal type. TOC rows scroll to sections via `getElementById(...).scrollIntoView({behavior:'smooth'})` off a single `SECTIONS` source-of-truth array.
+
+**Gates (independently re-run by orchestrator):**
+- `npm run build` → ✓ built in 23.49s, 2239 modules, no errors.
+- `npx esbuild src/WhitepaperPage.jsx` OK.
+- ASCII: only new non-ASCII is the middot `·` in the two new rendered sidebar strings (design-specified, rendered-UI glyph). Zero new non-ASCII in code/comments; content glyphs untouched.
+- **Content integrity (orchestrator-verified):** the porter re-typed the file via Write, so I diffed HEAD vs working after stripping classNames/JSX. Result: 10 sections intact; all frozen fingerprints present with counts matching HEAD (0.40% x2, 0.25% x4, 0.10% in curve, 0.50% x2, "500 pts flat", "2,000 bonus pts", "20% of referee", "800M (80%)", "200M (20%)", "55 Move unit tests", "Vs = 3,500", "9,000 SUI", "1 pt per 0.01 SUI spent"). Only net additions: the 10 TOC labels + scroll options + sidebar header/footer. No sentence dropped or altered.
+
+**Verified:** build + syntax + ASCII + content-byte integrity (fingerprint + token diff).
+**Not verified (no browser this session):** runtime smooth-scroll behavior (standard DOM `scrollIntoView` on statically-rendered ids; low risk) and pixel match.
+
+**Open flags:**
+1. English-only preserved — page never had `t(lang,key)` (ignores the `lang` prop). i18n of the whitepaper is a separate enhancement, out of a style-only pass (noted per D-4.2).
+2. CONTENT FACTS left verbatim per the freeze but flagged for Carlos: (a) section 06 states `Vs = 3,500 SUI` / graduation threshold `9,000 SUI`, whereas CLAUDE.md lists `VS=4369` / `BASE_GRAD=12,305` — the whitepaper copy is STALE vs the contract. (b) sections 01/03/07 describe the S1 airdrop as "50% of accumulated protocol fees", which predates the airdrop-bucket model (C-5: S1 pool = the 0.25% airdrop bucket) and the C-2 policy (points + 10% NFT + 10% testnet). Both are CONTENT-correctness edits requiring Carlos sign-off, out of scope for the reskin.
+
