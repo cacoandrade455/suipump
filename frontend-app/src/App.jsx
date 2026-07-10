@@ -972,8 +972,8 @@ function Header({ onLaunch, lang, setLang, onToggleFeed, showFeed, onStrategies 
           <Link to="/" className="flex items-center gap-2 shrink-0 group">
             <FlameLockup size={17} markSize={24} />
           </Link>
-          <span className="hidden lg:flex items-center gap-1.5 text-[11px] font-mono font-semibold text-white/40">
-            <span className="w-1.5 h-1.5 rounded-full bg-sp-glow sp-pulse" />TESTNET LIVE
+          <span className="hidden lg:inline-flex items-center px-2 py-1 rounded-md border border-lime-400/25 bg-lime-400/[0.06] text-lime-400/80 text-[9px] font-mono font-bold tracking-[.18em] whitespace-nowrap">
+            TESTNET
           </span>
 
           <nav className="hidden md:flex items-center gap-1">
@@ -1350,7 +1350,14 @@ function HomePage({ onLaunch, lang = 'en' }) {
               <div className="text-[10px] font-mono text-white/35 tracking-wide mt-1">{t(lang, 'heroSub')}</div>
             </div>
           </div>
-          {!account && (
+          {account ? (
+            <div className="shrink-0 text-right hidden sm:block">
+              <div className="text-[15px] font-mono font-extrabold tracking-[.14em] leading-relaxed">
+                <span className="text-white/90">LAUNCH. BUILD. TRADE. PUMP.</span> <span className="text-lime-400">EARN.</span>
+              </div>
+              <div className="text-[9px] font-mono text-white/25 tracking-[.22em] mt-1">EVERY TOKEN VIA PUBLIC CURVE · ZERO PRE-MINE</div>
+            </div>
+          ) : (
             <div className="shrink-0 flex flex-col items-center gap-2">
               <ConnectWalletHero lang={lang} />
               <MobileWalletButtons />
