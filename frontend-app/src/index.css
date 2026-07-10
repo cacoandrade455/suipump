@@ -29,6 +29,8 @@ body { background: #050505; margin: 0; }
 /* ── Brand keyframes (Terminal redesign 2a) ──────────────────────────────────
    sp-blink: wordmark cursor + agent goal caret (blink steps(1) 1.1s).
    sp-pulse: live/status dots (scale+opacity 1.5s).
+   sp-tickerX: mobile trades marquee (5a) - the track holds the list twice and
+   translates -50% for a seamless loop; .sp-ticker-track applies it.
    Also exposed as Tailwind animations (animate-sp-blink / animate-sp-pulse);
    the raw classes below exist for non-Tailwind contexts (dapp-kit slots).
 ──────────────────────────────────────────────────────────────────────────── */
@@ -40,9 +42,14 @@ body { background: #050505; margin: 0; }
   0%, 100% { transform: scale(1);    opacity: 1;   }
   50%      { transform: scale(1.35); opacity: .55; }
 }
+@keyframes sp-tickerX {
+  0%   { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
 .sp-blink { animation: sp-blink 1.1s steps(1) infinite; }
 .sp-pulse { animation: sp-pulse 1.5s ease-in-out infinite; }
+.sp-ticker-track { animation: sp-tickerX 36s linear infinite; }
 
 @media (prefers-reduced-motion: reduce) {
-  .sp-blink, .sp-pulse { animation: none; }
+  .sp-blink, .sp-pulse, .sp-ticker-track { animation: none; }
 }

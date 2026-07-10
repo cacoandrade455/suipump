@@ -369,7 +369,7 @@ function SkeletonCard() {
 }
 
 // ── Community Crown featured banner ───────────────────────────────────────────
-function CrownBanner({ token, stats, curveState: curveStateProp, suiUsd }) {
+function CrownBanner({ token, stats, curveState: curveStateProp, suiUsd, compact = false }) {
   const navigate = useNavigate();
   const iconUrl = token?.iconUrl || null;
 
@@ -379,6 +379,36 @@ function CrownBanner({ token, stats, curveState: curveStateProp, suiUsd }) {
   const graduated      = curveStateProp?.graduated ?? false;
   const pricePerWhole2 = stats?.lastPrice ?? 0;
   const mcapSui        = pricePerWhole2 * TOTAL_SUPPLY_WHOLE;
+
+  if (compact) {
+    return (
+      <button
+        onClick={() => navigate(`/token/${token.curveId}`)}
+        className="w-full flex items-center gap-3 rounded-card border border-lime-400/[0.28] px-3.5 py-3 text-left"
+        style={{ background: 'linear-gradient(160deg, rgba(132,204,22,.09), rgba(255,255,255,.02))' }}>
+        <div className="w-10 h-10 rounded-[11px] overflow-hidden border border-lime-400/40 flex items-center justify-center bg-lime-950/30 shrink-0">
+          {iconUrl
+            ? <img src={iconUrl} alt={token.symbol} className="w-full h-full object-cover"
+                onError={e => { e.target.style.display='none'; if (e.target.nextSibling) e.target.nextSibling.style.display='flex'; }} />
+            : null}
+          <div className="w-full h-full items-center justify-center text-base" style={{ display: iconUrl ? 'none' : 'flex' }}>🔥</div>
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            <Crown size={10} className="text-lime-400 shrink-0" />
+            <span className="text-[8.5px] font-mono font-bold text-lime-400 tracking-[.16em]">COMMUNITY CROWN</span>
+          </div>
+          <div className="flex items-center gap-2 mt-0.5 min-w-0">
+            <span className="text-[12px] font-mono font-bold text-white truncate">{token.name}</span>
+            <span className="text-[9.5px] font-mono text-white/35 shrink-0">${token.symbol}</span>
+            {mcapSui > 0 && suiUsd > 0 && <span className="text-[9.5px] font-mono text-lime-400/70 shrink-0">${((mcapSui * suiUsd) / 1000).toFixed(1)}k</span>}
+            <span className="text-[9.5px] font-mono text-white/30 shrink-0">{progress.toFixed(0)}%</span>
+          </div>
+        </div>
+        <span className="shrink-0 px-3 py-1.5 rounded-lg bg-lime-400 text-black text-[9px] font-mono font-extrabold tracking-widest">TRADE</span>
+      </button>
+    );
+  }
 
   return (
     <div className="rounded-card border border-lime-400/[0.28] p-4 relative overflow-hidden"
@@ -439,7 +469,7 @@ function CreateCtaCard({ onLaunch, lang }) {
 }
 
 // ── Graduating soon rail card (top-3 non-graduated by bonded %) ──────────────
-function GraduatingSoonCard({ tokens, curveStates, onNavigate }) {
+function GraduatingSoonCard({ tokens, curveStates, onNavigate, horizontal = false }) {
   const top = React.useMemo(() => {
     return tokens
       .filter(tk => curveStates[tk.curveId] && !curveStates[tk.curveId].graduated)
@@ -448,6 +478,27 @@ function GraduatingSoonCard({ tokens, curveStates, onNavigate }) {
       .slice(0, 3);
   }, [tokens, curveStates]);
   if (top.length === 0) return null;
+  if (horizontal) {
+    return (
+      <div>
+        <div className="text-[9px] font-mono font-bold text-white/40 tracking-[.16em] mb-2">GRADUATING SOON</div>
+        <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-1">
+          {top.map(({ tk, p }) => (
+            <button key={tk.curveId} onClick={() => onNavigate(tk.curveId)}
+              className="shrink-0 min-w-[130px] rounded-xl border border-white/[0.08] bg-white/[0.02] px-3 py-2 text-left">
+              <div className="flex items-center justify-between gap-2 mb-1.5">
+                <span className="text-[10.5px] font-mono font-bold text-white/80 truncate">${tk.symbol}</span>
+                <span className="text-[9px] font-mono text-white/35 shrink-0">{p.toFixed(0)}%</span>
+              </div>
+              <div className="h-1 rounded-full bg-white/[0.06] overflow-hidden">
+                <div className="h-full rounded-full" style={{ width: `${Math.max(p, 1)}%`, background: p > 80 ? 'linear-gradient(90deg,#4d7c0f,#a3e635)' : 'linear-gradient(90deg,#3f6212,#84cc16)' }} />
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="rounded-card border border-white/[0.08] bg-white/[0.015] p-4">
       <div className="text-[10px] font-mono font-bold text-white/40 tracking-[.16em] mb-3">GRADUATING SOON</div>
@@ -469,8 +520,8 @@ function GraduatingSoonCard({ tokens, curveStates, onNavigate }) {
 }
 
 // ── Live trades rail (board-local SSE; header LiveFeedSidebar toggle unaffected) ──
-function LiveTradesRail({ tokens }) {
-  const navigate = useNavigate();
+// ── Shared live-trades SSE hook (rail on desktop, ticker on mobile - one EventSource) ──
+function useLiveTrades(tokens) {
   const [trades, setTrades] = React.useState([]);
   const esRef = React.useRef(null);
   const timerRef = React.useRef(null);
@@ -500,10 +551,10 @@ function LiveTradesRail({ tokens }) {
           const row = {
             id: (ev.txDigest ?? d.tx_digest ?? '') + '_' + (ev.eventSeq ?? Math.random()),
             side: isBuy ? 'BUY' : 'SELL',
-            sym: d.symbol || symbolFor(curveId) || (curveId.slice(0, 6) + '…'),
+            sym: d.symbol || symbolFor(curveId) || (curveId.slice(0, 6) + '\u2026'),
             curveId,
             sui: suiMist / 1e9,
-            addr: trader ? trader.slice(0, 6) + '…' + trader.slice(-4) : '-',
+            addr: trader ? trader.slice(0, 6) + '\u2026' + trader.slice(-4) : '-',
             ts: Date.now(),
           };
           if (!cancelled) setTrades(prev => [row, ...prev].slice(0, 30));
@@ -514,6 +565,69 @@ function LiveTradesRail({ tokens }) {
     connect();
     return () => { cancelled = true; esRef.current?.close(); clearTimeout(timerRef.current); };
   }, [symbolFor]);
+
+  return trades;
+}
+
+// ── Mobile trades ticker (5a) - marquee strip under the header ──────────────
+function MobileTradesTicker({ tokens }) {
+  const navigate = useNavigate();
+  const trades = useLiveTrades(tokens);
+  if (trades.length === 0) return null;
+  const loop = [...trades, ...trades];
+  return (
+    <div className="lg:hidden h-[34px] border-y border-white/[0.06] overflow-hidden relative">
+      <div className="absolute inset-y-0 flex items-center gap-5 w-max px-3 sp-ticker-track">
+        {loop.map((tr, i) => (
+          <button key={tr.id + '_' + i} onClick={() => navigate(`/token/${tr.curveId}`)}
+            className="flex items-center gap-1.5 shrink-0">
+            <span className={`text-[9px] font-mono font-bold ${tr.side === 'BUY' ? 'text-lime-400' : 'text-red-400'}`}>{tr.side}</span>
+            <span className="text-[10px] font-mono font-semibold text-white/75">${tr.sym}</span>
+            <span className={`text-[9.5px] font-mono ${tr.side === 'BUY' ? 'text-lime-400/80' : 'text-red-400/80'}`}>{tr.side === 'BUY' ? '+' : '-'}{tr.sui.toFixed(tr.sui < 10 ? 2 : 1)}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Mobile bottom tab bar (5a app shell): BOARD / AGENT / FAB / FOLIO / REWARDS ──
+function MobileTabBar({ onLaunch }) {
+  const navigate = useNavigate();
+  const { pathname } = useLocation();
+  const account = useCurrentAccount();
+  const [connectOpen, setConnectOpen] = useState(false);
+  const item = (label, glyph, to, active) => (
+    <button onClick={() => navigate(to)} className="flex flex-col items-center gap-1 min-w-[56px]">
+      <span className={`text-[15px] font-mono font-extrabold leading-[21px] ${active ? 'text-lime-400' : 'text-white/40'}`}>{glyph}</span>
+      <span className={`text-[8.5px] font-mono font-semibold ${active ? 'text-lime-400' : 'text-white/40'}`}>{label}</span>
+    </button>
+  );
+  return (
+    <>
+      <div className="lg:hidden fixed bottom-0 inset-x-0 z-40 bg-sp-void/95 backdrop-blur-md border-t border-white/[0.08] px-4 pt-2 pb-[max(10px,env(safe-area-inset-bottom))]">
+        <div className="flex items-end justify-between max-w-md mx-auto">
+          {item('BOARD', '\u25a4', '/', pathname === '/')}
+          {item('AGENT', '>_', '/agent', pathname.startsWith('/agent'))}
+          <button
+            onClick={() => { if (account) { onLaunch(); } else { setConnectOpen(true); } }}
+            className="flex flex-col items-center -translate-y-[10px]" aria-label="Launch a token">
+            <span className="w-[46px] h-[46px] rounded-full bg-lime-400 flex items-center justify-center" style={{ boxShadow: '0 8px 22px rgba(132,204,22,.35)' }}>
+              <Plus size={17} strokeWidth={2.5} className="text-sp-void" />
+            </span>
+          </button>
+          {item('FOLIO', '\u25a5', '/portfolio', pathname.startsWith('/portfolio'))}
+          {item('REWARDS', '\u25c6', '/airdrop', pathname.startsWith('/airdrop') || pathname.startsWith('/leaderboard'))}
+        </div>
+      </div>
+      <ConnectModal open={connectOpen} onOpenChange={setConnectOpen} />
+    </>
+  );
+}
+
+function LiveTradesRail({ tokens }) {
+  const navigate = useNavigate();
+  const trades = useLiveTrades(tokens);
 
   return (
     <div className="rounded-card border border-white/[0.08] bg-white/[0.015] overflow-hidden relative h-[560px]">
@@ -1066,20 +1180,10 @@ function Header({ onLaunch, lang, setLang, onToggleFeed, showFeed, onStrategies 
           <NotificationBell walletAddress={account?.address} />
         </div>
 
-        {/* Mobile right */}
+        {/* Mobile right - 5a: points pill + wallet + bell; primary nav lives in the bottom tab bar */}
         <div className="flex sm:hidden items-center gap-2">
           {account && (
-            <button onClick={onLaunch} className="flex items-center gap-1 px-3 py-1.5 bg-lime-400 text-black text-[10px] font-mono font-bold rounded-xl hover:bg-lime-300 transition-colors">
-              <Plus size={11} /> {t(lang, 'launch')}
-            </button>
-          )}
-          {account && (
             <PointsCounter lang={lang} />
-          )}
-          {account && (
-            <Link to="/agent" className="p-1.5 rounded-lg border border-violet-400/40 text-violet-400 hover:bg-violet-400/10 transition-colors" title="Autonomous Agent">
-              <Bot size={14} />
-            </Link>
           )}
           <WalletButton size="sm" lang={lang} />
           <NotificationBell walletAddress={account?.address} />
@@ -1390,6 +1494,20 @@ function HomePage({ onLaunch, lang = 'en' }) {
 
       <TrendingBar lang={lang} />
 
+      {/* Mobile: crown + graduating surface ABOVE the table (rails are desktop-only) */}
+      <div className="lg:hidden space-y-3 mb-4">
+        {!search.trim() && crownCurveId && (
+          <CrownBanner
+            compact
+            token={tokens.find(tok => tok.curveId === crownCurveId)}
+            stats={tokenStats[crownCurveId]}
+            curveState={curveStates[crownCurveId]}
+            suiUsd={suiUsd}
+          />
+        )}
+        <GraduatingSoonCard horizontal tokens={tokens} curveStates={curveStates} onNavigate={(cid) => navigate(`/token/${cid}`)} />
+      </div>
+
       {/* 3-column board: live trades rail | table | crown/create/graduating rail */}
       <div className="grid grid-cols-1 lg:grid-cols-[260px_minmax(0,1fr)_280px] gap-4 items-start">
 
@@ -1480,8 +1598,8 @@ function HomePage({ onLaunch, lang = 'en' }) {
           )}
         </div>
 
-        {/* RIGHT rail - crown, create CTA, graduating soon */}
-        <div className="flex flex-col gap-4 lg:sticky lg:top-[120px]">
+        {/* RIGHT rail - crown, create CTA, graduating soon (desktop only; mobile gets crown/graduating above the table) */}
+        <div className="hidden lg:flex flex-col gap-4 lg:sticky lg:top-[120px]">
           {!search.trim() && crownCurveId && (
             <CrownBanner
               token={tokens.find(tok => tok.curveId === crownCurveId)}
@@ -1493,6 +1611,11 @@ function HomePage({ onLaunch, lang = 'en' }) {
           <CreateCtaCard onLaunch={onLaunch} lang={lang} />
           <GraduatingSoonCard tokens={tokens} curveStates={curveStates} onNavigate={(cid) => navigate(`/token/${cid}`)} />
         </div>
+      </div>
+
+      {/* Mobile: create CTA closes the page */}
+      <div className="lg:hidden mt-4">
+        <CreateCtaCard onLaunch={onLaunch} lang={lang} />
       </div>
     </div>
   );
@@ -1636,10 +1759,11 @@ export default function App() {
       <ScrollToTop />
       <Header onLaunch={() => setShowLaunch(true)} lang={lang} setLang={handleLang} onToggleFeed={() => setShowFeed(o => !o)} showFeed={showFeed} onStrategies={() => setShowStrategies(true)} />
       <LiveTicker stats={appStats} />
+      <MobileTradesTicker tokens={allTokens} />
       <NetworkBanner />
       <StrategiesLockedBanner tradeKey={tradeKey} onOpenStrategies={() => setShowStrategies(true)} />
 
-      <main className="max-w-[1440px] mx-auto px-4 py-6">
+      <main className="max-w-[1440px] mx-auto px-4 py-6 pb-24 lg:pb-6">
         <Routes>
           <Route path="/" element={<HomePage onLaunch={() => setShowLaunch(true)} lang={lang} />} />
           <Route path="/token/:curveId" element={<TokenPageWrapper lang={lang} tradeKey={tradeKey} />} />
@@ -1693,6 +1817,7 @@ export default function App() {
       {showFeed && (
         <LiveFeedSidebar tokens={allTokens} onClose={() => setShowFeed(false)} />
       )}
+      <MobileTabBar onLaunch={() => setShowLaunch(true)} />
     </div>
   );
 }
