@@ -36,7 +36,6 @@
 //     - trades concentrated in 1–2 wallets → flag (possible wash volume)
 
 import React, { useState } from 'react';
-import { Sparkles, AlertTriangle, ShieldCheck, Info } from 'lucide-react';
 
 const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
 const TOKEN_SCALE = 1e6;
@@ -427,18 +426,34 @@ ${posText}`;
   const strongCount = read?.flags.filter(f => f.level === 'strong').length ?? 0;
   const flagCount   = read?.flags.length ?? 0;
 
+  // Verdict pill severity (drives the design's colored caution pill from the
+  // deterministic flags already computed above - never fabricated).
+  const verdictLevel = strongCount > 0 ? 'strong' : flagCount > 0 ? 'moderate' : 'clear';
+  const verdictPill =
+    verdictLevel === 'strong'   ? 'border-red-400/35 bg-red-400/[0.08]'
+    : verdictLevel === 'moderate' ? 'border-amber-500/35 bg-amber-500/[0.08]'
+    : 'border-lime-400/30 bg-lime-400/[0.08]';
+  const verdictText =
+    verdictLevel === 'strong'   ? 'text-red-400'
+    : verdictLevel === 'moderate' ? 'text-[#f59e0b]'
+    : 'text-lime-400';
+  const verdictDot =
+    verdictLevel === 'strong'   ? '#f87171'
+    : verdictLevel === 'moderate' ? '#f59e0b'
+    : '#a3e635';
+
   return (
-    <div className="border border-white/10 rounded-lg p-4 bg-black/40">
+    <div className="border border-white/[0.08] rounded-2xl p-4 bg-white/[0.015]">
       {/* Header */}
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
-          <Sparkles size={11} className="text-lime-400" />
-          <span className="text-[10px] font-mono text-lime-400/70 tracking-widest">AI ANALYSIS</span>
+      <div className="flex items-center justify-between mb-3.5">
+        <div className="flex items-center gap-1.5">
+          <span className="text-[10px] font-mono font-bold tracking-[0.16em] text-white/55">AI ANALYSIS</span>
+          <span className="text-[8.5px] font-mono font-semibold text-black bg-lime-400 px-1.5 py-[3px] rounded">BETA</span>
         </div>
         {!loading && !done && (
           <button
             onClick={analyze}
-            className="text-[10px] font-mono font-bold tracking-widest px-3 py-1.5 rounded border border-lime-400/60 text-lime-400 hover:bg-lime-400/10 transition-colors"
+            className="text-[10px] font-mono font-bold tracking-widest px-3 py-1.5 rounded-lg border border-lime-400/60 text-lime-400 hover:bg-lime-400/10 transition-colors"
           >
             ANALYZE
           </button>
@@ -453,43 +468,37 @@ ${posText}`;
         )}
       </div>
 
-      {/* Stage + flags render INSTANTLY once computed (before prose) */}
+      {/* Verdict pill + flag rows render INSTANTLY once computed (before prose) */}
       {read && (
-        <div className="space-y-2 mb-3">
-          <div className="flex items-center gap-1.5">
-            <Info size={11} className="text-white/40" />
-            <span className="text-[10px] font-mono text-white/60 tracking-wide">
-              {read.stage.label.toUpperCase()}
-            </span>
-            <span className="text-[9px] font-mono text-white/30">· {read.stage.note}</span>
+        <div className="mb-3 space-y-3">
+          <div className={`inline-flex items-center gap-[7px] border rounded-[9px] px-[11px] py-2 ${verdictPill}`}>
+            <span className="w-[7px] h-[7px] rounded-full flex-none" style={{ background: verdictDot }} />
+            <span className={`text-[11px] font-mono font-bold ${verdictText}`}>{read.stage.label.toUpperCase()}</span>
+            <span className="text-[9.5px] font-mono text-white/40">{read.stage.note}</span>
           </div>
 
-          {flagCount > 0 ? (
-            <div className="space-y-1">
-              {read.flags.map((f, i) => (
-                <div key={i} className="flex items-start gap-1.5">
-                  <AlertTriangle size={10} className={`mt-0.5 shrink-0 ${f.level === 'strong' ? 'text-red-400' : 'text-yellow-400'}`} />
-                  <span className={`text-[10px] font-mono leading-snug ${f.level === 'strong' ? 'text-red-400/90' : 'text-yellow-400/90'}`}>
-                    {f.text}
-                  </span>
+          <div className="flex flex-col gap-[9px]">
+            {flagCount > 0 ? (
+              read.flags.map((f, i) => (
+                <div key={i} className="flex items-start gap-[9px]">
+                  <span className="w-[6px] h-[6px] rounded-full flex-none mt-[6px]" style={{ background: f.level === 'strong' ? '#f87171' : '#f59e0b' }} />
+                  <span className="text-[10.5px] font-mono text-white/55 leading-[1.55]">{f.text}</span>
                 </div>
-              ))}
-            </div>
-          ) : (
-            <div className="flex items-center gap-1.5">
-              <ShieldCheck size={10} className="text-white/40 shrink-0" />
-              <span className="text-[10px] font-mono text-white/45 leading-snug">
-                No specific red flags detected in on-chain data
-              </span>
-            </div>
-          )}
+              ))
+            ) : (
+              <div className="flex items-start gap-[9px]">
+                <span className="w-[6px] h-[6px] rounded-full flex-none mt-[6px] bg-white/30" />
+                <span className="text-[10.5px] font-mono text-white/45 leading-[1.55]">No specific red flags detected in on-chain data</span>
+              </div>
+            )}
 
-          {read.positives.map((p, i) => (
-            <div key={`p${i}`} className="flex items-center gap-1.5">
-              <ShieldCheck size={10} className="text-lime-400/70 shrink-0" />
-              <span className="text-[10px] font-mono text-lime-400/70 leading-snug">{p}</span>
-            </div>
-          ))}
+            {read.positives.map((p, i) => (
+              <div key={`p${i}`} className="flex items-start gap-[9px]">
+                <span className="w-[6px] h-[6px] rounded-full flex-none mt-[6px]" style={{ background: '#a3e635' }} />
+                <span className="text-[10.5px] font-mono text-lime-400/70 leading-[1.55]">{p}</span>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -514,7 +523,7 @@ ${posText}`;
 
       {/* Prose */}
       {prose && !loading && (
-        <p className="text-[11px] font-mono text-white/70 leading-relaxed">
+        <p className="text-[10.5px] font-mono text-white/60 leading-[1.55]">
           {proseLines.join(' ')}
           <span className="text-white/40"> NFA — Not Financial Advice.</span>
         </p>
@@ -529,13 +538,13 @@ ${posText}`;
 
       {/* Always-on baseline disclaimer */}
       {read && (
-        <p className="text-[9px] font-mono text-white/20 leading-snug mt-2 pt-2 border-t border-white/5">
+        <p className="text-[9px] font-mono text-white/22 leading-snug mt-2.5 pt-2.5 border-t border-white/[0.06]">
           All launchpad tokens are highly speculative. Flags show risks beyond that baseline — absence of flags is not a safety signal.
         </p>
       )}
 
-      <div className="mt-3 pt-2 border-t border-white/5 flex items-center justify-end">
-        <span className="text-[9px] font-mono text-white/15 tracking-widest">ANALYSIS BY GROQ</span>
+      <div className="mt-3 pt-2.5 border-t border-white/[0.06] text-[8.5px] font-mono text-white/22 leading-[1.5]">
+        computed from on-chain events {'·'} analysis by Groq {'·'} not financial advice
       </div>
     </div>
   );
