@@ -1350,11 +1350,7 @@ function HomePage({ onLaunch, lang = 'en' }) {
               <div className="text-[10px] font-mono text-white/35 tracking-wide mt-1">{t(lang, 'heroSub')}</div>
             </div>
           </div>
-          {account ? (
-            <button onClick={onLaunch} className="shrink-0 flex items-center gap-2 px-6 py-2.5 bg-lime-400 text-black text-xs font-mono font-extrabold tracking-widest hover:bg-lime-300 transition-all rounded-xl shadow-sp-cta">
-              <Plus size={13} /> {t(lang, 'launchAToken')}
-            </button>
-          ) : (
+          {!account && (
             <div className="shrink-0 flex flex-col items-center gap-2">
               <ConnectWalletHero lang={lang} />
               <MobileWalletButtons />
