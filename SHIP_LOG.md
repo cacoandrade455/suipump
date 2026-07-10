@@ -104,3 +104,25 @@ The current StatsPage shipped the OLD/wrong fee model (protocol labelled 0.50%, 
 1. StatsPage remains English-only (no `t(lang,key)`) — it never had i18n wired (App passes `lang` but the component signature ignored it pre-reskin). Preserved existing behavior rather than expanding scope to 7-language keys for ~15 stat labels. Flag: full i18n of stats is a separate enhancement.
 2. Indexer field semantics: if `/stats` returns `protocolFeesSui` as the old 0.50% combined bucket, the label "0.25%" would understate the raw value. Fallback math is C-5-correct; verify the live indexer field meaning at mainnet.
 3. GRADUATION BONUSES surfaced as a verified copy line in the fee note (formula, no fabricated $ value) rather than a stat card, since no indexer field backs a bonuses total. Covers the 3c "Graduation bonuses" item honestly.
+
+---
+
+## 3a roadmap + 6d — SHIPPED
+
+Ported the design 3a STYLE onto the CURRENT page's real content (D-4.2: keep repo content, not design placeholder copy).
+
+**Files changed (named `git add` only):**
+- `frontend-app/src/RoadmapPage.jsx` — Terminal restyle. Kept the 4 real phases + items + `t(lang,...)` (roadmapTitle/roadmapSub/target/backToHome). New: lime radial header card with the 4-segment progress bar + $50M target; phases in a 2-column grid (single column on mobile = 6d); Terminal card tints (complete = lime, active/upcoming = neutral); 13px checkbox squares with lime done-dot.
+- Corrected the target projection to the C-5 model: "~$500,000/month total fees, ~$125,000 to the S1 airdrop pool (0.25% of volume)" (was the wrong "~$500,000 protocol fees -> ~$250,000 S1 pool").
+
+**Gates (independently run):**
+- `npm run build` → ✓ built in 19.87s, no errors.
+- `npx esbuild src/RoadmapPage.jsx` OK.
+- ASCII: pure ASCII (no glyphs; used hyphens/commas, no arrows/em-dashes).
+
+**Verified:** build + syntax + ASCII; content unchanged except the C-5 projection correction; i18n keys reused (all pre-existing).
+**Not verified (no browser this session):** live pixel rendering / responsive 6d stacking (uses `grid-cols-1 lg:grid-cols-2`, opens via hamburger per M-4).
+
+**Open flags:**
+1. Phase content is hardcoded (as before) — only the header/subtitle/target/back strings use i18n. Item text was English-only pre-reskin; preserved. Full i18n of phase items is a separate enhancement.
+2. Phase 2 lists "Nexus/Talus 24/7 agent execution" as a pending item — the Nexus path is scoped out of v1 (Bucket B-1), but this is existing repo CONTENT (a roadmap item, not a live chip), left as-is per D-4.2. Flag for Carlos if the roadmap wording should drop "Nexus".
