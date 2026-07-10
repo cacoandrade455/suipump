@@ -256,7 +256,7 @@ function TokenCard({ token, stats, curveState: curveStateProp, isCrown, suiUsd =
   return (
     <div
       onClick={() => navigate(`/token/${token.curveId}`)}
-      className={`grid grid-cols-[26px_1fr_92px_150px_74px] sm:grid-cols-[26px_1fr_92px_92px_150px_74px] gap-3 items-center px-4 py-3 border-b border-white/5 cursor-pointer transition-colors group ${
+      className={`grid grid-cols-[26px_minmax(0,1.4fr)_92px_150px_74px] sm:grid-cols-[26px_minmax(0,1.4fr)_92px_92px_150px_74px] gap-3 items-center px-4 py-3 border-b border-white/5 cursor-pointer transition-colors group ${
         isCrown ? 'bg-lime-400/[0.04] hover:bg-lime-400/[0.07]' : 'hover:bg-white/[0.03]'
       }`}
     >
@@ -280,7 +280,7 @@ function TokenCard({ token, stats, curveState: curveStateProp, isCrown, suiUsd =
         </div>
         <div className="min-w-0">
           <div className="flex items-center gap-1.5 min-w-0">
-            <span className="text-[12.5px] font-mono font-bold text-white truncate group-hover:text-lime-400 transition-colors">{token.name}</span>
+            <span className="text-[12.5px] font-mono font-bold text-white truncate max-w-[220px] group-hover:text-lime-400 transition-colors">{token.name}</span>
             {isCrown && <Crown size={10} className="text-lime-400 shrink-0" />}
             {isTrending && <span className="text-[7.5px] font-mono font-bold text-lime-400 bg-lime-400/12 px-1.5 py-0.5 rounded-full shrink-0">HOT</span>}
             {isNew && !isTrending && <span className="text-[7.5px] font-mono font-bold text-blue-400 bg-blue-400/12 px-1.5 py-0.5 rounded-full shrink-0">NEW</span>}
@@ -346,7 +346,7 @@ function TokenCard({ token, stats, curveState: curveStateProp, isCrown, suiUsd =
 
 function SkeletonCard() {
   return (
-    <div className="grid grid-cols-[26px_1fr_92px_92px_150px_74px] gap-3 items-center px-4 py-3 border-b border-white/5 animate-pulse">
+    <div className="grid grid-cols-[26px_minmax(0,1.4fr)_92px_92px_150px_74px] gap-3 items-center px-4 py-3 border-b border-white/5 animate-pulse">
       <div className="w-3 h-3 rounded bg-white/5" />
       <div className="flex items-center gap-2.5">
         <div className="w-[34px] h-[34px] rounded-[10px] bg-white/5" />
@@ -967,7 +967,7 @@ function Header({ onLaunch, lang, setLang, onToggleFeed, showFeed, onStrategies 
 
   return (
     <header className="sticky top-0 z-40 border-b border-white/8 bg-sp-void/95 backdrop-blur-md">
-      <div className="max-w-6xl mx-auto px-4 h-[57px] flex items-center justify-between gap-3">
+      <div className="max-w-[1440px] mx-auto px-4 h-[57px] flex items-center justify-between gap-3">
         <div className="flex items-center gap-4">
           <Link to="/" className="flex items-center gap-2 shrink-0 group">
             <FlameLockup size={17} markSize={24} />
@@ -1371,7 +1371,7 @@ function HomePage({ onLaunch, lang = 'en' }) {
           <input
             value={search}
             onChange={e => setSearch(e.target.value)}
-            placeholder={t(lang, 'searchTokens')}
+            placeholder={t(lang, 'searchPlaceholder')}
             className="w-full bg-white/[0.04] border border-white/8 rounded-xl pl-8 pr-4 py-2.5 text-xs font-mono text-white placeholder-white/20 focus:outline-none focus:border-lime-400/30 transition-colors"
           />
         </div>
@@ -1380,7 +1380,7 @@ function HomePage({ onLaunch, lang = 'en' }) {
       <TrendingBar lang={lang} />
 
       {/* 3-column board: live trades rail | table | crown/create/graduating rail */}
-      <div className="grid grid-cols-1 lg:grid-cols-[240px_minmax(0,1fr)_260px] gap-4 items-start">
+      <div className="grid grid-cols-1 lg:grid-cols-[260px_minmax(0,1fr)_280px] gap-4 items-start">
 
         {/* LEFT rail - live trades (desktop) */}
         <div className="hidden lg:block sticky top-[120px]">
@@ -1428,7 +1428,7 @@ function HomePage({ onLaunch, lang = 'en' }) {
           </div>
 
           {/* column header row */}
-          <div className="hidden sm:grid grid-cols-[26px_1fr_92px_92px_150px_74px] gap-3 px-4 py-2.5 border-b border-white/[0.07] text-[9.5px] font-mono font-semibold tracking-[.12em] text-white/30">
+          <div className="hidden sm:grid grid-cols-[26px_minmax(0,1.4fr)_92px_92px_150px_74px] gap-3 px-4 py-2.5 border-b border-white/[0.07] text-[9.5px] font-mono font-semibold tracking-[.12em] text-white/30">
             <span></span><span>TOKEN</span><span className="text-right">MKT CAP</span><span className="text-right">VOLUME</span><span>BONDED</span><span className="text-right">24H</span>
           </div>
 
@@ -1628,7 +1628,7 @@ export default function App() {
       <NetworkBanner />
       <StrategiesLockedBanner tradeKey={tradeKey} onOpenStrategies={() => setShowStrategies(true)} />
 
-      <main className="max-w-6xl mx-auto px-4 py-6">
+      <main className="max-w-[1440px] mx-auto px-4 py-6">
         <Routes>
           <Route path="/" element={<HomePage onLaunch={() => setShowLaunch(true)} lang={lang} />} />
           <Route path="/token/:curveId" element={<TokenPageWrapper lang={lang} tradeKey={tradeKey} />} />
@@ -1645,7 +1645,7 @@ export default function App() {
         </Routes>
       </main>
 
-      <footer className="max-w-6xl mx-auto px-4 py-8 border-t border-white/5 mt-8">
+      <footer className="max-w-[1440px] mx-auto px-4 py-8 border-t border-white/5 mt-8">
         <div className="flex items-center justify-center gap-4 mb-3">
           <a href="https://x.com/SuiPump_SUMP" target="_blank" rel="noreferrer" className="text-white/25 hover:text-white/60 transition-colors">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
