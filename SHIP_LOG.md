@@ -51,3 +51,26 @@ verified-vs-not, open flags. STYLE-only ports; all logic/hooks/PTB preserved ver
 2. No per-row SELL on address-balance holdings (no existing handler; rows stay click-to-token-page). Mandatory SELL exists only on SESSION positions per C-6.
 3. Module assumptions (flagged): inner Coin<T> parsed from GraphQL `repr` (first `Coin<` .. last `>`); tokenType→curve matched case-insensitively with no short/zero-padded address normalization (a mismatch degrades to a visible read-only curveId=null row, never a silent drop).
 4. Public-profile gate DECISION: SESSION positions + creator-fees hidden on `/portfolio/:walletAddress`. If read-only SESSION list on public profiles is wanted later, flip the own-wallet gate.
+
+---
+
+## /profile/:address public profile (C-4) — SHIPPED
+
+Most of C-4 was ALREADY in place: `/portfolio/:walletAddress` route exists (D-0.2), PortfolioPage reads `useParams().walletAddress` → `viewAddress`/`isOwnWallet`/`viewAccount` and renders a read-only view for arbitrary wallets (restyled + own-vs-public gated in the 2e screen). Address links already existed in Comments (author → `/portfolio/:addr`), HolderList (holders + traders tabs), and LeaderboardPage (points leaders + traders rows). Remaining gaps closed here.
+
+**Files changed (named `git add` only):**
+- `frontend-app/src/App.jsx` — added `/profile/:walletAddress` alias route → same PortfolioPage (same param name, zero PortfolioPage change; own-wallet features stay gated).
+- `frontend-app/src/TradeHistory.jsx` — the trader address (`t.who`) in each trade row is now a `Link` to `/portfolio/:who` (was plain text). Added `Link` import.
+- `frontend-app/src/LiveFeedSidebar.jsx` — live-trade row wallet is now a `Link` to `/portfolio/:wallet`. Converted the outer row from `<button>` to a `role="button"` div (with Enter/Space keydown) so the nested address `Link` is valid HTML; `stopPropagation` keeps the row's token navigation intact.
+
+**Gates (independently run):**
+- `npm run build` → ✓ built in 20.29s, no errors.
+- `npx esbuild` OK: App.jsx, TradeHistory.jsx, LiveFeedSidebar.jsx.
+- ASCII: zero new em-dashes; kept pre-existing rendered glyphs (`…`, `▲`/`▼`).
+
+**Verified:** build + syntax; the read-only public view is the existing param-driven PortfolioPage (confirmed isOwnWallet gating by reading the code). Every C-4 surface (leaderboard, comments, trade rows incl. live feed) now links addresses to the profile.
+**Not verified (no browser this session):** live click-through navigation and that PortfolioPage's tabs populate for an arbitrary address end-to-end (data path is the same viewAccount used for own wallet).
+
+**Open flags:**
+1. Alias uses param name `:walletAddress` (not `:address`) so PortfolioPage needs no change; the public URL is still `/profile/0x...`. Existing links point at `/portfolio/:addr`; both routes resolve to the same view. If a canonical `/profile/...` link surface is wanted, repoint the Link targets in a follow-up.
+2. Public profiles hide SESSION positions + creator-fees (own-wallet gate from the 2e screen) — intended for read-only profiles.

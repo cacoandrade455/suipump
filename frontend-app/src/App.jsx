@@ -1814,6 +1814,10 @@ export default function App() {
           <Route path="/leaderboard" element={<LeaderboardPage onBack={() => navigate('/')} lang={lang} />} />
           <Route path="/portfolio" element={<PortfolioPage onBack={() => navigate('/')} lang={lang} tradeKeypair={tradeKey.isReady ? tradeKey.keypair : null} />} />
           <Route path="/portfolio/:walletAddress" element={<PortfolioPage onBack={() => navigate(-1)} lang={lang} tradeKeypair={tradeKey.isReady ? tradeKey.keypair : null} />} />
+          {/* C-4 public-profile alias: /profile/:address renders the same read-only
+              PortfolioPage view (own-wallet features stay gated behind isOwnWallet).
+              Same :walletAddress param name so PortfolioPage needs no change. */}
+          <Route path="/profile/:walletAddress" element={<PortfolioPage onBack={() => navigate(-1)} lang={lang} tradeKeypair={tradeKey.isReady ? tradeKey.keypair : null} />} />
           <Route path="/roadmap" element={<RoadmapPage onBack={() => navigate('/')} lang={lang} />} />
           <Route path="/agent" element={<AgentPage onBack={() => navigate('/')} />} />
           <Route path="/play" element={<GamePage onBack={() => navigate('/')} lang={lang} />} />

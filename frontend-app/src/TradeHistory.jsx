@@ -1,5 +1,6 @@
 // TradeHistory.jsx — receives trades + connected via props from TokenPage (shared SSE)
 import React from 'react';
+import { Link } from 'react-router-dom';
 import { useCurrentAccount } from '@mysten/dapp-kit-react';
 import { ArrowUpRight, ArrowDownRight } from 'lucide-react';
 
@@ -46,9 +47,11 @@ export default function TradeHistory({ trades = [], connected = false, loading =
                 <span className={t.kind === 'buy' ? 'text-lime-400' : 'text-red-400'}>
                   {t.kind.toUpperCase()}
                 </span>
-                <span className="text-white/40 hidden sm:inline">
-                  {t.who ? `${t.who.slice(0, 6)}…${t.who.slice(-4)}` : ''}
-                </span>
+                {t.who && (
+                  <Link to={`/portfolio/${t.who}`} className="text-white/40 hover:text-lime-400 transition-colors hidden sm:inline">
+                    {`${t.who.slice(0, 6)}…${t.who.slice(-4)}`}
+                  </Link>
+                )}
                 {myAddr && t.who === myAddr && (
                   <span className="text-[8px] font-mono font-bold text-violet-400 bg-violet-400/10 border border-violet-400/40 rounded px-1 py-0.5">YOU</span>
                 )}
