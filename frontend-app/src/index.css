@@ -2,7 +2,7 @@
 @tailwind components;
 @tailwind utilities;
 
-body { background: #000; margin: 0; }
+body { background: #050505; margin: 0; }
 
 /* ── dapp-kit-react theme (web components, CSS custom properties) ─────────────
    @mysten/dapp-kit-react uses Lit web components styled via CSS custom props.
@@ -25,3 +25,24 @@ body { background: #000; margin: 0; }
 ──────────────────────────────────────────────────────────────────────────── */
 .scrollbar-hide::-webkit-scrollbar { display: none; }
 .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* ── Brand keyframes (Terminal redesign 2a) ──────────────────────────────────
+   sp-blink: wordmark cursor + agent goal caret (blink steps(1) 1.1s).
+   sp-pulse: live/status dots (scale+opacity 1.5s).
+   Also exposed as Tailwind animations (animate-sp-blink / animate-sp-pulse);
+   the raw classes below exist for non-Tailwind contexts (dapp-kit slots).
+──────────────────────────────────────────────────────────────────────────── */
+@keyframes sp-blink {
+  0%, 49%   { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+@keyframes sp-pulse {
+  0%, 100% { transform: scale(1);    opacity: 1;   }
+  50%      { transform: scale(1.35); opacity: .55; }
+}
+.sp-blink { animation: sp-blink 1.1s steps(1) infinite; }
+.sp-pulse { animation: sp-pulse 1.5s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .sp-blink, .sp-pulse { animation: none; }
+}
