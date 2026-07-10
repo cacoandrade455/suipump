@@ -74,3 +74,33 @@ Most of C-4 was ALREADY in place: `/portfolio/:walletAddress` route exists (D-0.
 **Open flags:**
 1. Alias uses param name `:walletAddress` (not `:address`) so PortfolioPage needs no change; the public URL is still `/profile/0x...`. Existing links point at `/portfolio/:addr`; both routes resolve to the same view. If a canonical `/profile/...` link surface is wanted, repoint the Link targets in a follow-up.
 2. Public profiles hide SESSION positions + creator-fees (own-wallet gate from the 2e screen) — intended for read-only profiles.
+
+---
+
+## 2g stats + 6c with C-5 corrected projection — SHIPPED
+
+The current StatsPage shipped the OLD/wrong fee model (protocol labelled 0.50%, three-way 40/50/10 split, "$500k protocol fees -> $250k S1 pool"). This screen corrects it to the C-5 five-way model AND restyles to the Terminal design. Verified `CREATOR_GRAD_BONUS_BPS = 50` / `PROTOCOL_GRAD_BONUS_BPS = 50` in contracts-v10/sources/bonding_curve.move (ledger item 11) → the "1% of final reserve · 0.5/0.5" copy is accurate and shipped.
+
+**Files changed (named `git add` only):**
+- `frontend-app/src/StatsPage.jsx` — full rewrite (v4). C-5 corrections + Terminal restyle.
+
+**C-5 corrections (the crux):**
+- Fee model fallbacks: protocol `vol*0.0025` (0.25%, was `vol*0.005`), NEW airdrop bucket `vol*0.0025` (0.25%), creator `vol*0.004` (0.40%), LP `vol*0.001` (0.10%). S1 pool = the airdrop bucket (`d.s1PoolSui ?? airdropBucket`), no longer `protocolFees*0.5`.
+- Labels: PROTOCOL FEES sub "0.25% of every trade" (was 0.50%); S1 AIRDROP POOL sub "the airdrop bucket - 0.25% of every trade" (was "50% of protocol fees").
+- Fee breakdown is now FIVE-WAY (four buckets): CREATOR 40 / PROTOCOL 25 / AIRDROP BUCKET 25 / LP 10, with the referral note (protocol+airdrop each cede 0.05% for a 0.10% referrer reward; trader always pays 1.00%) and the verified graduation-bonus note (1% reserve fee: 0.5% creator / 0.5% protocol).
+- Projection copy = C-5 exact: "$50M monthly volume -> $500k total fees -> $125k S1 airdrop pool (0.25% of volume)." (was "~$500k protocol fees -> ~$250k S1 pool").
+
+**Restyle:** Terminal stat cards (accent lime-400/30 + bg lime-400/[0.05]; neutral white/[0.08] + bg white/[0.015]), Terminal fee/top-tokens cards, header card. Two-up desktop layout, `grid-cols-2` on mobile serves 6c (opens via hamburger/··· per M-4). Data-fetch logic (indexer /stats + /leaderboard/volume, suiUsd poll, 30s refresh) preserved.
+
+**Gates (independently run):**
+- `npm run build` → ✓ built in 20.47s, no errors.
+- `npx esbuild src/StatsPage.jsx` OK.
+- ASCII: StatsPage.jsx is now PURE ASCII (replaced all glyphs: em-dash→'-', arrow→'->', ellipsis→'...', middot→'-'). Zero non-ASCII bytes.
+
+**Verified:** build + syntax + ASCII; grad-bonus constants checked against the Move source; C-5 numbers match the ledger and the design's own (corrected) data arrays.
+**Not verified (no live indexer this session):** whether `d.protocolFeesSui`/`d.s1PoolSui` from the live indexer already represent the 0.25% buckets vs the old 0.50% combined — the C-5 model is applied to the FALLBACK math; if the indexer emits combined values under old field names, that is an indexer-side follow-up (flagged).
+
+**Open flags:**
+1. StatsPage remains English-only (no `t(lang,key)`) — it never had i18n wired (App passes `lang` but the component signature ignored it pre-reskin). Preserved existing behavior rather than expanding scope to 7-language keys for ~15 stat labels. Flag: full i18n of stats is a separate enhancement.
+2. Indexer field semantics: if `/stats` returns `protocolFeesSui` as the old 0.50% combined bucket, the label "0.25%" would understate the raw value. Fallback math is C-5-correct; verify the live indexer field meaning at mainnet.
+3. GRADUATION BONUSES surfaced as a verified copy line in the fee note (formula, no fabricated $ value) rather than a stat card, since no indexer field backs a bonuses total. Covers the 3c "Graduation bonuses" item honestly.
