@@ -4,14 +4,32 @@
   "description": "Launch any token in seconds. 40% creator fees. Choose your graduation DEX — Cetus, Turbos, or DeepBook. The permissionless meme launchpad on Sui.",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#000000",
+  "background_color": "#050505",
   "theme_color": "#84CC16",
   "icons": [
     {
-      "src": "/favicon.png",
-      "sizes": "48x48",
+      "src": "/favicon-32.png",
+      "sizes": "32x32",
       "type": "image/png",
       "purpose": "any"
+    },
+    {
+      "src": "/apple-touch-icon-180.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/app-icon-void-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/app-icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
   ]
 }

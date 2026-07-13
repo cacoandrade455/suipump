@@ -1,37 +1,50 @@
-// Flame.jsx - SuiPump brand mark (SVG flame system, "Terminal" redesign 2a).
+// Flame.jsx - SuiPump brand mark (SVG torch system, brand v2, 2026-07-13).
 //
-// One geometry, four cuts (per the brand screen in SuiPump_Redesign.dc.html):
-//   aurora - vertical gradient #d9f99d -> #a3e635 (45%) -> #4d7c0f, ember #d9f99d.
-//            Landing, OG images, whitepaper cover.
-//   solid  - flat #84cc16, ember #a3e635. Product UI, headers, favicon.
+// The TORCH supersedes the two-tongue flame of redesign 2a. Both design HTMLs
+// (SuiPump_Redesign.dc.html / SuiPump_Mobile_dc.html) still draw the OLD mark;
+// never restore it from there - the B-LOGO entry in RECONCILIATION_LEDGER.md
+// is the ruling. Source cuts live in frontend-app/public/ (torch-solid.svg,
+// torch-outline.svg, torch-aurora-1024.png, app-icon-*.png).
+//
+// One geometry, four cuts:
+//   aurora - vertical gradient #d9f99d -> #a3e635 (45%) -> #4d7c0f.
+//            Landing hero, OG images, whitepaper cover.
+//   solid  - flat #84cc16. Product UI, headers, favicon.
 //   strike - solid + diagonal slash through the body. Win states, graduation.
-//   pulse  - outline only (outer tongue), stroke #a3e635. Loading, empty states.
+//   pulse  - outline only (outer tongue), stroke #a3e635 width 5. Loading,
+//            empty states, stickers.
+//
+// BRAND RULES v2: always green - hollow core, NEVER an ember - lowercase
+// wordmark suipump_. The v1 ember circle is gone from every cut, including
+// the pulse cut's stroked ember.
 //
 // The paths below are the CANONICAL logo geometry. Never redraw or "clean up"
 // these curves - every rendering of the mark anywhere in the app must come
 // from this component (or from assets rasterized from these exact paths).
 //
 // viewBox is 96x96; size prop sets both width and height (the mark is square).
-// Each instance gets a unique gradient id via useId so multiple aurora flames
+// Each instance gets a unique gradient id via useId so multiple aurora torches
 // on one page never collide.
 import React, { useId } from 'react';
 
-// Full body: two tongues + live core (evenodd knocks the core out of the body).
+// Full body: outer tongue + drop core (evenodd knocks the core out of the body).
 export const FLAME_BODY_PATH =
-  'M60 4C64 16 72 30 72 50A22 22 0 0 1 28 50C28 44 30 39 33 41C29 33 29 24 33 15C36 26 40 29 42 27C45 20 55 14 60 4ZM50 42C54 51 58 55 58 63A9.5 9.5 0 0 1 39 63C39 55 45 51 47 44C48 42 49 41 50 42Z';
+  'M48 6 C42 28 22 34 22 58 A26 26 0 0 0 74 58 C74 40 62 32 58 20 C56 30 52 30 48 6 Z M48 50 C46 60 38 62 38 70 A10 10 0 0 0 58 70 C58 61 50 60 48 50 Z';
 
-// Outer tongue only - used by the PULSE (outline) cut.
+// Outer tongue only - used by the PULSE (outline) cut and tiny favicons.
 export const FLAME_OUTLINE_PATH =
-  'M60 4C64 16 72 30 72 50A22 22 0 0 1 28 50C28 44 30 39 33 41C29 33 29 24 33 15C36 26 40 29 42 27C45 20 55 14 60 4Z';
+  'M48 6 C42 28 22 34 22 58 A26 26 0 0 0 74 58 C74 40 62 32 58 20 C56 30 52 30 48 6 Z';
 
 // STRIKE cut: body + diagonal slash (single evenodd path so the slash reads
-// as part of the mark, exactly as drawn in the design file).
+// as a knockout stripe through the mark). Slash coords carried over from
+// brand v1 so 'strike' call sites keep working; pixel-check on preview where
+// the slash crosses the drop core, retire the cut if it is unused.
 export const FLAME_STRIKE_PATH =
   FLAME_BODY_PATH + 'M26 50L74 32L74 39L26 57Z';
 
 // Brand color constants (mirror tailwind.config.js theme.extend.colors.sp).
 export const SP_PUMP    = '#84cc16'; // primary lime - progress, wins, CTAs
-export const SP_GLOW    = '#a3e635'; // bright lime - embers, pulses, accents
+export const SP_GLOW    = '#a3e635'; // bright lime - pulses, accents
 export const SP_VOID    = '#050505'; // background black
 export const SP_AURORA  = ['#d9f99d', '#a3e635', '#4d7c0f']; // gradient stops (0 / .45 / 1)
 
@@ -57,7 +70,6 @@ export default function Flame({ variant = 'solid', size = 24, glow = false, clas
       <svg width={size} height={size} viewBox="0 0 96 96" className={className}
         style={{ flex: 'none', ...glowFilter, ...style }} aria-hidden="true">
         <path d={FLAME_OUTLINE_PATH} fill="none" stroke={SP_GLOW} strokeWidth="5" strokeLinejoin="round" />
-        <circle cx="71" cy="9" r="4" fill="none" stroke={SP_GLOW} strokeWidth="3" />
       </svg>
     );
   }
@@ -65,7 +77,6 @@ export default function Flame({ variant = 'solid', size = 24, glow = false, clas
   const isAurora = variant === 'aurora';
   const bodyPath = variant === 'strike' ? FLAME_STRIKE_PATH : FLAME_BODY_PATH;
   const bodyFill = isAurora ? `url(#${gradId})` : SP_PUMP;
-  const emberFill = isAurora ? SP_AURORA[0] : SP_GLOW;
 
   return (
     <svg width={size} height={size} viewBox="0 0 96 96" className={className}
@@ -80,13 +91,12 @@ export default function Flame({ variant = 'solid', size = 24, glow = false, clas
         </defs>
       )}
       <path fillRule="evenodd" clipRule="evenodd" d={bodyPath} fill={bodyFill} />
-      <circle cx="71" cy="9" r="4.5" fill={emberFill} />
     </svg>
   );
 }
 
 /**
- * <FlameLockup size markSize variant glow /> - flame + "suipump_" wordmark.
+ * <FlameLockup size markSize variant glow /> - torch + "suipump_" wordmark.
  * The trailing underscore blinks lime (sp-blink keyframes live in index.css).
  * size: wordmark font size in px (default 17, the header lockup).
  */
