@@ -140,7 +140,7 @@ export default function WhitepaperPage({ onBack }) {
           <Section number="01" title="Executive Summary">
             <P>SuiPump is a permissionless bonding-curve token launchpad built on the Sui blockchain. It enables anyone to launch a fungible token in two wallet signatures, with price discovery happening automatically through an on-chain constant-product curve. Every launched token starts at a fair price, has no pre-mine, and graduates to a decentralized exchange once its bonding curve drains.</P>
             <P>SuiPump improves on existing Solana-based launchpads across several dimensions: lower total fees with a larger creator share, an LP fee that deepens curve liquidity over time, a dedicated airdrop fee bucket that funds community rewards, a transferable creator-ownership model, an optional on-chain referral program, and an optional dev-token vesting lock that lets creators commit their launch allocation to a public, immutable unlock schedule.</P>
-            <P>Season 1 introduces the first coordinated user-acquisition program: at season close, 50% of all accumulated protocol fees are distributed to early users proportionally to an on-chain points system.</P>
+            <P>Season 1 introduces the first coordinated user-acquisition program: at season close, the dedicated airdrop bucket - 0.25% of every trade (25% of the 1.00% trade fee) - is distributed to early users proportionally to an on-chain points system.</P>
           </Section>
 
           <Section number="02" title="Problem">
@@ -166,7 +166,7 @@ export default function WhitepaperPage({ onBack }) {
             <H>TRANSFERABLE CREATORCAP</H>
             <P>Each launched token is associated with a CreatorCap — a Move object that confers the right to claim creator fees and update payout configuration. The cap is transferable and supports up to 10 payout recipients with custom percentage splits.</P>
             <H>S1 AIRDROP</H>
-            <P>At the end of Season 1, 50% of accumulated protocol fees are distributed to users in proportion to their points. Points are earned by trading, launching, referring, and holding graduated tokens.</P>
+            <P>At the end of Season 1, the dedicated airdrop bucket - 0.25% of every trade (25% of the 1.00% trade fee) - is distributed to users in proportion to their points. Points are earned by trading, launching, referring, and holding graduated tokens.</P>
           </Section>
 
           <Section number="04" title="Fee Structure">
@@ -232,7 +232,7 @@ export default function WhitepaperPage({ onBack }) {
 
           <Section number="06" title="How It Works">
             <H>BONDING CURVE MECHANICS</H>
-            <P>SuiPump uses a constant-product pricing model with virtual reserves: Vs = 3,500 SUI and Vt = 1,073,000,000 tokens. A token graduates once its real SUI reserve reaches the graduation threshold of 9,000 SUI, or its token reserve fully drains — whichever comes first.</P>
+            <P>SuiPump uses a constant-product pricing model with virtual reserves: Vs = 4,369 SUI and Vt = 1,073,000,000 tokens. A token graduates once its real SUI reserve reaches the graduation threshold of 12,305 SUI at $1 SUI (price-scaled: the buy entrypoint takes the live SUI price, so graduation targets a USD-stable market cap), or its token reserve fully drains — whichever comes first.</P>
             <H>LAUNCH FLOW</H>
             <P>Launching a token requires two wallet signatures. Tx 1: a fresh Move module is published with the creator's chosen name, symbol, description, and icon. Tx 2: the creator configures the curve — pays the 2 SUI launch fee, sets payout splits, picks a graduation venue, sets an optional anti-bot delay, and optionally executes a dev-buy. If the creator chooses, the dev-buy tokens are routed directly into a VestingLock within the same atomic transaction.</P>
             <H>GRADUATION VENUE</H>
@@ -250,7 +250,7 @@ export default function WhitepaperPage({ onBack }) {
           </Section>
 
           <Section number="07" title="Season 1 Airdrop">
-            <P>Season 1 runs from the protocol's first transaction on mainnet through a closing date announced with at least 30 days' notice. At season close, 50% of all accumulated protocol fees are distributed to eligible wallets in proportion to their S1 points. Distribution is in liquid SUI — no vesting, no new token.</P>
+            <P>Season 1 runs from the protocol's first transaction on mainnet through a closing date announced with at least 30 days' notice. At season close, the dedicated airdrop bucket - 0.25% of every trade (25% of the 1.00% trade fee) - is distributed to eligible wallets in proportion to their S1 points. Distribution is in liquid SUI — no vesting, no new token.</P>
             <H>POINTS STRUCTURE</H>
             <Table
               cols={['Action', 'Points']}

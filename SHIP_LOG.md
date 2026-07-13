@@ -149,3 +149,70 @@ Ported the design 3b STYLE (sticky TOC + Terminal section cards) onto the curren
 1. English-only preserved — page never had `t(lang,key)` (ignores the `lang` prop). i18n of the whitepaper is a separate enhancement, out of a style-only pass (noted per D-4.2).
 2. CONTENT FACTS left verbatim per the freeze but flagged for Carlos: (a) section 06 states `Vs = 3,500 SUI` / graduation threshold `9,000 SUI`, whereas CLAUDE.md lists `VS=4369` / `BASE_GRAD=12,305` — the whitepaper copy is STALE vs the contract. (b) sections 01/03/07 describe the S1 airdrop as "50% of accumulated protocol fees", which predates the airdrop-bucket model (C-5: S1 pool = the 0.25% airdrop bucket) and the C-2 policy (points + 10% NFT + 10% testnet). Both are CONTENT-correctness edits requiring Carlos sign-off, out of scope for the reskin.
 
+
+---
+
+## Post-review content fixes - whitepaper contract math + S1 bucket model, roadmap wording; indexer stats semantics note - SHIPPED
+
+Resolves the prior entry's open flag #2 (stale section-06 curve math + "50% of protocol
+fees" S1 phrasing). Carlos-approved content edits; no logic/hooks/PTB touched.
+
+**Files changed (named `git add` only):**
+- `frontend-app/src/WhitepaperPage.jsx` - 4 sentence-level content corrections (sections 01, 03, 06, 07). Style/structure untouched.
+- `frontend-app/src/RoadmapPage.jsx` - 1 phase-2 item wording change.
+
+**Exact sentences changed (before -> after):**
+
+1. Section 06 (curve math), BONDING CURVE MECHANICS:
+   - BEFORE: "SuiPump uses a constant-product pricing model with virtual reserves: Vs = 3,500 SUI and Vt = 1,073,000,000 tokens. A token graduates once its real SUI reserve reaches the graduation threshold of 9,000 SUI, or its token reserve fully drains - whichever comes first."
+   - AFTER:  "SuiPump uses a constant-product pricing model with virtual reserves: Vs = 4,369 SUI and Vt = 1,073,000,000 tokens. A token graduates once its real SUI reserve reaches the graduation threshold of 12,305 SUI at $1 SUI (price-scaled: the buy entrypoint takes the live SUI price, so graduation targets a USD-stable market cap), or its token reserve fully drains - whichever comes first."
+   - Vt (1,073,000,000 = 1,073M) verified correct against contract VTR - left unchanged. Section 06 states no graduation market-cap figure, so no formula was inserted.
+
+2. Section 01 (Executive Summary), last paragraph:
+   - BEFORE: "Season 1 introduces the first coordinated user-acquisition program: at season close, 50% of all accumulated protocol fees are distributed to early users proportionally to an on-chain points system."
+   - AFTER:  "Season 1 introduces the first coordinated user-acquisition program: at season close, the dedicated airdrop bucket - 0.25% of every trade (25% of the 1.00% trade fee) - is distributed to early users proportionally to an on-chain points system."
+
+3. Section 03 (Solution), S1 AIRDROP:
+   - BEFORE: "At the end of Season 1, 50% of accumulated protocol fees are distributed to users in proportion to their points. Points are earned by trading, launching, referring, and holding graduated tokens."
+   - AFTER:  "At the end of Season 1, the dedicated airdrop bucket - 0.25% of every trade (25% of the 1.00% trade fee) - is distributed to users in proportion to their points. Points are earned by trading, launching, referring, and holding graduated tokens."
+
+4. Section 07 (Season 1 Airdrop), lead paragraph:
+   - BEFORE: "Season 1 runs from the protocol's first transaction on mainnet through a closing date announced with at least 30 days' notice. At season close, 50% of all accumulated protocol fees are distributed to eligible wallets in proportion to their S1 points. Distribution is in liquid SUI - no vesting, no new token."
+   - AFTER:  "Season 1 runs from the protocol's first transaction on mainnet through a closing date announced with at least 30 days' notice. At season close, the dedicated airdrop bucket - 0.25% of every trade (25% of the 1.00% trade fee) - is distributed to eligible wallets in proportion to their S1 points. Distribution is in liquid SUI - no vesting, no new token."
+   - NOTE: no NFT/testnet allocation split percentages added (pending community poll, per instruction).
+
+5. RoadmapPage phase 2 item:
+   - BEFORE: "Nexus/Talus 24/7 agent execution"
+   - AFTER:  "24/7 autonomous agent execution"
+   - (Whitepaper section-09 "Nexus/Talus autonomous agent" bullet was deliberately NOT touched - out of task scope + would move a frozen fingerprint.)
+
+**Gates (all re-run this session, output captured):**
+- Fingerprint content diff (HEAD vs WT): "3,500" 1->0, "9,000 SUI" 1->0, "accumulated protocol fees" 3->0. Diffstat: WhitepaperPage 4 lines (-4/+4), RoadmapPage 1 line - no collateral. All other frozen fingerprints (0.40%, 0.25%, 0.10%, 0.50%, supply figures, points figures, 55 tests, Vt 1,073,000,000) unchanged.
+- `npm run build` -> OK, built in 23.43s, 2239 modules, no errors (dynamic-import note + >500 kB chunk warning pre-existing).
+- `npx esbuild src/WhitepaperPage.jsx` OK; `npx esbuild src/RoadmapPage.jsx` OK.
+- ASCII purity: total non-ASCII byte count HEAD==WT (WhitepaperPage 113==113, RoadmapPage 0==0). Zero new non-ASCII; inserts use ASCII hyphens; pre-existing rendered em-dashes untouched.
+
+**Verified:** fingerprint + build + esbuild + ASCII (proof above). Restyle-free, content-only edits.
+**Not verified (no browser this session):** live pixel rendering of the reworded sentences. Presentation-only; no runtime behavior touched.
+
+### INDEXER STATS SEMANTICS (Task 4 - READ-ONLY diagnostic, no indexer code changed)
+
+**Where:** `/stats` endpoint = `indexer/api.js:141-152`. Values are VOLUME-DERIVED (fixed
+rate x total volume), NOT event-derived from on-chain fee balances. `getGlobalStats()`
+(`indexer/db.js:590`) sums `token_stats.volume_sui` -> `totalVolume`.
+
+**How each field is computed (api.js:144-146):**
+- `protocolFeesSui = totalVolume * 0.005`  -> OLD COMBINED 0.50% model (protocol + airdrop lumped). This is NOT the C-5 0.25% protocol bucket; it overstates true protocol revenue by 2x.
+- `creatorFeesSui  = totalVolume * 0.004`  -> 0.40%. Correct under both the old and C-5 models.
+- `s1PoolSui       = protocolFeesSui * 0.5` = totalVolume * 0.0025 -> 0.25% of volume. Numerically equal to the C-5 airdrop bucket, but derived indirectly as half of the inflated 0.50% protocol figure (correct by arithmetic coincidence, fragile).
+- No dedicated `airdropFeesSui` field is emitted. StatsPage reads `d.airdropFeesSui` (StatsPage.jsx:135) but the indexer never sends it, so it always falls back to `vol*0.0025`.
+
+**StatsPage label accuracy at mainnet:**
+- "S1 AIRDROP POOL" card (StatsPage.jsx:137 `s1Pool = d.s1PoolSui ?? airdropBucket`; label line 230, sub "the airdrop bucket - 0.25% of every trade") -> ACCURATE. Indexer s1PoolSui = 0.25% of volume, matches the label.
+- "PROTOCOL FEES" card (StatsPage.jsx:134 `protocolFees = d.protocolFeesSui ?? vol*0.0025`; label line 223, sub "0.25% of every trade" line 226) -> INACCURATE at mainnet. The `??` prefers the live indexer field, which returns 0.50% of volume, so the card will display DOUBLE the rate its own sub-label claims. (The intended 0.0025 fallback only fires if the indexer field is absent, which it is not.)
+
+**VERDICT: an indexer-side change IS required for the PROTOCOL FEES field to be accurate at mainnet.** Minimal fix (proposed, NOT applied - read-only task):
+- `indexer/api.js:144` -> `const protocolFeesSui = stats.totalVolume * 0.0025;` (C-5 protocol bucket).
+- `indexer/api.js:146` -> DECOUPLE: `const s1PoolSui = stats.totalVolume * 0.0025;` (independent of protocolFeesSui; otherwise fixing line 144 would halve the S1 figure to 0.00125 = 0.125%).
+- Optional: also emit `airdropFeesSui = stats.totalVolume * 0.0025;` in the response - StatsPage.jsx:135 already reads it, so this makes the airdrop bucket a first-class field instead of a client-side fallback.
+The S1 AIRDROP POOL card needs no change on its own, but the protocol fix must not regress it - hence the decoupling above.

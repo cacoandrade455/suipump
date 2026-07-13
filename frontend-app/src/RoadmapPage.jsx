@@ -31,7 +31,7 @@ const phases = [
       { text: 'Security audit (hard gate)', done: false },
       { text: 'DeepBook / Cetus / Turbos auto-graduation PTB', done: true },
       { text: 'Dedicated gRPC RPC infra', done: true },
-      { text: 'Nexus/Talus 24/7 agent execution', done: false },
+      { text: '24/7 autonomous agent execution', done: false },
       { text: 'KOL + creator partnerships', done: false },
     ],
   },
