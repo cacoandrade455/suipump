@@ -216,3 +216,49 @@ rate x total volume), NOT event-derived from on-chain fee balances. `getGlobalSt
 - `indexer/api.js:146` -> DECOUPLE: `const s1PoolSui = stats.totalVolume * 0.0025;` (independent of protocolFeesSui; otherwise fixing line 144 would halve the S1 figure to 0.00125 = 0.125%).
 - Optional: also emit `airdropFeesSui = stats.totalVolume * 0.0025;` in the response - StatsPage.jsx:135 already reads it, so this makes the airdrop bucket a first-class field instead of a client-side fallback.
 The S1 AIRDROP POOL card needs no change on its own, but the protocol fix must not regress it - hence the decoupling above.
+
+---
+
+## Indexer /stats -> C-5 fee buckets; whitepaper section 09 agent-layer rename - SHIPPED
+
+Implements the prior entry's INDEXER STATS SEMANTICS proposed fix (Task 1) and resolves
+the deliberately-skipped section-09 Nexus/Talus rename (Task 2). Carlos-approved.
+
+**Files changed (named `git add` only):** `indexer/api.js`, `frontend-app/src/WhitepaperPage.jsx`, `SHIP_LOG.md`.
+
+**Task 1 - indexer/api.js `/stats` fee fields (api.js:143-157):**
+- `protocolFeesSui` was `stats.totalVolume * 0.005` (old combined 0.50% protocol+airdrop) -> now `stats.totalVolume * 0.0025` (C-5 protocol bucket 0.25%).
+- `s1PoolSui` was `protocolFeesSui * 0.5` (would have halved to 0.00125 once line 1 dropped to 0.0025) -> now `stats.totalVolume * 0.0025` computed INDEPENDENTLY (decoupled), so it stays at 0.25% of volume regardless of the protocol line.
+- NEW field `airdropFeesSui = stats.totalVolume * 0.0025` emitted in the response (StatsPage.jsx:135 already reads `d.airdropFeesSui` and previously fell back to `vol*0.0025`; it is now a first-class field).
+- Added a 4-line comment: values are volume-derived approximations under the C-5 five-way split (40/25/25/10 of the 1.00% fee) and ignore referral cessions (protocol + airdrop each cede 0.05% on referred trades); event-derived fee accounting is a post-mainnet enhancement.
+- No other field or route touched.
+
+**Task 1 grep proof (no other file depends on the old 0.50% semantics):**
+Searched repo `*.{js,jsx}` for `protocolFeesSui|s1PoolSui|airdropFeesSui|0.005|0.50%`:
+- `suipump-nexus-tools/bridge.js:1693-1694` - computes its OWN `protocolFeesSui`/`airdropFeesSui` from mist balances (`Number(...Mist)/1e9`) on a different route; does not read the indexer's volume-derived field. UNAFFECTED.
+- `frontend-app/src/App.jsx:180` and `S1AirdropCounter.jsx:47` - consume `s1PoolSui`. Value is IDENTICAL before/after (old `0.005*0.5` = new `0.0025` = 0.25% of volume). No regression.
+- `frontend-app/src/StatsPage.jsx:134-137` - consume all three with `?? vol*0.0025` fallbacks; the fix makes `protocolFeesSui` match its "0.25% of every trade" card label and promotes `airdropFeesSui` to a real field. Now accurate.
+- `frontend-app/src/AirdropPage.jsx:46` - static prose "0.50% goes to the protocol"; does NOT read the field (independent copy, not a code dependency). OUT OF SCOPE this session; flagged to Carlos as a separate stale-copy item.
+- Runner (`agent-runner/strategy.js`) - zero references (no grep hit).
+- No consumer depended on the field literally equaling 0.50% of volume. Safe.
+
+**Task 2 - WhitepaperPage.jsx section 09 (Roadmap, PHASE 2 bullet, line 306):**
+- BEFORE: "Nexus/Talus autonomous agent -- 24/7 server-side strategy execution"
+- AFTER:  "24/7 autonomous agent layer -- server-side strategy execution"
+- (em-dash preserved as the existing rendered glyph.) Dropped the now-duplicate "24/7" from the trailing clause so it does not read "24/7 ... 24/7" - the minimal grammar adjustment the rename forces. Section describes a roadmap bullet, not execution routing, so the alternate "agent runner with per-user session keys" rewording did not apply. "Nexus/Talus" verified to occur exactly ONCE in the file (line 306, section 09) before editing; nothing else in section 09 or any other section changed.
+
+**Incidental gate-compliance fix (same file, disclosed):** `indexer/api.js` carried 2 pre-existing non-ASCII bytes - a `check-glyph` in two `console.log` startup strings (lines 727 + 921 post-edit). Hard rule 14 (.js must be pure ASCII) is enforced by a blocking whole-file gate hook that fired on my edit. Converted both `check-glyph` -> `OK` (cosmetic log text, behavior-neutral) so the file passes. These bytes predate this session (non-ASCII count was 6==6 HEAD vs WT before the fix); not introduced by Task 1.
+
+**Gates (re-run this session, output captured):**
+- Whitepaper fingerprint diff: "Nexus" 1->0; "24/7" 1->1 (unchanged); non-ASCII 113==113; diffstat 1 line (-1/+1). All other fingerprints match HEAD.
+- `npx acorn --ecma2023 --module indexer/api.js` -> PARSE OK. (NOTE: the repo's PostToolUse gate hook runs acorn WITHOUT `--module`, so it emits a false "import/export only with sourceType: module" error on this and every ESM `.js` file; the file is valid ESM - 13 import/export, 0 require - and passes the correct `--module` gate the task specified.)
+- `npx esbuild src/WhitepaperPage.jsx` -> parse OK.
+- `npm run build` (frontend) -> OK, built in 19.58s, 2239 modules (dynamic-import note + >500 kB chunk warning pre-existing).
+- ASCII: indexer/api.js now 0 non-ASCII; WhitepaperPage.jsx 113==113 (zero new).
+
+**Verified:** grep dependency proof + fingerprint + acorn(--module) + esbuild + build + ASCII (all output captured). `/stats` change is a pure numeric-rate + additive-field edit; `s1PoolSui`/`protocolFeesSui` semantics traced through every consumer.
+**Not verified (no live indexer/browser this session):** the deployed `/stats` JSON at runtime and StatsPage rendering the corrected PROTOCOL FEES value. Presentation/number-only; no control flow changed.
+
+**Open flags:**
+1. `AirdropPage.jsx:46` prose still says "0.50% goes to the protocol" - stale vs the C-5 0.25% protocol bucket. Independent copy (not tied to the /stats field). Needs a separate Carlos-approved content pass; not touched here (out of task scope).
+2. Repo gate hook runs acorn in script mode for `.js`, producing false failures on ESM indexer files. Not a code bug; consider passing `--module` (or auto-detecting) in `.claude/hooks/gates.py` so ESM `.js` edits stop tripping the block.

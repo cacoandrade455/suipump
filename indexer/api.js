@@ -141,15 +141,20 @@ app.get('/stream', (req, res) => {
 app.get('/stats', async (req, res) => {
   try {
     const stats = await getGlobalStats();
-    const protocolFeesSui = stats.totalVolume * 0.005;
+    // Volume-derived approximations under the C-5 five-way split (40/25/25/10 of the
+    // 1.00% trade fee): creator 0.40%, protocol 0.25%, airdrop 0.25%, LP 0.10%. These
+    // ignore referral cessions (protocol + airdrop each cede 0.05% on referred trades);
+    // event-derived fee accounting is a post-mainnet enhancement.
+    const protocolFeesSui = stats.totalVolume * 0.0025;
     const creatorFeesSui  = stats.totalVolume * 0.004;
-    const s1PoolSui       = protocolFeesSui * 0.5;
+    const airdropFeesSui  = stats.totalVolume * 0.0025;
+    const s1PoolSui       = stats.totalVolume * 0.0025;
     const [buySellRes, uniqueWalletsRes, graduatedRes] = await Promise.all([
       pool.query('SELECT COALESCE(SUM(buys),0) AS total_buys, COALESCE(SUM(sells),0) AS total_sells FROM token_stats'),
       pool.query(`SELECT COUNT(DISTINCT wallet) AS cnt FROM (SELECT data->>'buyer' AS wallet FROM events WHERE event_type LIKE '%TokensPurchased' OR event_type LIKE '%TokensBought' UNION SELECT data->>'seller' AS wallet FROM events WHERE event_type LIKE '%TokensSold') w WHERE wallet IS NOT NULL AND wallet != ''`),
       pool.query(`SELECT COUNT(*) AS cnt FROM curves WHERE graduated = true`),
     ]);
-    res.json({ totalVolume: stats.totalVolume, totalTrades: stats.totalTrades, totalBuys: Number(buySellRes.rows[0]?.total_buys ?? 0), totalSells: Number(buySellRes.rows[0]?.total_sells ?? 0), tokenCount: stats.tokenCount, graduatedCount: Number(graduatedRes.rows[0]?.cnt ?? 0), uniqueWallets: Number(uniqueWalletsRes.rows[0]?.cnt ?? 0), protocolFeesSui, creatorFeesSui, s1PoolSui });
+    res.json({ totalVolume: stats.totalVolume, totalTrades: stats.totalTrades, totalBuys: Number(buySellRes.rows[0]?.total_buys ?? 0), totalSells: Number(buySellRes.rows[0]?.total_sells ?? 0), tokenCount: stats.tokenCount, graduatedCount: Number(graduatedRes.rows[0]?.cnt ?? 0), uniqueWallets: Number(uniqueWalletsRes.rows[0]?.cnt ?? 0), protocolFeesSui, creatorFeesSui, airdropFeesSui, s1PoolSui });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -719,7 +724,7 @@ async function startPgListener() {
     await client.query('LISTEN suipump_events');
     client.on('notification', (msg) => { try { const event = JSON.parse(msg.payload); emitEvent(event.eventType, event.data, event.curveId, event.digest ?? null); } catch {} });
     client.on('error', (err) => { console.error('  PG listener error:', err.message); client.end().catch(() => {}); setTimeout(startPgListener, 5_000); });
-    console.log('  ✓ PostgreSQL LISTEN active -- suipump_events');
+    console.log('  OK PostgreSQL LISTEN active -- suipump_events');
   } catch (err) { console.error('  PG listener connect failed:', err.message); setTimeout(startPgListener, 5_000); }
 }
 
@@ -913,6 +918,6 @@ app.get('/search/by-symbol/:symbol', async (req, res) => {
 });
 
 export function startApi() {
-  app.listen(PORT, () => console.log(`  ✓ API listening on port ${PORT}`));
+  app.listen(PORT, () => console.log(`  OK API listening on port ${PORT}`));
   startPgListener().catch(err => console.error('PG listener failed:', err.message));
 }

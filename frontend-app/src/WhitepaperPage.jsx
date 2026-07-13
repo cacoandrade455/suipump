@@ -303,7 +303,7 @@ export default function WhitepaperPage({ onBack }) {
             <Bullet>DEX auto-graduation (Cetus / DeepBook / Turbos)</Bullet>
             <Bullet>Dedicated gRPC RPC node and monitoring infrastructure</Bullet>
             <Bullet>Mobile app (iOS + Android)</Bullet>
-            <Bullet>Nexus/Talus autonomous agent — 24/7 server-side strategy execution</Bullet>
+            <Bullet>24/7 autonomous agent layer — server-side strategy execution</Bullet>
             <Bullet>KOL and creator partnerships</Bullet>
             <H>PHASE 3 — MAINNET</H>
             <Bullet>Mainnet deployment post-audit</Bullet>
