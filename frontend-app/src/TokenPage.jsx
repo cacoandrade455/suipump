@@ -427,9 +427,9 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
   const now = Date.now();
 
   return (
-    <div className="bg-white/[0.03] border border-white/10 rounded-xl overflow-hidden">
-      <div className="px-4 py-3 border-b border-white/10 flex items-center justify-between">
-        <span className="text-[10px] font-mono text-lime-400/70 tracking-widest">VESTING LOCKS</span>
+    <div className="bg-white/[0.015] border border-white/[0.08] rounded-2xl overflow-hidden">
+      <div className="px-4 py-3 border-b border-white/[0.08] flex items-center justify-between">
+        <span className="text-[10px] font-mono font-bold tracking-[0.16em] text-white/55">VESTING LOCKS</span>
         {account && <button onClick={() => setShowLockForm(o => !o)} className="text-[10px] font-mono text-lime-400 hover:text-lime-300 transition-colors">{showLockForm ? 'Cancel' : '+ Lock tokens'}</button>}
       </div>
       {showLockForm && (
@@ -631,15 +631,15 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
   };
 
   return (
-    <div className="bg-white/[0.03] border border-lime-400/20 rounded-xl p-4 space-y-3">
+    <div className="bg-amber-500/[0.04] border border-amber-500/25 rounded-2xl p-4 space-y-3">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-1.5">
-          <Edit3 size={11} className="text-lime-400/70" />
-          <span className="text-[9px] font-mono tracking-widest text-lime-400/70">CREATOR TOOLS</span>
+          <Edit3 size={11} className="text-[#f59e0b]" />
+          <span className="text-[10px] font-mono font-bold tracking-[0.16em] text-[#f59e0b]">CREATOR TOOLS</span>
         </div>
         <div className="flex gap-1">
           {['links', ...((METADATA_UPDATE_ENABLED && (isV6Token || isV7Token || isV8Token || isV9OrLater(pkgId))) ? ['metadata'] : [])].map(tabName => (
-            <button key={tabName} onClick={() => setTab(tabName)} className={`px-2.5 py-1 rounded-lg text-[9px] font-mono transition-colors ${tab === tabName ? 'bg-lime-400/10 text-lime-400 border border-lime-400/30' : 'text-white/30 hover:text-white/60'}`}>{tabName.toUpperCase()}</button>
+            <button key={tabName} onClick={() => setTab(tabName)} className={`px-2.5 py-1 rounded-lg text-[9px] font-mono transition-colors ${tab === tabName ? 'bg-amber-500/10 text-[#f59e0b] border border-amber-500/30' : 'text-white/30 hover:text-white/60'}`}>{tabName.toUpperCase()}</button>
           ))}
         </div>
       </div>
@@ -651,7 +651,7 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
           {[{ key: 'twitter', placeholder: 'https://x.com/yourtoken' }, { key: 'telegram', placeholder: 'https://t.me/yourtoken' }, { key: 'website', placeholder: 'https://yourtoken.xyz' }].map(({ key, placeholder }) => (
             <input key={key} value={links[key]} onChange={e => setLinks(l => ({ ...l, [key]: e.target.value }))} placeholder={placeholder} className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 transition-colors" />
           ))}
-          <button onClick={handleQueueLinks} disabled={busy} className={`w-full py-2 rounded-lg text-[10px] font-mono font-bold transition-colors ${busy ? 'bg-white/5 text-white/20 cursor-not-allowed' : 'bg-lime-400/10 border border-lime-400/30 text-lime-400 hover:bg-lime-400/20'}`}>{busy ? 'SAVING...' : 'UPDATE LINKS'}</button>
+          <button onClick={handleQueueLinks} disabled={busy} className={`w-full py-2 rounded-lg text-[10px] font-mono font-bold transition-colors ${busy ? 'bg-white/5 text-white/20 cursor-not-allowed' : 'bg-amber-500/10 border border-amber-500/30 text-[#f59e0b] hover:bg-amber-500/20'}`}>{busy ? 'SAVING...' : 'UPDATE LINKS'}</button>
         </div>
       )}
 
@@ -676,7 +676,7 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
               <>
                 <div className="flex items-center justify-between">
                   <div className="text-[9px] font-mono text-white/25">{isV7Token ? 'On-chain . one-time only' : 'Instant . one-time only'} . {hoursLeft}h remaining</div>
-                  <div className="flex items-center gap-1 text-[9px] font-mono text-lime-400/60"><Clock size={9} />{hoursLeft}h left</div>
+                  <div className="flex items-center gap-1 text-[9px] font-mono text-[#f59e0b]/70"><Clock size={9} />{hoursLeft}h left</div>
                 </div>
                 {[{ key: 'name', placeholder: 'New token name (optional)' }, { key: 'symbol', placeholder: 'NEW SYMBOL (optional)' }, { key: 'description', placeholder: 'New description (optional)' }].map(({ key, placeholder }) => (
                   <input key={key} value={meta[key]} onChange={e => setMeta(m => ({ ...m, [key]: e.target.value }))} placeholder={placeholder} className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 transition-colors" />
@@ -703,7 +703,7 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
                   {iconUploadError && <div className="text-[9px] font-mono text-red-400">{iconUploadError}</div>}
                   <input value={meta.iconUrl} onChange={e => setMeta(m => ({ ...m, iconUrl: e.target.value }))} placeholder="or paste URL (optional)" className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 transition-colors" />
                 </div>
-                <button onClick={handleUpdateMetadata} disabled={busy} className={`w-full py-2 rounded-lg text-[10px] font-mono font-bold transition-colors ${busy ? 'bg-white/5 text-white/20 cursor-not-allowed' : 'bg-lime-400 text-black hover:bg-lime-300'}`}>{busy ? 'UPDATING...' : (isV7Token ? 'UPDATE ON-CHAIN' : 'UPDATE NOW (INSTANT)')}</button>
+                <button onClick={handleUpdateMetadata} disabled={busy} className={`w-full py-2 rounded-lg text-[10px] font-mono font-bold transition-colors ${busy ? 'bg-white/5 text-white/20 cursor-not-allowed' : 'bg-[#f59e0b] text-black hover:bg-amber-400'}`}>{busy ? 'UPDATING...' : (isV7Token ? 'UPDATE ON-CHAIN' : 'UPDATE NOW (INSTANT)')}</button>
               </>
             )}
           </div>
@@ -1204,12 +1204,12 @@ function TPSLPanel({
   if (!account) return null;
 
   return (
-    <div className="bg-white/[0.03] border border-white/10 rounded-xl overflow-hidden">
+    <div className="bg-white/[0.015] border border-white/[0.08] rounded-2xl overflow-hidden">
       {/* Header */}
-      <div className="px-4 py-3 flex items-center justify-between border-b border-white/5">
+      <div className="px-4 py-3 flex items-center justify-between border-b border-white/[0.06]">
         <div className="flex items-center gap-2">
           <ShieldAlert size={11} className={isActive ? 'text-lime-400' : 'text-white/30'} />
-          <span className="text-[10px] font-mono tracking-widest text-lime-400/70">TP / SL</span>
+          <span className="text-[10px] font-mono font-bold tracking-[0.16em] text-white/55">AUTOMATION</span>
           {isActive && (
             <span className="flex items-center gap-1 text-[9px] font-mono text-lime-400/70">
               <span className="w-1.5 h-1.5 rounded-full bg-lime-400 animate-pulse inline-block" />
@@ -1218,6 +1218,7 @@ function TPSLPanel({
           )}
         </div>
         <div className="flex items-center gap-2">
+          <span className={`text-[8.5px] font-mono font-semibold px-[7px] py-[3px] rounded-full border ${keypair ? 'text-lime-400 border-lime-400/30' : 'text-[#f59e0b] border-amber-500/30'}`}>TRADING KEY</span>
           {isActive && (
             <button onClick={deactivate}
               className="text-[9px] font-mono text-red-400/60 hover:text-red-400 transition-colors">
@@ -1463,10 +1464,7 @@ function TradesHoldersBlock({ curveId, tokenType, suiUsd, lang, creator, trades,
 
 function CommentsBlock({ curveId, packageId, lang, initialSharedVersion = null, tokenType = null }) {
   return (
-    <div>
-      <div className="text-[10px] font-mono text-lime-400/70 tracking-widest mb-2">{t(lang, 'comments')}</div>
-      <Comments curveId={curveId} packageId={packageId} initialSharedVersion={initialSharedVersion} tokenType={tokenType} />
-    </div>
+    <Comments curveId={curveId} packageId={packageId} initialSharedVersion={initialSharedVersion} tokenType={tokenType} lang={lang} />
   );
 }
 
@@ -1661,9 +1659,9 @@ function CommunityTakeoverPanel({ curveId, tokenType, packageId, creator, lastCr
   };
 
   return (
-    <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 space-y-3">
+    <div className="bg-white/[0.015] border border-white/[0.08] rounded-2xl p-4 space-y-3">
       <div className="flex items-center justify-between">
-        <div className="text-[10px] font-mono text-lime-400/70 tracking-widest">COMMUNITY TAKEOVER</div>
+        <div className="text-[10px] font-mono font-bold tracking-[0.16em] text-white/55">COMMUNITY TAKEOVER</div>
         {isCreator && (
           <button onClick={doHeartbeat} disabled={busy}
             className={`px-2.5 py-1 rounded-lg text-[9px] font-mono transition-colors ${busy ? 'bg-white/5 text-white/25' : 'bg-lime-400/10 text-lime-400 border border-lime-400/30 hover:bg-lime-400/20'}`}>
@@ -1819,8 +1817,8 @@ function CommentGatePanel({ curveId, tokenType, isCreator, packageId, account, i
   if (!isV10OrLater(packageId) || !isCreator) return null;
 
   return (
-    <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 space-y-2">
-      <div className="text-[10px] font-mono text-lime-400/70 tracking-widest">COMMENTS ACCESS</div>
+    <div className="bg-white/[0.015] border border-white/[0.08] rounded-2xl p-4 space-y-2">
+      <div className="text-[10px] font-mono font-bold tracking-[0.16em] text-white/55">COMMENTS ACCESS</div>
       <div className="text-[10px] font-mono text-white/40">
         {gated ? 'Holder-gated: only wallets holding this token can comment.' : 'Open: anyone can comment.'}
       </div>
@@ -1921,8 +1919,8 @@ function CreatorBuybackPanel({ curveId, tokenType, packageId, isCreator, account
   if (!config && !isCreator) return null;
 
   return (
-    <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 space-y-3">
-      <div className="text-[10px] font-mono text-lime-400/70 tracking-widest">CREATOR BUYBACK</div>
+    <div className="bg-white/[0.015] border border-white/[0.08] rounded-2xl p-4 space-y-3">
+      <div className="text-[10px] font-mono font-bold tracking-[0.16em] text-white/55">CREATOR BUYBACK</div>
 
       {config ? (
         <div className="text-[10px] font-mono text-white/40">
@@ -2533,13 +2531,13 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
 
           {/* Mobile-only accordions - the right column is hidden below lg, so TP/SL and
               Vesting are surfaced here as collapsible grids (lime, token-page palette). */}
-          <div className="lg:hidden border border-white/10 rounded-xl bg-white/[0.02] overflow-hidden">
+          <div className="lg:hidden border border-white/[0.08] rounded-2xl bg-white/[0.015] overflow-hidden">
             <button onClick={() => setMTpslOpen(v => !v)} className="w-full flex items-center justify-between px-4 py-3 text-left">
-              <span className="text-[10px] font-mono text-lime-400/70 tracking-widest">TP / SL</span>
+              <span className="text-[10px] font-mono font-bold tracking-[0.16em] text-white/55">AUTOMATION</span>
               <ChevronDown size={14} className={`text-white/30 transition-transform ${mTpslOpen ? 'rotate-180' : ''}`} />
             </button>
             {mTpslOpen && (
-              <div className="border-t border-white/10">
+              <div className="border-t border-white/[0.08]">
                 <TPSLPanel
                   account={account}
                   curveId={curveId}
@@ -2559,13 +2557,13 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
             )}
           </div>
 
-          <div className="lg:hidden border border-white/10 rounded-xl bg-white/[0.02] overflow-hidden">
+          <div className="lg:hidden border border-white/[0.08] rounded-2xl bg-white/[0.015] overflow-hidden">
             <button onClick={() => setMVestOpen(v => !v)} className="w-full flex items-center justify-between px-4 py-3 text-left">
-              <span className="text-[10px] font-mono text-lime-400/70 tracking-widest">VESTING LOCKS</span>
+              <span className="text-[10px] font-mono font-bold tracking-[0.16em] text-white/55">VESTING LOCKS</span>
               <ChevronDown size={14} className={`text-white/30 transition-transform ${mVestOpen ? 'rotate-180' : ''}`} />
             </button>
             {mVestOpen && (
-              <div className="border-t border-white/10">
+              <div className="border-t border-white/[0.08]">
                 <VestingPanel curveId={curveId} tokenType={tokenType} packageId={pkgId} account={account} tokenBalance={tokenBalance} lang={lang} initialSharedVersion={curveState?.initial_shared_version ?? null} />
               </div>
             )}

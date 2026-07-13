@@ -7,6 +7,7 @@ import { useCurrentAccount, useDAppKit, useCurrentClient } from '@mysten/dapp-ki
 import { Transaction } from '@mysten/sui/transactions';
 import { Send, Reply, ChevronDown, ChevronUp } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { t } from './i18n.js';
 
 function getPfp(addr) { try { return localStorage.getItem(`suipump_pfp_${addr}`) || ''; } catch { return ''; } }
 import {
@@ -209,9 +210,9 @@ function CommentItem({ comment, replies, account, curveId, onReplyPosted,
   };
 
   return (
-    <div className="px-4 py-3 hover:bg-white/[0.02] transition-colors">
-      <div className="flex items-start gap-2.5">
-        <Link to={`/portfolio/${comment.author}`} className="w-6 h-6 rounded-full flex-shrink-0 mt-0.5 overflow-hidden block hover:ring-1 hover:ring-lime-400/40 transition-all">
+    <div className="-mx-2 px-2 py-2 rounded-lg hover:bg-white/[0.02] transition-colors">
+      <div className="flex items-start gap-[11px]">
+        <Link to={`/portfolio/${comment.author}`} className="w-7 h-7 rounded-[9px] flex-shrink-0 overflow-hidden block border border-white/[0.12] hover:ring-1 hover:ring-lime-400/40 transition-all">
           {getPfp(comment.author)
             ? <img src={getPfp(comment.author)} alt="" className="w-full h-full object-cover" />
             : <div className="w-full h-full flex items-center justify-center text-[9px] font-bold text-black"
@@ -221,11 +222,11 @@ function CommentItem({ comment, replies, account, curveId, onReplyPosted,
           }
         </Link>
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1">
-            <Link to={`/portfolio/${comment.author}`} className="text-[10px] font-mono text-white/50 hover:text-lime-400 transition-colors">{shortAddr(comment.author)}</Link>
-            <span className="text-[10px] font-mono text-white/25">{timeAgo(comment.timestamp)}</span>
+          <div className="flex items-center gap-2">
+            <Link to={`/portfolio/${comment.author}`} className="text-[11px] font-mono font-semibold text-white/75 hover:text-lime-400 transition-colors">{shortAddr(comment.author)}</Link>
+            <span className="text-[9.5px] font-mono text-white/28">{timeAgo(comment.timestamp)}</span>
           </div>
-          <p className="text-sm text-white/70 leading-relaxed break-words">{comment.text}</p>
+          <p className="text-xs text-white/60 leading-[1.55] break-words mt-1.5">{comment.text}</p>
           <div className="flex items-center gap-3 mt-2">
             {account && (
               <button onClick={handleOpenReply}
@@ -265,19 +266,19 @@ function CommentItem({ comment, replies, account, curveId, onReplyPosted,
             </div>
           )}
           {showReplies && replyCount > 0 && (
-            <div className="mt-3 space-y-3 border-l-2 border-white/5 pl-3">
+            <div className="mt-3 space-y-3 border-l-2 border-lime-400/20 pl-3">
               {replies.map(r => (
-                <div key={r.id} className="flex items-start gap-2">
-                  <div className="w-5 h-5 rounded-full flex-shrink-0 mt-0.5 flex items-center justify-center text-[8px] font-bold text-black"
+                <div key={r.id} className="flex items-start gap-[11px]">
+                  <div className="w-[22px] h-[22px] rounded-[7px] flex-shrink-0 flex items-center justify-center text-[8px] font-bold text-black border border-white/[0.12]"
                     style={{ backgroundColor: walletColor(r.author) }}>
                     {r.author?.slice(2, 4).toUpperCase()}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-0.5">
-                      <Link to={`/portfolio/${r.author}`} className="text-[10px] font-mono text-white/50 hover:text-lime-400 transition-colors">{shortAddr(r.author)}</Link>
-                      <span className="text-[10px] font-mono text-white/25">{timeAgo(r.timestamp)}</span>
+                    <div className="flex items-center gap-2">
+                      <Link to={`/portfolio/${r.author}`} className="text-[11px] font-mono font-semibold text-white/75 hover:text-lime-400 transition-colors">{shortAddr(r.author)}</Link>
+                      <span className="text-[9.5px] font-mono text-white/28">{timeAgo(r.timestamp)}</span>
                     </div>
-                    <p className="text-xs text-white/60 leading-relaxed break-words">{r.text}</p>
+                    <p className="text-xs text-white/60 leading-[1.55] break-words mt-1.5">{r.text}</p>
                   </div>
                 </div>
               ))}
@@ -289,7 +290,7 @@ function CommentItem({ comment, replies, account, curveId, onReplyPosted,
   );
 }
 
-export default function Comments({ curveId, packageId, initialSharedVersion = null, tokenType = null }) {
+export default function Comments({ curveId, packageId, initialSharedVersion = null, tokenType = null, lang = 'en' }) {
   const account = useCurrentAccount();
   const dAppKit = useDAppKit();
   const client  = useCurrentClient();
@@ -583,13 +584,56 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
   const repliesFor = (c) => repliesByParent[isV10 ? (c.digestKey ?? c.id) : c.id] || [];
 
   return (
-    <div className="bg-white/[0.03] border border-white/10 rounded-xl overflow-hidden">
+    <div className="border border-white/[0.08] rounded-2xl bg-white/[0.015] p-4">
+      {/* Header (design: COMMENTS + live gate subtitle) */}
+      <div className="flex items-center gap-2 mb-3.5 flex-wrap">
+        <span className="text-[10px] font-mono font-bold tracking-[0.16em] text-white/55">{t(lang, 'comments')}</span>
+        {isV10 && (
+          <span className="text-[9.5px] font-mono text-white/30">
+            {holderGated ? t(lang, 'commentsGateHolders') : t(lang, 'commentsGateOpen')} {'·'} {t(lang, 'commentsPostInfo')}
+          </span>
+        )}
+      </div>
+
+      {/* Composer (design: bordered box directly under header) */}
+      {account && (
+        <div className="mb-3.5">
+          {isV10 && holderGated && !holderCoinId ? (
+            <div className="py-2 text-center text-[11px] font-mono text-white/30">
+              Hold the token to comment.
+            </div>
+          ) : (
+            <>
+              <div className="flex items-start gap-2.5 border border-white/[0.09] rounded-[11px] px-3.5 py-[11px] bg-white/[0.02] focus-within:border-lime-400/40 transition-colors">
+                <textarea
+                  value={text}
+                  onChange={e => setText(e.target.value.slice(0, 500))}
+                  onKeyDown={handleKey}
+                  placeholder="Write a comment... (Enter to post)"
+                  rows={1}
+                  className="flex-1 bg-transparent border-0 p-0 text-sm text-white placeholder-white/30 focus:outline-none focus:ring-0 font-mono resize-none leading-snug"
+                />
+                <button onClick={handlePost} disabled={!text.trim() || posting}
+                  className={`h-7 px-3 rounded-lg text-[10px] font-mono font-bold transition-colors flex items-center gap-1 self-start ${!text.trim() || posting ? 'bg-white/5 text-white/20 cursor-not-allowed' : 'bg-lime-400 hover:bg-lime-300 text-black'}`}>
+                  <Send size={12} />
+                </button>
+              </div>
+              <div className="flex items-center justify-between px-1 mt-1.5">
+                {postErr ? <span className="text-[10px] font-mono text-red-400">{postErr}</span> : <span />}
+                <span className="text-[10px] font-mono text-white/25">{text.length}/500</span>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Comment list */}
       {loading ? (
         <div className="py-8 text-center text-white/20 text-xs font-mono">Loading...</div>
       ) : visibleComments.length === 0 ? (
         <div className="py-8 text-center text-white/20 text-xs font-mono">No comments yet. Be the first!</div>
       ) : (
-        <div className="divide-y divide-white/5 max-h-[500px] overflow-y-auto">
+        <div className="flex flex-col gap-3 max-h-[500px] overflow-y-auto">
           {visibleComments.map(c => (
             <CommentItem
               key={c.id}
@@ -610,36 +654,6 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
             />
           ))}
           <div ref={bottomRef} />
-        </div>
-      )}
-      {account && (
-        <div className="border-t border-white/10 p-3 space-y-2">
-          {isV10 && holderGated && !holderCoinId ? (
-            <div className="py-2 text-center text-[11px] font-mono text-white/30">
-              Hold the token to comment.
-            </div>
-          ) : (
-            <>
-              <div className="flex gap-2">
-                <textarea
-                  value={text}
-                  onChange={e => setText(e.target.value.slice(0, 500))}
-                  onKeyDown={handleKey}
-                  placeholder="Write a comment... (Enter to post)"
-                  rows={2}
-                  className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder-white/20 focus:outline-none focus:border-lime-400/40 font-mono resize-none transition-colors"
-                />
-                <button onClick={handlePost} disabled={!text.trim() || posting}
-                  className={`px-3 py-2 rounded-xl text-sm font-mono transition-colors self-end ${!text.trim() || posting ? 'bg-white/5 text-white/20 cursor-not-allowed' : 'bg-lime-400 hover:bg-lime-300 text-black'}`}>
-                  <Send size={14} />
-                </button>
-              </div>
-              <div className="flex items-center justify-between px-1">
-                {postErr ? <span className="text-[10px] font-mono text-red-400">{postErr}</span> : <span />}
-                <span className="text-[10px] font-mono text-white/25">{text.length}/500</span>
-              </div>
-            </>
-          )}
         </div>
       )}
     </div>

@@ -1,6 +1,6 @@
 // LiveFeedSidebar.jsx  -  real-time buys/sells across all tokens
 import React, { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { Zap, X } from 'lucide-react';
 import { ALL_PACKAGE_IDS } from './constants.js';
 import { paginateMultipleEvents } from './paginateEvents.js';
@@ -182,10 +182,13 @@ export default function LiveFeedSidebar({ tokens, onClose }) {
           <div className="text-center text-white/20 text-xs font-mono py-12">Waiting for trades…</div>
         ) : (
           feed.map(item => (
-            <button
+            <div
               key={item.id}
+              role="button"
+              tabIndex={0}
               onClick={() => navigate(`/token/${item.curveId}`)}
-              className="w-full px-4 py-2.5 border-b border-white/5 hover:bg-white/[0.03] transition-colors text-left"
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigate(`/token/${item.curveId}`); } }}
+              className="w-full px-4 py-2.5 border-b border-white/5 hover:bg-white/[0.03] transition-colors text-left cursor-pointer"
             >
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
@@ -196,8 +199,12 @@ export default function LiveFeedSidebar({ tokens, onClose }) {
                 </div>
                 <span className="text-[9px] font-mono text-white/25">{timeAgo(item.ts)}</span>
               </div>
-              <div className="text-[9px] font-mono text-white/25 mt-0.5">{shortAddr(item.wallet)}</div>
-            </button>
+              <Link
+                to={`/portfolio/${item.wallet}`}
+                onClick={(e) => e.stopPropagation()}
+                className="inline-block text-[9px] font-mono text-white/25 mt-0.5 hover:text-lime-400 transition-colors"
+              >{shortAddr(item.wallet)}</Link>
+            </div>
           ))
         )}
       </div>
