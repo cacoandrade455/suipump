@@ -23,7 +23,7 @@ export const config = { runtime: 'edge' };
 const GRAPHQL_URL    = 'https://graphql.testnet.sui.io/graphql';
 const INDEXER_URL    = 'https://suipump-62s2.onrender.com';
 const APP_URL        = 'https://suipump.org';
-const FALLBACK_IMAGE = 'https://i.imgur.com/qS6SGc7.jpeg'; // TODO: swap to a suipump.org-hosted card asset
+const FALLBACK_IMAGE = 'https://suipump.org/og-banner.png'; // torch brand card (brand v2, 2026-07-13)
 const MIST_PER_SUI   = 1_000_000_000n;
 
 // Defining package ids -- event TYPES define here forever (V11/V12 are
