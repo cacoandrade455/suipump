@@ -2,14 +2,35 @@
   "rewrites": [
     {
       "source": "/token/:curveId",
+      "has": [
+        {
+          "type": "header",
+          "key": "user-agent",
+          "value": "(?i).*(twitterbot|discordbot|telegrambot|slackbot|whatsapp|facebookexternalhit|facebot|linkedinbot|pinterest|embedly|applebot|googlebot|bingbot|duckduckbot|vkshare|ia_archiver|w3c_validator).*"
+        }
+      ],
       "destination": "/api/token-og?page=token&curveId=:curveId"
     },
     {
       "source": "/stats",
+      "has": [
+        {
+          "type": "header",
+          "key": "user-agent",
+          "value": "(?i).*(twitterbot|discordbot|telegrambot|slackbot|whatsapp|facebookexternalhit|facebot|linkedinbot|pinterest|embedly|applebot|googlebot|bingbot|duckduckbot|vkshare|ia_archiver|w3c_validator).*"
+        }
+      ],
       "destination": "/api/token-og?page=stats"
     },
     {
       "source": "/leaderboard",
+      "has": [
+        {
+          "type": "header",
+          "key": "user-agent",
+          "value": "(?i).*(twitterbot|discordbot|telegrambot|slackbot|whatsapp|facebookexternalhit|facebot|linkedinbot|pinterest|embedly|applebot|googlebot|bingbot|duckduckbot|vkshare|ia_archiver|w3c_validator).*"
+        }
+      ],
       "destination": "/api/token-og?page=leaderboard"
     },
     {
