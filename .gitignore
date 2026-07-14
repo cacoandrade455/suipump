@@ -68,3 +68,6 @@ contracts-v*/build/
 \'
 *.pem
 suipump-nexus-tools/register_enclave.js
+CLAUDE.md
+.claude/
+design/
