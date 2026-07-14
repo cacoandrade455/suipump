@@ -13,6 +13,13 @@
 // Env:
 //   AGENT_API_KEY       -- must match the bridge's AGENT_API_KEY exactly
 //   SUIPUMP_BRIDGE_URL  -- optional; defaults to the production bridge
+//
+// AUTH: the sweep returns funds to the session's recorded owner either way,
+// but only that owner should be able to trigger it. The caller signs the
+// canonical message; we require the recovered signer to be the indexed owner
+// of whichever of sessionId/sessionAddress was supplied.
+
+import { canonicalAuthMessage, verifyOwnerSignature, assertSessionOwner } from '../lib/verifyOwner.js';
 
 const BRIDGE_URL = process.env.SUIPUMP_BRIDGE_URL ?? 'https://suipump-bridge.onrender.com';
 
@@ -38,6 +45,22 @@ export default async function handler(req, res) {
   }
   if (!forward.sessionId && !forward.sessionAddress) {
     return res.status(400).json({ error: 'sessionId or sessionAddress required' });
+  }
+
+  // Wallet-signed ownership proof: signer must be the session's indexed owner.
+  try {
+    const { signature, ts, ...fields } = body;
+    const signer = await verifyOwnerSignature({
+      signature, ts,
+      canonicalPayload: canonicalAuthMessage('sweep-session-gas', ts, fields),
+    });
+    await assertSessionOwner({
+      sessionId: forward.sessionId,
+      sessionAddress: forward.sessionAddress,
+      ownerAddress: signer,
+    });
+  } catch (e) {
+    return res.status(401).json({ error: `auth: ${e.message}` });
   }
 
   const headers = { 'Content-Type': 'application/json' };

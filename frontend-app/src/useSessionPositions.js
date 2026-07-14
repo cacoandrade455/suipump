@@ -18,6 +18,7 @@
 // converted with Number() before any arithmetic; ASCII-only source.
 import { useState, useEffect, useCallback } from 'react';
 import { PACKAGE_ID_V10, TOKEN_DECIMALS } from './constants.js';
+import { signOwnerAuth } from './authSign.js';
 
 // Same definitions AgentPage.jsx uses (constants.js has no INDEXER_URL/GQL_URL).
 const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || 'https://suipump-62s2.onrender.com';
@@ -149,9 +150,14 @@ async function mapBounded(items, size, fn) {
 export async function sellSessionPosition({ sessionId, curveId }) {
   if (!sessionId) throw new Error('sellSessionPosition: sessionId is required');
   if (!curveId) throw new Error('sellSessionPosition: curveId is required (read-only position)');
+  // Wallet-signed ownership proof (mirrors AgentPage settleViaBridge's
+  // session-sell branch - keep the two in sync): the proxy verifies the
+  // signer owns this session before forwarding to the bridge.
+  const sellBody = { path: '/session-sell', sessionId, curveId, sellAll: true, minSuiOut: 0 };
+  const sellAuth = await signOwnerAuth('agent-bridge', sellBody);
   const r = await fetch(`/api/agent-bridge`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path: '/session-sell', sessionId, curveId, sellAll: true, minSuiOut: 0 }),
+    body: JSON.stringify({ ...sellBody, ...sellAuth }),
   });
   const d = await r.json().catch(() => ({}));
   if (!r.ok || d.ok === false) throw new Error(d.error || `bridge sell failed (${r.status})`);

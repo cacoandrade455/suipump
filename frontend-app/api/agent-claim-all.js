@@ -1,19 +1,25 @@
-// api/agent-claim-all.js — Vercel serverless proxy for "claim all creator fees".
+// api/agent-claim-all.js - Vercel serverless proxy for "claim all creator fees".
 //
-// FAN-OUT claim that SETTLES THROUGH THE BRIDGE — same as every other on-chain
+// FAN-OUT claim that SETTLES THROUGH THE BRIDGE - same as every other on-chain
 // action in SuiPump. The DAG plans; the bridge executes and moves the SUI. This
 // proxy enumerates every curve the connected (agent) wallet created with fees
 // pending, then calls the bridge POST /claim once per curve. The bridge finds
 // the CreatorCap in the agent wallet, runs claim_creator_fees on-chain, and
 // returns a REAL txDigest + the actual SUI claimed (from balanceChanges).
 //
-// A curve is only marked ok when the bridge returns a settled txDigest — so the
+// A curve is only marked ok when the bridge returns a settled txDigest - so the
 // UI can never show a green check for a claim that didn't actually land. The
 // total is summed from the bridge's on-chain suiClaimed, not the indexer's
 // estimate.
 //
 // Key handling mirrors agent-run.js: AGENT_API_KEY is injected server-side as
 // x-agent-key (the bridge gates /claim behind it) and never ships to the browser.
+//
+// AUTH: the claim loop is keyed on body.creatorAddress, so the caller must
+// PROVE control of that address - the personal-message signer must equal
+// creatorAddress before any enumerate-and-claim work starts.
+
+import { canonicalAuthMessage, verifyOwnerSignature } from '../lib/verifyOwner.js';
 
 const BRIDGE_URL  = process.env.AGENT_BRIDGE_URL ?? 'https://suipump-bridge.onrender.com';
 const INDEXER_URL = process.env.INDEXER_URL ?? process.env.VITE_INDEXER_URL ?? 'https://suipump-62s2.onrender.com';
@@ -32,6 +38,18 @@ export default async function handler(req, res) {
   const creatorAddress = body.creatorAddress;
   if (!creatorAddress || !/^0x[a-fA-F0-9]{60,66}$/.test(String(creatorAddress))) {
     return res.status(400).json({ error: 'Missing or invalid creatorAddress' });
+  }
+
+  // Wallet-signed ownership proof: signer must BE the creator being claimed for.
+  try {
+    const { signature, ts, ...fields } = body;
+    await verifyOwnerSignature({
+      signature, ts,
+      expectedAddress: creatorAddress,
+      canonicalPayload: canonicalAuthMessage('agent-claim-all', ts, fields),
+    });
+  } catch (e) {
+    return res.status(401).json({ error: `auth: ${e.message}` });
   }
 
   const headers = { 'Content-Type': 'application/json' };
