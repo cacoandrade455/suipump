@@ -1917,7 +1917,7 @@ export default function AgentPage({ onBack }) {
 
       const res = await fetch('/api/agent-plan', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-SP-Key': import.meta.env.VITE_SP_INTERNAL_KEY ?? '' },
         body: JSON.stringify({ goal: workGoal }),
       });
       const data = await res.json();
