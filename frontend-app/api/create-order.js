@@ -14,8 +14,18 @@
 //   STRATEGY_API_KEY  -- must match the indexer's STRATEGY_API_KEY exactly
 //   INDEXER_URL       -- optional; defaults to the production indexer
 //
-// Body (forwarded as-is to the indexer): the order create payload, e.g.
-//   { curveId, type:'tpsl', tokenType?, entryPriceSui?, takeProfit:[...], stopLoss? }
+// Body (forwarded to the indexer after auth, minus signature/ts): the order
+// create payload, e.g.
+//   { curveId, type:'tpsl', tokenType?, entryPriceSui?, takeProfit:[...],
+//     stopLoss?, sessionId?, wallet, signature, ts }
+//
+// AUTH: wallet-signed ownership proof. The armer signs the canonical message
+// over these exact fields with the wallet in body.wallet; we verify signer ==
+// body.wallet, and when a sessionId is bound, that the signer OWNS that
+// session (indexer owner-indexed lookup) - so nobody can arm a sell against
+// someone else's session with their own signature.
+
+import { canonicalAuthMessage, verifyOwnerSignature, assertSessionOwner } from '../lib/verifyOwner.js';
 
 const INDEXER_URL = process.env.INDEXER_URL ?? 'https://suipump-62s2.onrender.com';
 
@@ -30,10 +40,30 @@ export default async function handler(req, res) {
   if (typeof body === 'string') { try { body = JSON.parse(body); } catch { body = {}; } }
   body = body ?? {};
 
-  // sniper / copytrade / autopilot are curve-less — they discover their target
+  // sniper / copytrade / autopilot are curve-less - they discover their target
   // (or, for autopilot, the trending curve) at runtime, so no curveId is required.
   if (!body.curveId && body.type !== 'sniper' && body.type !== 'copytrade' && body.type !== 'autopilot') {
     return res.status(400).json({ error: 'Missing curveId' });
+  }
+
+  // Wallet-signed ownership proof. `fields` (body minus signature/ts) is both
+  // what gets signed and what gets forwarded - the signature covers exactly
+  // what the indexer will store.
+  const { signature, ts, ...fields } = body;
+  const wallet = typeof fields.wallet === 'string' && /^0x[0-9a-fA-F]{1,64}$/.test(fields.wallet)
+    ? fields.wallet : null;
+  if (!wallet) return res.status(401).json({ error: 'auth: wallet (owner address) required' });
+  try {
+    const signer = await verifyOwnerSignature({
+      signature, ts,
+      expectedAddress: wallet,
+      canonicalPayload: canonicalAuthMessage('create-order', ts, fields),
+    });
+    if (fields.sessionId) {
+      await assertSessionOwner({ sessionId: fields.sessionId, ownerAddress: signer });
+    }
+  } catch (e) {
+    return res.status(401).json({ error: `auth: ${e.message}` });
   }
 
   const key = process.env.STRATEGY_API_KEY;
@@ -47,7 +77,7 @@ export default async function handler(req, res) {
     const r = await fetch(`${INDEXER_URL}/orders`, {
       method: 'POST',
       headers,
-      body: JSON.stringify(body),
+      body: JSON.stringify(fields),
     });
     const data = await r.json().catch(() => ({}));
     // Pass the indexer's status + body straight through so the UI sees the real

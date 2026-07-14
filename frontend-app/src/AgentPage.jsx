@@ -18,6 +18,7 @@ import { Transaction } from '@mysten/sui/transactions';
 import { useNavigate } from 'react-router-dom';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { PACKAGE_ID, PACKAGE_ID_V10, PACKAGE_ID_V11, PACKAGE_ID_V12, MIST_PER_SUI } from './constants.js';
+import { signOwnerAuth } from './authSign.js';
 
 // The agent's execution wallet - the session_address authorized to trade the
 // escrow. buy_with_session/sell_with_session are signed by THIS wallet
@@ -1304,9 +1305,11 @@ function AgentSessionPanel({ account, onSessionChange }) {
       // or dust-skipped sweep just omits the note.
       let sweepNote = '';
       try {
+        const sweepBody = { sessionId: session.id };
+        const sweepAuth = await signOwnerAuth('sweep-session-gas', sweepBody);
         const sr = await fetch('/api/sweep-session-gas', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sessionId: session.id }),
+          body: JSON.stringify({ ...sweepBody, ...sweepAuth }),
           signal: AbortSignal.timeout(30000),
         });
         const sd = await sr.json().catch(() => ({}));
@@ -1834,10 +1837,13 @@ export default function AgentPage({ onBack }) {
   const cancelOrder = useCallback(async (id) => {
     setCancelingId(id);
     try {
+      // Wallet-signed ownership proof: the server reads the order's stored
+      // wallet and only cancels when this signature recovers to it.
+      const cancelAuth = await signOwnerAuth('cancel-order', { id });
       const r = await fetch('/api/cancel-order', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id }),
+        body: JSON.stringify({ id, ...cancelAuth }),
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(d.error || `cancel failed (${r.status})`);
@@ -2442,9 +2448,14 @@ export default function AgentPage({ onBack }) {
       if (payload.sell.sessionId) {
         // Session-parked position: the SESSION key sells via the bridge with
         // sellAll (bridge resolves the exact parked amount on-chain).
+        // Wallet-signed ownership proof (mirrors useSessionPositions.js
+        // sellSessionPosition - keep the two in sync): the proxy verifies the
+        // signer owns this session before forwarding to the bridge.
+        const sellBody = { path: '/session-sell', sessionId: payload.sell.sessionId, curveId: payload.sell.curveId, sellAll: true, minSuiOut: 0 };
+        const sellAuth = await signOwnerAuth('agent-bridge', sellBody);
         const r = await fetch(`/api/agent-bridge`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path: '/session-sell', sessionId: payload.sell.sessionId, curveId: payload.sell.curveId, sellAll: true, minSuiOut: 0 }),
+          body: JSON.stringify({ ...sellBody, ...sellAuth }),
         });
         const d = await r.json().catch(() => ({}));
         if (!r.ok || d.ok === false) throw new Error(d.error || `bridge sell failed (${r.status})`);
@@ -2644,19 +2655,24 @@ export default function AgentPage({ onBack }) {
 
         // 3) ARM the standing TP/SL via the secure create-order proxy.
         try {
+          // Wallet-signed ownership proof: the server verifies the signature
+          // over these exact fields and requires signer == wallet (and, when
+          // sessionId is bound, that the signer owns that session).
+          const orderBody = {
+            curveId: payload.tpsl.curveId,
+            tokenType: payload.tpsl.tokenType,
+            type: 'tpsl',
+            entryPriceSui,
+            takeProfit: payload.tpsl.takeProfit,
+            stopLoss: payload.tpsl.stopLoss,
+            sessionId: activeSessionId,
+            wallet: account?.address ?? null,
+          };
+          const orderAuth = await signOwnerAuth('create-order', orderBody);
           const r = await fetch(`/api/create-order`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              curveId: payload.tpsl.curveId,
-              tokenType: payload.tpsl.tokenType,
-              type: 'tpsl',
-              entryPriceSui,
-              takeProfit: payload.tpsl.takeProfit,
-              stopLoss: payload.tpsl.stopLoss,
-              sessionId: activeSessionId,
-              wallet: account?.address ?? null,
-            }),
+            body: JSON.stringify({ ...orderBody, ...orderAuth }),
           });
           const d = await r.json().catch(() => ({}));
           if (!r.ok) throw new Error(d.error || `order create failed (${r.status})`);
@@ -2686,18 +2702,20 @@ export default function AgentPage({ onBack }) {
           // Create via the same-origin Vercel proxy (/api/create-order), which
           // injects the STRATEGY_API_KEY server-side. The key never ships to the
           // browser, so the indexer's write guard is satisfied without exposing it.
+          const orderBody = {
+            curveId: payload.tpsl.curveId,
+            tokenType: payload.tpsl.tokenType,
+            type: 'tpsl',
+            takeProfit: payload.tpsl.takeProfit,
+            stopLoss: payload.tpsl.stopLoss,
+            sessionId: activeSessionId,
+            wallet: account?.address ?? null,
+          };
+          const orderAuth = await signOwnerAuth('create-order', orderBody);
           const r = await fetch(`/api/create-order`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              curveId: payload.tpsl.curveId,
-              tokenType: payload.tpsl.tokenType,
-              type: 'tpsl',
-              takeProfit: payload.tpsl.takeProfit,
-              stopLoss: payload.tpsl.stopLoss,
-              sessionId: activeSessionId,
-              wallet: account?.address ?? null,
-            }),
+            body: JSON.stringify({ ...orderBody, ...orderAuth }),
           });
           const d = await r.json().catch(() => ({}));
           if (!r.ok) throw new Error(d.error || `order create failed (${r.status})`);
@@ -2720,10 +2738,12 @@ export default function AgentPage({ onBack }) {
       // fires a buy (real Nexus scheduler task) on every NEW launch that matches.
       if (payload.workflow === 'sniper') {
         try {
+          const orderBody = { type: 'sniper', params: payload.sniper, sessionId: activeSessionId, wallet: account?.address ?? null };
+          const orderAuth = await signOwnerAuth('create-order', orderBody);
           const r = await fetch(`/api/create-order`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ type: 'sniper', params: payload.sniper, sessionId: activeSessionId, wallet: account?.address ?? null }),
+            body: JSON.stringify({ ...orderBody, ...orderAuth }),
           });
           const d = await r.json().catch(() => ({}));
           if (!r.ok) throw new Error(d.error || `order create failed (${r.status})`);
@@ -2780,17 +2800,19 @@ export default function AgentPage({ onBack }) {
           }
         }
         try {
+          const orderBody = {
+            type: 'dca',
+            curveId: payload.dca.curveId,
+            tokenType: payload.dca.tokenType,
+            params: payload.dca,
+            sessionId: activeSessionId,
+            wallet: account?.address ?? null,
+          };
+          const orderAuth = await signOwnerAuth('create-order', orderBody);
           const r = await fetch(`/api/create-order`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              type: 'dca',
-              curveId: payload.dca.curveId,
-              tokenType: payload.dca.tokenType,
-              params: payload.dca,
-              sessionId: activeSessionId,
-              wallet: account?.address ?? null,
-            }),
+            body: JSON.stringify({ ...orderBody, ...orderAuth }),
           });
           const d = await r.json().catch(() => ({}));
           if (!r.ok) throw new Error(d.error || `order create failed (${r.status})`);
@@ -2813,10 +2835,12 @@ export default function AgentPage({ onBack }) {
       // they happen, across any curve. Nothing settles now.
       if (payload.workflow === 'copytrade') {
         try {
+          const orderBody = { type: 'copytrade', params: payload.copytrade, sessionId: activeSessionId, wallet: account?.address ?? null };
+          const orderAuth = await signOwnerAuth('create-order', orderBody);
           const r = await fetch(`/api/create-order`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ type: 'copytrade', params: payload.copytrade, sessionId: activeSessionId, wallet: account?.address ?? null }),
+            body: JSON.stringify({ ...orderBody, ...orderAuth }),
           });
           const d = await r.json().catch(() => ({}));
           if (!r.ok) throw new Error(d.error || `order create failed (${r.status})`);
@@ -2840,10 +2864,12 @@ export default function AgentPage({ onBack }) {
       // Nothing settles now. Revocable by cancelling the order.
       if (payload.workflow === 'autopilot') {
         try {
+          const orderBody = { type: 'autopilot', params: payload.autopilot, sessionId: activeSessionId, wallet: account?.address ?? null };
+          const orderAuth = await signOwnerAuth('create-order', orderBody);
           const r = await fetch(`/api/create-order`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ type: 'autopilot', params: payload.autopilot, sessionId: activeSessionId, wallet: account?.address ?? null }),
+            body: JSON.stringify({ ...orderBody, ...orderAuth }),
           });
           const d = await r.json().catch(() => ({}));
           if (!r.ok) throw new Error(d.error || `order create failed (${r.status})`);
@@ -2874,10 +2900,13 @@ export default function AgentPage({ onBack }) {
           return;
         }
         try {
+          // Wallet-signed ownership proof: signer must BE creatorAddress.
+          const claimBody = { creatorAddress: account.address };
+          const claimAuth = await signOwnerAuth('agent-claim-all', claimBody);
           const r = await fetch(`/api/agent-claim-all`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ creatorAddress: account.address }),
+            body: JSON.stringify({ ...claimBody, ...claimAuth }),
           });
           const d = await r.json().catch(() => ({}));
           if (!r.ok || d.ok === false) throw new Error(d.error || `claim-all failed (${r.status})`);
