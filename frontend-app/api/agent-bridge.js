@@ -1,15 +1,21 @@
-// api/agent-bridge.js — Vercel serverless proxy for the agent's bridge actions.
+// api/agent-bridge.js - Vercel serverless proxy for the agent's bridge actions.
 // The agent UI calls THIS (same-origin, no key); this injects AGENT_API_KEY
-// server-side and forwards to the bridge's gated write endpoints (/buy /sell
-// /launch /claim). The key lives only in Vercel's server env (NO VITE_ prefix),
-// so it never ships to the browser — only our deployed UI, going through this
-// proxy, can reach the bridge's write endpoints. A direct browser/curl to the
-// bridge without the key gets 401.
+// server-side and forwards to the bridge. The key lives only in Vercel's
+// server env (NO VITE_ prefix), so it never ships to the browser - only our
+// deployed UI, going through this proxy, can reach the bridge's write
+// endpoints. A direct browser/curl to the bridge without the key gets 401.
 //
-// Body: { path: '/buy'|'/sell'|'/session-buy'|'/session-sell'|'/launch'|'/claim', ...bridgeBody }
+// ALLOWED is the exact set of bridge paths the UI actually calls. /buy /sell
+// /claim /session-buy have no frontend callers (autonomous fires hit the
+// bridge directly, server-side, never through this proxy), and /launch let
+// any caller publish + dev-buy from the funded agent wallet with an uncapped
+// devBuySui - all five are removed. privateKey is stripped from every
+// forwarded body: a caller must never choose the signing key.
+//
+// Body: { path: '/session-sell', ...bridgeBody }
 
 const BRIDGE_URL = process.env.SUIPUMP_BRIDGE_URL ?? 'https://suipump-bridge.onrender.com';
-const ALLOWED = new Set(['/buy', '/sell', '/session-buy', '/session-sell', '/launch', '/claim']);
+const ALLOWED = new Set(['/session-sell']);
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -24,7 +30,7 @@ export default async function handler(req, res) {
 
   const path = String(body.path ?? '');
   if (!ALLOWED.has(path)) return res.status(400).json({ error: `Invalid bridge path: ${path}` });
-  const { path: _omit, ...bridgeBody } = body;
+  const { path: _omit, privateKey: _neverForwarded, ...bridgeBody } = body;
 
   const headers = { 'Content-Type': 'application/json' };
   const key = process.env.AGENT_API_KEY;
