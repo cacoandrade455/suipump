@@ -14,7 +14,11 @@
 //   3. Build BalanceManager, deposit TOKEN + SUI, transfer to curve.creator
 
 import { Transaction } from '@mysten/sui/transactions';
-import { SuiClient, getFullnodeUrl } from '@mysten/sui/client';
+// This dir locks @mysten/sui 2.16.2: the v2 SDK moved the JSON-RPC client to
+// '@mysten/sui/jsonRpc' as SuiJsonRpcClient ('@mysten/sui/client' no longer
+// exports SuiClient/getFullnodeUrl - importing them rejects at module load,
+// which also killed auto_graduate's dynamic import of this file).
+import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { DeepBookClient } from '@mysten/deepbook-v3';
 import { fromBase64 } from '@mysten/sui/utils';
@@ -67,8 +71,19 @@ function fmtSui(mist) {
   return `${(Number(BigInt(mist)) / 1e9).toFixed(4)} SUI`;
 }
 
+// The endpoint MUST come from env: the Sui Foundation public testnet JSON-RPC
+// fullnode shut off the week of 2026-07-06, so a getFullnodeUrl-style default
+// would be a dead endpoint. SUIPUMP_JSONRPC_URL is a third-party JSON-RPC
+// endpoint; SUI_RPC_URL kept as the legacy alias.
 function defaultClient() {
-  return new SuiClient({ url: process.env.SUI_RPC_URL || getFullnodeUrl('testnet') });
+  const url = process.env.SUIPUMP_JSONRPC_URL || process.env.SUI_RPC_URL;
+  if (!url) {
+    throw new Error(
+      'SUIPUMP_JSONRPC_URL (or SUI_RPC_URL) env var not set - the public testnet ' +
+      'JSON-RPC fullnode is dead; provide a third-party JSON-RPC endpoint'
+    );
+  }
+  return new SuiJsonRpcClient({ url });
 }
 
 function defaultKeypair() {

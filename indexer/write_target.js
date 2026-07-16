@@ -71,7 +71,11 @@ export async function assertWriteTarget(client, requiredFunctions) {
         found = !!(res && res.function);
       } catch (err) {
         const msg = String(err && err.message ? err.message : err);
-        if (/missing response data|not found|does not exist/i.test(msg)) {
+        // ONLY "Missing response data" is definitive on the v2 flavor. Broader
+        // patterns like /not found/ are unsafe here: an HTTP 404 from a typoed
+        // SUI_GRAPHQL_URL or a proxy throws "GraphQL request failed: Not Found
+        // (404)", which is a transport failure, not an on-chain answer.
+        if (/missing response data/i.test(msg)) {
           found = false;
         } else {
           transportErr = err;

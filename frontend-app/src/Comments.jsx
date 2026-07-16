@@ -15,7 +15,7 @@ import {
   PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6,
   PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8,
   COMMENT_FEE_MIST, isV7OrLater, isV9OrLater, isV10OrLater,
-  PACKAGE_ID, PACKAGE_ID_V12,
+  PACKAGE_ID, PACKAGE_ID_V12, PACKAGE_ID_V13,
 } from './constants.js';
 
 // Sui GraphQL endpoint - same one CommentGatePanel (TokenPage.jsx) reads
@@ -68,8 +68,12 @@ function timeAgo(ts) {
 
 // Build a lineage post_comment moveCall onto `tx`. parentId = ZERO_ADDR for a
 // top-level comment, else the parent comment's tx digest (as an address).
-// Sig (V13+): post_comment<T>(curve, text, payment, &holder_coin, parent_id, ctx)
-// V13 derives the comment author from the tx sender on-chain (audit F-7) -- no author arg.
+// Per-package dispatch (deployed bytecode is frozen; V13 changed the arity):
+//   V13+ (env-gated): post_comment<T>(curve, text, payment, &holder_coin, parent_id, ctx)
+//     - author derived from the tx sender on-chain (audit F-7), no author arg.
+//   V12 (live today): post_comment<T>(curve, text, payment, author, &holder_coin, parent_id, ctx)
+// PACKAGE_ID_V13 comes from VITE_SUIPUMP_V13_PACKAGE, unset until the V13
+// publish, so comments keep the live V12 shape until the Vercel env flips.
 //
 // TARGET: the ACTIVE package (V12+), NOT the curve-derived packageId. The curve
 // type defines at V10 forever, but V10 bytecode holder-gates UNCONDITIONALLY --
@@ -80,7 +84,7 @@ function timeAgo(ts) {
 // is holder-gated the contract aborts EHolderOnly(37) -- callers map that to
 // the friendly "hold the token" message; if the creator opened comments, the
 // zero coin passes and anyone can post.
-function buildV10PostComment({ tx, curveRef, packageId: _packageId, tokenType, text, holderCoinId, parentId }) {
+function buildV10PostComment({ tx, curveRef, packageId: _packageId, tokenType, text, author, holderCoinId, parentId }) {
   const [feeCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(BigInt(COMMENT_FEE_MIST))]);
   let holderArg;
   let zeroCoin = null;
@@ -90,16 +94,26 @@ function buildV10PostComment({ tx, curveRef, packageId: _packageId, tokenType, t
     [zeroCoin] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [tokenType], arguments: [] });
     holderArg = zeroCoin;
   }
+  const useV13 = Boolean(PACKAGE_ID_V13);
   tx.moveCall({
-    target: `${PACKAGE_ID}::bonding_curve::post_comment`,
+    target: `${useV13 ? PACKAGE_ID_V13 : PACKAGE_ID}::bonding_curve::post_comment`,
     typeArguments: [tokenType],
-    arguments: [
-      curveRef,
-      tx.pure.string(text),
-      feeCoin,
-      holderArg,
-      tx.pure.address(parentId ?? ZERO_ADDR),
-    ],
+    arguments: useV13
+      ? [
+          curveRef,
+          tx.pure.string(text),
+          feeCoin,
+          holderArg,
+          tx.pure.address(parentId ?? ZERO_ADDR),
+        ]
+      : [
+          curveRef,
+          tx.pure.string(text),
+          feeCoin,
+          tx.pure.address(author),
+          holderArg,
+          tx.pure.address(parentId ?? ZERO_ADDR),
+        ],
   });
   if (zeroCoin) {
     tx.moveCall({ target: '0x2::coin::destroy_zero', typeArguments: [tokenType], arguments: [zeroCoin] });
@@ -181,7 +195,7 @@ function CommentItem({ comment, replies, account, curveId, onReplyPosted,
 
       buildV10PostComment({
         tx, curveRef, packageId, tokenType,
-        text: trimmed,
+        text: trimmed, author: account.address,
         holderCoinId: coinId, parentId: parentDigest,
       });
 
@@ -509,7 +523,7 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
         // contract aborts and we surface the friendly message below.
         buildV10PostComment({
           tx, curveRef, packageId, tokenType,
-          text: trimmed,
+          text: trimmed, author: account.address,
           holderCoinId: coinId, parentId: ZERO_ADDR,
         });
       } else if (isV7 && COMMENT_FEE_MIST && BigInt(COMMENT_FEE_MIST) > 0n) {
