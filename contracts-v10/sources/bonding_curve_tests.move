@@ -27,7 +27,7 @@ module suipump::bonding_curve_tests {
     use sui::coin::{Self, Coin};
     use sui::sui::SUI;
     use sui::test_scenario::{Self as ts, Scenario};
-    use sui::test_utils::destroy;
+    use std::unit_test::destroy;
     use sui::clock;
     use sui::transfer;
     use std::ascii;
@@ -54,7 +54,6 @@ module suipump::bonding_curve_tests {
     const E_NOT_GRADUATED:            u64 = 5;
     const E_ZERO_AMOUNT:              u64 = 7;
     const E_BAD_PAYOUTS:              u64 = 19;  // covers empty + sum invalid + duplicate
-    const E_TOO_MANY_PAYOUTS:         u64 = 20;
     const E_WRONG_LAUNCH_FEE:         u64 = 9;
     const E_COMMENT_TOO_LONG:         u64 = 16;
     const E_COMMENT_EMPTY:            u64 = 17;
@@ -74,10 +73,7 @@ module suipump::bonding_curve_tests {
     const E_NOT_ACTIVE_CREATOR:       u64 = 36;
     const E_HOLDER_ONLY:              u64 = 37;
     const E_BUYBACK_BPS_TOO_HIGH:     u64 = 38;
-    const E_NO_BUYBACK:               u64 = 39;
     const E_CREATOR_STILL_ACTIVE:     u64 = 40;
-    const E_CTO_ON_COOLDOWN:          u64 = 41;
-    const E_BELOW_NOMINATE_THRESHOLD: u64 = 42;
     const E_LP_ALREADY_CLAIMED:       u64 = 51;
     const E_RESERVE_TOO_LOW:          u64 = 52;
 
@@ -1526,7 +1522,6 @@ module suipump::bonding_curve_tests {
     const D_7D:   u64 = 7   * 24 * 60 * 60 * 1_000;
     const D_30D:  u64 = 30  * 24 * 60 * 60 * 1_000;
     const D_180D: u64 = 180 * 24 * 60 * 60 * 1_000;
-    const D_365D: u64 = 365 * 24 * 60 * 60 * 1_000;
 
     // Mint a Coin<TEST_TOKEN> for locking.
     fun mint_token(amount: u64, s: &mut Scenario): Coin<TEST_TOKEN> {
@@ -2025,8 +2020,6 @@ module suipump::bonding_curve_tests {
     const CTO_INACTIVITY_MS: u64 = 5  * 24 * 60 * 60 * 1_000;
     const CTO_WINDOW_MS:     u64 = 12 * 60 * 60 * 1_000;
     const NOMINEE:  address = @0xACE;
-    const VOTER_A:  address = @0xACED1;
-    const VOTER_B:  address = @0xACED2;
 
     // ─── Item 4: holder-gated chat ─────────────────────────────────────────
 

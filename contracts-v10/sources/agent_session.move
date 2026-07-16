@@ -266,7 +266,7 @@ module suipump::agent_session {
             return
         };
         let key = type_name::with_defining_ids<T>();
-        if (dof::exists_<TypeName>(&session.id, key)) {
+        if (dof::exists<TypeName>(&session.id, key)) {
             let existing: &mut Coin<T> = dof::borrow_mut(&mut session.id, key);
             coin::join(existing, tokens);
         } else {
@@ -372,7 +372,7 @@ module suipump::agent_session {
     /// venue universality, bounded by spend_cap / expiry / revoke.
     public fun enable_universal_trading(session: &mut AgentSession, ctx: &TxContext) {
         assert!(tx_context::sender(ctx) == session.owner, ENotOwner);
-        if (!df::exists_(&session.id, UNIVERSAL_TRADING_KEY)) {
+        if (!df::exists(&session.id, UNIVERSAL_TRADING_KEY)) {
             df::add(&mut session.id, UNIVERSAL_TRADING_KEY, true);
         };
         event::emit(UniversalTradingToggled { session_id: object::id(session), enabled: true });
@@ -381,14 +381,14 @@ module suipump::agent_session {
     /// Owner narrows the envelope back to module-custody trading only.
     public fun disable_universal_trading(session: &mut AgentSession, ctx: &TxContext) {
         assert!(tx_context::sender(ctx) == session.owner, ENotOwner);
-        if (df::exists_(&session.id, UNIVERSAL_TRADING_KEY)) {
+        if (df::exists(&session.id, UNIVERSAL_TRADING_KEY)) {
             let _: bool = df::remove(&mut session.id, UNIVERSAL_TRADING_KEY);
         };
         event::emit(UniversalTradingToggled { session_id: object::id(session), enabled: false });
     }
 
     public fun universal_trading_enabled(session: &AgentSession): bool {
-        df::exists_(&session.id, UNIVERSAL_TRADING_KEY)
+        df::exists(&session.id, UNIVERSAL_TRADING_KEY)
     }
 
     /// Borrow escrow SUI for one atomic buy on any venue. Charges the FULL

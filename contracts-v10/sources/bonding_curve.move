@@ -1153,7 +1153,7 @@ module suipump::bonding_curve {
     ): (Coin<SUI>, Coin<T>) {
         assert!(curve.graduated, ENotGraduated);
         // Barrier 1: explicit one-shot marker, checked before any mint.
-        assert!(!df::exists_(&curve.id, GRAD_CLAIMED_KEY), ELpAlreadyClaimed);
+        assert!(!df::exists(&curve.id, GRAD_CLAIMED_KEY), ELpAlreadyClaimed);
         // Barrier 2 (F-2): refuse to mint the 200M LP against a trivial reserve.
         let sui_amount = balance::value(&curve.sui_reserve);
         assert!(sui_amount >= MIN_GRAD_RESERVE_MIST, EReserveTooLow);
@@ -1184,7 +1184,7 @@ module suipump::bonding_curve {
     // "graduated, nothing claimed yet" — the state machine the auto-graduate
     // retry needs (claimed-but-no-pool vs nothing-to-claim).
     public fun grad_funds_claimed<T>(c: &Curve<T>): bool {
-        df::exists_(&c.id, GRAD_CLAIMED_KEY)
+        df::exists(&c.id, GRAD_CLAIMED_KEY)
     }
 
     // ---------- Update metadata (identical to v8) ----------
@@ -1336,7 +1336,7 @@ module suipump::bonding_curve {
         _ctx:         &mut TxContext,
     ) {
         assert_active_creator(cap, curve, clock);
-        let currently_open = df::exists_(&curve.id, COMMENTS_UNGATED_KEY);
+        let currently_open = df::exists(&curve.id, COMMENTS_UNGATED_KEY);
         if (holder_gated) {
             assert!(currently_open, ECommentGateNoop);
             let _: bool = df::remove(&mut curve.id, COMMENTS_UNGATED_KEY);
@@ -1349,7 +1349,7 @@ module suipump::bonding_curve {
 
     /// V12: read the gate (true = commenting requires holding the token).
     public fun comments_holder_gated<T>(curve: &Curve<T>): bool {
-        !df::exists_(&curve.id, COMMENTS_UNGATED_KEY)
+        !df::exists(&curve.id, COMMENTS_UNGATED_KEY)
     }
 
     /// V13 (audit F-7): the Comment event's author is the transaction sender.
