@@ -17,7 +17,7 @@
 //   6. record_graduation_pool() - write pool_id on-chain
 
 import { Transaction } from '@mysten/sui/transactions';
-import { SuiClient, getFullnodeUrl } from '@mysten/sui/client';
+import { SuiClient } from '@mysten/sui/client';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { TurbosSdk, Network } from 'turbos-clmm-sdk';
 import Decimal from 'decimal.js';
@@ -72,8 +72,21 @@ const ADMIN_CAPS = {
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function fmtSui(mist) { return `${(Number(BigInt(mist)) / 1e9).toFixed(4)} SUI`; }
 
+// turbos-clmm-sdk@3.6.4 peer-depends on @mysten/sui ^1.x, whose JSON-RPC client
+// is SuiClient itself (this dir pins v1; the v2 SuiJsonRpcClient import path
+// does not exist here). The endpoint MUST come from env: the Sui Foundation
+// public testnet JSON-RPC fullnode shut off the week of 2026-07-06, so a
+// getFullnodeUrl default would be a dead endpoint. SUIPUMP_JSONRPC_URL is a
+// third-party JSON-RPC endpoint; SUI_RPC_URL kept as the legacy alias.
 function defaultClient() {
-  return new SuiClient({ url: process.env.SUI_RPC_URL || getFullnodeUrl('testnet') });
+  const url = process.env.SUIPUMP_JSONRPC_URL || process.env.SUI_RPC_URL;
+  if (!url) {
+    throw new Error(
+      'SUIPUMP_JSONRPC_URL (or SUI_RPC_URL) env var not set - the public testnet ' +
+      'JSON-RPC fullnode is dead; provide a third-party JSON-RPC endpoint for turbos-clmm-sdk'
+    );
+  }
+  return new SuiClient({ url });
 }
 
 function defaultKeypair() {
