@@ -52,12 +52,26 @@ which ships in the same change set:
   the close/sweep drain path of pre-existing fallback sessions.
 
 Fallback-session census (B0), shared agent wallet
-`0x877af0fae3fa4f8ea936943b59bcd66104f67cf1895302e97761a28b3c3a5906`:
+`0x877af0fae3fa4f8ea936943b59bcd66104f67cf1895302e97761a28b3c3a5906`,
+run 2026-07-16 against the indexer Postgres + live testnet GraphQL
+(scripts/census_fallback_sessions.js):
 
-<!-- TODO(carlos): paste the B0 census output here - total fallback sessions
-     ever, live fallback sessions, escrow SUI parked. Command:
-     see scripts/census_fallback_sessions.js header. This TODO is the only
-     intentionally open item in this file. -->
+- TOTAL fallback sessions ever opened: 6
+- LIVE fallback sessions: 0
+- TOTAL escrow SUI parked in LIVE fallback sessions: 0 SUI (0 MIST)
+- 5 sessions CLOSED (revoked / expiry_ms==0 sentinel):
+  `0x010909d66b18ee11df7726a97f7b723f243ed581614de58564e156dddb1cf45c`
+  `0x3ae830303506cf4717b7100e861096d4542d498222ccfbba9f4300293aecc271`
+  `0x4761e88ce11847a0988fd4251b6c9a684b60ed8eedeed58d1e7518fff48f01fe`
+  `0xa8e5453744c0ae18dfc738d81b9f82132baa388601866057cdb603c59e49e7e9`
+  `0xe5a128767e7ee7552369071e1d0b2e0c5621fca25c0b0002c09b107e1b144e96`
+- 1 session EXPIRED with 1 SUI (1000000000 MIST) escrow still parked:
+  `0x309038535abb0ad478607baa2dd1de7558914bffb310ccf2694f74348db473ae`
+  (owner `0xf9dca7a3207a06c75ceca8aab3ab84c6ce66fb420b9343cb594c2074b30df78d`).
+  Recoverable WITHOUT the legacy signer: expire_refund is permissionless past
+  expiry and always refunds escrow to session.owner.
 
-Revisit if the census shows live fallback sessions with material escrow that
-cannot be drained via the legacy path.
+Census verdict: with zero live fallback sessions and the only stranded escrow
+recoverable permissionlessly, the SUIPUMP_LEGACY_SIGNER drain gate never needs
+to be enabled. It ships defaulted OFF and should stay off; the shared key is
+never constructed on any execution path.
