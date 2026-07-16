@@ -1352,17 +1352,19 @@ module suipump::bonding_curve {
         !df::exists_(&curve.id, COMMENTS_UNGATED_KEY)
     }
 
+    /// V13 (audit F-7): the Comment event's author is the transaction sender.
+    /// The caller-supplied `author: address` parameter is GONE -- it let anyone
+    /// emit comments attributed to an arbitrary address.
     public fun post_comment<T>(
         curve:       &mut Curve<T>,
         text:        String,
         payment:     Coin<SUI>,
-        author:      address,
         // V10: caller presents a reference to their own token balance to prove
         // they hold > 0 of this token (holder-gated chat). The coin is borrowed,
         // never consumed. 0x0 parent_id = top-level; else the parent comment id.
         holder_coin: &Coin<T>,
         parent_id:   address,
-        _ctx:        &mut TxContext,
+        ctx:         &mut TxContext,
     ) {
         assert!(coin::value(&payment) == COMMENT_FEE_MIST, EWrongCommentFee);
         // V12: holder gate is now creator-togglable. Marker absent (default) =
@@ -1376,11 +1378,16 @@ module suipump::bonding_curve {
         balance::join(&mut curve.protocol_fees, coin::into_balance(payment));
         event::emit(Comment {
             curve_id: object::id(curve),
-            author,
+            author: tx_context::sender(ctx),
             text,
             parent_id,
         });
     }
+
+    /// V13 test hook: the tests module cannot read another module's struct
+    /// fields, so expose the Comment event's author for event assertions.
+    #[test_only]
+    public fun comment_author(c: &Comment): address { c.author }
 
     // ---------- Lock tokens for vesting (identical to v8) ----------
     public fun lock_tokens<T>(

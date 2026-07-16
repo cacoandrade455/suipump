@@ -1422,10 +1422,36 @@ module suipump::bonding_curve_tests {
         let fee = mint_sui(COMMENT_FEE, &mut s);
         let holder = mint_token(1_000_000, &mut s);
         bonding_curve::post_comment(
-            &mut curve, string::utf8(b"great token"), fee, CREATOR, &holder, @0x0, ts::ctx(&mut s),
+            &mut curve, string::utf8(b"great token"), fee, &holder, @0x0, ts::ctx(&mut s),
         );
         destroy(holder);
         assert!(bonding_curve::protocol_fees(&curve) == proto_before + COMMENT_FEE, 1800);
+        ts::return_shared(curve);
+        ts::end(s);
+    }
+
+    #[test]
+    fun test_comment_author_is_tx_sender() {
+        let mut s = ts::begin(CREATOR);
+        let (_a, _b) = make_payouts_single();
+        setup_curve(&mut s, _a, _b);
+
+        // V13 (audit F-7): post_comment no longer takes an author parameter;
+        // the emitted Comment event's author must be the tx sender. Post as
+        // BUYER (a non-creator) and inspect this tx's events -- events_by_type
+        // only sees events emitted in the CURRENT test_scenario transaction,
+        // so the assertions happen before the next next_tx/end.
+        ts::next_tx(&mut s, BUYER);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let fee = mint_sui(COMMENT_FEE, &mut s);
+        let holder = mint_token(1_000_000, &mut s);
+        bonding_curve::post_comment(
+            &mut curve, string::utf8(b"sender is author"), fee, &holder, @0x0, ts::ctx(&mut s),
+        );
+        let evs = sui::event::events_by_type<bonding_curve::Comment>();
+        assert!(vector::length(&evs) == 1, 1801);
+        assert!(bonding_curve::comment_author(vector::borrow(&evs, 0)) == BUYER, 1802);
+        destroy(holder);
         ts::return_shared(curve);
         ts::end(s);
     }
@@ -1442,7 +1468,7 @@ module suipump::bonding_curve_tests {
         let bad_fee = mint_sui(MIST_PER_SUI, &mut s);
         let holder = mint_token(1_000_000, &mut s);
         bonding_curve::post_comment(
-            &mut curve, string::utf8(b"hi"), bad_fee, CREATOR, &holder, @0x0, ts::ctx(&mut s),
+            &mut curve, string::utf8(b"hi"), bad_fee, &holder, @0x0, ts::ctx(&mut s),
         );
         destroy(holder);
         ts::return_shared(curve);
@@ -1461,7 +1487,7 @@ module suipump::bonding_curve_tests {
         let fee = mint_sui(COMMENT_FEE, &mut s);
         let holder = mint_token(1_000_000, &mut s);
         bonding_curve::post_comment(
-            &mut curve, string::utf8(b""), fee, CREATOR, &holder, @0x0, ts::ctx(&mut s),
+            &mut curve, string::utf8(b""), fee, &holder, @0x0, ts::ctx(&mut s),
         );
         destroy(holder);
         ts::return_shared(curve);
@@ -1487,7 +1513,7 @@ module suipump::bonding_curve_tests {
         let long_text = string::utf8(long_bytes);
         let holder = mint_token(1_000_000, &mut s);
         bonding_curve::post_comment(
-            &mut curve, long_text, fee, CREATOR, &holder, @0x0, ts::ctx(&mut s),
+            &mut curve, long_text, fee, &holder, @0x0, ts::ctx(&mut s),
         );
         destroy(holder);
         ts::return_shared(curve);
@@ -2016,7 +2042,7 @@ module suipump::bonding_curve_tests {
         let fee = mint_sui(COMMENT_FEE, &mut s);
         let empty_holder = coin::zero<TEST_TOKEN>(ts::ctx(&mut s)); // balance 0
         bonding_curve::post_comment(
-            &mut curve, string::utf8(b"spam"), fee, BUYER, &empty_holder, @0x0, ts::ctx(&mut s),
+            &mut curve, string::utf8(b"spam"), fee, &empty_holder, @0x0, ts::ctx(&mut s),
         );
         destroy(empty_holder);
         ts::return_shared(curve);

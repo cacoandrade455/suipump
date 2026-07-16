@@ -68,7 +68,8 @@ function timeAgo(ts) {
 
 // Build a lineage post_comment moveCall onto `tx`. parentId = ZERO_ADDR for a
 // top-level comment, else the parent comment's tx digest (as an address).
-// Sig (V10..V12): post_comment<T>(curve, text, payment, author, &holder_coin, parent_id, ctx)
+// Sig (V13+): post_comment<T>(curve, text, payment, &holder_coin, parent_id, ctx)
+// V13 derives the comment author from the tx sender on-chain (audit F-7) -- no author arg.
 //
 // TARGET: the ACTIVE package (V12+), NOT the curve-derived packageId. The curve
 // type defines at V10 forever, but V10 bytecode holder-gates UNCONDITIONALLY --
@@ -79,7 +80,7 @@ function timeAgo(ts) {
 // is holder-gated the contract aborts EHolderOnly(37) -- callers map that to
 // the friendly "hold the token" message; if the creator opened comments, the
 // zero coin passes and anyone can post.
-function buildV10PostComment({ tx, curveRef, packageId: _packageId, tokenType, text, author, holderCoinId, parentId }) {
+function buildV10PostComment({ tx, curveRef, packageId: _packageId, tokenType, text, holderCoinId, parentId }) {
   const [feeCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(BigInt(COMMENT_FEE_MIST))]);
   let holderArg;
   let zeroCoin = null;
@@ -96,7 +97,6 @@ function buildV10PostComment({ tx, curveRef, packageId: _packageId, tokenType, t
       curveRef,
       tx.pure.string(text),
       feeCoin,
-      tx.pure.address(author),
       holderArg,
       tx.pure.address(parentId ?? ZERO_ADDR),
     ],
@@ -181,7 +181,7 @@ function CommentItem({ comment, replies, account, curveId, onReplyPosted,
 
       buildV10PostComment({
         tx, curveRef, packageId, tokenType,
-        text: trimmed, author: account.address,
+        text: trimmed,
         holderCoinId: coinId, parentId: parentDigest,
       });
 
@@ -509,7 +509,7 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
         // contract aborts and we surface the friendly message below.
         buildV10PostComment({
           tx, curveRef, packageId, tokenType,
-          text: trimmed, author: account.address,
+          text: trimmed,
           holderCoinId: coinId, parentId: ZERO_ADDR,
         });
       } else if (isV7 && COMMENT_FEE_MIST && BigInt(COMMENT_FEE_MIST) > 0n) {
