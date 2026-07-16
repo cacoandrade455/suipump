@@ -39,6 +39,7 @@ import {
   enclavePublicKeyHex,
   enclaveAttestationHex,
 } from './turnkey_signer.js';
+import { LATEST_WRITE_PACKAGE, assertWriteTarget } from '../indexer/write_target.js';
 
 const PORT          = parseInt(process.env.PORT ?? '3030', 10);
 const INDEXER_URL   = process.env.SUIPUMP_INDEXER_URL ?? 'https://suipump-62s2.onrender.com';
@@ -126,10 +127,13 @@ const ALL_PACKAGE_IDS = [
 // targets must be remapped to the newest version of that lineage or the upgrade
 // never takes effect. Map: defining (original) package -> latest upgrade.
 const PACKAGE_LATEST = {
-  // V10 lineage -> V12 (V11: net-exposure cap, TradeTicket, closed sentinel,
-  // V2 events; V12: comments toggle, enclave registry, attested open)
+  // V10 lineage -> latest published upgrade (V11: net-exposure cap, TradeTicket,
+  // closed sentinel, V2 events; V12: comments toggle, enclave registry, attested
+  // open). The value is env-driven (SUIPUMP_LATEST_WRITE_PACKAGE) via
+  // ../indexer/write_target.js and defaults to V12 until the V13 publish -
+  // post-publish, Carlos flips the env var on Render with no code change.
   '0x2deda2cade65cd5afd5ffbe799d48f2491debf08d3aef6fa11aa6e1c8afe1598':
-    '0xf5a3566ba920a3e3614e8b25da0ca3237879b6e22eb12f21ccf2bceb6520b9cd',
+    LATEST_WRITE_PACKAGE,
 };
 function latestPackageFor(pkgId) {
   return PACKAGE_LATEST[String(pkgId).toLowerCase()] ?? pkgId;
@@ -1210,6 +1214,22 @@ server.listen(PORT, () => {
   if (LEGACY_SIGNER_ENABLED) {
     console.warn('[bridge] *** SUIPUMP_LEGACY_SIGNER=1 - shared agent wallet key is LOADABLE for legacy fallback-session drain (/session-sell) - unset after draining ***');
   }
+
+  // Startup assert: the remapped write target (PACKAGE_LATEST value) must
+  // expose the session-trade entry points this bridge moveCalls. Only a
+  // DEFINITIVE on-chain "function absent" kills the process - refusing to
+  // start beats silently targeting a package without the function. Transport
+  // failures only warn (see ../indexer/write_target.js) so a transient
+  // GraphQL outage cannot crashloop the Render service.
+  assertWriteTarget(makeClient(), [
+    ['agent_session', 'buy_with_session'],
+    ['agent_session', 'sell_with_session'],
+  ]).then(() => {
+    console.log(`[bridge] write target ${LATEST_WRITE_PACKAGE} verified (agent_session::buy_with_session / sell_with_session present)`);
+  }).catch((err) => {
+    console.error(`[bridge] FATAL: write target verification failed - ${err.message}`);
+    process.exit(1);
+  });
 });
 
 export { handleSessionBuy, handleSessionSell, handleProvisionSessionKey };

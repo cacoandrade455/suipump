@@ -1,10 +1,10 @@
-// auto_graduate.js — Auto-graduation watcher for SuiPump indexer
+// auto_graduate.js - Auto-graduation watcher for SuiPump indexer
 // Polls the DB every 30s for curves that have crossed the graduation threshold
 // and fires the appropriate graduation script automatically.
 //
 // IMPORTANT: grpcClient is passed in from index.js which uses GrpcTransport
 // (Node.js native @grpc/grpc-js). Do NOT create a new SuiGrpcClient here
-// with GrpcWebFetchTransport (browser-only fetch) — that causes "fetch failed".
+// with GrpcWebFetchTransport (browser-only fetch) - that causes "fetch failed".
 
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { fromBase64 } from '@mysten/sui/utils';
@@ -13,12 +13,13 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { pool } from './db.js';
+import { LATEST_WRITE_PACKAGE, assertWriteTarget } from './write_target.js';
 
 const NETWORK     = process.env.NETWORK         ?? 'testnet';
 const GRAPHQL_URL = process.env.SUI_GRAPHQL_URL ?? 'https://graphql.' + NETWORK + '.sui.io/graphql';
 const graphqlClient = new SuiGraphQLClient({ url: GRAPHQL_URL });
 
-// ── Config ────────────────────────────────────────────────────────────────────
+// -- Config --------------------------------------------------------------------
 
 const PACKAGES = {
   V4:   '0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8',
@@ -34,7 +35,8 @@ const PACKAGES = {
 };
 
 // AdminCap per DEFINING package. The whole V10 lineage (V10/V11/V12+) shares ONE
-// AdminCap (0x144d...) — the V10 defining package governs all its upgrades.
+// AdminCap (0x144d426960a9a6b8db63ce3426e06a9c41273a17e72ed0193cd8c8507d4f6ec5)
+// - the V10 defining package governs all its upgrades.
 const ADMIN_CAPS = {
   [PACKAGES.V4]:   '0xfc80d40718e8e9d0bc1fddc1e47a74e46d0c89c3e1e36a2bc8f016efb6d51e0c',
   [PACKAGES.V5]:   '0xfc80d40718e8e9d0bc1fddc1e47a74e46d0c89c3e1e36a2bc8f016efb6d51e0c',
@@ -51,10 +53,10 @@ const ADMIN_CAPS = {
 // WRITE-target remap: a curve's package_id in the DB is its DEFINING package (V10
 // for the whole lineage), but graduate/claim/record WRITES must target the LATEST
 // upgrade that actually contains claim_graduation_funds. Types stay V10-defined.
-// TODO(owner): bump LATEST_WRITE_PACKAGE to the V13 upgrade id once the
-// claim_graduation_funds upgrade is published. claim_graduation_funds does NOT
-// exist in the currently-deployed V10/V11/V12 — writes abort until V13 ships.
-const LATEST_WRITE_PACKAGE = PACKAGES.V12;
+// LATEST_WRITE_PACKAGE is env-driven (SUIPUMP_LATEST_WRITE_PACKAGE) via
+// ./write_target.js - after the V13 publish, Carlos flips the env var on Render
+// with no code change. Until then it defaults to V12, which genuinely lacks
+// claim_graduation_funds, so claim writes abort until V13 ships.
 
 const WRITE_PACKAGE = {
   [PACKAGES.V10]: LATEST_WRITE_PACKAGE,
@@ -70,7 +72,7 @@ const POLL_INTERVAL_MS = 30_000;
 
 const inProgress = new Set();
 
-// ── Keypair ───────────────────────────────────────────────────────────────────
+// -- Keypair -------------------------------------------------------------------
 
 function loadKeypair() {
   if (process.env.SUI_PRIVATE_KEY) {
@@ -84,7 +86,7 @@ function loadKeypair() {
   return Ed25519Keypair.fromSecretKey(raw[0] === 0x00 ? raw.slice(1) : raw);
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// -- Helpers -------------------------------------------------------------------
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -101,17 +103,17 @@ function hasPool(fields) {
   return true;
 }
 
-// ── DEX pool creation ─────────────────────────────────────────────────────────
+// -- DEX pool creation ---------------------------------------------------------
 
 async function createDexPool(client, curveId, tokenType, pkgId, graduationTarget, keypair) {
   const target = Number(graduationTarget ?? 0);
 
   if (target === 0) {
-    console.log(`  [auto-grad] Cetus graduation — mainnet only, skipping DEX pool creation`);
+    console.log(`  [auto-grad] Cetus graduation - mainnet only, skipping DEX pool creation`);
     return null;
   }
   if (target === 2) {
-    console.log(`  [auto-grad] Creating Turbos pool…`);
+    console.log(`  [auto-grad] Creating Turbos pool...`);
     try {
       const { graduateToTurbos } = await import('../graduation-test-turbos/graduate_turbos_full.js');
       return await graduateToTurbos({ curveId, tokenType, pkgId, keypair, client });
@@ -121,7 +123,7 @@ async function createDexPool(client, curveId, tokenType, pkgId, graduationTarget
     }
   }
   if (target === 1) {
-    console.log(`  [auto-grad] Creating DeepBook pool…`);
+    console.log(`  [auto-grad] Creating DeepBook pool...`);
     try {
       const { graduateToDeepBook } = await import('../graduation-test/graduate_deepbook_full.js');
       return await graduateToDeepBook({ curveId, tokenType, pkgId, keypair, client });
@@ -132,7 +134,7 @@ async function createDexPool(client, curveId, tokenType, pkgId, graduationTarget
   }
 }
 
-// ── Main graduation flow ──────────────────────────────────────────────────────
+// -- Main graduation flow ------------------------------------------------------
 
 async function graduateCurve(client, curveId, curveData) {
   if (inProgress.has(curveId)) return;
@@ -145,56 +147,73 @@ async function graduateCurve(client, curveId, curveData) {
   const gradTarget = curveData.graduation_target ?? 0;
 
   if (!curveData.package_id) {
-    console.warn(`  [auto-grad] ⚠ No package_id for ${curveId} — defaulting to V10 lineage`);
+    console.warn(`  [auto-grad] ! No package_id for ${curveId} - defaulting to V10 lineage`);
   }
   if (!tokenType) {
-    console.error(`  [auto-grad] ✗ No token type for curve ${curveId} — skipping`);
+    console.error(`  [auto-grad] x No token type for curve ${curveId} - skipping`);
     inProgress.delete(curveId);
     return;
   }
   if (!adminCapId) {
-    console.error(`  [auto-grad] ✗ No AdminCap for package ${pkgId} — skipping`);
+    console.error(`  [auto-grad] x No AdminCap for package ${pkgId} - skipping`);
     inProgress.delete(curveId);
     return;
   }
 
-  console.log(`\n  [auto-grad] 🎓 Graduating ${curveData.name ?? curveId} (target: ${['Cetus','DeepBook','Turbos'][gradTarget]}) — write pkg ${writePackageFor(pkgId)}`);
+  console.log(`\n  [auto-grad] >> Graduating ${curveData.name ?? curveId} (target: ${['Cetus','DeepBook','Turbos'][gradTarget]}) - write pkg ${writePackageFor(pkgId)}`);
 
   try {
     // The full graduation script owns the ENTIRE on-chain flow:
     // graduate() -> claim_graduation_funds() -> create pool -> record_graduation_pool().
-    // auto_graduate no longer graduates/claims itself — doing both here AND in the
+    // auto_graduate no longer graduates/claims itself - doing both here AND in the
     // full script caused a double claim whose second call aborted with
     // ELpAlreadyClaimed (code 51). This is now a thin watcher+dispatcher.
     const poolResult = await createDexPool(client, curveId, tokenType, pkgId, gradTarget, keypair);
 
     if (poolResult?.skipped) {
       // Terminal skip (e.g. EReserveTooLow / F-2 griefed graduation). Mark handled
-      // so the watcher stops re-dispatching it — do NOT auto-retry; needs manual
+      // so the watcher stops re-dispatching it - do NOT auto-retry; needs manual
       // review.
-      console.warn(`  [auto-grad] ⚠ ${curveData.name ?? curveId} skipped (${poolResult.reason}) — marking handled to stop retry, NEEDS MANUAL REVIEW`);
+      console.warn(`  [auto-grad] ! ${curveData.name ?? curveId} skipped (${poolResult.reason}) - marking handled to stop retry, NEEDS MANUAL REVIEW`);
       await pool.query(`UPDATE curves SET graduated = true WHERE curve_id = $1`, [curveId]);
     } else if (poolResult || Number(gradTarget ?? 0) === 0) {
       // Only mark done once a pool actually exists (or the target is a deliberate
       // testnet skip, e.g. Cetus/mainnet-only which returns null by design).
       await pool.query(`UPDATE curves SET graduated = true WHERE curve_id = $1`, [curveId]);
-      console.log(`  [auto-grad] ✓ ${curveData.name ?? curveId} fully graduated`);
+      console.log(`  [auto-grad] + ${curveData.name ?? curveId} fully graduated`);
     } else {
       // Graduated-but-poolless (transient failure) stays eligible for retry.
-      console.warn(`  [auto-grad] ⚠ ${curveData.name ?? curveId} graduated but no pool yet — will retry`);
+      console.warn(`  [auto-grad] ! ${curveData.name ?? curveId} graduated but no pool yet - will retry`);
     }
   } catch (err) {
-    console.error(`  [auto-grad] ✗ Graduation failed for ${curveId}:`, err.message);
+    console.error(`  [auto-grad] x Graduation failed for ${curveId}:`, err.message);
   } finally {
     inProgress.delete(curveId);
   }
 }
 
-// ── Watcher loop ──────────────────────────────────────────────────────────────
+// -- Watcher loop --------------------------------------------------------------
 // grpcClient is passed in from index.js (uses GrpcTransport, not GrpcWebFetchTransport)
 
 export async function startGraduationWatcher(grpcClient) {
-  console.log('  [auto-grad] Graduation watcher started — polling every 30s');
+  console.log('  [auto-grad] Graduation watcher started - polling every 30s');
+
+  // Startup assert: the write target must expose the functions THIS watcher's
+  // flow invokes. claim_graduation_funds (and its grad_funds_claimed getter)
+  // first exist in V13; the default V12 target genuinely lacks them, so they
+  // are required only once SUIPUMP_LATEST_WRITE_PACKAGE is set (post-publish) -
+  // requiring them unconditionally would block startup pre-publish. Only a
+  // definitive on-chain "function absent" throws; transport failures warn and
+  // continue (see write_target.js).
+  const requiredFns = [
+    ['bonding_curve', 'graduate'],
+    ['bonding_curve', 'record_graduation_pool'],
+  ];
+  if (process.env.SUIPUMP_LATEST_WRITE_PACKAGE) {
+    requiredFns.push(['bonding_curve', 'claim_graduation_funds']);
+    requiredFns.push(['bonding_curve', 'grad_funds_claimed']);
+  }
+  await assertWriteTarget(graphqlClient, requiredFns);
 
   await pool.query(`ALTER TABLE curves ADD COLUMN IF NOT EXISTS graduated BOOLEAN DEFAULT false`);
 
@@ -220,7 +239,7 @@ export async function startGraduationWatcher(grpcClient) {
 
           // Trigger: the curve has GRADUATED (inline inside buy() at the dynamic
           // ~12305 SUI threshold, or via permissionless graduate()) but has NO DEX
-          // pool yet. Driven off (graduated && !pool_id) — NOT off a static SUI
+          // pool yet. Driven off (graduated && !pool_id) - NOT off a static SUI
           // reserve threshold, which is dead for V9+ inline graduation.
           if (isGraduated && !poolCreated) {
             graduateCurve(grpcClient, row.curve_id, {
@@ -231,7 +250,7 @@ export async function startGraduationWatcher(grpcClient) {
               console.error(`  [auto-grad] graduateCurve error:`, err.message)
             );
           } else if (isGraduated && poolCreated) {
-            // Already graduated with a pool on-chain — keep DB bookkeeping in sync.
+            // Already graduated with a pool on-chain - keep DB bookkeeping in sync.
             await pool.query(`UPDATE curves SET graduated = true WHERE curve_id = $1`, [row.curve_id]);
           }
         } catch (err) {

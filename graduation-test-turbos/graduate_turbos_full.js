@@ -3,18 +3,18 @@
 //
 // DUAL-MODE:
 //   - Exported function: graduateToTurbos({ curveId, tokenType, pkgId, keypair, client })
-//     Called by indexer/auto_graduate.js — all context passed in, no process.exit.
+//     Called by indexer/auto_graduate.js - all context passed in, no process.exit.
 //
 //   - Standalone CLI: node graduate_turbos_full.js <CURVE_ID>
 //     Uses env SUI_PRIVATE_KEY + SUI_RPC_URL, calls process.exit on failure.
 //
 // Steps:
-//   1. graduate()               — mark curve graduated, pay bonuses
-//   2. claim_graduation_funds() — pull SUI reserve + LP tokens to admin wallet
-//   3. Split 50/50              — creator half + protocol half
-//   4. Create Turbos CLMM pool  — full tick range, 1% fee tier
-//   5. Add both halves          — creator gets LP NFT, protocol keeps theirs
-//   6. record_graduation_pool() — write pool_id on-chain
+//   1. graduate()               - mark curve graduated, pay bonuses
+//   2. claim_graduation_funds() - pull SUI reserve + LP tokens to admin wallet
+//   3. Split 50/50              - creator half + protocol half
+//   4. Create Turbos CLMM pool  - full tick range, 1% fee tier
+//   5. Add both halves          - creator gets LP NFT, protocol keeps theirs
+//   6. record_graduation_pool() - write pool_id on-chain
 
 import { Transaction } from '@mysten/sui/transactions';
 import { SuiClient, getFullnodeUrl } from '@mysten/sui/client';
@@ -22,8 +22,9 @@ import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { TurbosSdk, Network } from 'turbos-clmm-sdk';
 import Decimal from 'decimal.js';
 import { fromBase64 } from '@mysten/sui/utils';
+import { LATEST_WRITE_PACKAGE, assertWriteTarget } from '../indexer/write_target.js';
 
-// ── Constants ─────────────────────────────────────────────────────────────────
+// -- Constants -----------------------------------------------------------------
 const SUI_TYPE     = '0x2::sui::SUI';
 const MIN_TICK     = -443636;
 const MAX_TICK     =  443636;
@@ -36,10 +37,10 @@ const PKG_V10 = '0x2deda2cade65cd5afd5ffbe799d48f2491debf08d3aef6fa11aa6e1c8afe1
 const PKG_V11 = '0xc03817bce45ff492e5d0f40f9e46f5a075a952b50c5c6146b8fb38138bd699eb';
 const PKG_V12 = '0xf5a3566ba920a3e3614e8b25da0ca3237879b6e22eb12f21ccf2bceb6520b9cd';
 
-// TODO(owner): bump LATEST_WRITE_PACKAGE to the V13 upgrade id once the
-// claim_graduation_funds upgrade is published. claim_graduation_funds does NOT
-// exist in the currently-deployed V10/V11/V12 — writes abort until V13 ships.
-const LATEST_WRITE_PACKAGE = PKG_V12;
+// LATEST_WRITE_PACKAGE is env-driven (SUIPUMP_LATEST_WRITE_PACKAGE) via
+// ../indexer/write_target.js - after the V13 publish, Carlos flips the env var
+// with no code change. Until then it defaults to V12, which genuinely lacks
+// claim_graduation_funds, so claim writes abort until V13 ships.
 
 // Remap a curve's DEFINING package -> latest upgrade that contains
 // claim_graduation_funds. Non-lineage packages pass through unchanged.
@@ -52,8 +53,9 @@ function writePackageFor(pkgId) {
   return WRITE_PACKAGE[pkgId] ?? pkgId;
 }
 
-// AdminCap IDs by DEFINING package version — kept in sync with auto_graduate.js.
-// The whole V10 lineage (V10/V11/V12+) shares one AdminCap (0x144d...).
+// AdminCap IDs by DEFINING package version - kept in sync with auto_graduate.js.
+// The whole V10 lineage (V10/V11/V12+) shares one AdminCap
+// (0x144d426960a9a6b8db63ce3426e06a9c41273a17e72ed0193cd8c8507d4f6ec5).
 const ADMIN_CAPS = {
   '0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8': '0xfc80d40718e8e9d0bc1fddc1e47a74e46d0c89c3e1e36a2bc8f016efb6d51e0c',
   '0x785c0604cb6c60a8547501e307d2b0ca7a586ff912c8abff4edfb88db65b7236': '0xfc80d40718e8e9d0bc1fddc1e47a74e46d0c89c3e1e36a2bc8f016efb6d51e0c',
@@ -66,7 +68,7 @@ const ADMIN_CAPS = {
   [PKG_V12]: '0x144d426960a9a6b8db63ce3426e06a9c41273a17e72ed0193cd8c8507d4f6ec5',
 };
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// -- Helpers -------------------------------------------------------------------
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function fmtSui(mist) { return `${(Number(BigInt(mist)) / 1e9).toFixed(4)} SUI`; }
 
@@ -141,18 +143,18 @@ async function fetchClaimedSuiAmount({ client, writePkg, curveId }) {
 }
 
 // Detect the F-2 backstop abort EReserveTooLow (code 52) from a Move status/error
-// string — claim_graduation_funds aborts 52 when the graduated reserve is below
+// string - claim_graduation_funds aborts 52 when the graduated reserve is below
 // the 1000 SUI floor (likely oracle-manipulated / griefed graduation).
 function isReserveTooLow(msg) {
   const s = String(msg ?? '');
   return s.includes('EReserveTooLow') || /,\s*52\)/.test(s) || /MoveAbort\([^)]*\b52\b/.test(s);
 }
 
-// ── Core exported function ────────────────────────────────────────────────────
+// -- Core exported function ----------------------------------------------------
 
 /**
  * Graduates a SuiPump curve to a Turbos CLMM pool.
- * Called by auto_graduate.js — all deps passed in, never calls process.exit.
+ * Called by auto_graduate.js - all deps passed in, never calls process.exit.
  *
  * @param {object} opts
  * @param {string}   opts.curveId   - Shared curve object ID
@@ -173,16 +175,16 @@ export async function graduateToTurbos({ curveId, tokenType, pkgId, keypair, cli
 
   const sdk = new TurbosSdk(Network.testnet, client);
 
-  console.log(`  [turbos] Graduating ${curveId.slice(0, 12)}… → Turbos CLMM`);
+  console.log(`  [turbos] Graduating ${curveId.slice(0, 12)}... -> Turbos CLMM`);
   console.log(`  [turbos] token: ${tokenType}`);
   console.log(`  [turbos] pkg:   ${pkgId} (write ${writePkg})`);
 
-  // ── Step 1: graduate() if needed ───────────────────────────────────────────
+  // -- Step 1: graduate() if needed -------------------------------------------
   const curveObj = await client.getObject({ id: curveId, options: { showContent: true } });
   let fields   = curveObj.data?.content?.fields ?? {};
 
   if (!fields.graduated) {
-    console.log(`  [turbos] [1/5] Calling graduate()…`);
+    console.log(`  [turbos] [1/5] Calling graduate()...`);
 
     const metadataId = await (async () => {
       try { const m = await client.getCoinMetadata({ coinType: tokenType }); return m?.id ?? null; }
@@ -216,31 +218,31 @@ export async function graduateToTurbos({ curveId, tokenType, pkgId, keypair, cli
       signer: keypair, transaction: tx, options: { showEffects: true },
     });
     if (r.effects.status.status !== 'success') throw new Error(`graduate() failed: ${r.effects.status.error}`);
-    console.log(`  [turbos] ✓ graduate: ${r.digest}`);
+    console.log(`  [turbos] + graduate: ${r.digest}`);
     await sleep(3000);
     const after = await client.getObject({ id: curveId, options: { showContent: true } });
     fields = after.data?.content?.fields ?? {};
   } else {
-    console.log(`  [turbos] [1/5] Already graduated — skipping`);
+    console.log(`  [turbos] [1/5] Already graduated - skipping`);
   }
 
   const creator = fields.creator ?? address;
 
-  // ── Step 2: 4-state machine (graduated + grad_funds_claimed + pool_id) ──────
+  // -- Step 2: 4-state machine (graduated + grad_funds_claimed + pool_id) ------
   //   A  !graduated                          -> not ready (watcher shouldn't send)
   //   B  graduated && !claimed               -> claim now, size pool from sui_reserve
   //   C  graduated && claimed && no pool_id  -> recover size from event, build pool
   //   D  graduated && pool_id present        -> already done
   if (!fields.graduated) {
     // State A
-    console.warn(`  [turbos] Curve not graduated — nothing to do, skipping`);
+    console.warn(`  [turbos] Curve not graduated - nothing to do, skipping`);
     return null;
   }
 
   const existingPool = extractPoolId(fields);
   if (existingPool) {
     // State D
-    console.log(`  [turbos] Pool already recorded (${existingPool}) — already done`);
+    console.log(`  [turbos] Pool already recorded (${existingPool}) - already done`);
     return { poolId: existingPool, txDigest: null };
   }
 
@@ -250,12 +252,12 @@ export async function graduateToTurbos({ curveId, tokenType, pkgId, keypair, cli
   if (!claimed) {
     // State B: reserve is full. Claim (both coins -> admin wallet); size from reserve.
     poolSuiMist = BigInt(fields.sui_reserve ?? 0);
-    console.log(`  [turbos] [2/5] Claiming ${fmtSui(poolSuiMist)} + 200M LP…`);
+    console.log(`  [turbos] [2/5] Claiming ${fmtSui(poolSuiMist)} + 200M LP...`);
     const sv2  = await getSharedVersion(client, curveId);
     const tx2  = new Transaction();
     const ref2 = tx2.sharedObjectRef({ objectId: curveId, initialSharedVersion: sv2, mutable: true });
     // claim_graduation_funds returns (Coin<SUI>, Coin<T>). BOTH returns must be
-    // captured and transferred — the LP Coin<T> has no drop, so leaving it unused
+    // captured and transferred - the LP Coin<T> has no drop, so leaving it unused
     // fails the PTB.
     const [poolSuiCoin, lpCoin] = tx2.moveCall({
       target: `${writePkg}::bonding_curve::claim_graduation_funds`,
@@ -270,33 +272,33 @@ export async function graduateToTurbos({ curveId, tokenType, pkgId, keypair, cli
       });
     } catch (err) {
       if (isReserveTooLow(err?.message)) {
-        console.warn(`  [turbos] ⚠ ${curveId} graduated below the F-2 min-reserve floor (likely oracle-manipulated / griefed) — skipping, needs manual review`);
+        console.warn(`  [turbos] ! ${curveId} graduated below the F-2 min-reserve floor (likely oracle-manipulated / griefed) - skipping, needs manual review`);
         return { poolId: null, txDigest: null, skipped: true, reason: 'reserve-too-low' };
       }
       throw err;
     }
     if (r2.effects.status.status !== 'success') {
       if (isReserveTooLow(r2.effects.status.error)) {
-        console.warn(`  [turbos] ⚠ ${curveId} graduated below the F-2 min-reserve floor (likely oracle-manipulated / griefed) — skipping, needs manual review`);
+        console.warn(`  [turbos] ! ${curveId} graduated below the F-2 min-reserve floor (likely oracle-manipulated / griefed) - skipping, needs manual review`);
         return { poolId: null, txDigest: null, skipped: true, reason: 'reserve-too-low' };
       }
       throw new Error(`claim_graduation_funds() failed: ${r2.effects.status.error}`);
     }
-    console.log(`  [turbos] ✓ claimed (SUI + LP): ${r2.digest}`);
+    console.log(`  [turbos] + claimed (SUI + LP): ${r2.digest}`);
     await sleep(3000);
   } else {
     // State C: claimed in a prior run but pool creation failed. The SUI + 200M LP
     // are already in the admin wallet. Recover the pool SUI size from the
-    // GraduationFundsClaimed event and rebuild the pool — do NOT throw.
+    // GraduationFundsClaimed event and rebuild the pool - do NOT throw.
     const recovered = await fetchClaimedSuiAmount({ client, writePkg, curveId });
     if (recovered == null || recovered === 0n) {
-      throw new Error(`Claimed but GraduationFundsClaimed event not found for ${curveId} — cannot recover pool SUI size`);
+      throw new Error(`Claimed but GraduationFundsClaimed event not found for ${curveId} - cannot recover pool SUI size`);
     }
     poolSuiMist = recovered;
-    console.log(`  [turbos] [2/5] Already claimed — recovered ${fmtSui(poolSuiMist)} pool SUI from GraduationFundsClaimed event; using LP already in wallet`);
+    console.log(`  [turbos] [2/5] Already claimed - recovered ${fmtSui(poolSuiMist)} pool SUI from GraduationFundsClaimed event; using LP already in wallet`);
   }
 
-  // ── Step 3: Compute 50/50 split ────────────────────────────────────────────
+  // -- Step 3: Compute 50/50 split --------------------------------------------
   // LP now arrives in the admin wallet from claim_graduation_funds() above
   // (graduate() no longer mints the 200M LP allocation).
   const lpCoins = await client.getCoins({ owner: address, coinType: tokenType });
@@ -307,8 +309,8 @@ export async function graduateToTurbos({ curveId, tokenType, pkgId, keypair, cli
 
   console.log(`  [turbos] [3/5] Split: ${(Number(halfLp)/1e6).toLocaleString()} tokens + ${fmtSui(halfSui)} each half`);
 
-  // ── Step 4: Turbos fee tier + sqrtPrice ────────────────────────────────────
-  console.log(`  [turbos] [4/5] Fetching Turbos config…`);
+  // -- Step 4: Turbos fee tier + sqrtPrice ------------------------------------
+  console.log(`  [turbos] [4/5] Fetching Turbos config...`);
   const fees = await sdk.contract.getFees();
   const fee  = fees.find(f => f.fee === 10000) ?? fees[fees.length - 1];
   console.log(`  [turbos] Fee tier: ${fee.fee / 100}% (tickSpacing: ${fee.tickSpacing})`);
@@ -325,8 +327,8 @@ export async function graduateToTurbos({ curveId, tokenType, pkgId, keypair, cli
   const tickLower   = Math.ceil(MIN_TICK / tickSpacing) * tickSpacing;
   const tickUpper   = Math.floor(MAX_TICK / tickSpacing) * tickSpacing;
 
-  // ── Step 5: Create Turbos pool + add creator half ──────────────────────────
-  console.log(`  [turbos] [5/5] Creating Turbos pool + adding creator liquidity…`);
+  // -- Step 5: Create Turbos pool + add creator half --------------------------
+  console.log(`  [turbos] [5/5] Creating Turbos pool + adding creator liquidity...`);
   const poolTxb = await sdk.pool.createPool({
     fee,
     address,
@@ -347,7 +349,7 @@ export async function graduateToTurbos({ curveId, tokenType, pkgId, keypair, cli
   if (poolResult.effects.status.status !== 'success') {
     throw new Error(`Turbos pool creation failed: ${poolResult.effects.status.error}`);
   }
-  console.log(`  [turbos] ✓ Pool created: ${poolResult.digest}`);
+  console.log(`  [turbos] + Pool created: ${poolResult.digest}`);
   await sleep(3000);
 
   // Find pool ID
@@ -357,7 +359,7 @@ export async function graduateToTurbos({ curveId, tokenType, pkgId, keypair, cli
   const poolId = poolObj?.objectId;
   if (!poolId) throw new Error('Could not find pool ID in object changes');
 
-  // Find creator LP NFT — transfer to curve creator
+  // Find creator LP NFT - transfer to curve creator
   const creatorNft = poolResult.objectChanges?.find(c =>
     c.type === 'created' && c.objectType?.includes('::position::Position')
   );
@@ -369,16 +371,16 @@ export async function graduateToTurbos({ curveId, tokenType, pkgId, keypair, cli
       signer: keypair, transaction: txTransfer, options: { showEffects: true },
     });
     if (rTransfer.effects.status.status === 'success') {
-      console.log(`  [turbos] ✓ LP NFT transferred to creator: ${rTransfer.digest}`);
+      console.log(`  [turbos] + LP NFT transferred to creator: ${rTransfer.digest}`);
     } else {
-      console.warn(`  [turbos] ⚠ LP NFT transfer failed: ${rTransfer.effects.status.error}`);
+      console.warn(`  [turbos] ! LP NFT transfer failed: ${rTransfer.effects.status.error}`);
     }
     await sleep(2000);
   }
 
   // Add protocol half to the same pool
   await sleep(3000);
-  console.log(`  [turbos]   Adding protocol liquidity…`);
+  console.log(`  [turbos]   Adding protocol liquidity...`);
   try {
     let poolSv = null;
     for (let i = 0; i < 5; i++) {
@@ -415,19 +417,19 @@ export async function graduateToTurbos({ curveId, tokenType, pkgId, keypair, cli
           signer: keypair, transaction: addTxb, options: { showEffects: true },
         });
         if (rAdd.effects.status.status === 'success') {
-          console.log(`  [turbos] ✓ Protocol liquidity added: ${rAdd.digest}`);
+          console.log(`  [turbos] + Protocol liquidity added: ${rAdd.digest}`);
         } else {
-          console.warn(`  [turbos] ⚠ Protocol liquidity failed: ${rAdd.effects.status.error}`);
+          console.warn(`  [turbos] ! Protocol liquidity failed: ${rAdd.effects.status.error}`);
         }
       } else {
-        console.warn(`  [turbos] ⚠ Insufficient balance for protocol half — skipped`);
+        console.warn(`  [turbos] ! Insufficient balance for protocol half - skipped`);
       }
     }
   } catch (err) {
-    console.warn(`  [turbos] ⚠ Protocol liquidity step failed: ${err.message}`);
+    console.warn(`  [turbos] ! Protocol liquidity step failed: ${err.message}`);
   }
 
-  // ── Step 6: record_graduation_pool() ───────────────────────────────────────
+  // -- Step 6: record_graduation_pool() ---------------------------------------
   const sv5  = await getSharedVersion(client, curveId);
   const tx5  = new Transaction();
   const ref5 = tx5.sharedObjectRef({ objectId: curveId, initialSharedVersion: sv5, mutable: true });
@@ -445,16 +447,16 @@ export async function graduateToTurbos({ curveId, tokenType, pkgId, keypair, cli
     signer: keypair, transaction: tx5, options: { showEffects: true },
   });
   if (r5.effects.status.status !== 'success') {
-    console.warn(`  [turbos] ⚠ record_graduation_pool failed: ${r5.effects.status.error}`);
+    console.warn(`  [turbos] ! record_graduation_pool failed: ${r5.effects.status.error}`);
   } else {
-    console.log(`  [turbos] ✓ recorded: ${r5.digest}`);
+    console.log(`  [turbos] + recorded: ${r5.digest}`);
   }
 
-  console.log(`  [turbos] ✅ Done — Pool: ${poolId}`);
+  console.log(`  [turbos] OK Done - Pool: ${poolId}`);
   return { poolId, txDigest: poolResult.digest };
 }
 
-// ── Standalone CLI entry point ────────────────────────────────────────────────
+// -- Standalone CLI entry point ------------------------------------------------
 if (process.argv[1] && process.argv[1].endsWith('graduate_turbos_full.js')) {
   const curveId = process.argv[2];
   if (!curveId?.startsWith('0x')) {
@@ -464,15 +466,36 @@ if (process.argv[1] && process.argv[1].endsWith('graduate_turbos_full.js')) {
 
   const client  = defaultClient();
   const keypair = defaultKeypair();
+
+  // Startup assert (CLI path only - the library export is covered by
+  // auto_graduate's startup assert): the write target must expose the
+  // functions this script invokes. claim_graduation_funds/grad_funds_claimed
+  // first exist in V13; the default V12 target genuinely lacks them, so they
+  // are required only once SUIPUMP_LATEST_WRITE_PACKAGE is set (post-publish).
+  const requiredFns = [
+    ['bonding_curve', 'graduate'],
+    ['bonding_curve', 'record_graduation_pool'],
+  ];
+  if (process.env.SUIPUMP_LATEST_WRITE_PACKAGE) {
+    requiredFns.push(['bonding_curve', 'claim_graduation_funds']);
+    requiredFns.push(['bonding_curve', 'grad_funds_claimed']);
+  }
+  try {
+    await assertWriteTarget(client, requiredFns);
+  } catch (err) {
+    console.error('X', err.message);
+    process.exit(1);
+  }
+
   const obj     = await client.getObject({ id: curveId, options: { showContent: true, showType: true } });
   const fields  = obj.data?.content?.fields ?? {};
   const tokenType = obj.data?.type?.match(/Curve<(.+)>$/)?.[1];
-  if (!tokenType) { console.error('❌ Could not parse token type'); process.exit(1); }
+  if (!tokenType) { console.error('X Could not parse token type'); process.exit(1); }
   const pkgId = tokenType.split('::')[0];
 
-  console.log('━'.repeat(60));
-  console.log('  SUIPUMP — Graduate to Turbos CLMM (standalone)');
-  console.log('━'.repeat(60));
+  console.log('='.repeat(60));
+  console.log('  SUIPUMP - Graduate to Turbos CLMM (standalone)');
+  console.log('='.repeat(60));
   console.log(`  curve:   ${curveId}`);
   console.log(`  token:   ${fields.name} ($${fields.symbol})`);
   console.log(`  type:    ${tokenType}`);
@@ -486,7 +509,7 @@ if (process.argv[1] && process.argv[1].endsWith('graduate_turbos_full.js')) {
     console.log(`  poolId:   ${result.poolId}`);
     console.log('  https://testnet.suivision.xyz/txblock/' + result.txDigest);
   } catch (err) {
-    console.error('❌', err.message);
+    console.error('X', err.message);
     process.exit(1);
   }
 }
