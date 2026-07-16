@@ -524,7 +524,12 @@ module suipump::bonding_curve_tests {
         let proto_before   = bonding_curve::protocol_fees(&curve);
         let airdrop_before = bonding_curve::airdrop_fees(&curve);
 
-        let payment = mint_sui(10_000 * MIST_PER_SUI, &mut s);
+        // V13: BASE_GRAD_MIST dropped 12,305 -> 9,000 SUI. A 10,000 SUI buy
+        // now CLIPS at the threshold and graduates inline, and graduation adds
+        // a protocol-ONLY bonus (do_graduate_inline: PROTOCOL_GRAD_BONUS_BPS)
+        // that contaminates any fee-split measurement. Keep this buy well
+        // below the threshold so it stays a plain, non-graduating buy.
+        let payment = mint_sui(1_000 * MIST_PER_SUI, &mut s);
         let clk = clock::create_for_testing(ts::ctx(&mut s));
         let (tokens, refund) = bonding_curve::buy_for_testing(
             &mut curve, payment, 0, option::none(), &clk, ts::ctx(&mut s)
@@ -552,7 +557,12 @@ module suipump::bonding_curve_tests {
 
         ts::next_tx(&mut s, BUYER);
         let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
-        let payment = mint_sui(10_000 * MIST_PER_SUI, &mut s);
+        // V13: BASE_GRAD_MIST dropped 12,305 -> 9,000 SUI. A 10,000 SUI buy
+        // now CLIPS at the threshold and graduates inline, and graduation adds
+        // a protocol-ONLY bonus (do_graduate_inline: PROTOCOL_GRAD_BONUS_BPS)
+        // that contaminates any fee-split measurement. Keep this buy well
+        // below the threshold so it stays a plain, non-graduating buy.
+        let payment = mint_sui(1_000 * MIST_PER_SUI, &mut s);
         let clk = clock::create_for_testing(ts::ctx(&mut s));
         let (tokens, refund) = bonding_curve::buy_for_testing(
             &mut curve, payment, 0, option::some(REFERRER), &clk, ts::ctx(&mut s)
@@ -1233,7 +1243,9 @@ module suipump::bonding_curve_tests {
         assert!(bonding_curve::current_grad_threshold(&curve) == 2_845_980_000_000, 2013);
 
         clock::destroy_for_testing(clk);
-        ts::return_to_sender(&s, admin);
+        // Taken from CREATOR but the current tx sender is BUYER, so
+        // return_to_sender would abort with ECantReturnObject (code 2).
+        ts::return_to_address(CREATOR, admin);
         ts::return_shared(cfg);
         ts::return_shared(curve);
         ts::end(s);
@@ -1270,7 +1282,9 @@ module suipump::bonding_curve_tests {
         assert!(bonding_curve::current_grad_threshold(&curve) == 9_000 * MIST_PER_SUI, 2020);
 
         clock::destroy_for_testing(clk);
-        ts::return_to_sender(&s, admin);
+        // Taken from CREATOR but the current tx sender is BUYER, so
+        // return_to_sender would abort with ECantReturnObject (code 2).
+        ts::return_to_address(CREATOR, admin);
         ts::return_shared(cfg);
         ts::return_shared(curve);
         ts::end(s);
