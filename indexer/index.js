@@ -16,6 +16,7 @@ import {
   upsertLock, updateLockClaimed,
 } from './db.js';
 import { startGraduationWatcher } from './auto_graduate.js';
+import { startPricePublisher } from './price_publisher.js';
 import { startApi } from './api.js';
 
 // -- Config --------------------------------------------------------------------
@@ -424,6 +425,20 @@ async function main() {
   console.log(`  Events:   ${EVENT_NAMES.join(', ')}`);
   console.log();
 
+  // V13 price publisher arming decision, logged up front so a worker booted
+  // without the publish-time env states its posture immediately. Missing V13
+  // env is NORMAL pre-publish: the worker must run fine without it. The signer
+  // check is SUI_PRIVATE_KEY specifically (the Render reality; the publisher's
+  // keystore fallback is a local-dev convenience, not an arming signal).
+  const pricePublisherArmed = Boolean(
+    process.env.SUIPUMP_V13_PACKAGE &&
+    process.env.SUIPUMP_PRICE_CONFIG &&
+    process.env.SUI_PRIVATE_KEY
+  );
+  if (!pricePublisherArmed) {
+    console.log('  [price] price publisher dormant (set SUIPUMP_V13_PACKAGE + SUIPUMP_PRICE_CONFIG + SUI_PRIVATE_KEY to arm)');
+  }
+
   await initSchema();
   startApi();
 
@@ -440,6 +455,15 @@ async function main() {
   startGraduationWatcher(grpcClient).catch(err =>
     console.error('Auto-grad watcher crashed:', err.message)
   );
+
+  // Same fire-and-forget containment as the graduation watcher. Passes the
+  // GraphQL client: pushPrice's build/execute shape is the proven
+  // SuiGraphQLClient pattern (see price_publisher.js pushPrice).
+  if (pricePublisherArmed) {
+    startPricePublisher(graphqlClient).catch(err =>
+      console.error('Price publisher crashed:', err.message)
+    );
+  }
 
   await startStreaming();
 }
