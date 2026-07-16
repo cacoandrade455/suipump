@@ -77,6 +77,10 @@ module suipump::bonding_curve_tests {
     const E_CREATOR_STILL_ACTIVE:     u64 = 40;
     const E_CTO_ON_COOLDOWN:          u64 = 41;
     const E_BELOW_NOMINATE_THRESHOLD: u64 = 42;
+    const E_LP_ALREADY_CLAIMED:       u64 = 51;
+    const E_RESERVE_TOO_LOW:          u64 = 52;
+
+    const LP_SUPPLY_ATOMIC:           u64 = 200_000_000 * 1_000_000; // 1B total - 800M curve
 
     // ─── Helpers ─────────────────────────────────────────────────────────────
 
@@ -986,17 +990,33 @@ module suipump::bonding_curve_tests {
         ts::next_tx(&mut s, CREATOR);
         let admin_cap = ts::take_from_sender<AdminCap>(&s);
         let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
-        // In V9 inline graduation already ran — verify pool SUI is in reserve
         assert!(bonding_curve::graduated(&curve), 1000);
-        assert!(bonding_curve::sui_reserve(&curve) > 0, 1001);
+
+        let reserve_before = bonding_curve::sui_reserve(&curve);
+        assert!(reserve_before > 0, 1001);
+
+        // Actually call the function this test is named after.
+        let (sui_coin, lp_coin) = bonding_curve::claim_graduation_funds<TEST_TOKEN>(
+            &admin_cap, &mut curve, ts::ctx(&mut s)
+        );
+
+        // Reserve fully drained, returned SUI == pre-claim reserve.
+        assert!(bonding_curve::sui_reserve(&curve) == 0, 1002);
+        assert!(coin::value(&sui_coin) == reserve_before, 1003);
+        // 200M LP minted fresh at graduation.
+        assert!(coin::value(&lp_coin) == LP_SUPPLY_ATOMIC, 1004);
+
+        destroy(sui_coin);
+        destroy(lp_coin);
         ts::return_to_sender(&s, admin_cap);
         ts::return_shared(curve);
         ts::end(s);
     }
 
     #[test]
+    #[expected_failure(abort_code = E_NOT_GRADUATED, location = suipump::bonding_curve)]
     fun test_claim_graduation_funds_fails_if_not_graduated() {
-        // Verify that a non-graduated curve cannot be used as if graduated
+        // A non-graduated curve must not release the reserve or mint the LP.
         let mut s = ts::begin(CREATOR);
         bonding_curve::init_for_testing(ts::ctx(&mut s));
 
@@ -1004,7 +1024,7 @@ module suipump::bonding_curve_tests {
         let (_a, _b) = make_payouts_single();
         setup_curve(&mut s, _a, _b);
 
-        // Small buy — does NOT graduate the curve
+        // Small buy — does NOT graduate the curve.
         ts::next_tx(&mut s, BUYER);
         let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
         let payment = mint_sui(10 * MIST_PER_SUI, &mut s);
@@ -1014,6 +1034,149 @@ module suipump::bonding_curve_tests {
         );
         assert!(!bonding_curve::graduated(&curve), 999);
         destroy(tokens); destroy(refund);
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+
+        // Claim on the non-graduated curve — expected to abort ENotGraduated.
+        ts::next_tx(&mut s, CREATOR);
+        let admin_cap = ts::take_from_sender<AdminCap>(&s);
+        let mut curve2 = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let (sui_coin, lp_coin) = bonding_curve::claim_graduation_funds<TEST_TOKEN>(
+            &admin_cap, &mut curve2, ts::ctx(&mut s)
+        );
+        destroy(sui_coin); destroy(lp_coin);
+        ts::return_to_sender(&s, admin_cap);
+        ts::return_shared(curve2);
+        ts::end(s);
+    }
+
+    #[test]
+    #[expected_failure(abort_code = E_LP_ALREADY_CLAIMED, location = suipump::bonding_curve)]
+    fun test_claim_graduation_funds_twice_aborts() {
+        // One-shot guard: the reserve is emptied on the first claim and never
+        // refills, so a second claim aborts BEFORE minting a second LP tranche.
+        let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
+
+        ts::next_tx(&mut s, CREATOR);
+        let (_a, _b) = make_payouts_single();
+        setup_curve(&mut s, _a, _b);
+        drain_curve(&mut s);
+
+        ts::next_tx(&mut s, CREATOR);
+        let admin_cap = ts::take_from_sender<AdminCap>(&s);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+
+        let (sui1, lp1) = bonding_curve::claim_graduation_funds<TEST_TOKEN>(
+            &admin_cap, &mut curve, ts::ctx(&mut s)
+        );
+        destroy(sui1); destroy(lp1);
+
+        // Second claim — expected to abort ELpAlreadyClaimed.
+        let (sui2, lp2) = bonding_curve::claim_graduation_funds<TEST_TOKEN>(
+            &admin_cap, &mut curve, ts::ctx(&mut s)
+        );
+        destroy(sui2); destroy(lp2);
+        ts::return_to_sender(&s, admin_cap);
+        ts::return_shared(curve);
+        ts::end(s);
+    }
+
+    #[test]
+    #[expected_failure(abort_code = E_RESERVE_TOO_LOW, location = suipump::bonding_curve)]
+    fun test_claim_graduation_funds_rejects_trivial_reserve() {
+        // F-2 backstop: a curve graduated on a trivially small reserve (the shape
+        // an oracle-manipulation attack produces) must NOT be able to mint 200M LP.
+        let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
+
+        ts::next_tx(&mut s, CREATOR);
+        let (_a, _b) = make_payouts_single();
+        setup_curve(&mut s, _a, _b);
+
+        // Force a 3 SUI graduation threshold, then graduate on ~3 SUI of reserve.
+        ts::next_tx(&mut s, BUYER);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        bonding_curve::set_grad_threshold_for_testing(&mut curve, 3 * MIST_PER_SUI);
+        let payment = mint_sui(5 * MIST_PER_SUI, &mut s);
+        let clk = clock::create_for_testing(ts::ctx(&mut s));
+        let (tokens, refund) = bonding_curve::buy_for_testing(
+            &mut curve, payment, 0, option::none(), &clk, ts::ctx(&mut s)
+        );
+        destroy(tokens); destroy(refund);
+        clock::destroy_for_testing(clk);
+        assert!(bonding_curve::graduated(&curve), 1010);
+        assert!(bonding_curve::sui_reserve(&curve) < 1_000 * MIST_PER_SUI, 1011);
+        ts::return_shared(curve);
+
+        // Claim on the trivially-funded graduated curve — expect EReserveTooLow.
+        ts::next_tx(&mut s, CREATOR);
+        let admin_cap = ts::take_from_sender<AdminCap>(&s);
+        let mut curve2 = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let (sui_coin, lp_coin) = bonding_curve::claim_graduation_funds<TEST_TOKEN>(
+            &admin_cap, &mut curve2, ts::ctx(&mut s)
+        );
+        destroy(sui_coin); destroy(lp_coin);
+        ts::return_to_sender(&s, admin_cap);
+        ts::return_shared(curve2);
+        ts::end(s);
+    }
+
+    #[test]
+    #[expected_failure(abort_code = E_NOT_GRADUATED, location = suipump::bonding_curve)]
+    fun test_graduate_rejects_zero_threshold_fresh_curve() {
+        // F-2 (self-audit): a fresh curve has current_grad_threshold == 0 and a
+        // full token_reserve, so without the `threshold > 0` guard graduate()
+        // would pass (sui_reserve 0 >= 0) and permanently brick it. This exercises
+        // graduate_for_testing, whose guard production graduate() now mirrors
+        // (production graduate() itself needs a CoinMetadata not constructible in
+        // the test VM). Expected to abort ENotGraduated.
+        let mut s = ts::begin(CREATOR);
+        let (_a, _b) = make_payouts_single();
+        setup_curve(&mut s, _a, _b);
+
+        ts::next_tx(&mut s, BUYER);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        assert!(bonding_curve::current_grad_threshold(&curve) == 0, 1030);
+        bonding_curve::graduate_for_testing(&mut curve, ts::ctx(&mut s));
+        ts::return_shared(curve);
+        ts::end(s);
+    }
+
+    #[test]
+    fun test_f2_clamp_bounds_threshold_on_manipulated_price() {
+        // F-2 (self-audit): the price clamp lives in resolve_grad_threshold, only
+        // reachable via the REAL buy() oracle path. Every other graduation test
+        // uses buy_for_testing / set_grad_threshold_for_testing, which bypass it.
+        // This drives buy() with absurd prices and asserts the stored threshold is
+        // clamped far above any cheap-graduation value (~38,910 SUI), never ~3 SUI.
+        let mut s = ts::begin(CREATOR);
+        let (_a, _b) = make_payouts_single();
+        setup_curve(&mut s, _a, _b);
+
+        ts::next_tx(&mut s, BUYER);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let clk = clock::create_for_testing(ts::ctx(&mut s));
+
+        // ~$16.8B/SUI: unclamped this collapses the threshold to ~3 SUI.
+        let payment = mint_sui(1 * MIST_PER_SUI, &mut s);
+        let (tokens, refund) = bonding_curve::buy<TEST_TOKEN>(
+            &mut curve, payment, 0, option::none(),
+            16_800_000_000_000, &clk, ts::ctx(&mut s)
+        );
+        destroy(tokens); destroy(refund);
+        assert!(!bonding_curve::graduated(&curve), 1040);
+        assert!(bonding_curve::current_grad_threshold(&curve) >= 38_000 * MIST_PER_SUI, 1041);
+
+        // u64::MAX must clamp safely (no overflow abort) to the same bound.
+        let payment2 = mint_sui(1 * MIST_PER_SUI, &mut s);
+        let (t2, r2) = bonding_curve::buy<TEST_TOKEN>(
+            &mut curve, payment2, 0, option::none(),
+            18_446_744_073_709_551_615, &clk, ts::ctx(&mut s)
+        );
+        destroy(t2); destroy(r2);
+        assert!(bonding_curve::current_grad_threshold(&curve) >= 38_000 * MIST_PER_SUI, 1042);
+
         clock::destroy_for_testing(clk);
         ts::return_shared(curve);
         ts::end(s);
@@ -1877,7 +2040,13 @@ module suipump::bonding_curve_tests {
         let esc_after = agent_session::escrow_value(&session);
         assert!(esc_after > 9 * MIST_PER_SUI, 9301);
         assert!(esc_after < 10 * MIST_PER_SUI, 9303);
-        assert!(agent_session::spent(&session) == 1 * MIST_PER_SUI, 9302);
+        // V11 net-exposure: the LP-fee tail refund (0.1% of 1 SUI = 1e6) compounds
+        // back to escrow AND credits `spent` down (credit_spent), so spent =
+        // amount - lp_fee, NOT the gross amount. The prior assertion (== 1 SUI)
+        // predated the V11 net-exposure change and had been failing since; the same
+        // refund is already reflected in the escrow bounds asserted above. (The
+        // LP-fee-refund itself is finding F-5, a separate remediation.)
+        assert!(agent_session::spent(&session) == 1 * MIST_PER_SUI - 1_000_000, 9302);
 
         clock::destroy_for_testing(clk);
         ts::return_shared(curve);

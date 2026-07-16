@@ -109,12 +109,22 @@ module suipump::bonding_curve {
     const ECtoZeroWeight:            u64 = 49; // CTO: voter presented zero balance
     // V12:
     const ECommentGateNoop:          u64 = 50; // toggle called with the current value
+    // V13: graduation exit path (restored; lost in the v8->v9 rewrite).
+    const ELpAlreadyClaimed:         u64 = 51; // claim_graduation_funds already drained this curve
+    const EReserveTooLow:            u64 = 52; // F-2: graduated reserve below the mint-site floor
 
     /// V12 comments toggle: dynamic-field marker on the curve. Marker ABSENT =
     /// holder-gated (the V10/V11 default, preserved); marker PRESENT = open
     /// comments (anyone may post). Stored as a dynamic field because the
     /// stored Curve<T> struct layout is frozen under upgrade rules.
     const COMMENTS_UNGATED_KEY: vector<u8> = b"comments_ungated";
+    // V13: one-shot marker for claim_graduation_funds. Dynamic field on curve.id
+    // (no struct-layout change, upgrade-safe). PRESENT = the graduation reserve +
+    // 200M LP have already been claimed. This guard is EXPLICIT and self-contained
+    // — it does not depend on "nothing refills sui_reserve post-graduation" being
+    // enforced by buy/sell/execute_buyback, so a future reserve-touching function
+    // cannot silently re-open the 200M mint.
+    const GRAD_CLAIMED_KEY:     vector<u8> = b"grad_funds_claimed";
 
     const MAX_COMMENT_BYTES: u64 = 280;
     const MAX_NAME_BYTES:    u64 = 64;
@@ -141,6 +151,10 @@ module suipump::bonding_curve {
 
     // ---------- Curve constants (v9 recalibrated) ----------
     const CURVE_SUPPLY:          u64 = 800_000_000  * 1_000_000;
+    // V13: total supply == curve supply + graduation LP allocation. The 200M LP
+    // (TOTAL_SUPPLY - CURVE_SUPPLY) is minted fresh at claim_graduation_funds and
+    // handed to the protocol relayer to seed the DEX pool. Mirrors V8's exit path.
+    const TOTAL_SUPPLY:          u64 = 1_000_000_000 * 1_000_000;
     const VIRTUAL_SUI_RESERVE:   u64 = 4_369 * 1_000_000_000;       // v9: was 3,500 (V8)
     const VIRTUAL_TOKEN_RESERVE: u64 = 1_073_000_000 * 1_000_000;   // unchanged from agreed spec
     const BPS_DENOMINATOR:       u64 = 10_000;
@@ -153,6 +167,28 @@ module suipump::bonding_curve {
     const BASE_GRAD_MIST:        u64 = 12_305 * 1_000_000_000;
     // Staleness is enforced off-chain: PTB caller passes sui_price_scaled = 0
     // when the Pyth price is stale. No on-chain timestamp check needed.
+    //
+    // ---------- F-2: oracle-manipulation guards (V13) ----------
+    // sui_price_scaled is caller-supplied (floor(sui_usd * 1000)) and is otherwise
+    // UNVALIDATED. A huge value collapses the dynamic graduation threshold toward
+    // zero (computed: threshold hits ~3 SUI at price_scaled ~1.68e13), which would
+    // let an attacker graduate a fresh curve on ~3 SUI and mint the 200M LP against
+    // it. Clamp the price into a sane band [$0.10, $100], floor the resolved
+    // threshold, and (belt-and-suspenders) assert a minimum reserve at the mint
+    // site in claim_graduation_funds. The clamp keeps the (currently mis-scaled)
+    // threshold >= ~38,910 SUI; the floor and reserve assert bound it regardless
+    // of any future change to dampened_grad_threshold.
+    const MIN_PRICE_SCALED:      u64 = 100;      // $0.10 SUI
+    const MAX_PRICE_SCALED:      u64 = 100_000;  // $100.00 SUI
+    // Hard floor on the graduation threshold actually used for the decision AND
+    // persisted to current_grad_threshold. 4,000 SUI is far below any legitimate
+    // graduation (~12,305 SUI at $1) so it never blocks a real launch, but a
+    // manipulated price can never drive the threshold below it.
+    const MIN_GRAD_MIST:         u64 = 4_000 * 1_000_000_000;
+    // Mint-site backstop: claim_graduation_funds refuses to drain the reserve and
+    // mint the 200M LP unless the graduated reserve is at least this large. Set
+    // well below any real graduation reserve, far above any manipulated one.
+    const MIN_GRAD_RESERVE_MIST: u64 = 1_000 * 1_000_000_000;
 
     // Anti-bot delay options (seconds)
     const ANTI_BOT_NONE: u8 = 0;
@@ -314,6 +350,13 @@ module suipump::bonding_curve {
         curve_id:          ID,
         pool_id:           ID,
         creator_lp_nft_id: ID,
+    }
+
+    // V13: emitted once per curve when the graduation reserve + LP are claimed.
+    public struct GraduationFundsClaimed has copy, drop {
+        curve_id:   ID,
+        sui_amount: u64,
+        lp_amount:  u64,
     }
 
     public struct TokensLocked has copy, drop {
@@ -495,8 +538,19 @@ module suipump::bonding_curve {
     ): (u64, u64) {
         let maybe_price = get_oracle_price_from_input(sui_price_scaled);
         if (option::is_some(&maybe_price)) {
-            let price_scaled = *option::borrow(&maybe_price);
-            let threshold    = dampened_grad_threshold(price_scaled);
+            let raw = *option::borrow(&maybe_price);
+            // F-2: clamp the caller-supplied price into a sane band BEFORE it can
+            // move the threshold, so a manipulated price cannot collapse it.
+            let price_scaled = if (raw < MIN_PRICE_SCALED) { MIN_PRICE_SCALED }
+                               else if (raw > MAX_PRICE_SCALED) { MAX_PRICE_SCALED }
+                               else { raw };
+            let raw_threshold = dampened_grad_threshold(price_scaled);
+            // F-2: floor the resolved threshold. Only a clamped+floored value is
+            // ever returned or persisted to current_grad_threshold, so a hostile
+            // price can neither graduate cheaply now nor poison the stored
+            // threshold that stale-price (price==0) buys later reuse.
+            let threshold = if (raw_threshold < MIN_GRAD_MIST) { MIN_GRAD_MIST }
+                            else { raw_threshold };
             (threshold, threshold)
         } else if (curve.current_grad_threshold > 0) {
             (curve.current_grad_threshold, curve.current_grad_threshold)
@@ -977,9 +1031,17 @@ module suipump::bonding_curve {
         // but still needed for the off-chain DEX pool creation PTB to pass
         // metadata. We assert !graduated here for the standalone drain path.
         assert!(!curve.graduated, EAlreadyGraduated);
+        // F-2 (self-audit): production graduate() reads current_grad_threshold
+        // directly and NEVER goes through resolve_grad_threshold, so the buy()-path
+        // price clamp does NOT protect it. On a fresh curve current_grad_threshold
+        // is 0, and without the `> 0` guard "sui_reserve >= 0" is always true, so a
+        // permissionless graduate() would brick any brand-new curve for gas. Require
+        // the threshold to have been established by a real oracle-priced buy first
+        // (mirrors graduate_for_testing). The token_reserve==0 drain branch stays.
         assert!(
             balance::value(&curve.token_reserve) == 0 ||
-            balance::value(&curve.sui_reserve) >= curve.current_grad_threshold,
+            (curve.current_grad_threshold > 0 &&
+             balance::value(&curve.sui_reserve) >= curve.current_grad_threshold),
             ENotGraduated,
         );
         let _ = metadata; // used by off-chain PTB for DEX pool; no on-chain mutation needed
@@ -1018,6 +1080,62 @@ module suipump::bonding_curve {
             pool_id,
             creator_lp_nft_id,
         });
+    }
+
+    // ---------- Graduation exit path (V13; restored from V8) ----------
+    // AdminCap-gated, one-shot. Callable only after the curve has graduated
+    // (inline via buy() OR standalone graduate()). Mints the 200M LP allocation
+    // and drains ALL remaining bonding-curve SUI, returning both to the caller
+    // (the protocol relayer) to seed the DEX pool. The protocol owns the LP.
+    //
+    // Guard model (three independent barriers on the 200M mint):
+    //   1. EXPLICIT one-shot: a dynamic-field marker (GRAD_CLAIMED_KEY) set BEFORE
+    //      the mint. Self-contained — does NOT rely on any other function keeping
+    //      sui_reserve empty. A second call aborts ELpAlreadyClaimed.
+    //   2. MINT-SITE reserve floor (F-2): the mint cannot fire against a trivial
+    //      reserve, so a manipulated-oracle "cheap graduation" (a fresh curve
+    //      graduated on ~3 SUI) can never mint 200M against it. This bounds the
+    //      OUTPUT and is immune to any dampened_grad_threshold / oracle bug.
+    //   3. AdminCap gate (caller authority).
+    public fun claim_graduation_funds<T>(
+        _cap:  &AdminCap,
+        curve: &mut Curve<T>,
+        ctx:   &mut TxContext,
+    ): (Coin<SUI>, Coin<T>) {
+        assert!(curve.graduated, ENotGraduated);
+        // Barrier 1: explicit one-shot marker, checked before any mint.
+        assert!(!df::exists_(&curve.id, GRAD_CLAIMED_KEY), ELpAlreadyClaimed);
+        // Barrier 2 (F-2): refuse to mint the 200M LP against a trivial reserve.
+        let sui_amount = balance::value(&curve.sui_reserve);
+        assert!(sui_amount >= MIN_GRAD_RESERVE_MIST, EReserveTooLow);
+        // Mark claimed BEFORE minting/draining so nothing can re-enter the mint.
+        df::add(&mut curve.id, GRAD_CLAIMED_KEY, true);
+
+        let sui_out = coin::from_balance(
+            balance::withdraw_all(&mut curve.sui_reserve), ctx
+        );
+
+        // The only mint after launch. Raises max supply CURVE_SUPPLY (800M) ->
+        // TOTAL_SUPPLY (1B). Mirrors V8: lp_supply = TOTAL_SUPPLY - CURVE_SUPPLY.
+        let lp_supply = TOTAL_SUPPLY - CURVE_SUPPLY;
+        let lp_out    = coin::from_balance(
+            coin::mint_balance(&mut curve.treasury, lp_supply), ctx
+        );
+
+        event::emit(GraduationFundsClaimed {
+            curve_id:   object::id(curve),
+            sui_amount,
+            lp_amount:  lp_supply,
+        });
+
+        (sui_out, lp_out)
+    }
+
+    // V13: relayer/frontend read to distinguish "graduated, claim done" from
+    // "graduated, nothing claimed yet" — the state machine the auto-graduate
+    // retry needs (claimed-but-no-pool vs nothing-to-claim).
+    public fun grad_funds_claimed<T>(c: &Curve<T>): bool {
+        df::exists_(&c.id, GRAD_CLAIMED_KEY)
     }
 
     // ---------- Update metadata (identical to v8) ----------
