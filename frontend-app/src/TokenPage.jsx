@@ -13,7 +13,7 @@ import { useTokenPageFeed } from './useRealtimeFeed.js';
 import HolderList from './HolderList.jsx';
 import Comments from './Comments.jsx';
 import AIAnalysis from './AIAnalysis.jsx';
-import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8, PACKAGE_ID_V9, PACKAGE_ID_V10, PACKAGE_ID_V12, ALL_PACKAGE_IDS, MIST_PER_SUI, DRAIN_SUI_APPROX, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_SUI_V6, VIRTUAL_SUI_V7, VIRTUAL_SUI_V8, VIRTUAL_SUI_V9, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, VIRTUAL_TOKENS_V6, VIRTUAL_TOKENS_V7, VIRTUAL_TOKENS_V8, VIRTUAL_TOKENS_V9, DRAIN_SUI_V4, DRAIN_SUI_V5, DRAIN_SUI_V6, DRAIN_SUI_V7, DRAIN_SUI_V8, DRAIN_SUI_V9, isNewCurve, isV5OrLater, isV7OrLater, isV8OrLater, isV9OrLater, isV10OrLater, supportsMetadataUpdate, curveShapeFor } from './constants.js';
+import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8, PACKAGE_ID_V9, PACKAGE_ID_V10, PACKAGE_ID_V12, PACKAGE_ID_V13, PRICE_CONFIG_ID, V13_BUY_ENABLED, ALL_PACKAGE_IDS, MIST_PER_SUI, DRAIN_SUI_APPROX, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_SUI_V6, VIRTUAL_SUI_V7, VIRTUAL_SUI_V8, VIRTUAL_SUI_V9, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, VIRTUAL_TOKENS_V6, VIRTUAL_TOKENS_V7, VIRTUAL_TOKENS_V8, VIRTUAL_TOKENS_V9, DRAIN_SUI_V4, DRAIN_SUI_V5, DRAIN_SUI_V6, DRAIN_SUI_V7, DRAIN_SUI_V8, DRAIN_SUI_V9, isNewCurve, isV5OrLater, isV7OrLater, isV8OrLater, isV9OrLater, isV10OrLater, supportsMetadataUpdate, curveShapeFor } from './constants.js';
 import { buyQuote, sellQuote } from './curve.js';
 import { t } from './i18n.js';
 
@@ -2307,27 +2307,40 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
         const impactPct = bq?.priceImpact ?? 0;
         const effectiveSlippage = resolveSlippagePct(slippage, impactPct);
         const minOut = bq?.tokensOut != null ? BigInt(Math.floor(Number(bq.tokensOut) * (1 - effectiveSlippage / 100))) : 0n;
-        // V9: buy(curve, payment, min_out, referral, sui_price_scaled, clock)
-        // Fetch live SUI price for oracle; pass 0 as fallback if unavailable
+        // V13 dispatch (env-gated): once the V13 upgrade is published and the
+        // VITE_SUIPUMP_V13_PACKAGE / VITE_SUIPUMP_PRICE_CONFIG env vars are set,
+        // buys on lineage curves (defining package V10) must target the V13
+        // package - calling the defining address runs OLD bytecode - and pass
+        // the shared PriceConfig object at position 5 instead of the u64 oracle
+        // price (same arity). While the env vars are unset, V13_BUY_ENABLED is
+        // false and every path below is unchanged.
+        const useV13Buy = V13_BUY_ENABLED && isV10OrLater(pkgId);
+        // V9-V12: buy(curve, payment, min_out, referral, sui_price_scaled, clock)
+        // Fetch live SUI price for oracle; pass 0 as fallback if unavailable.
+        // V13 reads the price from the on-chain PriceConfig - no client fetch.
         let suiPriceScaled = 0n;
-        try {
-          const priceRes = await fetch(
-            'https://api.binance.com/api/v3/ticker/price?symbol=SUIUSDT',
-            { signal: AbortSignal.timeout(2000) }
-          );
-          if (priceRes.ok) {
-            const priceData = await priceRes.json();
-            const priceUsd = parseFloat(priceData.price ?? '0');
-            if (priceUsd > 0) suiPriceScaled = BigInt(Math.floor(priceUsd * 1000));
-          }
-        } catch { /* fallback: 0 triggers stored/BASE_GRAD threshold */ }
+        if (!useV13Buy) {
+          try {
+            const priceRes = await fetch(
+              'https://api.binance.com/api/v3/ticker/price?symbol=SUIUSDT',
+              { signal: AbortSignal.timeout(2000) }
+            );
+            if (priceRes.ok) {
+              const priceData = await priceRes.json();
+              const priceUsd = parseFloat(priceData.price ?? '0');
+              if (priceUsd > 0) suiPriceScaled = BigInt(Math.floor(priceUsd * 1000));
+            }
+          } catch { /* fallback: 0 triggers stored/BASE_GRAD threshold */ }
+        }
         const isV9 = isV9OrLater(pkgId);
-        const buyArgs = isV9
+        const buyArgs = useV13Buy
+          ? [curveRef, payment, tx.pure.u64(minOut), tx.pure.option('address', null), tx.object(PRICE_CONFIG_ID), tx.object(SUI_CLOCK_ID)]
+          : isV9
           ? [curveRef, payment, tx.pure.u64(minOut), tx.pure.option('address', null), tx.pure.u64(suiPriceScaled), tx.object(SUI_CLOCK_ID)]
           : isV5
           ? [curveRef, payment, tx.pure.u64(minOut), tx.pure.option('address', null), tx.object(SUI_CLOCK_ID)]
           : [curveRef, payment, tx.pure.u64(minOut)];
-        const [tokens, refund] = tx.moveCall({ target: `${pkgId}::bonding_curve::buy`, typeArguments: [tokenType], arguments: buyArgs });
+        const [tokens, refund] = tx.moveCall({ target: `${useV13Buy ? PACKAGE_ID_V13 : pkgId}::bonding_curve::buy`, typeArguments: [tokenType], arguments: buyArgs });
         tx.transferObjects([tokens, refund], account.address);
       } else {
         const tokInAtomic = BigInt(Math.floor(amtFloat * 10 ** TOKEN_DECIMALS));

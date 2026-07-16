@@ -17,7 +17,7 @@ import { useCurrentAccount, useDAppKit, useCurrentClient } from '@mysten/dapp-ki
 import { Transaction } from '@mysten/sui/transactions';
 import { useNavigate } from 'react-router-dom';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
-import { PACKAGE_ID, PACKAGE_ID_V10, PACKAGE_ID_V11, PACKAGE_ID_V12, MIST_PER_SUI } from './constants.js';
+import { PACKAGE_ID, PACKAGE_ID_V10, PACKAGE_ID_V11, PACKAGE_ID_V12, PACKAGE_ID_V13, PRICE_CONFIG_ID, V13_BUY_ENABLED, MIST_PER_SUI } from './constants.js';
 import { signOwnerAuth } from './authSign.js';
 
 // The agent's execution wallet - the session_address authorized to trade the
@@ -2327,7 +2327,14 @@ export default function AgentPage({ onBack }) {
 
     const suiMist = BigInt(Math.floor(parseFloat(amountSui) * Number(MIST_PER_SUI)));
     if (suiMist <= 0n) throw new Error('Buy amount must be > 0');
-    const suiPriceScaled = await suiPriceScaledArg();
+    // V13 dispatch (env-gated): once the V13 upgrade is published and the env
+    // vars are set, lineage-curve buys must target the V13 package (calling the
+    // defining/old address runs OLD bytecode) and pass the shared PriceConfig
+    // object at position 5 instead of the client-fetched u64 oracle price. The
+    // curve already passed isLineagePkg above, so V13_BUY_ENABLED alone decides.
+    // While the env vars are unset this is false and behavior is unchanged.
+    const useV13Buy = V13_BUY_ENABLED;
+    const suiPriceScaled = useV13Buy ? 0n : await suiPriceScaledArg();
 
     const tx = new Transaction();
     // Match TokenPage's proven curveRef construction exactly: raw ISV (no
@@ -2337,14 +2344,17 @@ export default function AgentPage({ onBack }) {
       ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: sharedVersion, mutable: true })
       : tx.object(curveId);
     const [payment] = tx.splitCoins(tx.gas, [tx.pure.u64(suiMist)]);
-    // V9+: buy(curve, payment, min_out, referral, sui_price_scaled, clock) -> (Coin<T>, Coin<SUI>)
+    // V9-V12: buy(curve, payment, min_out, referral, sui_price_scaled u64, clock) -> (Coin<T>, Coin<SUI>)
+    // V13:    buy(curve, payment, min_out, referral, &PriceConfig,          clock) - same arity,
+    // position 5 becomes the shared PriceConfig object and the call must target
+    // the V13 package (env-gated above).
     // Clock is passed via tx.object(0x6) - the SDK resolves it. (tx.sharedObjectRef
     // for the clock produced a malformed input that made the wallet SDK throw
     // "reading 'txSignatures'" AFTER signing. TokenPage's working buy uses tx.object.)
     const [tokens, refund] = tx.moveCall({
-      target: `${packageId}::bonding_curve::buy`,
+      target: useV13Buy ? `${PACKAGE_ID_V13}::bonding_curve::buy` : `${packageId}::bonding_curve::buy`,
       typeArguments: [tokenType],
-      arguments: [curveRef, payment, tx.pure.u64(0), tx.pure.option('address', null), tx.pure.u64(suiPriceScaled), tx.object(AGENT_SUI_CLOCK_ID)],
+      arguments: [curveRef, payment, tx.pure.u64(0), tx.pure.option('address', null), useV13Buy ? tx.object(PRICE_CONFIG_ID) : tx.pure.u64(suiPriceScaled), tx.object(AGENT_SUI_CLOCK_ID)],
     });
     tx.transferObjects([tokens, refund], account.address);
 

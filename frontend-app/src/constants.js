@@ -1,6 +1,6 @@
 // constants.js
 // Multi-package support: v4-v8_1 (legacy), v8 (active)
-// CRITICAL: ALL package IDs must stay in ALL_PACKAGE_IDS forever — old tokens
+// CRITICAL: ALL package IDs must stay in ALL_PACKAGE_IDS forever - old tokens
 // must remain visible, tradeable, and counted in stats.
 
 export const PACKAGE_ID_V4 =
@@ -11,10 +11,10 @@ export const PACKAGE_ID_V6 =
   '0x21d5b1284d5f1d4d14214654f414ffca20c757ee9f9db7701d3ffaaac62cd768';
 export const PACKAGE_ID_V7 =
   '0xfb8f3f3e4e8d53130ac140906eebea6b6740bfaf0c971aec607fbc723be951f0';
-// V8_1: first V8 publish — tokens still tradeable forever
+// V8_1: first V8 publish - tokens still tradeable forever
 export const PACKAGE_ID_V8_1 =
   '0x145a1e79b83cc17680dbfe4f96839cd359c7db380ac15463ecb6dc30f9849b69';
-// V8: active — duplicate payout check, correct comment error codes, init_for_testing
+// V8: active - duplicate payout check, correct comment error codes, init_for_testing
 export const PACKAGE_ID_V8 =
   '0xbb4ee050239f59dfd983501ce101698ba27857f77aff2d437cec568fe0062546';
 // V9: sqrt-dampened oracle graduation threshold, buy() takes sui_price_scaled
@@ -49,8 +49,16 @@ export const PACKAGE_ID_V11 =
 // types define at V10, write targets move here.
 export const PACKAGE_ID_V12 =
   '0xf5a3566ba920a3e3614e8b25da0ca3237879b6e22eb12f21ccf2bceb6520b9cd';
+// V13: UNPUBLISHED third upgrade of the V10 lineage. bonding_curve::buy position
+// 5 changes from sui_price_scaled u64 to &PriceConfig (shared object, same arity).
+// Env-only wiring: set VITE_SUIPUMP_V13_PACKAGE + VITE_SUIPUMP_PRICE_CONFIG on
+// Vercel AFTER the V13 publish; while unset, all buys use the frozen V9-V12 u64
+// shape. NEVER hardcode these ids here.
+export const PACKAGE_ID_V13 = (import.meta.env.VITE_SUIPUMP_V13_PACKAGE ?? '').toLowerCase() || null;
+export const PRICE_CONFIG_ID = import.meta.env.VITE_SUIPUMP_PRICE_CONFIG || null;
+export const V13_BUY_ENABLED = Boolean(PACKAGE_ID_V13 && PRICE_CONFIG_ID);
 
-// ── Capabilities ─────────────────────────────────────────────────────────────
+// -- Capabilities -------------------------------------------------------------
 export const ADMIN_CAP_V7 =
   '0x1dc44030adaa6e366666a8e095fc29a5a55c8ae614f04c5e93c062a85b475527';
 export const UPGRADE_CAP_V7 =
@@ -68,11 +76,11 @@ export const ADMIN_CAP_V10 =
 export const UPGRADE_CAP_V10 =
   '0xb840fc9c54271c73f9c5e8f22f42ffda3c46f93914586bf671958ad9e754a274';
 
-// ── Active package ────────────────────────────────────────────────────────────
+// -- Active package ------------------------------------------------------------
 export const PACKAGE_ID = PACKAGE_ID_V12;
 export const ADMIN_CAP  = ADMIN_CAP_V10;
 
-// ── All package IDs — READ paths must cover every version ────────────────────
+// -- All package IDs - READ paths must cover every version --------------------
 export const ALL_PACKAGE_IDS = [
   PACKAGE_ID_V4,
   PACKAGE_ID_V5,
@@ -89,7 +97,7 @@ export const ALL_PACKAGE_IDS = [
 export const CURVE_ID    = '0xf7c137e90c5a5c9e716c91fdd3561d55e6ba3c11c37a9741b0bfde03dc9d812f';
 export const TOKEN_TYPE  = `${PACKAGE_ID}::token_template::TOKEN_TEMPLATE`;
 
-// ── Fee constants ─────────────────────────────────────────────────────────────
+// -- Fee constants -------------------------------------------------------------
 export const TRADE_FEE_BPS      = 100;
 export const CREATOR_SHARE_BPS  = 4_000;
 export const PROTOCOL_SHARE_BPS = 5_000;
@@ -97,12 +105,12 @@ export const LP_SHARE_BPS       = 1_000;
 export const REFERRAL_SHARE_BPS = 1_000;
 export const COMMENT_FEE_MIST   = 1_000_000;
 
-// ── Curve supply ──────────────────────────────────────────────────────────────
+// -- Curve supply --------------------------------------------------------------
 export const CURVE_SUPPLY   = 800_000_000;
 export const TOKEN_DECIMALS = 6;
 export const MIST_PER_SUI   = 1_000_000_000;
 
-// ── Curve shapes per version ──────────────────────────────────────────────────
+// -- Curve shapes per version --------------------------------------------------
 export const VIRTUAL_SUI_V4    = 30_000;
 export const VIRTUAL_TOKENS_V4 = 1_073_000_000;
 export const DRAIN_SUI_V4      = 35_000;
@@ -127,12 +135,12 @@ export const VIRTUAL_SUI_V9    = 4_369;
 export const VIRTUAL_TOKENS_V9 = 1_073_000_000;
 export const DRAIN_SUI_V9      = 12_305;
 
-// ── Active virtual reserves ───────────────────────────────────────────────────
+// -- Active virtual reserves ---------------------------------------------------
 export const VIRTUAL_SUI      = VIRTUAL_SUI_V9;
 export const VIRTUAL_TOKENS   = VIRTUAL_TOKENS_V9;
 export const DRAIN_SUI_APPROX = DRAIN_SUI_V9;
 
-// ── Per-package curve shape ───────────────────────────────────────────────────
+// -- Per-package curve shape ---------------------------------------------------
 export function curveShapeFor(pkgId) {
   if (pkgId === PACKAGE_ID_V12) { // defensive: lineage curves type as V10
     return { virtualSui: VIRTUAL_SUI_V9, virtualTokens: VIRTUAL_TOKENS_V9, drainSui: DRAIN_SUI_V9 };
@@ -161,7 +169,7 @@ export function curveShapeFor(pkgId) {
   return { virtualSui: VIRTUAL_SUI_V4, virtualTokens: VIRTUAL_TOKENS_V4, drainSui: DRAIN_SUI_V4 };
 }
 
-// ── Package feature helpers ───────────────────────────────────────────────────
+// -- Package feature helpers ---------------------------------------------------
 export function isNewCurve(pkgId) {
   return pkgId === PACKAGE_ID_V5 || pkgId === PACKAGE_ID_V6
       || pkgId === PACKAGE_ID_V7 || pkgId === PACKAGE_ID_V8_1
@@ -212,40 +220,40 @@ export function isV12OrLater(pkgId) {
   return pkgId === PACKAGE_ID_V12;
 }
 
-// ── Graduation targets ────────────────────────────────────────────────────────
+// -- Graduation targets --------------------------------------------------------
 export const GRAD_TARGET_CETUS    = 0;
 export const GRAD_TARGET_DEEPBOOK = 1;
 export const GRAD_TARGET_TURBOS   = 2;
 
-// ── Anti-bot ──────────────────────────────────────────────────────────────────
+// -- Anti-bot ------------------------------------------------------------------
 export const ANTI_BOT_NONE = 0;
 export const ANTI_BOT_15S  = 15;
 export const ANTI_BOT_30S  = 30;
 
-// ── Clock ─────────────────────────────────────────────────────────────────────
+// -- Clock ---------------------------------------------------------------------
 export const SUI_CLOCK_ID =
   '0x0000000000000000000000000000000000000000000000000000000000000006';
 
-// ── Epoch launch-with-site (testnet) ──────────────────────────────────────────
+// -- Epoch launch-with-site (testnet) ------------------------------------------
 // PTB-level integration (no SuiPump contract change). A creator can attach an
 // Epoch .epoch site to their launch; record_partner_launch routes the cut into
 // Epoch's shared Treasury and emits a PartnerLaunch event we index.
-// Swap EPOCH_PKG + EPOCH_TREASURY for mainnet when Steve sends them — call shape
+// Swap EPOCH_PKG + EPOCH_TREASURY for mainnet when Steve sends them - call shape
 // is identical.
 export const EPOCH_PKG =
   '0xdf5905144e2895c5ac08a673234d9688e4cae97e9d2750aa864e75a5dc53a282';
 export const EPOCH_TREASURY =
   '0x3dd2336c4a789aa2e10125e916ac56447055223fd9384cb16feb8097a89959b3';
 
-// Epoch API base (Cloudflare worker, testnet) — serves /partner/check (public),
+// Epoch API base (Cloudflare worker, testnet) - serves /partner/check (public),
 // and behind our server-side proxies /partner/session + /partner/registration.
 export const EPOCH_API_BASE  = 'https://epoch-indexer.pupazzipunkapi.workers.dev';
 export const EPOCH_NETWORK   = 'testnet';
 
-// Public name-availability check (no auth — browser calls direct).
+// Public name-availability check (no auth - browser calls direct).
 export const EPOCH_CHECK_URL = `${EPOCH_API_BASE}/partner/check`;
 
-// Handoff / sign page (different host from the API base — Epoch's sign UI).
+// Handoff / sign page (different host from the API base - Epoch's sign UI).
 export const EPOCH_SIGN_URL  = 'https://names.epochsui.com/build';
 
 // Our server-side proxy routes (hold the shared secret; never the browser).
@@ -253,9 +261,9 @@ export const EPOCH_SESSION_PROXY  = '/api/epoch-session';
 export const EPOCH_RECOVERY_PROXY = '/api/epoch-recovery';
 
 // Surcharge economics (MIST). Base launch fee stays LAUNCH_FEE_MIST = 2 SUI.
-// Epoch launch = 2 base + 5 surcharge = 7 total: 3 → Epoch, 2 → protocol wallet.
-export const EPOCH_CUT_MIST          = 3_000_000_000n; // → Epoch treasury
-export const PROTOCOL_SURCHARGE_MIST = 2_000_000_000n; // → protocol/main wallet
+// Epoch launch = 2 base + 5 surcharge = 7 total: 3 -> Epoch, 2 -> protocol wallet.
+export const EPOCH_CUT_MIST          = 3_000_000_000n; // -> Epoch treasury
+export const PROTOCOL_SURCHARGE_MIST = 2_000_000_000n; // -> protocol/main wallet
 
 // Destination for the +2 SUI protocol surcharge (main/control wallet).
 export const PROTOCOL_WALLET =

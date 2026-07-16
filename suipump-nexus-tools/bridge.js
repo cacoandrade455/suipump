@@ -39,7 +39,7 @@ import {
   enclavePublicKeyHex,
   enclaveAttestationHex,
 } from './turnkey_signer.js';
-import { LATEST_WRITE_PACKAGE, assertWriteTarget } from '../indexer/write_target.js';
+import { LATEST_WRITE_PACKAGE, V13_PACKAGE, PRICE_CONFIG_ID, assertWriteTarget } from '../indexer/write_target.js';
 
 const PORT          = parseInt(process.env.PORT ?? '3030', 10);
 const INDEXER_URL   = process.env.SUIPUMP_INDEXER_URL ?? 'https://suipump-62s2.onrender.com';
@@ -165,6 +165,17 @@ const V9_PLUS = new Set([
 const V10_PLUS = new Set([
   '0x2deda2cade65cd5afd5ffbe799d48f2491debf08d3aef6fa11aa6e1c8afe1598', // V10
 ]);
+
+// Packages that use the V13+ buy()/buy_with_session() signature: arg position 5
+// becomes price_cfg: &PriceConfig (shared object) in place of
+// sui_price_scaled: u64 (same arity). sell paths are UNCHANGED in V13.
+// V13 is UNPUBLISHED, so this set is populated from env ONLY (never hardcoded):
+// it requires BOTH SUIPUMP_V13_PACKAGE and SUIPUMP_PRICE_CONFIG, because the
+// V13 shape is unusable without the shared PriceConfig object id. While either
+// is unset the set is empty and every V13 branch below is unreachable.
+const V13_PLUS = new Set(
+  (V13_PACKAGE && PRICE_CONFIG_ID) ? [String(V13_PACKAGE).toLowerCase()] : []
+);
 
 const SUI_CLOCK_ID = '0x6';
 const MIST_PER_SUI = 1_000_000_000n;
@@ -609,13 +620,28 @@ async function handleSessionBuy(body) {
   }
   const minOut = BigInt(minTokensOut ?? 0);
 
-  // Oracle price arg for V9+ buy() shapes (both the native V10-lineage path and
-  // legacy V9 curves on the universal path). Fallback 0 -> stored BASE_GRAD.
+  // Dispatch SHAPE for buy arg position 5, decided BEFORE any price fetch:
+  // V13+ targets take price_cfg: &PriceConfig (shared object) where V9-V12
+  // took sui_price_scaled: u64. Keyed on the package the buy moveCall actually
+  // targets: sessTargetPkg on the native path (buy_with_session),
+  // the curve's own defining package (pkgId) on the universal path
+  // (bonding_curve::buy). With V13_PLUS empty (env unset) this is always
+  // false and behavior is identical to the pre-V13 bridge.
+  const v13Dispatch = universal
+    ? V13_PLUS.has(String(pkgId).toLowerCase())
+    : V13_PLUS.has(String(sessTargetPkg).toLowerCase());
+
+  // Oracle price arg for the legacy V9-V12 u64 buy() shapes (both the native
+  // V10-lineage path and legacy V9 curves on the universal path). Fallback 0 ->
+  // stored BASE_GRAD. SKIPPED on a V13 dispatch: the chain reads the shared
+  // PriceConfig instead, so the 2s Binance round-trip would be pure waste.
   let suiPriceScaled = 0n;
-  try {
-    const pr = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=SUIUSDT', { signal: AbortSignal.timeout(2000) });
-    if (pr.ok) { const pd = await pr.json(); const p = parseFloat(pd.price ?? '0'); if (p > 0) suiPriceScaled = BigInt(Math.floor(p * 1000)); }
-  } catch {}
+  if (!v13Dispatch) {
+    try {
+      const pr = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=SUIUSDT', { signal: AbortSignal.timeout(2000) });
+      if (pr.ok) { const pd = await pr.json(); const p = parseFloat(pd.price ?? '0'); if (p > 0) suiPriceScaled = BigInt(Math.floor(p * 1000)); }
+    } catch {}
+  }
 
   const tx = new Transaction();
   tx.setSender(address);
@@ -625,11 +651,15 @@ async function handleSessionBuy(body) {
 
   if (!universal) {
     // Native path: coins never leave module custody (V10 blast radius).
-    // buy_with_session<T>(session, curve, amount, min_tokens_out, sui_price_scaled, clock, ctx)
+    // V9-V12: buy_with_session<T>(session, curve, amount, min_tokens_out, sui_price_scaled: u64, clock, ctx)
+    // V13+:   buy_with_session<T>(session, curve, amount, min_tokens_out, price_cfg: &PriceConfig, clock, ctx)
+    // PriceConfig is a shared object whose initialSharedVersion is not knowable
+    // from env, so tx.object() (rule-3 fallback) resolves the ref at build time.
+    const priceArg = v13Dispatch ? tx.object(PRICE_CONFIG_ID) : tx.pure.u64(suiPriceScaled);
     tx.moveCall({
       target: `${sessTargetPkg}::agent_session::buy_with_session`,
       typeArguments: [tokenType],
-      arguments: [sessionRef, curveRef, tx.pure.u64(suiMist), tx.pure.u64(minOut), tx.pure.u64(suiPriceScaled), clockRef],
+      arguments: [sessionRef, curveRef, tx.pure.u64(suiMist), tx.pure.u64(minOut), priceArg, clockRef],
     });
   } else {
     // Universal path (owner opt-in): borrow -> legacy version-dispatched buy ->
@@ -641,11 +671,16 @@ async function handleSessionBuy(body) {
       arguments: [sessionRef, tx.pure.u64(suiMist), clockRef],
     });
     // Exact per-version buy() dispatch, mirroring executeBuy:
+    //   V13+: buy(curve, payment, min_out, referral, price_cfg: &PriceConfig, clock)
     //   V9:   buy(curve, payment, min_out, referral, sui_price_scaled, clock)
     //   V5-8: buy(curve, payment, min_out, referral, clock)
     //   V4:   buy(curve, payment, min_out)
     let buyArgs;
-    if (V9_PLUS.has(pkgId)) {
+    if (v13Dispatch) {
+      // Keyed on the ACTUAL buy target (the curve's DEFINING package today), so
+      // this branch stays dormant even post-publish unless that target is remapped.
+      buyArgs = [curveRef, funds, tx.pure.u64(minOut), tx.pure.option('address', null), tx.object(PRICE_CONFIG_ID), clockRef];
+    } else if (V9_PLUS.has(pkgId)) {
       buyArgs = [curveRef, funds, tx.pure.u64(minOut), tx.pure.option('address', null), tx.pure.u64(suiPriceScaled), clockRef];
     } else if (V5_PLUS.has(pkgId)) {
       buyArgs = [curveRef, funds, tx.pure.u64(minOut), tx.pure.option('address', null), clockRef];
@@ -1213,6 +1248,17 @@ server.listen(PORT, () => {
   console.log(`[bridge] Turnkey: ${turnkeyConfigured() ? 'CONFIGURED' : 'not configured'}; Enclave: ${enclaveConfigured() ? 'CONFIGURED (' + process.env.ENCLAVE_SIGNER_URL + ')' : 'not configured'}; signer DB: ${process.env.DATABASE_URL ? 'set' : 'unset'}`);
   if (LEGACY_SIGNER_ENABLED) {
     console.warn('[bridge] *** SUIPUMP_LEGACY_SIGNER=1 - shared agent wallet key is LOADABLE for legacy fallback-session drain (/session-sell) - unset after draining ***');
+  }
+
+  // V13 dispatch status - one line, always. Dormant until BOTH env vars are
+  // set (V13 is unpublished; nothing is hardcoded). The half-configured case
+  // warns loudly instead of degrading silently.
+  if (PRICE_CONFIG_ID == null) {
+    console.log('[bridge] V13 dispatch dormant (no SUIPUMP_PRICE_CONFIG)');
+  } else if (V13_PLUS.size > 0) {
+    console.log(`[bridge] V13 dispatch ARMED: package ${V13_PACKAGE} PriceConfig ${PRICE_CONFIG_ID}`);
+  } else {
+    console.warn('[bridge] SUIPUMP_PRICE_CONFIG is set but SUIPUMP_V13_PACKAGE is not - V13 dispatch stays dormant (set both to arm)');
   }
 
   // Startup assert: the remapped write target (PACKAGE_LATEST value) must
