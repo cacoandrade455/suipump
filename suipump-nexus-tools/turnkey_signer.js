@@ -16,11 +16,12 @@
 // DESIGN
 // - Self-contained, imported by bridge.js. No change to how transactions are
 //   BUILT -- only how they are SIGNED and EXECUTED.
-// - Fallback-safe: if a session has no Turnkey key mapped (e.g. sessions opened
-//   before this rolled out, or Turnkey env not configured), it falls back to the
-//   local env keypair via the caller-provided loadKeypair, so nothing breaks
-//   mid-migration. The fallback is logged (without key material) so operators
-//   can see which path was taken.
+// - No silent fallback: when a session has no usable Turnkey/enclave key,
+//   signAndExecute HARD-THROWS unless the caller explicitly supplies a
+//   fallbackKeypair. The bridge only does that on the SUIPUMP_LEGACY_SIGNER=1
+//   gated /session-sell drain of pre-existing fallback sessions (their
+//   session_address IS the shared agent wallet). The drain is logged (without
+//   key material) so operators can see it happen.
 //
 // SUI SIGNING DETAIL (matches Turnkey's official Sui example)
 // Sui verifies a signature over blake2b-256(intent_message_bytes), where the
@@ -161,9 +162,11 @@ function toSerializedSignature(rawSig64, pubKey) {
 //   client         the bridge's SuiGraphQLClient (has .executeTransaction)
 //   transaction    a @mysten/sui Transaction (already fully built, sender set)
 //   sessionKey     { signWith, publicKeyHex } | null  -- Turnkey key for this
-//                  session; null => use the local fallback keypair
-//   fallbackKeypair an Ed25519Keypair (from the bridge's loadKeypair) used only
-//                  when sessionKey is null or Turnkey is not configured
+//                  session; null with no fallbackKeypair => hard-throw
+//   fallbackKeypair OPTIONAL Ed25519Keypair used only when sessionKey is null
+//                  or unusable. The bridge supplies it solely on the
+//                  SUIPUMP_LEGACY_SIGNER=1 drain path (loadLegacyKeypair);
+//                  omitted everywhere else, so a missing session key fails loud
 //   include        execute options (e.g. { balanceChanges: true })
 //
 // Returns the same result shape as client.signAndExecuteTransaction so the
@@ -175,8 +178,9 @@ export async function signAndExecute({ client, transaction, sessionKey, fallback
   const isEnclaveKey = !!(sessionKey?.enclave && sessionKey?.publicKeyHex && enclaveConfigured());
   const isTurnkeyKey = !!(tk && sessionKey?.signWith && sessionKey?.publicKeyHex);
 
-  // Fallback path: no usable per-session key. Identical to the pre-Turnkey
-  // bridge -- local keypair signs.
+  // Fallback path: no usable per-session key. Hard-throw unless the caller
+  // explicitly passed a fallbackKeypair - which only the SUIPUMP_LEGACY_SIGNER
+  // gated /session-sell drain does.
   if (!isEnclaveKey && !isTurnkeyKey) {
     if (!fallbackKeypair) {
       throw new Error('No usable session key (turnkey/enclave) and no fallback keypair available to sign');
@@ -184,7 +188,7 @@ export async function signAndExecute({ client, transaction, sessionKey, fallback
     const why = sessionKey?.enclave
       ? (enclaveConfigured() ? 'enclave key incomplete' : 'enclave not configured')
       : (tk ? 'no session key mapped' : 'Turnkey not configured');
-    console.log(`[signer] signing via LOCAL fallback keypair (${why})`);
+    console.log(`[signer] signing via LEGACY shared keypair (SUIPUMP_LEGACY_SIGNER drain path) (${why})`);
     return await client.signAndExecuteTransaction({
       signer: fallbackKeypair, transaction, include,
     });
