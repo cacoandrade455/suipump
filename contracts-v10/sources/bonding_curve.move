@@ -112,6 +112,8 @@ module suipump::bonding_curve {
     // V13: graduation exit path (restored; lost in the v8->v9 rewrite).
     const ELpAlreadyClaimed:         u64 = 51; // claim_graduation_funds already drained this curve
     const EReserveTooLow:            u64 = 52; // F-2: graduated reserve below the mint-site floor
+    const EPriceOutOfBand:           u64 = 43; // V13: set_sui_price outside [MIN,MAX]_PRICE_SCALED
+    const EPreMintedSupply:          u64 = 53; // F-1: TreasuryCap had supply before create_and_return
 
     /// V12 comments toggle: dynamic-field marker on the curve. Marker ABSENT =
     /// holder-gated (the V10/V11 default, preserved); marker PRESENT = open
@@ -159,36 +161,40 @@ module suipump::bonding_curve {
     const VIRTUAL_TOKEN_RESERVE: u64 = 1_073_000_000 * 1_000_000;   // unchanged from agreed spec
     const BPS_DENOMINATOR:       u64 = 10_000;
 
-    // ---------- Oracle / graduation (v9 new) ----------
-    // BASE_GRAD_MIST is the graduation threshold at $1.03 SUI.
-    // grad_threshold(price) = BASE_GRAD_MIST * sqrt(1000) / sqrt(price_scaled)
-    //   price_scaled = price_in_usd * 1000  (e.g. $1.03 → 1030)
-    // At $1.03: threshold = 12,305 SUI  (~$12.7k pool, ~$49k mcap)
-    const BASE_GRAD_MIST:        u64 = 12_305 * 1_000_000_000;
-    // Staleness is enforced off-chain: PTB caller passes sui_price_scaled = 0
-    // when the Pyth price is stale. No on-chain timestamp check needed.
-    //
-    // ---------- F-2: oracle-manipulation guards (V13) ----------
-    // sui_price_scaled is caller-supplied (floor(sui_usd * 1000)) and is otherwise
-    // UNVALIDATED. A huge value collapses the dynamic graduation threshold toward
-    // zero (computed: threshold hits ~3 SUI at price_scaled ~1.68e13), which would
-    // let an attacker graduate a fresh curve on ~3 SUI and mint the 200M LP against
-    // it. Clamp the price into a sane band [$0.10, $100], floor the resolved
-    // threshold, and (belt-and-suspenders) assert a minimum reserve at the mint
-    // site in claim_graduation_funds. The clamp keeps the (currently mis-scaled)
-    // threshold >= ~38,910 SUI; the floor and reserve assert bound it regardless
-    // of any future change to dampened_grad_threshold.
+    // ---------- Graduation threshold: protocol-published price (V13) ----------
+    // BASE_GRAD_MIST is the graduation threshold AT $1.00 SUI (price_scaled=1000).
+    // It is the anchor the sqrt dampener pivots on:
+    //   grad_threshold(price) = BASE_GRAD_MIST * sqrt(1000) / sqrt(price_scaled)
+    //   price_scaled = floor(sui_usd * 1000)   e.g. $0.75 -> 750
+    // Threshold FALLS as SUI appreciates, so graduation mcap scales with
+    // sqrt(price) not linearly. At BASE = 9,000 (max reachable reserve = 12,803):
+    //   $0.49  12,857 SUI  ->  above the 12,803 ceiling: crossover, drain path
+    //   $0.75  10,392 SUI  ->  $31.2k mcap
+    //   $1.00   9,000 SUI  ->  $36.0k mcap
+    //   $2.00   6,363 SUI  ->  $50.9k mcap
+    //   $5.00   4,024 SUI  ->  $80.5k mcap
+    //   $10.00  2,845 SUI  ->  $113.8k mcap
+    //   $100      900 SUI  ->  $360k mcap
+    const BASE_GRAD_MIST:        u64 = 9_000 * 1_000_000_000;
+    // ---------- V13: protocol-published price reference ----------
+    // The SUI/USD price is published by the protocol relayer via set_sui_price
+    // (AdminCap-gated) into the shared PriceConfig object. buy() READS it; the
+    // caller cannot supply, choose, or influence it. This deletes F-2 (a caller
+    // passing an inflated price to collapse the threshold) at the root rather
+    // than clamping a hostile input into a narrower band. Bounds are enforced AT
+    // THE SETTER, so a fat-fingered or compromised push cannot write garbage.
     const MIN_PRICE_SCALED:      u64 = 100;      // $0.10 SUI
     const MAX_PRICE_SCALED:      u64 = 100_000;  // $100.00 SUI
-    // Hard floor on the graduation threshold actually used for the decision AND
-    // persisted to current_grad_threshold. 4,000 SUI is far below any legitimate
-    // graduation (~12,305 SUI at $1) so it never blocks a real launch, but a
-    // manipulated price can never drive the threshold below it.
-    const MIN_GRAD_MIST:         u64 = 4_000 * 1_000_000_000;
+    // A published price older than this is IGNORED and buy() falls back to the
+    // static BASE_GRAD_MIST. buy() must NEVER abort on a stale price: a dead
+    // relayer must not halt trading. Push cadence is 5 min, so 30 min tolerates
+    // several missed pushes.
+    const PRICE_MAX_AGE_MS:      u64 = 30 * 60 * 1_000;
     // Mint-site backstop: claim_graduation_funds refuses to drain the reserve and
-    // mint the 200M LP unless the graduated reserve is at least this large. Set
-    // well below any real graduation reserve, far above any manipulated one.
-    const MIN_GRAD_RESERVE_MIST: u64 = 1_000 * 1_000_000_000;
+    // mint the 200M LP below this. Must sit BELOW the smallest LEGITIMATE
+    // threshold, which is 900 SUI at MAX_PRICE_SCALED ($100). 500 never blocks a
+    // real graduation anywhere in the [$0.10, $100] band.
+    const MIN_GRAD_RESERVE_MIST: u64 = 500 * 1_000_000_000;
 
     // Anti-bot delay options (seconds)
     const ANTI_BOT_NONE: u8 = 0;
@@ -219,6 +225,23 @@ module suipump::bonding_curve {
 
     // ---------- Capabilities ----------
     public struct AdminCap  has key, store { id: UID }
+
+    /// V13: the protocol-published SUI/USD reference the dampened graduation
+    /// threshold reads. Shared so buy() can take it by reference; only AdminCap
+    /// can write it (set_sui_price). Replaces V9's caller-supplied
+    /// sui_price_scaled: u64, which was F-2.
+    public struct PriceConfig has key {
+        id:               UID,
+        sui_price_scaled: u64,  // floor(sui_usd * 1000); 0 = never published
+        updated_at_ms:    u64,  // clock ms at last publish; 0 = never published
+    }
+
+    /// Emitted on every price publish: the public audit trail proving the
+    /// protocol is not skewing graduation timing.
+    public struct SuiPriceUpdated has copy, drop {
+        price_scaled:  u64,
+        updated_at_ms: u64,
+    }
     public struct CreatorCap has key, store {
         id:       UID,
         curve_id: ID,
@@ -235,7 +258,46 @@ module suipump::bonding_curve {
             EFeeSplitInvalid,
         );
         transfer::public_transfer(AdminCap { id: object::new(ctx) }, tx_context::sender(ctx));
+        // V13: one shared PriceConfig per package. Starts UNSET (0), so every buy
+        // falls back to the static BASE_GRAD_MIST until the relayer publishes the
+        // first price. Launching before the relayer runs is therefore safe.
+        transfer::share_object(PriceConfig {
+            id:               object::new(ctx),
+            sui_price_scaled: 0,
+            updated_at_ms:    0,
+        });
     }
+
+    /// V13: publish the SUI/USD reference. AdminCap-gated; called by the protocol
+    /// relayer every ~5 min with the median of three independent sources. Bounds
+    /// asserted here, so a garbage source / fat-finger / compromised cap cannot
+    /// write an out-of-band value. Reads then need no clamp.
+    /// CENTRALIZATION (disclose): the protocol publishes the number the
+    /// graduation threshold is computed from; every write emits SuiPriceUpdated.
+    /// AdminCap already pauses any curve and (V13) drains any graduated reserve +
+    /// mints the 200M LP, so this is strictly smaller than powers already granted
+    /// - and is why the AdminCap/UpgradeCap multisig migration is MAINNET-BLOCKING.
+    public fun set_sui_price(
+        _cap:         &AdminCap,
+        cfg:          &mut PriceConfig,
+        price_scaled: u64,
+        clock:        &Clock,
+    ) {
+        assert!(
+            price_scaled >= MIN_PRICE_SCALED && price_scaled <= MAX_PRICE_SCALED,
+            EPriceOutOfBand,
+        );
+        cfg.sui_price_scaled = price_scaled;
+        cfg.updated_at_ms    = clock::timestamp_ms(clock);
+        event::emit(SuiPriceUpdated {
+            price_scaled,
+            updated_at_ms: cfg.updated_at_ms,
+        });
+    }
+
+    /// Read accessors for the frontend / relayer.
+    public fun price_scaled(cfg: &PriceConfig): u64 { cfg.sui_price_scaled }
+    public fun price_updated_at_ms(cfg: &PriceConfig): u64 { cfg.updated_at_ms }
 
     // ---------- Core object ----------
     public struct Curve<phantom T> has key {
@@ -498,65 +560,38 @@ module suipump::bonding_curve {
     ///
     /// At $1.09 (price_scaled=1090): num=31622, den=33015 → ≈12,303 SUI ≈ 12,305 SUI.
     /// Within ~0.02% of the 12,305 target — acceptable integer-sqrt error.
+    /// threshold = BASE_GRAD_MIST * sqrt(1000) / sqrt(price_scaled)
+    /// F-4 FIX (V13): den previously computed isqrt(price_scaled * precision / 1_000)
+    /// while num was isqrt(1_000 * precision) - ASYMMETRIC. den divided by 1,000
+    /// where num multiplied, a sqrt(1000)=31.6x error in the SAME direction at
+    /// every price. The threshold ran 31.6x HIGH, always exceeding the curve's
+    /// 12,803 SUI ceiling, so Path B never fired and the dampener never ran in
+    /// production. The doc above already had the CORRECT den (33,015 at 1090).
+    /// OVERFLOW: BASE(9e12) * num(31,622) = 2.85e17 < u64::MAX. price(<=1e5)*1e6 = 1e11. ok.
     fun dampened_grad_threshold(price_scaled: u64): u64 {
-        // Guard: never divide by zero; price_scaled should always be > 0
-        // but if oracle returns garbage, use BASE_GRAD_MIST unchanged.
         if (price_scaled == 0) return BASE_GRAD_MIST;
         let precision: u64 = 1_000_000;
         let num = isqrt(1_000u64 * precision);
-        let den = isqrt(price_scaled * precision / 1_000);
+        let den = isqrt(price_scaled * precision);
         if (den == 0) return BASE_GRAD_MIST;
         BASE_GRAD_MIST * num / den
     }
 
-    /// Oracle price is passed in by the PTB caller as sui_price_scaled.
-    /// The caller is responsible for fetching a fresh Pyth price update
-    /// and passing price_scaled = floor(sui_usd_price * 1000) before calling buy().
-    /// e.g. $1.04 → 1040,  $2.00 → 2000
-    ///
-    /// Passing 0 signals "oracle unavailable" — fallback logic applies.
-    /// This avoids pulling Pyth as a Move build dependency (old-style manifest
-    /// conflict with new-style Sui package manager). The PTB constructs:
-    ///   1. pyth::pyth::update_price_feeds(...)  — update Pyth state
-    ///   2. suipump::bonding_curve::buy(..., price_scaled, ...)
-    /// The price freshness guarantee is enforced by the PTB atomicity.
-    fun get_oracle_price_from_input(
-        sui_price_scaled: u64,
-    ): Option<u64> {
-        if (sui_price_scaled == 0) option::none()
-        else option::some(sui_price_scaled)
-    }
-
-    /// Resolve the graduation threshold for this buy:
-    ///   1. sui_price_scaled > 0 → compute dampened threshold, store on curve.
-    ///   2. sui_price_scaled == 0 + curve.current_grad_threshold > 0 → reuse stored.
-    ///   3. sui_price_scaled == 0 + no stored → BASE_GRAD_MIST static fallback.
-    /// Returns (threshold_mist, updated_threshold_to_store).
-    fun resolve_grad_threshold<T>(
-        curve:            &Curve<T>,
-        sui_price_scaled: u64,
-    ): (u64, u64) {
-        let maybe_price = get_oracle_price_from_input(sui_price_scaled);
-        if (option::is_some(&maybe_price)) {
-            let raw = *option::borrow(&maybe_price);
-            // F-2: clamp the caller-supplied price into a sane band BEFORE it can
-            // move the threshold, so a manipulated price cannot collapse it.
-            let price_scaled = if (raw < MIN_PRICE_SCALED) { MIN_PRICE_SCALED }
-                               else if (raw > MAX_PRICE_SCALED) { MAX_PRICE_SCALED }
-                               else { raw };
-            let raw_threshold = dampened_grad_threshold(price_scaled);
-            // F-2: floor the resolved threshold. Only a clamped+floored value is
-            // ever returned or persisted to current_grad_threshold, so a hostile
-            // price can neither graduate cheaply now nor poison the stored
-            // threshold that stale-price (price==0) buys later reuse.
-            let threshold = if (raw_threshold < MIN_GRAD_MIST) { MIN_GRAD_MIST }
-                            else { raw_threshold };
-            (threshold, threshold)
-        } else if (curve.current_grad_threshold > 0) {
-            (curve.current_grad_threshold, curve.current_grad_threshold)
-        } else {
-            (BASE_GRAD_MIST, BASE_GRAD_MIST)
-        }
+    /// Resolve this buy's graduation threshold from the protocol-published price.
+    ///   1. price published AND fresh   -> dampened threshold
+    ///   2. never published (0)         -> BASE_GRAD_MIST
+    ///   3. stale (> PRICE_MAX_AGE_MS)   -> BASE_GRAD_MIST
+    /// NEVER ABORTS: a dead relayer degrades the dampener, it must not halt
+    /// trading. Falling back to BASE_GRAD_MIST (9,000 SUI at $1) is a real,
+    /// reachable threshold, not a lockout. Bounds are enforced in set_sui_price,
+    /// so cfg.sui_price_scaled is always in [MIN,MAX]_PRICE_SCALED or exactly 0.
+    /// The threshold is recomputed from live state every buy - nothing is stored
+    /// for reuse, so there is no persisted threshold to poison (F-8).
+    fun resolve_grad_threshold(cfg: &PriceConfig, clock: &Clock): u64 {
+        if (cfg.sui_price_scaled == 0) return BASE_GRAD_MIST;
+        let now_ms = clock::timestamp_ms(clock);
+        if (now_ms > cfg.updated_at_ms + PRICE_MAX_AGE_MS) return BASE_GRAD_MIST;
+        dampened_grad_threshold(cfg.sui_price_scaled)
     }
 
     // ---------- Payout builder (identical to v8) ----------
@@ -617,6 +652,12 @@ module suipump::bonding_curve {
 
         // Mint total supply into token_reserve (only 800M sold on curve; 200M
         // minted fresh at graduation for the DEX LP).
+        // F-1 (CRITICAL, V13). template::init hands the TreasuryCap to the
+        // PUBLISHER, so between the coin-publish tx and this call the creator
+        // holds an unrestricted mint. Without this assert they mint an unbacked
+        // pile, let honest buyers fund sui_reserve, then dump into the curve.
+        // NOT the accepted dev-buy (real SUI through the curve); this is free.
+        assert!(coin::total_supply(&treasury) == 0, EPreMintedSupply);
         let token_supply = coin::mint(&mut treasury, CURVE_SUPPLY, ctx);
 
         // Launch fee → protocol_fees
@@ -719,7 +760,7 @@ module suipump::bonding_curve {
         mut payment:      Coin<SUI>,
         min_tokens_out:   u64,
         referral:         Option<address>,
-        sui_price_scaled: u64,    // v9: floor(sui_usd * 1000); 0 = use fallback
+        price_cfg:        &PriceConfig,  // V13: replaces sui_price_scaled: u64 (F-2)
         clock:            &Clock,
         ctx:              &mut TxContext,
     ): (Coin<T>, Coin<SUI>) {
@@ -740,11 +781,11 @@ module suipump::bonding_curve {
             };
         };
 
-        // ── v9: Resolve dynamic graduation threshold ───────────────────────
-        let (grad_threshold, new_stored_threshold) =
-            resolve_grad_threshold(curve, sui_price_scaled);
-        // Store the (potentially updated) threshold for frontend reads.
-        curve.current_grad_threshold = new_stored_threshold;
+        // V13: threshold from the protocol-published price. Recomputed from live
+        // state every buy. current_grad_threshold is now a DISPLAY CACHE ONLY;
+        // it is never read back for the graduation decision, so no poison (F-8).
+        let grad_threshold = resolve_grad_threshold(price_cfg, clock);
+        curve.current_grad_threshold = grad_threshold;
 
         // ── Fee split (on full sui_in — we'll refund the tail below) ───────
         // IMPORTANT: fees are computed on the effective sui_in MINUS the tail
@@ -854,7 +895,15 @@ module suipump::bonding_curve {
         //          swap_amount = effective_sui_in - fee_amount
         //                      = (sui_in - tail) - fee
         //                      = actual_swap + lp_fee  ✓
-        let to_reserve   = swap_amount;
+        // F-5 FIX (V13). The comment here was a FALSE PROOF: it claimed
+        // swap_amount == actual_swap + lp_fee. It does not - fee_amount INCLUDES
+        // lp_fee and swap_amount = effective_sui_in - fee_amount, so lp_fee is
+        // subtracted out. No coin::split(lp_fee) exists here, so the leftover
+        // lp_fee + tail_refund was REFUNDED to the buyer while lp_fees_accumulated
+        // was incremented - a phantom counter and an underfunded DEX seed. sell()
+        // got this right, which is why only buy leaked. With + lp_fee the leftover
+        // is exactly tail_refund again.
+        let to_reserve   = swap_amount + lp_fee;
         let reserve_coin = coin::split(&mut payment, to_reserve, ctx);
         balance::join(&mut curve.sui_reserve, coin::into_balance(reserve_coin));
 

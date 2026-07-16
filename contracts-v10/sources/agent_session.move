@@ -79,7 +79,7 @@ module suipump::agent_session {
     use sui::dynamic_object_field as dof;
     use sui::dynamic_field as df;
     use std::type_name::{Self, TypeName};
-    use suipump::bonding_curve::{Self, Curve};
+    use suipump::bonding_curve::{Self, Curve, PriceConfig};
 
     // ---------- Errors ----------
     const ENotSessionKey:   u64 = 1; // tx sender != session_address
@@ -282,13 +282,13 @@ module suipump::agent_session {
     /// This is the NARROW path: only suipump::bonding_curve, coins never
     /// touchable by the PTB. Preferred whenever the curve is current-package.
     public fun buy_with_session<T>(
-        session:          &mut AgentSession,
-        curve:            &mut Curve<T>,
-        amount:           u64,
-        min_tokens_out:   u64,
-        sui_price_scaled: u64,
-        clock:            &Clock,
-        ctx:              &mut TxContext,
+        session:        &mut AgentSession,
+        curve:          &mut Curve<T>,
+        amount:         u64,
+        min_tokens_out: u64,
+        price_cfg:      &PriceConfig,  // V13: replaces sui_price_scaled: u64 (F-2)
+        clock:          &Clock,
+        ctx:            &mut TxContext,
     ) {
         assert_can_trade(session, clock, ctx);
         assert!(balance::value(&session.escrow) >= amount, EInsufficientEscrow);
@@ -299,7 +299,7 @@ module suipump::agent_session {
         let payment = coin::from_balance(balance::split(&mut session.escrow, amount), ctx);
         let (tokens, refund) = bonding_curve::buy<T>(
             curve, payment, min_tokens_out, option::none<address>(),
-            sui_price_scaled, clock, ctx,
+            price_cfg, clock, ctx,
         );
 
         // Refund (graduation tail / overshoot) compounds back to escrow AND is
