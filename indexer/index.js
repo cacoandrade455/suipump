@@ -58,13 +58,17 @@ const GRAPHQL_URL = process.env.SUI_GRAPHQL_URL  ?? `https://graphql.${NETWORK}.
 const EVENT_NAMES = [
   'TokensPurchased', 'TokensSold', 'CurveCreated', 'Comment', 'Graduated',
   'TokensLocked', 'VestedClaimed',
-  // V10 events (all carry curve_id, so they ride the existing curve-keyed
+  // V10 events (these carry curve_id, so they ride the existing curve-keyed
   // insert + pg_notify pipeline). Older packages never emit these -- harmless.
   'BuybackConfigured', 'BuybackExecuted', 'CreatorHeartbeat',
   'ProtocolSurchargeCollected',
   // V12: creator toggled the comments holder gate (carries curve_id).
   'CommentGateSet',
-  'TakeoverProposed', 'TakeoverVoted', 'TakeoverSucceeded', 'TakeoverFailed',
+  // V13 CTO surface: TakeoverProposed/TakeoverResolved carry curve_id, but the
+  // vote/unvote/reclaim events are PROPOSAL-keyed and carry NO curve_id -- so
+  // those three persist + pg_notify with curve_id null (like the session events
+  // below), which insertEvent handles fine (curve_id is nullable).
+  'TakeoverProposed', 'TakeoverVoted', 'TakeoverUnvoted', 'TakeoverResolved', 'VoteReclaimed',
 ];
 
 // V10's agent_session module -- a SEPARATE module from bonding_curve, so these
@@ -245,9 +249,11 @@ async function processEvent(eventType, evt, packageId) {
     await recomputeStats(curveId);
   }
 
-  // V10: a successful community takeover swaps the active creator on-chain.
+  // V13: a successful community takeover swaps the active creator on-chain.
   // Refresh the curve row so the new creator address is reflected in stats.
-  if (curveId && eventType.includes('TakeoverSucceeded')) {
+  // The success signal is now TakeoverResolved with succeeded === true
+  // (TakeoverResolved carries curve_id, so curveId is populated here).
+  if (curveId && eventType.includes('TakeoverResolved') && evt.parsedJson?.succeeded === true) {
     try { await recomputeStats(curveId); } catch {}
   }
 
