@@ -119,6 +119,7 @@ module suipump::bonding_curve {
     const ECtoNotVoter:              u64 = 57; // CTO: unvote/reclaim by an address with no escrow entry
     const ECtoNotResolved:           u64 = 58; // CTO: reclaim before the proposal is resolved
     const ECtoZeroCirculating:       u64 = 59; // CTO: propose against a curve with 0 circulating supply / 0 stake
+    const ECtoProposerBondLocked:    u64 = 60; // PASS-C-1: proposer may not unvote below the nominate bond while live
 
     /// V12 comments toggle: dynamic-field marker on the curve. Marker ABSENT =
     /// holder-gated (the V10/V11 default, preserved); marker PRESENT = open
@@ -1765,6 +1766,14 @@ module suipump::bonding_curve {
         id:           UID,
         curve_id:     ID,
         proposer:     address,
+        // PASS-C-1: the proposer's nominate bond, recorded at propose time. While
+        // the proposal is live it blocks every competing proposal (the one-live
+        // marker), so the proposer must NOT be able to reclaim this bond via
+        // unvote_takeover mid-window - otherwise propose+immediate-unvote perpetually
+        // denies the community-takeover recovery at gas-only cost. The proposer may
+        // unvote only weight staked ABOVE this bond; the bond itself is reclaimable
+        // only after resolve, via the permissionless reclaim_vote (never forfeit).
+        proposer_bond: u64,
         opened_at_ms: u64,
         deadline_ms:  u64,
         escrow:       Balance<T>,
@@ -1825,6 +1834,8 @@ module suipump::bonding_curve {
             id:           object::new(ctx),
             curve_id:     object::id(curve),
             proposer:     sender,
+            // PASS-C-1: lock the proposer's nominate bond for the life of the proposal.
+            proposer_bond: amount,
             opened_at_ms: now,
             deadline_ms:  now + CTO_WINDOW_MS,
             escrow:       coin::into_balance(stake),
@@ -1877,9 +1888,18 @@ module suipump::bonding_curve {
         });
     }
 
-    /// Withdraw a vote BEFORE the deadline: full escrow returned and total_weight
+    /// Withdraw a vote BEFORE the deadline: escrow returned and total_weight
     /// decremented so a withdrawn vote cannot count. The clock is required so a
     /// vote cannot be pulled after the deadline (which could flip a decided tally).
+    ///
+    /// PASS-C-1: a NON-proposer voter withdraws their full stake (unchanged). The
+    /// PROPOSER may withdraw only the weight they staked ABOVE their nominate bond;
+    /// the bond stays locked until resolve (reclaimable then via reclaim_vote). A
+    /// proposer holding exactly the bond therefore CANNOT unvote while live, which
+    /// removes the propose+immediate-unvote perpetual-denial grief: keeping the
+    /// one-live-proposal marker set now costs the bond locked for the whole window.
+    /// Escrow conservation is preserved exactly: escrow == sum(votes) on every path
+    /// (this only reduces the amount split out and the amount decremented in lockstep).
     public fun unvote_takeover<T>(
         proposal: &mut TakeoverProposal<T>,
         clock:    &Clock,
@@ -1890,14 +1910,25 @@ module suipump::bonding_curve {
         assert!(now < proposal.deadline_ms, ECtoVoteClosed);
         let who = tx_context::sender(ctx);
         assert!(table::contains(&proposal.votes, who), ECtoNotVoter);
-        let amt = table::remove(&mut proposal.votes, who);
-        proposal.total_weight = proposal.total_weight - amt;
-        let bal = balance::split(&mut proposal.escrow, amt);
+        let withdraw = if (who == proposal.proposer) {
+            // Proposer keeps proposer_bond locked; only the excess above it exits.
+            // cur >= proposer_bond always (the entry starts at the bond and unvote
+            // never sets it below the bond), so the subtraction cannot underflow.
+            let cur = *table::borrow(&proposal.votes, who);
+            let excess = cur - proposal.proposer_bond;
+            assert!(excess > 0, ECtoProposerBondLocked);
+            *table::borrow_mut(&mut proposal.votes, who) = proposal.proposer_bond;
+            excess
+        } else {
+            table::remove(&mut proposal.votes, who)
+        };
+        proposal.total_weight = proposal.total_weight - withdraw;
+        let bal = balance::split(&mut proposal.escrow, withdraw);
         transfer::public_transfer(coin::from_balance(bal, ctx), who);
         event::emit(TakeoverUnvoted {
             proposal_id: object::id(proposal),
             voter:       who,
-            amount:      amt,
+            amount:      withdraw,
         });
     }
 

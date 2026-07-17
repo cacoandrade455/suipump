@@ -94,6 +94,7 @@ module suipump::bonding_curve_tests {
     const E_CTO_NOT_VOTER:            u64 = 57;
     const E_CTO_NOT_RESOLVED:         u64 = 58;
     const E_CTO_ZERO_CIRCULATING:     u64 = 59;
+    const E_CTO_PROPOSER_BOND_LOCKED: u64 = 60;
 
     const LP_SUPPLY_ATOMIC:           u64 = 200_000_000 * 1_000_000; // 1B total - 800M curve
 
@@ -2989,6 +2990,202 @@ module suipump::bonding_curve_tests {
         bonding_curve::unvote_takeover(&mut proposal, &clk, ts::ctx(&mut s));
         clock::destroy_for_testing(clk);
         ts::return_shared(proposal);
+        ts::end(s);
+    }
+
+    // PASS-C-1: the PROPOSER may not reclaim the nominate bond mid-window via
+    // unvote. A proposer who staked exactly the bond has 0 withdrawable excess.
+    #[test]
+    #[expected_failure(abort_code = E_CTO_PROPOSER_BOND_LOCKED, location = suipump::bonding_curve)]
+    fun test_cto_proposer_unvote_below_bond_aborts() {
+        let mut s = begin_cto();
+        buy_bag(&mut s, VOTER_A, 3_000 * MIST_PER_SUI);
+
+        ts::next_tx(&mut s, VOTER_A);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let mut bag = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_A);
+        let circ = bonding_curve::cto_circulating_supply(&curve);
+        let bond = (circ * 100) / 10_000; // 1% nominate threshold == the bond
+        let stake = coin::split(&mut bag, bond, ts::ctx(&mut s));
+        destroy(bag);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 1);
+        bonding_curve::propose_takeover(&mut curve, stake, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+
+        // Proposer staked exactly the bond -> excess == 0 -> unvote aborts.
+        ts::next_tx(&mut s, VOTER_A);
+        let mut proposal = ts::take_shared<bonding_curve::TakeoverProposal<TEST_TOKEN>>(&s);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 2);
+        bonding_curve::unvote_takeover(&mut proposal, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(proposal);
+        ts::end(s);
+    }
+
+    // PASS-C-1: the proposer CAN withdraw weight staked ABOVE the bond; the bond
+    // itself stays locked and keeps counting.
+    #[test]
+    fun test_cto_proposer_unvote_excess_succeeds() {
+        let mut s = begin_cto();
+        buy_bag(&mut s, VOTER_A, 3_000 * MIST_PER_SUI);
+
+        ts::next_tx(&mut s, VOTER_A);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let mut bag = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_A);
+        let circ = bonding_curve::cto_circulating_supply(&curve);
+        let bond = (circ * 100) / 10_000;
+        let stake = coin::split(&mut bag, bond, ts::ctx(&mut s)); // propose with exactly the bond
+        let excess_amt = coin::value(&bag);                       // the rest is voted as excess
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 1);
+        bonding_curve::propose_takeover(&mut curve, stake, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+
+        ts::next_tx(&mut s, VOTER_A);
+        let mut proposal = ts::take_shared<bonding_curve::TakeoverProposal<TEST_TOKEN>>(&s);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 2);
+        bonding_curve::vote_takeover(&mut proposal, bag, &clk, ts::ctx(&mut s));
+        assert!(bonding_curve::proposal_total_weight(&proposal) == bond + excess_amt, 9600);
+        // Unvote: only the excess leaves; the bond stays locked and counting.
+        bonding_curve::unvote_takeover(&mut proposal, &clk, ts::ctx(&mut s));
+        assert!(bonding_curve::proposal_total_weight(&proposal) == bond, 9601);
+        assert!(bonding_curve::proposal_escrow_value(&proposal) == bond, 9602);
+        assert!(bonding_curve::proposal_voter_weight(&proposal, VOTER_A) == bond, 9603);
+        clock::destroy_for_testing(clk);
+        ts::return_shared(proposal);
+
+        ts::next_tx(&mut s, VOTER_A);
+        let refunded = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_A);
+        assert!(coin::value(&refunded) == excess_amt, 9604);
+        destroy(refunded);
+        ts::end(s);
+    }
+
+    // PASS-C-1: after a FAILED resolve the proposer reclaims the FULL bond (never
+    // forfeit) and escrow drains to exactly zero.
+    #[test]
+    fun test_cto_proposer_reclaims_bond_after_failed_resolve() {
+        let mut s = begin_cto();
+        buy_bag(&mut s, VOTER_A, 3_000 * MIST_PER_SUI);
+
+        ts::next_tx(&mut s, VOTER_A);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let mut bag = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_A);
+        let circ = bonding_curve::cto_circulating_supply(&curve);
+        let bond = (circ * 100) / 10_000; // 1% << 25% quorum -> will FAIL
+        let stake = coin::split(&mut bag, bond, ts::ctx(&mut s));
+        destroy(bag);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 1);
+        bonding_curve::propose_takeover(&mut curve, stake, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+
+        ts::next_tx(&mut s, BUYER);
+        let mut proposal = ts::take_shared<bonding_curve::TakeoverProposal<TEST_TOKEN>>(&s);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + CTO_WINDOW_MS + 2);
+        bonding_curve::resolve_takeover(&mut proposal, &mut curve, &clk, ts::ctx(&mut s));
+        assert!(!bonding_curve::proposal_succeeded(&proposal), 9610);
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+
+        // Reclaim is permissionless and pays the voter; escrow -> 0.
+        bonding_curve::reclaim_vote(&mut proposal, VOTER_A, ts::ctx(&mut s));
+        assert!(bonding_curve::proposal_escrow_value(&proposal) == 0, 9611);
+        assert!(!bonding_curve::proposal_has_voter(&proposal, VOTER_A), 9612);
+        ts::return_shared(proposal);
+
+        ts::next_tx(&mut s, VOTER_A);
+        let reclaimed = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_A);
+        assert!(coin::value(&reclaimed) == bond, 9613);
+        destroy(reclaimed);
+        ts::end(s);
+    }
+
+    // PASS-C-1: after a PASSED resolve the proposer still reclaims the FULL bond
+    // (the bond is locked, never slashed); escrow drains to exactly zero.
+    #[test]
+    fun test_cto_proposer_reclaims_bond_after_passed_resolve() {
+        let mut s = begin_cto();
+        buy_bag(&mut s, VOTER_A, 3_000 * MIST_PER_SUI);
+
+        // Propose with the FULL bag (~all circulating) -> clears the 25% quorum.
+        ts::next_tx(&mut s, VOTER_A);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let bag = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_A);
+        let bond = coin::value(&bag);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 1);
+        bonding_curve::propose_takeover(&mut curve, bag, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+
+        ts::next_tx(&mut s, BUYER);
+        let mut proposal = ts::take_shared<bonding_curve::TakeoverProposal<TEST_TOKEN>>(&s);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + CTO_WINDOW_MS + 2);
+        bonding_curve::resolve_takeover(&mut proposal, &mut curve, &clk, ts::ctx(&mut s));
+        assert!(bonding_curve::proposal_succeeded(&proposal), 9620);
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+
+        bonding_curve::reclaim_vote(&mut proposal, VOTER_A, ts::ctx(&mut s));
+        assert!(bonding_curve::proposal_escrow_value(&proposal) == 0, 9621);
+        ts::return_shared(proposal);
+
+        // VOTER_A now holds BOTH the reclaimed bag AND the freshly minted CreatorCap.
+        ts::next_tx(&mut s, VOTER_A);
+        let reclaimed = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_A);
+        assert!(coin::value(&reclaimed) == bond, 9622);
+        destroy(reclaimed);
+        ts::end(s);
+    }
+
+    // PASS-C-1: NON-proposer voters keep full, unrestricted early exit - the bond
+    // lock applies ONLY to the proposer.
+    #[test]
+    fun test_cto_nonproposer_unvote_still_unrestricted() {
+        let mut s = begin_cto();
+        buy_bag(&mut s, VOTER_A, 2_000 * MIST_PER_SUI);
+        buy_bag(&mut s, VOTER_B, 2_000 * MIST_PER_SUI);
+
+        ts::next_tx(&mut s, VOTER_A);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let bag_a = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_A);
+        let a_amt = coin::value(&bag_a);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 1);
+        bonding_curve::propose_takeover(&mut curve, bag_a, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+
+        ts::next_tx(&mut s, VOTER_B);
+        let mut proposal = ts::take_shared<bonding_curve::TakeoverProposal<TEST_TOKEN>>(&s);
+        let bag_b = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_B);
+        let b_amt = coin::value(&bag_b);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 2);
+        bonding_curve::vote_takeover(&mut proposal, bag_b, &clk, ts::ctx(&mut s));
+        // B is NOT the proposer: full unvote removes the entry entirely.
+        bonding_curve::unvote_takeover(&mut proposal, &clk, ts::ctx(&mut s));
+        assert!(!bonding_curve::proposal_has_voter(&proposal, VOTER_B), 9630);
+        assert!(bonding_curve::proposal_total_weight(&proposal) == a_amt, 9631);
+        assert!(bonding_curve::proposal_escrow_value(&proposal) == a_amt, 9632);
+        clock::destroy_for_testing(clk);
+        ts::return_shared(proposal);
+
+        ts::next_tx(&mut s, VOTER_B);
+        let refunded = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_B);
+        assert!(coin::value(&refunded) == b_amt, 9633);
+        destroy(refunded);
         ts::end(s);
     }
 
