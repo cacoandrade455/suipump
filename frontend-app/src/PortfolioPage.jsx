@@ -12,6 +12,7 @@ import { TOKEN_DECIMALS, DRAIN_SUI_APPROX, ALL_PACKAGE_IDS } from './constants.j
 import { paginateMultipleEvents } from './paginateEvents.js';
 import { useSessionPositions, sellSessionPosition } from './useSessionPositions.js';
 import { t } from './i18n.js';
+import { executeTx } from './lib/executeTx.js';
 
 const MIST_PER_SUI = 1e9;
 const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
@@ -742,7 +743,7 @@ function CreatorFeesBar({ createdTokens, account, tradeKeypair, lang }) {
           const execResult = await autoClient.executeTransaction({ transaction: builtTx, signatures: [signature] });
           if (execResult?.errors == null) claimed++;
         } else {
-          const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+          const result = await executeTx(dAppKit, null, tx, account.address);
           if (result.$kind === 'Transaction') claimed++;
         }
       }

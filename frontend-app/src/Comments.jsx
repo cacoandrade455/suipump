@@ -8,6 +8,7 @@ import { Transaction } from '@mysten/sui/transactions';
 import { Send, Reply, ChevronDown, ChevronUp } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { t } from './i18n.js';
+import { executeTx } from './lib/executeTx.js';
 
 function getPfp(addr) { try { return localStorage.getItem(`suipump_pfp_${addr}`) || ''; } catch { return ''; } }
 import {
@@ -199,7 +200,7 @@ function CommentItem({ comment, replies, account, curveId, onReplyPosted,
         holderCoinId: coinId, parentId: parentDigest,
       });
 
-      const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const result = await executeTx(dAppKit, null, tx, account.address);
       if (result.FailedTransaction) throw new Error(result.FailedTransaction.status.error ?? 'Reply failed');
       const txDigest = result.digest ?? result.Transaction?.digest ?? null;
 
@@ -551,7 +552,7 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
         });
       }
 
-      const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const result = await executeTx(dAppKit, null, tx, account.address);
       if (result.FailedTransaction) throw new Error(result.FailedTransaction.status.error ?? 'Post failed');
 
       const txDigest = result.digest ?? result.Transaction?.digest ?? null;

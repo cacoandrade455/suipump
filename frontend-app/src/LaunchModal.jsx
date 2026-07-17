@@ -6,6 +6,7 @@ import { X, Plus, Trash2, Rocket, CheckCircle } from 'lucide-react';
 import wasmInit, * as bytecodeTemplate from '@mysten/move-bytecode-template';
 import { PACKAGE_ID, PACKAGE_ID_V5, PACKAGE_ID_V7, MIST_PER_SUI, ANTI_BOT_NONE, ANTI_BOT_15S, ANTI_BOT_30S, GRAD_TARGET_CETUS, GRAD_TARGET_DEEPBOOK, GRAD_TARGET_TURBOS, isV7OrLater, isV9OrLater, isV10OrLater, EPOCH_PKG, EPOCH_TREASURY, EPOCH_CUT_MIST, PROTOCOL_SURCHARGE_MIST, PROTOCOL_WALLET, EPOCH_SIGN_URL, EPOCH_CHECK_URL, EPOCH_SESSION_PROXY, EPOCH_RECOVERY_PROXY, EPOCH_NETWORK } from './constants.js';
 import { t } from './i18n.js';
+import { executeTx } from './lib/executeTx.js';
 
 // Vesting modes / durations — must match bonding_curve.move v7
 const VEST_MODE_CLIFF   = 0;
@@ -440,7 +441,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
       const [upgradeCap] = tx1.publish({ modules: [[...patched]], dependencies: ['0x1', '0x2'] });
       tx1.transferObjects([upgradeCap], account.address);
 
-      const res1raw = await dAppKit.signAndExecuteTransaction({ transaction: tx1 });
+      const res1raw = await executeTx(dAppKit, null, tx1, account.address);
       if (res1raw.$kind === 'FailedTransaction') throw new Error('Tx1 signing failed: ' + res1raw.FailedTransaction.status.error);
       setTx1Digest(res1raw.Transaction?.digest ?? res1raw.digest ?? '');
 
@@ -626,7 +627,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
       tx2.moveCall({ target: `${PACKAGE_ID}::bonding_curve::share_curve`, typeArguments: [newTokenType], arguments: [curve] });
       tx2.transferObjects([cap], account.address);
 
-      const res2raw = await dAppKit.signAndExecuteTransaction({ transaction: tx2 });
+      const res2raw = await executeTx(dAppKit, null, tx2, account.address);
       if (res2raw.$kind === 'FailedTransaction') throw new Error('Tx2 signing failed: ' + res2raw.FailedTransaction.status.error);
       const res2 = await client.waitForTransaction({
         digest: res2raw.Transaction?.digest ?? res2raw.digest,

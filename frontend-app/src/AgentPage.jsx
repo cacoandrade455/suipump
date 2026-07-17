@@ -19,6 +19,7 @@ import { useNavigate } from 'react-router-dom';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { PACKAGE_ID, PACKAGE_ID_V10, PACKAGE_ID_V11, PACKAGE_ID_V12, PACKAGE_ID_V13, PRICE_CONFIG_ID, V13_BUY_ENABLED, MIST_PER_SUI } from './constants.js';
 import { signOwnerAuth } from './authSign.js';
+import { executeTx } from './lib/executeTx.js';
 
 // The agent's execution wallet - the session_address authorized to trade the
 // escrow. buy_with_session/sell_with_session are signed by THIS wallet
@@ -887,7 +888,7 @@ function AgentSessionPanel({ account, onSessionChange }) {
         ? tx.sharedObjectRef({ objectId: session.id, initialSharedVersion: String(session.sharedVersion), mutable: true })
         : tx.object(session.id);
       tx.moveCall({ target: `${PACKAGE_ID}::agent_session::${fn}`, arguments: [ref] });
-      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const res = await executeTx(dAppKit, null, tx, account.address);
       if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Toggle failed');
       setUniversalTrading(!universalTrading);
       setMsg(!universalTrading
@@ -1167,7 +1168,7 @@ function AgentSessionPanel({ account, onSessionChange }) {
           ],
         });
       }
-      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const res = await executeTx(dAppKit, null, tx, account.address);
       if (res.FailedTransaction) {
         const raw = res.FailedTransaction.status?.error;
         const errStr = typeof raw === 'string' ? raw : JSON.stringify(raw ?? {});
@@ -1207,7 +1208,7 @@ function AgentSessionPanel({ account, onSessionChange }) {
         target: `${PACKAGE_ID}::agent_session::top_up_session`,
         arguments: [sessionRef(tx, true), coin],
       });
-      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const res = await executeTx(dAppKit, null, tx, account.address);
       if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Top-up failed');
       setMsg('Escrow topped up.');
       setTimeout(loadSession, 1500);
@@ -1224,7 +1225,7 @@ function AgentSessionPanel({ account, onSessionChange }) {
         target: `${PACKAGE_ID}::agent_session::revoke_session`,
         arguments: [sessionRef(tx, true)],
       });
-      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const res = await executeTx(dAppKit, null, tx, account.address);
       if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Revoke failed');
       setMsg('Session revoked - the agent can no longer spend. Close to withdraw escrow.');
       setTimeout(loadSession, 1500);
@@ -1295,7 +1296,7 @@ function AgentSessionPanel({ account, onSessionChange }) {
         arguments: [ref],
       });
       tx.transferObjects([refund], account.address);
-      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const res = await executeTx(dAppKit, null, tx, account.address);
       if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Close failed');
       rememberClosedSession(session.id);
       // Best-effort leftover-gas sweep: the session's dedicated key still holds
@@ -1432,7 +1433,7 @@ function AgentSessionPanel({ account, onSessionChange }) {
           n++;
         }
       }
-      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const res = await executeTx(dAppKit, null, tx, account.address);
       if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Sweep failed');
       setMsg(`Swept ${n} token balance${n > 1 ? 's' : ''} from ${targets.length} session${targets.length > 1 ? 's' : ''} - everything sent to your wallet.`);
     } catch (e) { setMsg(e.message || 'Sweep failed'); }
@@ -2358,22 +2359,12 @@ export default function AgentPage({ onBack }) {
     });
     tx.transferObjects([tokens, refund], account.address);
 
-    // Build -> wallet-sign -> execute, the SAME pattern the autonomous paths use
-    // (useDCA / useLimitOrder / turnkey_signer): build the tx to bytes against a
-    // client, get the signature, execute via the client. This is what avoids the
-    // Slush "reading 'txSignatures'" crash: signAndExecuteTransaction makes the
-    // WALLET build/serialize the tx itself (its SuiGrpcClient-backed build chokes
-    // on the shared-object refs and throws inside dapp-interface.js), whereas
-    // signTransaction just signs already-built bytes. tx.setSender is required so
-    // the build can resolve gas for the connected wallet.
-    tx.setSender(account.address);
-    const execClient = new SuiGraphQLClient({ url: '/api/rpc' });
+    // Build -> wallet-sign -> execute via the shared executeTx helper (see
+    // lib/executeTx.js for why this avoids the Slush "reading 'txSignatures'"
+    // crash: the wallet only signs already-built bytes, it never builds).
     let digest = null;
     try {
-      const built = await tx.build({ client: execClient });
-      const { signature } = await dAppKit.signTransaction({ transaction: tx });
-      const res = await execClient.executeTransaction({ transaction: built, signatures: [signature] });
-      if (res?.errors) throw new Error(Array.isArray(res.errors) ? (res.errors[0]?.message ?? JSON.stringify(res.errors)) : String(res.errors));
+      const res = await executeTx(dAppKit, null, tx, account.address);
       digest = res?.digest ?? res?.data?.executeTransaction?.digest ?? res?.Transaction?.digest ?? null;
     } catch (e) {
       const msg = String(e?.message ?? e);
@@ -2417,15 +2408,12 @@ export default function AgentPage({ onBack }) {
     });
     tx.transferObjects([suiOut], account.address);
 
-    // Build -> wallet-sign -> execute (see userBuy for why this avoids the Slush
-    // txSignatures crash). Reuse the rpc client built above for coin lookup.
-    tx.setSender(account.address);
+    // Build -> wallet-sign -> execute via the shared executeTx helper (see
+    // lib/executeTx.js for why this avoids the Slush txSignatures crash).
+    // Reuse the rpc client built above for coin lookup.
     let digest = null;
     try {
-      const built = await tx.build({ client: rpc });
-      const { signature } = await dAppKit.signTransaction({ transaction: tx });
-      const res = await rpc.executeTransaction({ transaction: built, signatures: [signature] });
-      if (res?.errors) throw new Error(Array.isArray(res.errors) ? (res.errors[0]?.message ?? JSON.stringify(res.errors)) : String(res.errors));
+      const res = await executeTx(dAppKit, rpc, tx, account.address);
       digest = res?.digest ?? res?.data?.executeTransaction?.digest ?? res?.Transaction?.digest ?? null;
     } catch (e) {
       const msg = String(e?.message ?? e);
@@ -2604,14 +2592,14 @@ export default function AgentPage({ onBack }) {
       const tx = new Transaction();
       const ref = tx.sharedObjectRef({ objectId: activeSessionId, initialSharedVersion: String(sv), mutable: true });
       tx.moveCall({ target: `${PACKAGE_ID}::agent_session::enable_universal_trading`, arguments: [ref] });
-      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const res = await executeTx(dAppKit, null, tx, account?.address);
       if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'enable failed');
       return true;
     } catch (e) {
       setError(`Could not enable universal trading: ${e.message || e}`);
       return false;
     }
-  }, [activeSessionId, client, dAppKit]);
+  }, [activeSessionId, client, dAppKit, account]);
 
   const approve = useCallback(async () => {
     if (!plan || phase === 'running') return;

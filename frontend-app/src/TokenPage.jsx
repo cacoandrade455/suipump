@@ -16,6 +16,7 @@ import AIAnalysis from './AIAnalysis.jsx';
 import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8, PACKAGE_ID_V9, PACKAGE_ID_V10, PACKAGE_ID_V12, PACKAGE_ID_V13, PRICE_CONFIG_ID, V13_BUY_ENABLED, ALL_PACKAGE_IDS, MIST_PER_SUI, DRAIN_SUI_APPROX, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_SUI_V6, VIRTUAL_SUI_V7, VIRTUAL_SUI_V8, VIRTUAL_SUI_V9, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, VIRTUAL_TOKENS_V6, VIRTUAL_TOKENS_V7, VIRTUAL_TOKENS_V8, VIRTUAL_TOKENS_V9, DRAIN_SUI_V4, DRAIN_SUI_V5, DRAIN_SUI_V6, DRAIN_SUI_V7, DRAIN_SUI_V8, DRAIN_SUI_V9, isNewCurve, isV5OrLater, isV7OrLater, isV8OrLater, isV9OrLater, isV10OrLater, supportsMetadataUpdate, curveShapeFor } from './constants.js';
 import { buyQuote, sellQuote } from './curve.js';
 import { t } from './i18n.js';
+import { executeTx } from './lib/executeTx.js';
 
 // BCS helpers
 function bcsOptionNone() { return new Uint8Array([0]); }
@@ -379,7 +380,7 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
       const lockRef = tx.object(lockId);
       const [claimed] = tx.moveCall({ target: `${vestingPkg}::bonding_curve::claim_vested`, typeArguments: [tokenType], arguments: [lockRef, tx.object(SUI_CLOCK_ID)] });
       tx.transferObjects([claimed], account.address);
-      const claimResult = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const claimResult = await executeTx(dAppKit, null, tx, account.address);
       if (claimResult.$kind === 'FailedTransaction') throw new Error(claimResult.FailedTransaction.status.error ?? 'Claim failed');
       setMsg('Claimed ✓'); setBusy(false); setTimeout(() => { setMsg(''); loadLocks(); }, 1500);
     } catch (e) { setMsg(e.message || 'Claim failed'); setBusy(false); }
@@ -414,7 +415,7 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
       else { tx.mergeCoins(coinObjs[0], coinObjs.slice(1)); [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(atomic)]); }
       const durationMs = VEST_DURATIONS_MS[lockDuration] ?? VEST_DURATIONS_MS['30d'];
       tx.moveCall({ target: `${vestingPkg}::bonding_curve::lock_tokens`, typeArguments: [tokenType], arguments: [curveRef, tokenCoin, tx.pure.u8(lockMode), tx.pure.u64(durationMs), tx.object(SUI_CLOCK_ID)] });
-      const lockResult = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const lockResult = await executeTx(dAppKit, null, tx, account.address);
       if (lockResult.$kind === 'FailedTransaction') throw new Error(lockResult.FailedTransaction.status.error ?? 'Lock failed');
       setMsg('Locked ✓'); setBusy(false); setLockAmount(''); setShowLockForm(false); setTimeout(() => { setMsg(''); loadLocks(); }, 1500);
     } catch (e) { setMsg(e.message || 'Lock failed'); setBusy(false); }
@@ -598,7 +599,7 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
         typeArguments: [tokenType],
         arguments: [tx.object(capId), curveRef, metadataRef, tx.pure.option('string', meta.name.trim() || null), tx.pure.option('string', meta.symbol.trim() || null), tx.pure.option('string', meta.description.trim() || null), tx.pure.option('string', meta.iconUrl.trim() || null), tx.object(SUI_CLOCK_ID)],
       });
-      const metaResult = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const metaResult = await executeTx(dAppKit, null, tx, account.address);
       if (metaResult.$kind === 'FailedTransaction') throw new Error(metaResult.FailedTransaction.status.error ?? 'Update failed');
       // Lock immediately. A successful update_metadata PROVABLY flipped
       // metadata_updated=true on-chain, so don't wait on the indexer (its
@@ -797,7 +798,7 @@ function TradePanelContent({
         typeArguments: [panelTokenType],
         arguments: [tx.object(capId), curveRef],
       });
-      const feeResult = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const feeResult = await executeTx(dAppKit, null, tx, account.address);
       if (feeResult.$kind === 'FailedTransaction') throw new Error(feeResult.FailedTransaction.status.error ?? 'Claim failed');
       setClaimMsg('Fees claimed! 🎉'); setClaiming(false); setTimeout(() => setClaimMsg(''), 3000);
     } catch (err) { setClaimMsg(err.message || 'Claim failed'); setClaiming(false); }
@@ -1140,7 +1141,7 @@ function TPSLPanel({
       }
 
       // -- Slush fallback (no keypair) --------------------------------------
-      const sellResult = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const sellResult = await executeTx(dAppKit, null, tx, signerAddress);
       if (sellResult.$kind === 'FailedTransaction') throw new Error(sellResult.FailedTransaction.status.error ?? 'Sell failed');
       setTriggerMsg(m => m ? { ...m, status: 'done' } : m);
       setSelling(false);
@@ -1569,7 +1570,7 @@ function CommunityTakeoverPanel({ curveId, tokenType, packageId, creator, lastCr
         typeArguments: [tokenType],
         arguments: [tx.object(capId), curveRef(tx, true), tx.object(SUI_CLOCK_ID)],
       });
-      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const res = await executeTx(dAppKit, null, tx, account.address);
       if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Heartbeat failed');
       setMsg('Heartbeat sent - inactivity timer reset.');
     } catch (e) { setMsg(e.message || 'Heartbeat failed'); }
@@ -1596,7 +1597,7 @@ function CommunityTakeoverPanel({ curveId, tokenType, packageId, creator, lastCr
         typeArguments: [`${packageId}::bonding_curve::TakeoverProposal`],
         arguments: [prop],
       });
-      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const res = await executeTx(dAppKit, null, tx, account.address);
       if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Propose failed');
       setMsg('Takeover proposed. Voting is open for 12h.');
       setNominee('');
@@ -1619,7 +1620,7 @@ function CommunityTakeoverPanel({ curveId, tokenType, packageId, creator, lastCr
         typeArguments: [tokenType],
         arguments: [curveRef(tx, false), propRef, tx.pure.bool(support), tx.object(coinId), tx.object(SUI_CLOCK_ID)],
       });
-      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const res = await executeTx(dAppKit, null, tx, account.address);
       if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Vote failed');
       setMsg(support ? 'Voted FOR.' : 'Voted AGAINST.');
     } catch (e) { setMsg(e.message || 'Vote failed'); }
@@ -1639,7 +1640,7 @@ function CommunityTakeoverPanel({ curveId, tokenType, packageId, creator, lastCr
         typeArguments: [tokenType],
         arguments: [curveRef(tx, true), propRef, tx.object(SUI_CLOCK_ID)],
       });
-      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const res = await executeTx(dAppKit, null, tx, account?.address);
       if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Resolve failed');
       setMsg('Proposal resolved.');
       setProposal(null);
@@ -1803,7 +1804,7 @@ function CommentGatePanel({ curveId, tokenType, isCreator, packageId, account, i
         typeArguments: [tokenType],
         arguments: [tx.object(capId), curveRef, tx.pure.bool(!gated), tx.object(SUI_CLOCK_ID)],
       });
-      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const res = await executeTx(dAppKit, null, tx, account.address);
       if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Toggle failed');
       setGated(!gated);
       setMsg(!gated ? 'Comments are now HOLDER-GATED - only token holders can post.' : 'Comments are now OPEN - anyone can post.');
@@ -1889,7 +1890,7 @@ function CreatorBuybackPanel({ curveId, tokenType, packageId, isCreator, account
         typeArguments: [tokenType],
         arguments: [tx.object(capId), curveRef(tx, true), tx.pure.u64(BigInt(bpsNum)), tx.pure.bool(burn), tx.object(SUI_CLOCK_ID)],
       });
-      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const res = await executeTx(dAppKit, null, tx, account.address);
       if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Update failed');
       setMsg('Buyback config updated.');
       setTimeout(loadConfig, 1500);
@@ -1907,7 +1908,7 @@ function CreatorBuybackPanel({ curveId, tokenType, packageId, isCreator, account
         typeArguments: [tokenType],
         arguments: [curveRef(tx, true)],
       });
-      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const res = await executeTx(dAppKit, null, tx, account?.address);
       if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Buyback execution failed');
       setMsg('Buyback executed.');
     } catch (e) { setMsg(e.message || 'Buyback execution failed'); }
@@ -2380,7 +2381,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
         tx.transferObjects([suiOut], account.address);
       }
 
-      const tradeResult = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const tradeResult = await executeTx(dAppKit, null, tx, account.address);
       if (tradeResult.$kind === 'FailedTransaction') throw new Error(tradeResult.FailedTransaction.status.error ?? 'Transaction failed');
       setTxStatus('success'); setTxMsg(side === 'buy' ? 'Buy successful! 🎉' : 'Sell successful!'); setAmount('');
       setTimeout(() => { setTxStatus(null); setTxMsg(''); }, 3000);
