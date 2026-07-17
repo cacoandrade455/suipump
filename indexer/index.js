@@ -17,6 +17,7 @@ import {
 } from './db.js';
 import { startGraduationWatcher } from './auto_graduate.js';
 import { startPricePublisher } from './price_publisher.js';
+import { startCtoReclaimSweeper } from './cto_reclaim_sweeper.js';
 import { startApi } from './api.js';
 
 // -- Config --------------------------------------------------------------------
@@ -445,6 +446,16 @@ async function main() {
     console.log('  [price] price publisher dormant (set SUIPUMP_V13_PACKAGE + SUIPUMP_PRICE_CONFIG + SUI_PRIVATE_KEY to arm)');
   }
 
+  // V13 CTO reclaim sweeper arming, same posture as the price publisher. Needs
+  // no PriceConfig - only the V13 package (arming signal) and a signer for gas.
+  const ctoSweeperArmed = Boolean(
+    process.env.SUIPUMP_V13_PACKAGE &&
+    process.env.SUI_PRIVATE_KEY
+  );
+  if (!ctoSweeperArmed) {
+    console.log('  [cto-sweep] reclaim sweeper dormant (set SUIPUMP_V13_PACKAGE + SUI_PRIVATE_KEY to arm)');
+  }
+
   await initSchema();
   startApi();
 
@@ -468,6 +479,14 @@ async function main() {
   if (pricePublisherArmed) {
     startPricePublisher(graphqlClient).catch(err =>
       console.error('Price publisher crashed:', err.message)
+    );
+  }
+
+  // Same fire-and-forget containment. reclaim_vote is permissionless and pays
+  // the voter (see cto_reclaim_sweeper.js header): the signer only pays gas.
+  if (ctoSweeperArmed) {
+    startCtoReclaimSweeper(graphqlClient, pool).catch(err =>
+      console.error('CTO reclaim sweeper crashed:', err.message)
     );
   }
 
