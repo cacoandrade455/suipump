@@ -18,6 +18,30 @@
 //   SUIPUMP_V13_PACKAGE - the V13 package id itself, for consumers that need it as
 //       a version key (event types, dispatch-set entries, virtual-reserve branch).
 //
+// TWO SIGNER KEYS, NEVER CONFLATED (env contract; this module reads neither):
+//   SUI_PRIVATE_KEY       - the PRICE RELAYER wallet
+//       0xce53cb8f9befc490393d70528ef732bbcbe12d951ffcdd76a37af9b0f9624629 (holds
+//       the PriceRelayerCap). Read by price_publisher.js and cto_reclaim_sweeper.js.
+//   GRADUATION_SIGNER_KEY - the graduation signer = MAIN wallet
+//       0x0be9a8f56ba3b07f295e0c7526e7f47ca3a146649b9d864d2eb47bf3acd90c55 (holds
+//       AdminCap V13). Read ONLY by the graduation-test/graduation-test-turbos
+//       scripts that auto_graduate.js imports. auto_graduate MUST NEVER read
+//       SUI_PRIVATE_KEY; price_publisher MUST NEVER read GRADUATION_SIGNER_KEY.
+//
+// ================= TESTNET-ONLY EXPEDIENT - REMOVE AT V14 =====================
+// GRADUATION_SIGNER_KEY carries the AdminCap holder's private key on an
+// always-online server. This is precisely the concentration that finding E-1 was
+// raised to eliminate, and it is accepted here ONLY because this is testnet faucet
+// money and the graduation loop has never been proven end-to-end. It MUST NOT reach
+// mainnet. The fix is a GraduationCap: an additive (compatible) V14 upgrade via
+// UpgradeCap V13 0x79ebefc92e5da42720ff4b3e719a71e4ecd5428a9750d4ada8257f61e3556a19
+// adding a cap whose only powers are claim_graduation_funds and
+// record_graduation_pool, plus an active_graduation_cap_id rotation field so the
+// cold AdminCap can revoke a compromised cap instantly (same pattern as the
+// CreatorCap swap). When V14 ships, auto_graduate moves to that cap and
+// GRADUATION_SIGNER_KEY is deleted from Render.
+// =============================================================================
+//
 // ZERO imports on purpose: this module is imported from indexer/, from
 // suipump-nexus-tools/ and from the graduation-test dirs, each with its own
 // node_modules tree - it must not depend on any package being installed in any

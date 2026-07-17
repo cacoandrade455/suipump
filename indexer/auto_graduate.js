@@ -10,10 +10,32 @@
 // shapes and classes are NOT interchangeable with this indexer's v2 grpc/
 // graphql clients - injecting our client or a cross-install keypair object
 // into them never worked. The watcher's OWN reads stay on GraphQL below.
+//
+// SIGNER SEPARATION (do not conflate): the graduation subsystem (this watcher and
+// the graduation-test/graduation-test-turbos scripts it imports) signs with
+// GRADUATION_SIGNER_KEY ONLY. auto_graduate itself signs nothing and MUST NEVER read
+// SUI_PRIVATE_KEY; price_publisher.js signs set_sui_price with SUI_PRIVATE_KEY and
+// MUST NEVER read GRADUATION_SIGNER_KEY. They are two different wallets:
+//   GRADUATION_SIGNER_KEY = main wallet 0x0be9a8f56ba3b07f295e0c7526e7f47ca3a146649b9d864d2eb47bf3acd90c55 (holds AdminCap V13)
+//   SUI_PRIVATE_KEY       = price relayer wallet 0xce53cb8f9befc490393d70528ef732bbcbe12d951ffcdd76a37af9b0f9624629 (holds PriceRelayerCap)
+//
+// ================= TESTNET-ONLY EXPEDIENT - REMOVE AT V14 =====================
+// GRADUATION_SIGNER_KEY carries the AdminCap holder's private key on an
+// always-online server. This is precisely the concentration that finding E-1 was
+// raised to eliminate, and it is accepted here ONLY because this is testnet faucet
+// money and the graduation loop has never been proven end-to-end. It MUST NOT reach
+// mainnet. The fix is a GraduationCap: an additive (compatible) V14 upgrade via
+// UpgradeCap V13 0x79ebefc92e5da42720ff4b3e719a71e4ecd5428a9750d4ada8257f61e3556a19
+// adding a cap whose only powers are claim_graduation_funds and
+// record_graduation_pool, plus an active_graduation_cap_id rotation field so the
+// cold AdminCap can revoke a compromised cap instantly (same pattern as the
+// CreatorCap swap). When V14 ships, auto_graduate moves to that cap and
+// GRADUATION_SIGNER_KEY is deleted from Render.
+// =============================================================================
 
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { pool } from './db.js';
-import { LATEST_WRITE_PACKAGE, assertWriteTarget } from './write_target.js';
+import { LATEST_WRITE_PACKAGE, V13_PACKAGE, assertWriteTarget } from './write_target.js';
 
 const NETWORK     = process.env.NETWORK         ?? 'testnet';
 const GRAPHQL_URL = process.env.SUI_GRAPHQL_URL ?? 'https://graphql.' + NETWORK + '.sui.io/graphql';
@@ -32,11 +54,19 @@ const PACKAGES = {
   V10:  '0x2deda2cade65cd5afd5ffbe799d48f2491debf08d3aef6fa11aa6e1c8afe1598',
   V11:  '0xc03817bce45ff492e5d0f40f9e46f5a075a952b50c5c6146b8fb38138bd699eb',
   V12:  '0xf5a3566ba920a3e3614e8b25da0ca3237879b6e22eb12f21ccf2bceb6520b9cd',
+  // V13 is a SEPARATE published lineage (env-gated so the package id is not
+  // hardcoded); a V13 curve reports V13 as its own defining id.
+  ...(V13_PACKAGE ? { V13: V13_PACKAGE } : {}),
 };
+
+// V13 (SEPARATE lineage) AdminCap - held on the MAIN wallet, whose key is
+// GRADUATION_SIGNER_KEY. TESTNET-ONLY EXPEDIENT - see the module header.
+const ADMIN_CAP_V13 = '0xb3d3155ca1bc153664143895928aa77384f5c70f752c306e10fa619f460e039d';
 
 // AdminCap per DEFINING package. The whole V10 lineage (V10/V11/V12+) shares ONE
 // AdminCap (0x144d426960a9a6b8db63ce3426e06a9c41273a17e72ed0193cd8c8507d4f6ec5)
-// - the V10 defining package governs all its upgrades.
+// - the V10 defining package governs all its upgrades. V13 is its OWN lineage with
+// its OWN AdminCap (env-gated key; cap value follows the per-version literal pattern).
 const ADMIN_CAPS = {
   [PACKAGES.V4]:   '0xfc80d40718e8e9d0bc1fddc1e47a74e46d0c89c3e1e36a2bc8f016efb6d51e0c',
   [PACKAGES.V5]:   '0xfc80d40718e8e9d0bc1fddc1e47a74e46d0c89c3e1e36a2bc8f016efb6d51e0c',
@@ -48,6 +78,7 @@ const ADMIN_CAPS = {
   [PACKAGES.V10]:  '0x144d426960a9a6b8db63ce3426e06a9c41273a17e72ed0193cd8c8507d4f6ec5',
   [PACKAGES.V11]:  '0x144d426960a9a6b8db63ce3426e06a9c41273a17e72ed0193cd8c8507d4f6ec5',
   [PACKAGES.V12]:  '0x144d426960a9a6b8db63ce3426e06a9c41273a17e72ed0193cd8c8507d4f6ec5',
+  ...(V13_PACKAGE ? { [V13_PACKAGE]: ADMIN_CAP_V13 } : {}),
 };
 
 // WRITE-target remap: a curve's package_id in the DB is its DEFINING package (V10
