@@ -99,3 +99,41 @@ export async function assertSessionOwner({ sessionId, sessionAddress, ownerAddre
   if (!owned) throw new Error('session is not owned by the signer');
   return true;
 }
+
+// Sui GraphQL endpoint for the live session-open read below. GraphQL only -
+// JSON-RPC is forbidden repo-wide (hard shutdown 2026-07-31).
+const SUI_GRAPHQL_URL =
+  process.env.SUI_GRAPHQL_URL ?? 'https://graphql.testnet.sui.io/graphql';
+
+// assertSessionOpen - live on-chain check that an AgentSession is OPEN and can
+// still trade: the object exists, revoked is false, and expiry_ms is neither
+// the 0 CLOSED sentinel (V11 close_session) nor in the past. assertSessionOwner
+// above only proves the signer OPENED the session at some point (indexer
+// SessionOpened history); this proves the session can actually fire NOW, so
+// arm-time rejects orders the strategy runner would immediately close.
+// Throws with a human-readable reason unless the session is open. Fails
+// CLOSED on read errors by design: arming against an unverifiable session
+// just creates an order the runner's gate kills on first wake.
+export async function assertSessionOpen({ sessionId }) {
+  if (!sessionId) throw new Error('sessionId required');
+  const r = await fetch(SUI_GRAPHQL_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      query: 'query($id: SuiAddress!) { object(address: $id) { asMoveObject { contents { json } } } }',
+      variables: { id: String(sessionId) },
+    }),
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!r.ok) throw new Error(`session read failed (graphql ${r.status})`);
+  const d = await r.json().catch(() => null);
+  if (d?.errors?.length) throw new Error(`session read failed: ${d.errors[0].message}`);
+  const json = d?.data?.object?.asMoveObject?.contents?.json;
+  if (!json) throw new Error('session object not found on-chain');
+  if (json.revoked === true || json.revoked === 'true') throw new Error('session revoked');
+  // u64 arrives as a string in GraphQL json; ms timestamps are Number-safe.
+  const expiryMs = Number(json.expiry_ms ?? 0);
+  if (!(expiryMs > 0)) throw new Error('session closed');
+  if (expiryMs <= Date.now()) throw new Error('session expired');
+  return true;
+}

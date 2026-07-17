@@ -2603,6 +2603,18 @@ export default function AgentPage({ onBack }) {
 
   const approve = useCallback(async () => {
     if (!plan || phase === 'running') return;
+    // Strategies hard-require an OPEN session (founder decision 2026-07-16):
+    // the bridge retired shared-wallet /buy /sell, and /api/create-order now
+    // 400s without a sessionId. Bail BEFORE executing - buy_then_tpsl settles
+    // its buy leg first, so a late 400 on the arm leg would leave an
+    // unprotected position.
+    const STRATEGY_WORKFLOWS = ['buy_then_tpsl', 'tpsl', 'sniper', 'dca', 'copytrade', 'autopilot'];
+    if (STRATEGY_WORKFLOWS.includes(plan.workflow) && !activeSessionId) {
+      setError('Strategies require an open agent session - open a session in the panel above first');
+      clearAnim();
+      setPhase('idle');
+      return;
+    }
     setError(null); setResult(null); setPhase('running');
     clearAnim();
 
@@ -2987,7 +2999,7 @@ export default function AgentPage({ onBack }) {
       setError(err.message);
       setPhase('failed');
     }
-  }, [plan, phase, clearAnim, account]);
+  }, [plan, phase, clearAnim, account, activeSessionId]);
 
   const nodeColor = (s) =>
     s === 'done'    ? 'border-violet-400/60 bg-violet-400/10' :
@@ -3321,14 +3333,29 @@ export default function AgentPage({ onBack }) {
               <div key={k}>{k}: <span className="text-white/80">{v}</span></div>
             ))}
           </div>
-          {(phase === 'idle' || phase === 'failed') && !(candidates && candidates.length > 1) && (
-            <button
-              onClick={approve}
-              className="w-full text-[11px] font-mono font-bold tracking-widest px-4 py-3 rounded-lg bg-violet-500 text-white hover:bg-violet-400 transition-colors flex items-center justify-center gap-2"
-            >
-              <Play size={12} /> {phase === 'failed' ? 'RETRY - EXECUTE ON-CHAIN' : 'APPROVE & EXECUTE ON-CHAIN'}
-            </button>
-          )}
+          {(phase === 'idle' || phase === 'failed') && !(candidates && candidates.length > 1) && (() => {
+            // Strategies hard-require an open session - keep the no-session
+            // submission unreachable from the UI (mirrors the approve() guard
+            // and the /api/create-order 400).
+            const needsSession = ['buy_then_tpsl', 'tpsl', 'sniper', 'dca', 'copytrade', 'autopilot'].includes(plan?.workflow);
+            const sessionMissing = needsSession && !activeSessionId;
+            return (
+              <>
+                <button
+                  onClick={approve}
+                  disabled={sessionMissing}
+                  className={`w-full text-[11px] font-mono font-bold tracking-widest px-4 py-3 rounded-lg transition-colors flex items-center justify-center gap-2 ${sessionMissing ? 'bg-violet-500/30 text-white/40 cursor-not-allowed' : 'bg-violet-500 text-white hover:bg-violet-400'}`}
+                >
+                  <Play size={12} /> {phase === 'failed' ? 'RETRY - EXECUTE ON-CHAIN' : 'APPROVE & EXECUTE ON-CHAIN'}
+                </button>
+                {sessionMissing && (
+                  <div className="mt-2 text-[10px] font-mono text-amber-300/80">
+                    Strategies require an open agent session - open a session in the panel above first.
+                  </div>
+                )}
+              </>
+            );
+          })()}
         </div>
       )}
 

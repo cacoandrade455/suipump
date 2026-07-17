@@ -25,7 +25,7 @@
 // session (indexer owner-indexed lookup) - so nobody can arm a sell against
 // someone else's session with their own signature.
 
-import { canonicalAuthMessage, verifyOwnerSignature, assertSessionOwner } from '../lib/verifyOwner.js';
+import { canonicalAuthMessage, verifyOwnerSignature, assertSessionOwner, assertSessionOpen } from '../lib/verifyOwner.js';
 
 const INDEXER_URL = process.env.INDEXER_URL ?? 'https://suipump-62s2.onrender.com';
 
@@ -46,6 +46,14 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Missing curveId' });
   }
 
+  // HARD REQUIREMENT (founder decision 2026-07-16): strategies fire ONLY
+  // through an open agent session. The bridge retired the shared-wallet /buy
+  // and /sell endpoints (HTTP 410), so a session-less order could never
+  // execute - reject it at arm time with a clear message.
+  if (typeof body.sessionId !== 'string' || !/^0x[0-9a-fA-F]{1,64}$/.test(body.sessionId)) {
+    return res.status(400).json({ error: 'strategies require an open agent session - open a session first' });
+  }
+
   // Wallet-signed ownership proof. `fields` (body minus signature/ts) is both
   // what gets signed and what gets forwarded - the signature covers exactly
   // what the indexer will store.
@@ -59,11 +67,20 @@ export default async function handler(req, res) {
       expectedAddress: wallet,
       canonicalPayload: canonicalAuthMessage('create-order', ts, fields),
     });
-    if (fields.sessionId) {
-      await assertSessionOwner({ sessionId: fields.sessionId, ownerAddress: signer });
-    }
+    // sessionId is mandatory (guarded above); the signer must OWN it.
+    await assertSessionOwner({ sessionId: fields.sessionId, ownerAddress: signer });
   } catch (e) {
     return res.status(401).json({ error: `auth: ${e.message}` });
+  }
+
+  // The bound session must also be OPEN on-chain right now (exists, not
+  // revoked, expiry_ms neither the 0 CLOSED sentinel nor past). Not an auth
+  // failure - a dead session is a 400: the fix is opening a session, not
+  // re-signing.
+  try {
+    await assertSessionOpen({ sessionId: fields.sessionId });
+  } catch (e) {
+    return res.status(400).json({ error: `session not open: ${e.message} - open a session first` });
   }
 
   const key = process.env.STRATEGY_API_KEY;
