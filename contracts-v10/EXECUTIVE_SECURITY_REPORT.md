@@ -35,13 +35,13 @@ that has ever been found in this code.
 **The bottom line of this audit, in three sentences.** Every serious money-loss flaw
 found in earlier reviews has been fixed and each fix is now backed by an automated test
 that proves the attack no longer works. This latest review found no new way for a
-stranger on the internet to steal funds, but it did find one serious concern about how
-much power a single administrator key holds, and one way to jam (not steal from) an
-optional community feature, both of which are documented below and handed to the owner
-to decide on before launch. This automated review is a safety pass, not a substitute
-for the paid outside audit that is still required before real money is involved: top
-firms have missed nine-figure bugs before, so a clean pass means "nothing found here,"
-never "provably safe."
+stranger on the internet to steal funds; it did raise one serious concern about how
+much power a single administrator key held and one way to jam (not steal from) an
+optional community feature, and both of those have now been fixed as well, each with
+new automated tests. This automated review is a safety pass, not a substitute for the
+paid outside audit that is still required before real money is involved: top firms have
+missed nine-figure bugs before, so a clean pass means "nothing found here," never
+"provably safe."
 
 ---
 
@@ -198,71 +198,82 @@ cannot be moved by later trading. The vote count is compared against that frozen
 
 **The test that proves it.** `test_cto_quorum_snapshot_survives_supply_inflation`.
 
-### 2.7 One administrator key holds too much power, and it has to be kept "hot"
+### 2.7 One administrator key held too much power and had to be kept "hot"
 
-**The story.** This is the most important new concern from the final review, and it is
+**The story.** This was the most important concern from the final review, and it is
 about concentration of power rather than a coding mistake. A single master
 administrator key (a "capability," meaning an object whose holder is allowed to perform
-privileged actions) controls almost everything: it publishes the official SUI price, it
-can drain the money from any graduated token and print that token's final batch for the
-exchange listing, it can freeze trading on any token, and it can collect fees. The
-official plan is to protect this key by requiring multiple people to approve its use (a
-"multisig," meaning several signatures are needed to act). The problem the review
-raised: the price has to be republished about every five minutes, forever, which means
-this key has to be constantly available online (a "hot" key). A key that several humans
-must approve cannot realistically sign something every five minutes. So either the key
-stays online and a single point of failure controls the treasury, or price updates stop
-and a feature goes dormant. If an attacker stole that always-online key, they could
-drain every graduated token and print tokens.
+privileged actions) controlled almost everything: it published the official SUI price,
+it could drain the money from any graduated token and print that token's final batch
+for the exchange listing, it could freeze trading on any token, and it could collect
+fees. The plan is to protect this key by requiring multiple people to approve its use (a
+"multisig," meaning several signatures are needed to act). The problem: the price has to
+be republished about every five minutes, forever, which means the key that does it has
+to be constantly available online (a "hot" key). A key that several humans must approve
+cannot realistically sign something every five minutes. So either the key stayed online
+and a single point of failure controlled the treasury, or price updates stopped and a
+feature went dormant. If an attacker stole that always-online key, they could have
+drained every graduated token and printed tokens.
 
 **Who loses.** In the worst case, everyone with money in graduated tokens, if that one
-key were stolen. This requires stealing an internal key, not just visiting the website,
+key were stolen. This required stealing an internal key, not just visiting the website,
 so it is a concentration-of-power risk rather than an open-door bug.
 
 **How it was found.** The July 17 final pre-publish review, rated High and confirmed by
 a second reviewer whose job was to disprove it (finding E-1 in
-SECURITY_REAUDIT_2026-07-17_PREPUBLISH.md). It sharpens an earlier, milder note about
+SECURITY_REAUDIT_2026-07-17_PREPUBLISH.md). It sharpened an earlier, milder note about
 administrator power (F-9).
 
-**What was done about it.** Because fixing it changes how the core permissions are
-structured, it was deliberately not changed by the automated pass. It is handed to the
-owner as a launch-blocking decision. The recommended fix is to split the power: give the
-always-online price-updating job its own tiny, low-risk key that can do nothing but
-update the price within a safe range, and keep the powerful treasury key protected by
-the multiple-approval scheme and kept offline. This is the honest state today: the code
-is testnet-only (play money), and moving these keys to multiple-approval control is
-already a stated requirement before real-money launch. This finding says that migration
-is necessary but, for the price job specifically, not enough on its own without the
-split.
+**How it was fixed.** The power was split. The everyday price-updating job now has its
+own separate, tiny key whose only ability is to publish a price, and only within the
+same safe range as before. That is the key that has to stay online. It can do nothing
+else: it cannot drain a token, cannot print tokens, cannot freeze trading, and cannot
+collect fees. Those powerful actions stayed with the master key, which does not need to
+be online every five minutes and can therefore be kept offline under the
+multiple-approval scheme. So even if the always-online price key were stolen, the thief
+could at most nudge the published price inside its safe band; the treasury is out of
+reach (commit 9fcbd6d5, 2026-07-17).
 
-**Status.** Open, documented, and awaiting the owner's decision. No test applies because
-nothing was changed; the recommendation is a design change, not a patch.
+**The tests that prove it.** `test_price_relayer_cap_sets_price` (the new price-only key
+works), `test_set_sui_price_gated_on_relayer_cap_only` (the master key can no longer set
+the price at all; the old way will not even compile), `test_create_price_config_mints_relayer_cap`
+(setup produces exactly one price key), and `test_admin_cap_still_pauses_after_relayer_split`
+(the master key's other powers are untouched).
 
-### 2.8 A troublemaker could repeatedly jam the community-rescue feature for almost nothing
+### 2.8 A troublemaker could have repeatedly jammed the community-rescue feature for almost nothing
 
 **The story.** To start a community takeover you must post a small stake, which is meant
-to discourage spam. The flaw: the person who starts a proposal can immediately withdraw
-their own stake in the very next step, while their proposal keeps blocking everyone
-else from starting a competing one. By starting a proposal and instantly pulling the
-stake back, a troublemaker holding just one percent of a token can keep the rescue
-feature jammed almost all the time, at only the cost of network fees, with no money
-locked up. They cannot steal anything; they just deny the rescue feature to everyone.
+to discourage spam. The flaw: the person who started a proposal could immediately
+withdraw their own stake in the very next step, while their proposal kept blocking
+everyone else from starting a competing one. By starting a proposal and instantly
+pulling the stake back, a troublemaker holding just one percent of a token could keep
+the rescue feature jammed almost all the time, at only the cost of network fees, with no
+money locked up. They could not steal anything; they just denied the rescue feature to
+everyone.
 
 **Who loses.** No one loses deposits. The community of an abandoned token loses access
 to the rescue feature that exists to help them.
 
 **How it was found.** The July 17 final pre-publish review, rated Medium and confirmed
-by a second reviewer whose job was to disprove it (finding PASS-C-1). It makes an
+by a second reviewer whose job was to disprove it (finding PASS-C-1). It made an
 earlier, milder note (CTO-2.1) worse, because that earlier note assumed the stake stayed
-locked during the blackout, which it does not.
+locked during the blackout, which it did not.
 
-**What was done about it.** Because the fix changes how the voting feature behaves, it
-was deliberately not changed by the automated pass and is handed to the owner. The
-recommended fix is to stop the proposer from pulling their stake while their proposal is
-still blocking others, or to clear a stake-less proposal out of the way so a real one
-can start.
+**How it was fixed.** The starter's stake is now locked for the whole life of their
+proposal. They can still add extra votes and pull those extra votes back, but the
+original stake that lets them block everyone else cannot be withdrawn until the proposal
+finishes and is then returned to them in full (it is never taken away, just held). So
+jamming the feature now costs the troublemaker their one percent locked up for the
+entire multi-day window each time, which removes the "almost free" part that made the
+attack worthwhile. Ordinary voters are completely unaffected and can still change their
+mind and pull their votes at any time (commit 2b2d764d, 2026-07-17).
 
-**Status.** Open, documented, and awaiting the owner's decision.
+**The tests that prove it.** `test_cto_proposer_unvote_below_bond_aborts` (the starter
+cannot pull their locked stake early), `test_cto_proposer_unvote_excess_succeeds` (they
+can still pull extra votes), `test_cto_proposer_reclaims_bond_after_failed_resolve` and
+`test_cto_proposer_reclaims_bond_after_passed_resolve` (they always get the full stake
+back afterward, win or lose), and `test_cto_nonproposer_unvote_still_unrestricted`
+(ordinary voters keep full freedom).
 
 ### 2.9 The smaller issues, briefly
 
@@ -303,14 +314,17 @@ deposit (finding F-6, with the reasoning recorded in AUDIT_NOTES.md).
 No honest system pretends to remove all trust. Here is what you are still trusting today,
 stated plainly.
 
-- **The administrator key.** As described in 2.7, one powerful key can freeze tokens,
-  set the official price, and move graduated tokens' money. Until it is placed under
-  multiple-approval control (and, per this report, split so the everyday price job does
-  not need the powerful key), you are trusting whoever holds it. Moving it to
-  multiple-approval control is a stated requirement before real-money launch.
+- **The administrator key.** One powerful key can still freeze tokens, move graduated
+  tokens' money, and collect fees. As of the July 17 fix (2.7) the everyday price job is
+  no longer part of this key, so the powerful key no longer needs to be online all the
+  time and can be kept offline. Until it is placed under multiple-approval control you
+  are still trusting whoever holds it, and that migration is a stated requirement before
+  real-money launch. The separate, online price-only key is deliberately limited: the
+  worst its holder can do is nudge the published price within a fixed safe band.
 - **The price feed.** The graduation target depends on an official SUI price published
-  by the operator. The operator can only publish a value within a sane range, and every
-  update is recorded publicly, but you are trusting them to publish honest prices.
+  by the operator through the price-only key above. The operator can only publish a value
+  within a sane range, and every update is recorded publicly, but you are trusting them
+  to publish honest prices.
 - **The outside audit has not happened yet.** The reviews behind this document are
   automated and internal. A paid, independent human audit (the plan names MoveBit) is
   still required before real money is involved and has not yet been done. Automated
@@ -339,16 +353,20 @@ Leaving things out is also a security decision. These were left inert on purpose
   turned off by default and requires an explicit, separate opt-in, and the plan is to
   leave it off for the first launch. While off, the assistant can only trade inside
   SuiPump's own tokens, where proceeds always return to your deposit.
-- **The two open community-rescue issues (2.7 is separate; here we mean the rescue
-  feature's remaining lower-rated items) were left as documented decisions, not rushed
-  fixes.** Several lower-severity notes about the rescue feature (for example, that a
+- **Some lower-rated community-rescue notes were left as documented decisions, not
+  rushed fixes.** Several minor notes about the rescue feature (for example, that a
   takeover of an already-graduated token could redirect its old unclaimed fees, or that
-  burned tokens slightly skew the vote math over time) were deliberately not patched in
-  this pass. They are low-impact, they require unusual conditions, and changing the
-  voting rules is an owner decision, so they are written down with recommendations rather
-  than altered quietly. The two new items from the final review (2.7 and 2.8) are handled
-  the same way: documented and handed to the owner, because both fixes change core
-  permission or voting rules.
+  burned tokens slightly skew the vote math over time) were deliberately not patched.
+  They are low-impact, they require unusual conditions, and changing the voting rules is
+  an owner decision, so they are written down with recommendations rather than altered
+  quietly. The two serious items from the final review (2.7 and 2.8) were the exception:
+  they were approved and fixed on July 17 because their impact warranted it.
+- **One low-rated timing quirk in the automatic buyback was left documented, not
+  patched.** A token's automatic buyback can, in a narrow case, push it just past its
+  graduation point without finishing the graduation, which makes purchases temporarily
+  bounce until anyone triggers the (permissionless) graduation step. Nothing is lost and
+  it self-heals; the fix changes when graduation fires, which is an owner decision, so it
+  is documented with a recommendation rather than altered here.
 - **The external "orchestrator" trading path was scoped out.** An earlier design routed
   trades through a separate orchestration system. That was set aside for the first
   version in favor of a simpler, more directly controlled path, which reduces the amount

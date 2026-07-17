@@ -124,3 +124,43 @@ Census verdict: with zero live fallback sessions and the only stranded escrow
 recoverable permissionlessly, the SUIPUMP_LEGACY_SIGNER drain gate never needs
 to be enabled. It ships defaulted OFF and should stay off; the shared key is
 never constructed on any execution path.
+
+---
+
+## F-9 - AdminCap centralization - price surface SPLIT OUT; remainder is the mainnet multisig gate (F-14)
+
+**Status: PARTLY RESOLVED (price surface, 2026-07-17, commit 9fcbd6d5); the
+remainder is the standing mainnet multisig gate, tracked as F-14.**
+
+F-9 (SECURITY_AUDIT_2026-07-15.md, INFO) disclosed that a single `AdminCap`
+gated pause, fee claims, graduation-pool recording, and the enclave registry.
+The pre-publish re-audit (SECURITY_REAUDIT_2026-07-17_PREPUBLISH.md, E-1)
+escalated this to HIGH once `set_sui_price` and `claim_graduation_funds` were
+added to the same cap: the price relayer must hold a HOT key that pushes every
+~5 min, and that key could therefore also drain every graduated reserve, mint
+the 200M LP, pause any curve, and claim fees. A 2-of-3 multisig cannot co-sign a
+push every 5 min, so the "multisig before mainnet" mitigation could not cover
+the price surface.
+
+**Resolution (E-1, commit 9fcbd6d5):** the price-publish authority is split into
+its own capability, `PriceRelayerCap`, and `set_sui_price` is gated on it ALONE
+(no AdminCap path; Move type-checks the argument, so there is no dual-path escape
+hatch). The hot relayer key now holds only `PriceRelayerCap`, whose entire power
+is to push a price already clamped to `[MIN,MAX]_PRICE_SCALED`. It can never
+touch reserves, minting, fees, pause, or the enclave registry. Exactly one
+`PriceRelayerCap` is minted per package (by `init` on a fresh publish, by
+`create_price_config` on an upgrade), announced via `PriceRelayerCapIssued` for
+the publish runbook. Regression: `test_price_relayer_cap_sets_price`,
+`test_set_sui_price_gated_on_relayer_cap_only`,
+`test_create_price_config_mints_relayer_cap`,
+`test_admin_cap_still_pauses_after_relayer_split`.
+
+**F-14 (OPEN until mainnet):** what remains under `AdminCap` - pause any curve,
+`claim_graduation_funds` (drain a graduated reserve + mint the 200M LP),
+`claim_protocol_fees`, `claim_airdrop_fees`, `record_graduation_pool`, and the
+`enclave_registry` - is legitimate protocol authority that stays a disclosed
+centralization surface until the `AdminCap`/`UpgradeCap` multisig migration.
+That migration is a MAINNET-BLOCKING gate (CLAUDE.md). After the E-1 split the
+cap no longer needs to be online for price pushes, so it CAN be held cold in the
+multisig - which is exactly what E-1 makes possible. F-14 is the standing tracker
+for that migration; it is accepted-until-mainnet, not a code defect.

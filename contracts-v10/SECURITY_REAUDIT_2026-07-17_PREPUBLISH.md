@@ -44,10 +44,16 @@
 | Severity | Count | IDs |
 |----------|-------|-----|
 | A critical | 0 | - |
-| B high     | 1 | E-1 (CONFIRMED, DISPOSITION: reported to Carlos - fix is a cap-semantics change) |
-| C medium   | 1 | PASS-C-1 (CONFIRMED) |
-| D low      | 1 | PASS-D-1 (refines accepted ECON-2) |
-| E info     | 1 | PA-1 (documentation accuracy) |
+| B high     | 1 | E-1 (CONFIRMED; **RESOLVED 2026-07-17**, commit `9fcbd6d5` - see the addendum) |
+| C medium   | 1 | PASS-C-1 (CONFIRMED; **RESOLVED 2026-07-17**, commit `2b2d764d` - see the addendum) |
+| D low      | 1 | PASS-D-1 (refines accepted ECON-2; still deferred) |
+| E info     | 1 | PA-1 (documentation accuracy; still open, doc-only) |
+
+> **Update 2026-07-17:** the two founder-decision items (E-1, PASS-C-1) were
+> approved and fixed the same day. Both are now RESOLVED with regression tests;
+> `sui move test` = 115/115, zero warnings. See the dated addendum at the end of
+> this report for the exact change, commit, and tests. The body below is preserved
+> as the point-in-time finding; only this line and the addendum record the fixes.
 
 **Zero A findings. One B finding (E-1), whose only real fix changes capability
 semantics (splitting a dedicated price-relayer capability out of `AdminCap`), which
@@ -476,9 +482,65 @@ indexer-forgeable - accepted SP-03.)
 
 ---
 
-*End of report. Findings are static-analysis derived and verified against source;
-none were executed on-chain. E-1 and PASS-C-1 are the two new items requiring a
-founder decision before mainnet; both fixes change locked semantics (capability
-authority / CTO governance) and were therefore reported, not applied. Commission the
-paid human audit (MoveBit) and complete the AdminCap/UpgradeCap multisig migration -
-with the E-1 capability split - before mainnet, as CLAUDE.md requires.*
+*End of the point-in-time report. Findings are static-analysis derived and verified
+against source; none were executed on-chain. E-1 and PASS-C-1 were the two new items
+requiring a founder decision; both were approved and fixed on 2026-07-17 (addendum
+below). Commission the paid human audit (MoveBit) and complete the
+AdminCap/UpgradeCap multisig migration - now materially smaller after the E-1 split -
+before mainnet, as CLAUDE.md requires.*
+
+---
+
+## Addendum 2026-07-17 - E-1 and PASS-C-1 RESOLVED (founder-approved same day)
+
+Both founder-decision findings were approved and fixed on 2026-07-17. `sui move test`
+= 115/115, zero warnings (was 106 pre-fix; +4 E-1 tests, +5 PASS-C-1 tests). Files
+touched: only `contracts-v10/sources/bonding_curve.move` and
+`contracts-v10/sources/bonding_curve_tests.move`. No fee, curve-math, threshold,
+quorum, or 72h-window semantics were changed.
+
+### E-1 RESOLVED - PriceRelayerCap split out of AdminCap (commit `9fcbd6d5`)
+
+The price-publish authority is now its own capability, `PriceRelayerCap`, and
+`set_sui_price` is gated on it ALONE - the `AdminCap` parameter is gone and there is
+no dual path (Move type-checks the argument, so the old AdminCap price call cannot
+even be written). The hot, always-online relayer key now holds only `PriceRelayerCap`,
+whose entire power is to push a price already clamped to `[MIN,MAX]_PRICE_SCALED`; it
+can never drain a reserve, mint the 200M LP, claim fees, pause a curve, or touch the
+enclave registry (all still `AdminCap`, which stays cold in the mainnet multisig).
+Exactly one `PriceRelayerCap` is minted per package - by `init` on a fresh publish and
+by `create_price_config` on an upgrade, each transferred to the caller and announced
+via a new `PriceRelayerCapIssued` event for the publish runbook; the existing one-shot
+`PRICE_CONFIG_CREATED_KEY` marker bounds the upgrade path to a single cap. Every
+min/max bound and validation on `set_sui_price` is byte-for-byte unchanged; only the
+gating cap type changed. Regression tests: `test_price_relayer_cap_sets_price` (a),
+`test_set_sui_price_gated_on_relayer_cap_only` (b, proof-by-absence: the AdminCap call
+is shown commented as "WOULD NOT COMPILE"), `test_create_price_config_mints_relayer_cap`
+(c), `test_admin_cap_still_pauses_after_relayer_split` (d, AdminCap authority intact).
+
+### PASS-C-1 RESOLVED - proposer bond locked until resolve (commit `2b2d764d`)
+
+`TakeoverProposal` gains a `proposer_bond: u64` field, set to the proposer's nominate
+stake at propose time. `unvote_takeover` now lets the proposer withdraw only the weight
+they staked ABOVE the bond; the bond stays locked until resolve and is reclaimable only
+via the permissionless `reclaim_vote` after the window (never forfeit). A proposer who
+staked exactly the bond has zero withdrawable excess and aborts
+`ECtoProposerBondLocked` (code 60). Non-proposer voters are entirely unaffected - they
+keep full early exit. This restores the capital-lockup deterrent the accepted CTO-2.1
+D-rating assumed: keeping the one-live-proposal marker set now costs the proposer the
+bond locked for the full 72h window, so propose+immediate-unvote perpetual denial is no
+longer near-free. Escrow conservation is preserved exactly (`escrow == sum(votes)` on
+every path; the change reduces the amount split out and the amount decremented in
+lockstep). Regression tests: `test_cto_proposer_unvote_below_bond_aborts`,
+`test_cto_proposer_unvote_excess_succeeds`,
+`test_cto_proposer_reclaims_bond_after_failed_resolve`,
+`test_cto_proposer_reclaims_bond_after_passed_resolve`,
+`test_cto_nonproposer_unvote_still_unrestricted`.
+
+### Result-ledger effect
+
+Post-fix open findings from this pass: 0 A, 0 B, 0 C. Remaining: PASS-D-1 (D,
+deferred - the ECON-2/SP-01 mechanical bundle, a graduation-timing founder decision)
+and PA-1 (E, doc-only). The mainnet gates are unchanged: the paid MoveBit audit and
+the AdminCap/UpgradeCap multisig migration (now smaller, since the price surface is no
+longer bundled with the treasury cap).

@@ -7,6 +7,36 @@
 
 ---
 
+## RESOLUTION LEDGER (added 2026-07-17)
+
+This document is a POINT-IN-TIME audit of commit
+`e54dbc06bcc4fe084d55b6d815d193f14005297d` (2026-07-14). Every finding below has
+since been resolved or explicitly accepted; the original finding text is preserved
+unchanged beneath this ledger for the historical record. Cross-references:
+`contracts-v10/AUDIT_NOTES.md` (accepted-finding rationale), the two internal
+re-audits `contracts-v10/SECURITY_REAUDIT_2026-07-16.md` and
+`contracts-v10/SECURITY_REAUDIT_2026-07-17_PREPUBLISH.md`. As of 2026-07-17 the full
+suite is `sui move test` = 115/115, zero warnings. Commit hashes are given in full.
+
+| ID | Sev | Status | Resolution (fixing commit + regression test) |
+|----|-----|--------|----------------------------------------------|
+| F-1 | CRITICAL | FIXED | `create_and_return` asserts `coin::total_supply(&treasury) == 0` (`EPreMintedSupply`) before minting, so no unbacked pre-mint can reach the curve. Commit `b0b5dd35d52c7fb4bb26c218d7ed52ffcacd5366` (V13 PriceConfig + graduation source changes). Test `test_f1_premint_aborts_launch`. |
+| F-2 | HIGH | FIXED | The oracle price is no longer caller-supplied: `buy` reads a shared `PriceConfig` written only through a capability, bounded to `[MIN,MAX]_PRICE_SCALED` with a staleness fallback that never aborts; the standalone `graduate_impl` requires `current_grad_threshold > 0`, and `claim_graduation_funds` enforces the `MIN_GRAD_RESERVE_MIST` floor. Commits `b0b5dd35d52c7fb4bb26c218d7ed52ffcacd5366` (PriceConfig buy path) and `f610e257f992bce015bc58740e02c24dbcaf6304` (`create_price_config` bootstrap). Tests `test_set_sui_price_rejects_below_min`, `test_set_sui_price_rejects_above_max`, `test_published_price_dampens_threshold`, `test_graduate_rejects_zero_threshold_fresh_curve`, `test_claim_graduation_funds_rejects_trivial_reserve`. |
+| F-3 | HIGH | FIXED (was proposed ACCEPTED) | Redesigned to escrow-weighted voting: weight is a `Coin<T>` LOCKED into the shared proposal escrow (`coin::into_balance`), so the same token cannot be moved to a second wallet and counted twice under Move linear typing. Not accepted; genuinely fixed. Commit `f5b808857d2081b1fd9e6de5274286eaa2934c9f`. Test `test_cto_f3_double_count_impossible`. |
+| F-4 | MEDIUM | FIXED | The spurious `/ 1_000` in `dampened_grad_threshold`'s denominator was removed (`den = isqrt(price_scaled * precision)`), so the sqrt-dampened threshold is correct (verified `$1` -> 9,000 SUI, `$100` -> 900 SUI). Commit `b0b5dd35d52c7fb4bb26c218d7ed52ffcacd5366`. Test `test_published_price_dampens_threshold`. |
+| F-5 | MEDIUM | FIXED | `buy` now retains the LP fee in the reserve (`to_reserve = swap_amount + lp_fee`); the returned payment is exactly `tail_refund` and `lp_fees_accumulated` is backed by real SUI. Commit `b0b5dd35d52c7fb4bb26c218d7ed52ffcacd5366`. Tests `test_normal_buy_refund_is_zero_lp_fee_in_reserve`, `test_grad_clip_conservation`. |
+| F-6 | MEDIUM | ACCEPTED (founder decision) | `spend_cap` is V11 NET exposure by design; accepted because a compromised session key is bounded to one user's escrow under per-user Turnkey/enclave keys and the retired shared-wallet fallback. Rationale and the fallback-session census are in `AUDIT_NOTES.md` (F-6). |
+| F-7 | LOW | FIXED | `post_comment` emits `author = tx_context::sender(ctx)`; the spoofable caller-supplied `author` parameter was removed. Commit `7118c6ec8b5d754f414477fc91cfed680cd7d6be`. Test `test_comment_author_is_tx_sender`. |
+| F-8 | LOW | SUPERSEDED (by F-2 fix) | Permissionless `graduate()` no longer reads a caller-poisonable threshold: the price cannot be caller-set (F-2), `current_grad_threshold` is a display cache never read back for the buy-path decision, and `graduate_impl` requires `current_grad_threshold > 0` so a fresh curve cannot be force-graduated. Commit `b0b5dd35d52c7fb4bb26c218d7ed52ffcacd5366`. Test `test_graduate_rejects_zero_threshold_fresh_curve`. |
+| F-9 | INFO -> HIGH (E-1) | PARTLY RESOLVED; remainder OPEN-until-mainnet (F-14) | The price-publish surface is split into a dedicated `PriceRelayerCap` gating `set_sui_price` alone (no AdminCap path), so the hot relayer key can only push a clamped price and can never drain reserves, mint the 200M LP, pause, or claim fees. Commit `9fcbd6d5192ba15bc49b993c432bccdccabd77a2` (finding E-1 in the 2026-07-17 pre-publish re-audit). Tests `test_price_relayer_cap_sets_price`, `test_set_sui_price_gated_on_relayer_cap_only`, `test_create_price_config_mints_relayer_cap`, `test_admin_cap_still_pauses_after_relayer_split`. The remaining AdminCap powers (pause, `claim_graduation_funds`, fee claims, `record_graduation_pool`, enclave registry) stay a disclosed centralization surface pending the AdminCap/UpgradeCap multisig migration, tracked as F-14 and MAINNET-BLOCKING (see `AUDIT_NOTES.md` F-9/F-14). |
+| F-10 | INFO | FIXED | `buy_for_testing` is now a zero-logic delegator to the production `buy()`, and `graduate_for_testing`/`graduate()` both route through `graduate_impl`; no test-only function carries fee/threshold/graduation arithmetic, so the green build now exercises the real path. Commit `f0c64c298c45bb74d7c9e850dcad9751b63cf57e`. |
+
+Findings first surfaced in later passes (F-AC-1, the CTO-4.0/CTO-6.0 B findings,
+E-1, PASS-C-1) are tracked in the re-audit reports and `AUDIT_NOTES.md`; E-1 and
+PASS-C-1 were fixed 2026-07-17 (commits `9fcbd6d5192ba15bc49b993c432bccdccabd77a2`, `2b2d764dea07398403515998cff2b9a69e279889`).
+
+---
+
 ## Summary
 
 - **Modules audited:** 4 production Move modules (`bonding_curve`, `agent_session`, `enclave_registry`, `template`) + off-chain boundary review.
