@@ -306,3 +306,41 @@ Verified clean by the reviewers, for the record:
   phase (phase rule: fix A/B only). Applying SP-01 (`!paused` on
   `execute_buyback`) and F-AC-2/F-U2 (canonical PriceConfig pin) as a small
   mechanical follow-up is recommended before mainnet.
+
+---
+
+## Addendum 2026-07-17 -- F-AC-1 RESOLVED (escrow-weighted CTO redesign)
+
+F-AC-1 (CTO governance dead-on-arrival -- `TakeoverProposal` was `key`-only and
+never shared, so the proposal could not survive its creating transaction and the
+whole CTO feature could not execute on-chain) is RESOLVED by commit `f5b80885`
+("feat(move): escrow-weighted CTO - shared proposal, vote/unvote escrow,
+permissionless resolve+reclaim (fixes F-AC-1, F-3) + full cross-tx test
+family").
+
+What changed:
+
+- The proposal is now a SHARED object: `propose_takeover` calls
+  `transfer::share_object(proposal)` (legal in the defining module without
+  `store`) and returns nothing, so the proposal persists across the proposer tx,
+  the voter txs over the window, and the resolver tx. `resolve_takeover` takes
+  `&mut` so the object persists and escrow stays reclaimable.
+- The CTO is now ESCROW-WEIGHTED: vote weight comes from a `Coin<T>` locked into
+  the proposal's escrow (`coin::into_balance` consumes the coin), keyed per voter
+  and returned on unvote/resolve. This also fixes the accepted finding F-3 (CTO
+  vote double-count) that F-AC-1 had mooted: a locked coin cannot be moved to a
+  second wallet to vote again, and under Move linear typing the same token cannot
+  be counted twice.
+
+Regression coverage (cross-tx, `contracts-v10/sources/bonding_curve_tests.move`):
+`test_cto_shares_the_object` (F-AC-1 regression -- `take_shared` in a later tx,
+exercising the cross-tx share/settlement path the original tests could not reach)
+and `test_cto_f3_double_count_impossible` (F-3 regression -- coin escrowed, a
+second wallet cannot add weight, each token counted once), plus 19 more across
+the full CTO family (propose/vote/unvote/resolve/reclaim/cooldown; 21 CTO tests
+total). Suite: `sui move test` = 103/103, zero warnings.
+
+Result-ledger effect: the "Highest open finding: F-AC-1 (C, CONFIRMED)" line in
+the Phase 4 gate status above is now CLEARED -- F-AC-1 is resolved and F-3 is no
+longer accepted (both fixed by `f5b80885`). The original re-audit body above is
+unchanged; this addendum only records the subsequent resolution.

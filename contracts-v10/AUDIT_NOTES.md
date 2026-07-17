@@ -8,22 +8,71 @@ conditions attached. Auditors: read this before flagging the items below as open
 
 ## F-3 - CTO vote double-count via balance shuffling
 
-**Status: ACCEPTED AS-IS. Founder decision, 2026-07-16.**
+**Status: SUPERSEDED -- FIXED IN V13 by escrow-weighted voting (f5b80885).**
 
-Vote weight reads a live transferable balance while `voted` is keyed by
-address, so coins can be shuffled to fresh wallets and re-voted within a single
-proposal window.
+The CTO governance was redesigned to escrow-weighted voting. Vote weight now
+comes from a `Coin<T>` LOCKED into the proposal's escrow -- `coin::into_balance`
+consumes the coin at vote time -- rather than from a live transferable balance.
+A locked coin physically cannot be moved to a second wallet to vote again, and
+votes remain keyed per-voter address. Under Move linear typing the same token
+cannot be counted twice: it is either escrowed here (weight added once) or held
+elsewhere (weight not added), never both. Double-counting is not expressible.
+Unvote returns the escrowed coin; resolve/reclaim are permissionless and return
+each voter's escrow after the window. Regression coverage in
+`contracts-v10/sources/bonding_curve_tests.move`:
+`test_cto_f3_double_count_impossible` (coin escrowed, a second wallet cannot add
+weight, each token counted once) plus the full CTO family (21 CTO tests:
+propose/vote/unvote/resolve/reclaim/cooldown). Suite: `sui move test` = 103/103,
+zero warnings.
 
-Mitigations considered and rejected:
+The re-audit (2026-07-16) had already noted F-3 was mooted by F-AC-1 (the
+proposal was never shared, so the flow F-3 presumes could not run); the V13
+redesign both shares the proposal (see F-AC-1 below) and removes the
+double-count vector physically.
 
-- **Snapshot at proposal open.** Rejected: Sui has no holder registry; the
-  balance-at-proposal-open of a wallet that has not yet voted is not queryable
-  on-chain, so a snapshot scheme cannot be enforced in the contract.
-- **Vote escrow.** Rejected: locking coins for the duration of the vote window
-  is unacceptable UX for v1 (holders would be unable to trade while a CTO vote
-  is live).
+**History (original ACCEPTED rationale, 2026-07-16 -- preserved for the trail;
+no longer the disposition):**
 
-Revisit post-mainnet.
+> **Status: ACCEPTED AS-IS. Founder decision, 2026-07-16.**
+>
+> Vote weight reads a live transferable balance while `voted` is keyed by
+> address, so coins can be shuffled to fresh wallets and re-voted within a single
+> proposal window.
+>
+> Mitigations considered and rejected:
+>
+> - **Snapshot at proposal open.** Rejected: Sui has no holder registry; the
+>   balance-at-proposal-open of a wallet that has not yet voted is not queryable
+>   on-chain, so a snapshot scheme cannot be enforced in the contract.
+> - **Vote escrow.** Rejected: locking coins for the duration of the vote window
+>   is unacceptable UX for v1 (holders would be unable to trade while a CTO vote
+>   is live).
+>
+> Revisit post-mainnet.
+
+(The rejected "vote escrow" mitigation is exactly what V13 adopted; the UX
+objection was resolved by making resolve and reclaim permissionless so escrow is
+always recoverable after the window.)
+
+---
+
+## F-AC-1 - CTO governance dead-on-arrival (proposal never shared)
+
+**Status: FIXED IN V13 by escrow-weighted CTO redesign (f5b80885).**
+
+Re-audit 2026-07-16 (C, CONFIRMED): `TakeoverProposal` was `key`-only and was
+returned by value from `propose_takeover` without ever being shared, so the
+proposal could not survive its creating transaction and the whole CTO feature
+could not execute on-chain. The re-audit noted this mooted the accepted F-3.
+
+Resolution: `propose_takeover` now `transfer::share_object`s the proposal
+(returns nothing), so it persists as a shared object across the proposer tx, the
+voter txs over the window, and the resolver tx. `resolve_takeover` takes `&mut`
+(the object persists) so escrow remains reclaimable. Regression coverage in
+`contracts-v10/sources/bonding_curve_tests.move`:
+`test_cto_shares_the_object` (take_shared in a later tx, exercising the cross-tx
+share path the old tests could not), alongside the full CTO family. Suite:
+`sui move test` = 103/103, zero warnings.
 
 ---
 
