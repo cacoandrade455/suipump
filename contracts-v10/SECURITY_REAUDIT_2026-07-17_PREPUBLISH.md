@@ -44,10 +44,20 @@
 | Severity | Count | IDs |
 |----------|-------|-----|
 | A critical | 0 | - |
-| B high     | 1 | E-1 (CONFIRMED; **RESOLVED 2026-07-17**, commit `9fcbd6d5` - see the addendum) |
-| C medium   | 1 | PASS-C-1 (CONFIRMED; **RESOLVED 2026-07-17**, commit `2b2d764d` - see the addendum) |
+| B high     | 2 | E-1 (CONFIRMED; **RESOLVED 2026-07-17**, commit `9fcbd6d5` - addendum); PREPUBLISH-2 (founder review, post-pass; **RESOLVED 2026-07-17**, commit `0ef9b032` - addendum 2) |
+| C medium   | 1 | PASS-C-1 (CONFIRMED; **RESOLVED 2026-07-17**, commit `2b2d764d` - addendum) |
 | D low      | 1 | PASS-D-1 (refines accepted ECON-2; still deferred) |
 | E info     | 1 | PA-1 (documentation accuracy; still open, doc-only) |
+
+> **Honest note on PREPUBLISH-2.** A second B finding was found AFTER this pass
+> completed, by founder review of the `init` / `create_price_config` divergence. It
+> survived both the 2026-07-16 CTO-surface pass and this full pre-publish pass -
+> neither flagged that `init` left the one-shot marker unset, so a fresh publish
+> could end with two `PriceConfig` objects and, since `resolve_grad_threshold` does
+> no identity check, a caller could pick the graduation threshold by choosing which
+> config to pass (the object-form of F-2). It was fixed the same day. See addendum 2.
+> This is exactly the failure mode the mandatory-disclaimer warns about: a clean pass
+> means "nothing found by this pass," not "safe."
 
 > **Update 2026-07-17:** the two founder-decision items (E-1, PASS-C-1) were
 > approved and fixed the same day. Both are now RESOLVED with regression tests;
@@ -544,3 +554,74 @@ deferred - the ECON-2/SP-01 mechanical bundle, a graduation-timing founder decis
 and PA-1 (E, doc-only). The mainnet gates are unchanged: the paid MoveBit audit and
 the AdminCap/UpgradeCap multisig migration (now smaller, since the price surface is no
 longer bundled with the treasury cap).
+
+---
+
+## Addendum 2 (2026-07-17) - PREPUBLISH-2 [B, HIGH] found by founder review, RESOLVED same day
+
+### [B - HIGH] PREPUBLISH-2 - `init` left the one-shot marker unset, so a fresh publish could mint TWO `PriceConfig` objects; with no identity check in `resolve_grad_threshold` a caller picks the graduation threshold by picking the config (object-form of F-2)
+
+- **Module / location:** `bonding_curve::init` (`bonding_curve.move:289-313`),
+  `create_price_config` (`366-394`), `resolve_grad_threshold` (`632-637`, no identity
+  check on the `&PriceConfig` it is handed), consumed by `buy` (`800`) /
+  `buy_with_session`.
+- **Provenance (honest):** NOT surfaced by any automated pass. This finding survived
+  both the 2026-07-16 CTO-surface re-audit and this full pre-publish pass; it was found
+  afterward by founder review of the `init` / `create_price_config` divergence. The E-1
+  fix (which added a second cap mint to both paths) made the latent duplication concrete
+  - a fresh publish could now end with two `PriceConfig` objects AND two
+  `PriceRelayerCap`s. Recorded as a live example of why "clean pass" != "safe."
+- **Description.** `create_price_config` (the upgrade bootstrap) is one-shot via a
+  `PRICE_CONFIG_CREATED_KEY` marker on the AdminCap's UID. But `init` (the fresh-publish
+  path, which is the stated mainnet plan) shared its `PriceConfig` WITHOUT setting that
+  marker - its own code comment documented this as intended ("fresh publishes still get
+  their PriceConfig from init, unguarded, exactly as before"). So on a fresh publish the
+  admin could ALSO call `create_price_config` once, producing a SECOND shared
+  `PriceConfig`. `resolve_grad_threshold` performs NO identity check on the config it is
+  handed, so `buy<T>(curve, ..., price_cfg, ...)` accepts ANY `PriceConfig`.
+- **Exploit path (fresh-publish path only):**
+  1. Fresh publish: `init` shares canonical `PriceConfig` C1 (unset). The relayer keeps
+     C1 fresh via `set_sui_price`, so C1's dampened threshold tracks the live SUI price.
+  2. Admin (or a compromised admin key) calls `create_price_config` once, sharing a
+     SECOND `PriceConfig` C2 that is never updated (stays unset, or stale).
+  3. A buyer submits `buy<T>(curve, payment, ..., C2, clock, ...)`. Because C2 is unset
+     or stale, `resolve_grad_threshold` returns the static `BASE_GRAD_MIST` (9,000 SUI)
+     instead of C1's live dampened threshold - the buyer chose the graduation threshold
+     for that trade by choosing which config object to pass. This removes the relayer's
+     control over graduation timing and is the object-form of the original F-2
+     (caller-supplied price).
+- **Attacker gain / impact:** no direct theft, but the graduation threshold - a
+  value-bearing protocol parameter - becomes caller-selectable per trade, defeating the
+  entire point of the F-2 fix (making the price protocol-controlled). HIGH because it
+  reopens F-2 on the mainnet publish path. Harmless on the V13 UPGRADE path, where `init`
+  never runs and `create_price_config`'s own marker already bounds it to one config.
+- **Resolution (commit `0ef9b032`):** `init` now sets `PRICE_CONFIG_CREATED_KEY` on the
+  AdminCap it mints, BEFORE transferring it, so a fresh publish's `create_price_config`
+  aborts `EPriceConfigExists` forever - `init` already created the one canonical
+  `PriceConfig` and its one relayer cap. The package invariant (EXACTLY ONE `PriceConfig`
+  and EXACTLY ONE `PriceRelayerCap` per package, on BOTH paths, mutually exclusive) is
+  now stated in doc comments on both `init` and `create_price_config`, with the explicit
+  warning that `resolve_grad_threshold` has no identity check and that one-shot
+  uniqueness is what carries that safety, so the marker must never be relaxed. The false
+  "unguarded, exactly as before" NOTE in `init` was corrected. `create_price_config`'s
+  executable body is unchanged (doc-only edit), so the upgrade path is byte-for-byte
+  behaviorally identical. Regression tests:
+  `test_init_marks_price_config_created_fresh_publish` (fresh-publish `create_price_config`
+  aborts `EPriceConfigExists`), `test_init_mints_exactly_one_relayer_cap` (no duplicate
+  relayer mint on `init`); the existing upgrade-path tests
+  (`test_create_price_config_shares_unset_config`,
+  `test_create_price_config_second_call_aborts`,
+  `test_create_price_config_mints_relayer_cap`) were re-pointed at a bare (unmarked)
+  test AdminCap and still prove "succeeds once, second aborts."
+- **Defense-in-depth follow-up (NOT implemented; post-mainnet recommendation):** pin the
+  canonical `PriceConfig` id (e.g. store it on the AdminCap or as a package singleton)
+  and assert `object::id(price_cfg) == expected` in `buy` / `buy_with_session`, so the
+  missing identity check in `resolve_grad_threshold` is closed by construction rather
+  than relying solely on one-shot uniqueness. Deferred: it touches the buy path and is
+  belt-and-suspenders given the invariant now holds; recommended for the post-mainnet
+  hardening pass. This also subsumes the earlier F-U2/F-AC-2 informational items.
+- **Corpus reference:** Cetus 2.1 lens (caller-controls a value-bearing parameter) via
+  Navi 2.3 (a generic/config object not bound to the authorizing identity). Object-form
+  reopening of F-2.
+
+`sui move test` = 117/117, zero warnings after this fix.

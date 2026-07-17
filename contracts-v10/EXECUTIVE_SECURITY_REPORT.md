@@ -275,7 +275,39 @@ can still pull extra votes), `test_cto_proposer_reclaims_bond_after_failed_resol
 back afterward, win or lose), and `test_cto_nonproposer_unvote_still_unrestricted`
 (ordinary voters keep full freedom).
 
-### 2.9 The smaller issues, briefly
+### 2.9 A second official price board could have been created, letting a buyer pick the graduation target
+
+**The story.** The graduation target is worked out from an official SUI price that the
+operator posts on a shared price board. There is supposed to be exactly one official
+board. The flaw was in the very first setup step when SuiPump is launched fresh: it left
+a door open that would have allowed a second price board to be created later. And because
+a purchase does not check which board it is reading, a buyer could point their purchase
+at the stale second board instead of the official one, and so get a different graduation
+target than the real price would give. This is the same problem as the earlier "the
+buyer states the price" flaw (2.2), just in a different shape: instead of stating a
+price, you pick which board to read from.
+
+**Who loses.** No one is directly robbed, but the graduation target, which is supposed to
+be set by the operator's honest price, becomes something the buyer can choose. That
+quietly undoes the earlier fix (2.2) that took this control away from buyers.
+
+**How it was found.** By founder review after the automated reviews were finished, while
+comparing the two setup paths (a brand new launch versus an upgrade of the existing
+system). Stated plainly: the automated reviews did not catch this one, which is exactly
+why an independent human audit is still required.
+
+**How it was fixed.** The first-launch setup now locks that door in the same instant it
+creates the one official board, so a second board can never be made. The result is that
+exactly one official price board (and exactly one price key from 2.7) exists, on both
+setup paths, and it is now impossible for a second one to exist (commit 0ef9b032,
+2026-07-17). Plainly: the price board everyone trades against must be the one official
+board, and this fix makes a second board impossible.
+
+**The tests that prove it.** `test_init_marks_price_config_created_fresh_publish` (a
+second board cannot be created at a fresh launch) and `test_init_mints_exactly_one_relayer_cap`
+(exactly one price key is created, not two).
+
+### 2.10 The smaller issues, briefly
 
 These were found and dealt with; none of them let anyone steal deposits.
 
