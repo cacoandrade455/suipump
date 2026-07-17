@@ -16,6 +16,8 @@ import {
   upsertLock, updateLockClaimed,
 } from './db.js';
 import { startGraduationWatcher } from './auto_graduate.js';
+import { startPricePublisher } from './price_publisher.js';
+import { startCtoReclaimSweeper } from './cto_reclaim_sweeper.js';
 import { startApi } from './api.js';
 
 // -- Config --------------------------------------------------------------------
@@ -57,13 +59,17 @@ const GRAPHQL_URL = process.env.SUI_GRAPHQL_URL  ?? `https://graphql.${NETWORK}.
 const EVENT_NAMES = [
   'TokensPurchased', 'TokensSold', 'CurveCreated', 'Comment', 'Graduated',
   'TokensLocked', 'VestedClaimed',
-  // V10 events (all carry curve_id, so they ride the existing curve-keyed
+  // V10 events (these carry curve_id, so they ride the existing curve-keyed
   // insert + pg_notify pipeline). Older packages never emit these -- harmless.
   'BuybackConfigured', 'BuybackExecuted', 'CreatorHeartbeat',
   'ProtocolSurchargeCollected',
   // V12: creator toggled the comments holder gate (carries curve_id).
   'CommentGateSet',
-  'TakeoverProposed', 'TakeoverVoted', 'TakeoverSucceeded', 'TakeoverFailed',
+  // V13 CTO surface: TakeoverProposed/TakeoverResolved carry curve_id, but the
+  // vote/unvote/reclaim events are PROPOSAL-keyed and carry NO curve_id -- so
+  // those three persist + pg_notify with curve_id null (like the session events
+  // below), which insertEvent handles fine (curve_id is nullable).
+  'TakeoverProposed', 'TakeoverVoted', 'TakeoverUnvoted', 'TakeoverResolved', 'VoteReclaimed',
 ];
 
 // V10's agent_session module -- a SEPARATE module from bonding_curve, so these
@@ -244,9 +250,11 @@ async function processEvent(eventType, evt, packageId) {
     await recomputeStats(curveId);
   }
 
-  // V10: a successful community takeover swaps the active creator on-chain.
+  // V13: a successful community takeover swaps the active creator on-chain.
   // Refresh the curve row so the new creator address is reflected in stats.
-  if (curveId && eventType.includes('TakeoverSucceeded')) {
+  // The success signal is now TakeoverResolved with succeeded === true
+  // (TakeoverResolved carries curve_id, so curveId is populated here).
+  if (curveId && eventType.includes('TakeoverResolved') && evt.parsedJson?.succeeded === true) {
     try { await recomputeStats(curveId); } catch {}
   }
 
@@ -424,6 +432,30 @@ async function main() {
   console.log(`  Events:   ${EVENT_NAMES.join(', ')}`);
   console.log();
 
+  // V13 price publisher arming decision, logged up front so a worker booted
+  // without the publish-time env states its posture immediately. Missing V13
+  // env is NORMAL pre-publish: the worker must run fine without it. The signer
+  // check is SUI_PRIVATE_KEY specifically (the Render reality; the publisher's
+  // keystore fallback is a local-dev convenience, not an arming signal).
+  const pricePublisherArmed = Boolean(
+    process.env.SUIPUMP_V13_PACKAGE &&
+    process.env.SUIPUMP_PRICE_CONFIG &&
+    process.env.SUI_PRIVATE_KEY
+  );
+  if (!pricePublisherArmed) {
+    console.log('  [price] price publisher dormant (set SUIPUMP_V13_PACKAGE + SUIPUMP_PRICE_CONFIG + SUI_PRIVATE_KEY to arm)');
+  }
+
+  // V13 CTO reclaim sweeper arming, same posture as the price publisher. Needs
+  // no PriceConfig - only the V13 package (arming signal) and a signer for gas.
+  const ctoSweeperArmed = Boolean(
+    process.env.SUIPUMP_V13_PACKAGE &&
+    process.env.SUI_PRIVATE_KEY
+  );
+  if (!ctoSweeperArmed) {
+    console.log('  [cto-sweep] reclaim sweeper dormant (set SUIPUMP_V13_PACKAGE + SUI_PRIVATE_KEY to arm)');
+  }
+
   await initSchema();
   startApi();
 
@@ -440,6 +472,23 @@ async function main() {
   startGraduationWatcher(grpcClient).catch(err =>
     console.error('Auto-grad watcher crashed:', err.message)
   );
+
+  // Same fire-and-forget containment as the graduation watcher. Passes the
+  // GraphQL client: pushPrice's build/execute shape is the proven
+  // SuiGraphQLClient pattern (see price_publisher.js pushPrice).
+  if (pricePublisherArmed) {
+    startPricePublisher(graphqlClient).catch(err =>
+      console.error('Price publisher crashed:', err.message)
+    );
+  }
+
+  // Same fire-and-forget containment. reclaim_vote is permissionless and pays
+  // the voter (see cto_reclaim_sweeper.js header): the signer only pays gas.
+  if (ctoSweeperArmed) {
+    startCtoReclaimSweeper(graphqlClient, pool).catch(err =>
+      console.error('CTO reclaim sweeper crashed:', err.message)
+    );
+  }
 
   await startStreaming();
 }

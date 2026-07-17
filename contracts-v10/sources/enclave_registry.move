@@ -98,7 +98,7 @@ module suipump::enclave_registry {
         registry:        &mut EnclaveRegistry,
         session_address: address,
     ) {
-        assert!(df::exists_(&registry.id, session_address), ENotRegistered);
+        assert!(df::exists(&registry.id, session_address), ENotRegistered);
         let _: vector<u8> = df::remove(&mut registry.id, session_address);
         event::emit(EnclaveKeyRevoked { registry_id: object::id(registry), session_address });
     }
@@ -129,7 +129,7 @@ module suipump::enclave_registry {
         assert!(vector::length(&pk) == 32, EBadKeyLength);
 
         let session_address = sui_address_for_ed25519(&pk);
-        assert!(!df::exists_(&registry.id, session_address), EAlreadyRegistered);
+        assert!(!df::exists(&registry.id, session_address), EAlreadyRegistered);
         df::add(&mut registry.id, session_address, pk);
 
         event::emit(EnclaveKeyRegistered { registry_id: object::id(registry), session_address });
@@ -138,7 +138,7 @@ module suipump::enclave_registry {
 
     /// Chain-verified test used by agent_session::open_and_share_attested.
     public fun is_registered(registry: &EnclaveRegistry, session_address: address): bool {
-        df::exists_(&registry.id, session_address)
+        df::exists(&registry.id, session_address)
     }
 
     // ---------- Internal ----------

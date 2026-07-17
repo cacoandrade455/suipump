@@ -13,9 +13,11 @@ import { useTokenPageFeed } from './useRealtimeFeed.js';
 import HolderList from './HolderList.jsx';
 import Comments from './Comments.jsx';
 import AIAnalysis from './AIAnalysis.jsx';
-import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8, PACKAGE_ID_V9, PACKAGE_ID_V10, PACKAGE_ID_V12, ALL_PACKAGE_IDS, MIST_PER_SUI, DRAIN_SUI_APPROX, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_SUI_V6, VIRTUAL_SUI_V7, VIRTUAL_SUI_V8, VIRTUAL_SUI_V9, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, VIRTUAL_TOKENS_V6, VIRTUAL_TOKENS_V7, VIRTUAL_TOKENS_V8, VIRTUAL_TOKENS_V9, DRAIN_SUI_V4, DRAIN_SUI_V5, DRAIN_SUI_V6, DRAIN_SUI_V7, DRAIN_SUI_V8, DRAIN_SUI_V9, isNewCurve, isV5OrLater, isV7OrLater, isV8OrLater, isV9OrLater, isV10OrLater, supportsMetadataUpdate, curveShapeFor } from './constants.js';
+import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8, PACKAGE_ID_V9, PACKAGE_ID_V10, PACKAGE_ID_V12, PACKAGE_ID_V13, PRICE_CONFIG_ID, V13_BUY_ENABLED, ALL_PACKAGE_IDS, MIST_PER_SUI, DRAIN_SUI_APPROX, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_SUI_V6, VIRTUAL_SUI_V7, VIRTUAL_SUI_V8, VIRTUAL_SUI_V9, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, VIRTUAL_TOKENS_V6, VIRTUAL_TOKENS_V7, VIRTUAL_TOKENS_V8, VIRTUAL_TOKENS_V9, DRAIN_SUI_V4, DRAIN_SUI_V5, DRAIN_SUI_V6, DRAIN_SUI_V7, DRAIN_SUI_V8, DRAIN_SUI_V9, isNewCurve, isV5OrLater, isV7OrLater, isV8OrLater, isV9OrLater, isV10OrLater, supportsMetadataUpdate, curveShapeFor } from './constants.js';
 import { buyQuote, sellQuote } from './curve.js';
 import { t } from './i18n.js';
+import { executeTx } from './lib/executeTx.js';
+import CommunityTakeoverPanel from './CommunityTakeoverPanel.jsx';
 
 // BCS helpers
 function bcsOptionNone() { return new Uint8Array([0]); }
@@ -379,7 +381,7 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
       const lockRef = tx.object(lockId);
       const [claimed] = tx.moveCall({ target: `${vestingPkg}::bonding_curve::claim_vested`, typeArguments: [tokenType], arguments: [lockRef, tx.object(SUI_CLOCK_ID)] });
       tx.transferObjects([claimed], account.address);
-      const claimResult = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const claimResult = await executeTx(dAppKit, null, tx, account.address);
       if (claimResult.$kind === 'FailedTransaction') throw new Error(claimResult.FailedTransaction.status.error ?? 'Claim failed');
       setMsg('Claimed ✓'); setBusy(false); setTimeout(() => { setMsg(''); loadLocks(); }, 1500);
     } catch (e) { setMsg(e.message || 'Claim failed'); setBusy(false); }
@@ -414,7 +416,7 @@ function VestingPanel({ curveId, tokenType, packageId, account, tokenBalance, la
       else { tx.mergeCoins(coinObjs[0], coinObjs.slice(1)); [tokenCoin] = tx.splitCoins(coinObjs[0], [tx.pure.u64(atomic)]); }
       const durationMs = VEST_DURATIONS_MS[lockDuration] ?? VEST_DURATIONS_MS['30d'];
       tx.moveCall({ target: `${vestingPkg}::bonding_curve::lock_tokens`, typeArguments: [tokenType], arguments: [curveRef, tokenCoin, tx.pure.u8(lockMode), tx.pure.u64(durationMs), tx.object(SUI_CLOCK_ID)] });
-      const lockResult = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const lockResult = await executeTx(dAppKit, null, tx, account.address);
       if (lockResult.$kind === 'FailedTransaction') throw new Error(lockResult.FailedTransaction.status.error ?? 'Lock failed');
       setMsg('Locked ✓'); setBusy(false); setLockAmount(''); setShowLockForm(false); setTimeout(() => { setMsg(''); loadLocks(); }, 1500);
     } catch (e) { setMsg(e.message || 'Lock failed'); setBusy(false); }
@@ -598,7 +600,7 @@ function CreatorToolsPanel({ curveId, tokenType, packageIdHint, account, curveSt
         typeArguments: [tokenType],
         arguments: [tx.object(capId), curveRef, metadataRef, tx.pure.option('string', meta.name.trim() || null), tx.pure.option('string', meta.symbol.trim() || null), tx.pure.option('string', meta.description.trim() || null), tx.pure.option('string', meta.iconUrl.trim() || null), tx.object(SUI_CLOCK_ID)],
       });
-      const metaResult = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const metaResult = await executeTx(dAppKit, null, tx, account.address);
       if (metaResult.$kind === 'FailedTransaction') throw new Error(metaResult.FailedTransaction.status.error ?? 'Update failed');
       // Lock immediately. A successful update_metadata PROVABLY flipped
       // metadata_updated=true on-chain, so don't wait on the indexer (its
@@ -797,7 +799,7 @@ function TradePanelContent({
         typeArguments: [panelTokenType],
         arguments: [tx.object(capId), curveRef],
       });
-      const feeResult = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const feeResult = await executeTx(dAppKit, null, tx, account.address);
       if (feeResult.$kind === 'FailedTransaction') throw new Error(feeResult.FailedTransaction.status.error ?? 'Claim failed');
       setClaimMsg('Fees claimed! 🎉'); setClaiming(false); setTimeout(() => setClaimMsg(''), 3000);
     } catch (err) { setClaimMsg(err.message || 'Claim failed'); setClaiming(false); }
@@ -1140,7 +1142,7 @@ function TPSLPanel({
       }
 
       // -- Slush fallback (no keypair) --------------------------------------
-      const sellResult = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const sellResult = await executeTx(dAppKit, null, tx, signerAddress);
       if (sellResult.$kind === 'FailedTransaction') throw new Error(sellResult.FailedTransaction.status.error ?? 'Sell failed');
       setTriggerMsg(m => m ? { ...m, status: 'done' } : m);
       setSelling(false);
@@ -1468,275 +1470,6 @@ function CommentsBlock({ curveId, packageId, lang, initialSharedVersion = null, 
   );
 }
 
-// -- V10: Community Takeover (CTO) ---------------------------------------------
-// Surfaces the proposal lifecycle for a V10 curve: a token holder can nominate a
-// new creator once the incumbent has been inactive ≥5 days; holders vote for/
-// against during a 12h window weighted by live balance; anyone resolves after
-// close. The active proposal (id, tallies, close time, nominee) is read from the
-// indexer. The incumbent creator gets a Heartbeat button to reset the timer.
-// Entrypoints:
-//   propose_takeover<T>(curve, nominee, &holder_coin, clock, ctx) -> TakeoverProposal (shared)
-//   vote_takeover<T>(curve, &mut proposal, support, &holder_coin, clock, ctx)
-//   resolve_takeover<T>(curve, proposal, clock, ctx)
-//   creator_heartbeat<T>(&cap, curve, clock, ctx)
-const CTO_INACTIVITY_MS = 5 * 24 * 60 * 60 * 1000;
-const CTO_WINDOW_MS     = 12 * 60 * 60 * 1000;
-const ZERO_ADDR_CTO     = '0x0000000000000000000000000000000000000000000000000000000000000000';
-
-async function firstCoinId(client, owner, coinType) {
-  if (!client || !owner || !coinType) return null;
-  try {
-    const res = await client.getCoins({ owner, coinType });
-    const coins = res?.data ?? res?.coins ?? [];
-    if (!coins.length) return null;
-    let best = coins[0];
-    for (const c of coins) if (BigInt(c.balance ?? 0) > BigInt(best.balance ?? 0)) best = c;
-    return best.coinObjectId ?? best.objectId ?? null;
-  } catch { return null; }
-}
-
-function CommunityTakeoverPanel({ curveId, tokenType, packageId, creator, lastCreatorActivityMs, account, initialSharedVersion, lang }) {
-  const client  = useCurrentClient();
-  const dAppKit = useDAppKit();
-  const isCreator = account && creator && account.address.toLowerCase() === creator.toLowerCase();
-
-  const [proposal, setProposal] = useState(null); // { proposalId, sharedVersion, nominee, forWeight, againstWeight, closesMs, snapshotSupply }
-  const [activityMs, setActivityMs] = useState(null); // last_creator_activity_ms from the takeover route
-  // 'heartbeat' = a real creator_heartbeat reading; 'launch_fallback' = the
-  // creator has never heartbeated, so this is a guess from launch time, not a
-  // real activity signal. The contract has no other notion of "creator active."
-  const [activitySource, setActivitySource] = useState(null);
-  const [nominee, setNominee]   = useState('');
-  const [busy, setBusy]         = useState(false);
-  const [msg, setMsg]           = useState('');
-  const [now, setNow]           = useState(Date.now());
-
-  const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
-
-  // Poll the indexer for the active proposal on this curve.
-  useEffect(() => {
-    if (!curveId || !INDEXER_URL) return;
-    let cancelled = false;
-    async function load() {
-      try {
-        const r = await fetch(`${INDEXER_URL}/token/${curveId}/takeover`, { signal: AbortSignal.timeout(5000) });
-        if (r.ok) {
-          const d = await r.json();
-          if (!cancelled) {
-            // The takeover route also returns last_creator_activity_ms (latest
-            // heartbeat, else curve created_at) - use it to drive the inactivity
-            // gate without needing a curves-table column.
-            if (d && d.last_creator_activity_ms != null) setActivityMs(Number(d.last_creator_activity_ms));
-            if (d && d.last_creator_activity_source) setActivitySource(d.last_creator_activity_source);
-            setProposal(d && d.proposal_id ? {
-              proposalId:     d.proposal_id,
-              sharedVersion:  d.initial_shared_version ?? d.shared_version ?? null,
-              nominee:        d.nominee ?? null,
-              forWeight:      BigInt(d.for_weight ?? 0),
-              againstWeight:  BigInt(d.against_weight ?? 0),
-              closesMs:       Number(d.closes_ms ?? 0),
-              snapshotSupply: BigInt(d.snapshot_supply ?? 0),
-            } : null);
-          }
-        }
-      } catch {}
-    }
-    load();
-    const t = setInterval(load, 8000);
-    const clk = setInterval(() => setNow(Date.now()), 1000);
-    return () => { cancelled = true; clearInterval(t); clearInterval(clk); };
-  }, [curveId, INDEXER_URL]);
-
-  const curveRef = (tx, mutable) => (initialSharedVersion
-    ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: String(initialSharedVersion), mutable })
-    : tx.object(curveId));
-
-  // Prefer the route-sourced activity (always fresh); fall back to the prop.
-  const effectiveActivityMs = activityMs ?? lastCreatorActivityMs ?? null;
-  const inactiveFor = effectiveActivityMs ? (now - Number(effectiveActivityMs)) : 0;
-  const canPropose  = !proposal && inactiveFor >= CTO_INACTIVITY_MS;
-  const voteOpen    = proposal && now < proposal.closesMs;
-  const canResolve  = proposal && now >= proposal.closesMs;
-
-  async function doHeartbeat() {
-    if (busy) return;
-    setBusy(true); setMsg('');
-    try {
-      const { capId } = await resolveCreatorCap(account.address, curveId, INDEXER_URL);
-      const tx = new Transaction();
-      tx.moveCall({
-        target: `${packageId}::bonding_curve::creator_heartbeat`,
-        typeArguments: [tokenType],
-        arguments: [tx.object(capId), curveRef(tx, true), tx.object(SUI_CLOCK_ID)],
-      });
-      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Heartbeat failed');
-      setMsg('Heartbeat sent - inactivity timer reset.');
-    } catch (e) { setMsg(e.message || 'Heartbeat failed'); }
-    finally { setBusy(false); }
-  }
-
-  async function doPropose() {
-    if (busy || !account) return;
-    const nm = nominee.trim();
-    if (!/^0x[0-9a-fA-F]{1,64}$/.test(nm)) { setMsg('Enter a valid nominee address'); return; }
-    setBusy(true); setMsg('');
-    try {
-      const coinId = await firstCoinId(client, account.address, tokenType);
-      if (!coinId) { setMsg('Hold the token to nominate'); setBusy(false); return; }
-      const tx = new Transaction();
-      const prop = tx.moveCall({
-        target: `${packageId}::bonding_curve::propose_takeover`,
-        typeArguments: [tokenType],
-        arguments: [curveRef(tx, true), tx.pure.address(nm), tx.object(coinId), tx.object(SUI_CLOCK_ID)],
-      });
-      // propose_takeover returns a TakeoverProposal - share it so voters can reach it.
-      tx.moveCall({
-        target: '0x2::transfer::public_share_object',
-        typeArguments: [`${packageId}::bonding_curve::TakeoverProposal`],
-        arguments: [prop],
-      });
-      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Propose failed');
-      setMsg('Takeover proposed. Voting is open for 12h.');
-      setNominee('');
-    } catch (e) { setMsg(e.message || 'Propose failed'); }
-    finally { setBusy(false); }
-  }
-
-  async function doVote(support) {
-    if (busy || !account || !proposal) return;
-    setBusy(true); setMsg('');
-    try {
-      const coinId = await firstCoinId(client, account.address, tokenType);
-      if (!coinId) { setMsg('Hold the token to vote'); setBusy(false); return; }
-      const tx = new Transaction();
-      const propRef = proposal.sharedVersion
-        ? tx.sharedObjectRef({ objectId: proposal.proposalId, initialSharedVersion: String(proposal.sharedVersion), mutable: true })
-        : tx.object(proposal.proposalId);
-      tx.moveCall({
-        target: `${packageId}::bonding_curve::vote_takeover`,
-        typeArguments: [tokenType],
-        arguments: [curveRef(tx, false), propRef, tx.pure.bool(support), tx.object(coinId), tx.object(SUI_CLOCK_ID)],
-      });
-      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Vote failed');
-      setMsg(support ? 'Voted FOR.' : 'Voted AGAINST.');
-    } catch (e) { setMsg(e.message || 'Vote failed'); }
-    finally { setBusy(false); }
-  }
-
-  async function doResolve() {
-    if (busy || !proposal) return;
-    setBusy(true); setMsg('');
-    try {
-      const tx = new Transaction();
-      const propRef = proposal.sharedVersion
-        ? tx.sharedObjectRef({ objectId: proposal.proposalId, initialSharedVersion: String(proposal.sharedVersion), mutable: true })
-        : tx.object(proposal.proposalId);
-      tx.moveCall({
-        target: `${packageId}::bonding_curve::resolve_takeover`,
-        typeArguments: [tokenType],
-        arguments: [curveRef(tx, true), propRef, tx.object(SUI_CLOCK_ID)],
-      });
-      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Resolve failed');
-      setMsg('Proposal resolved.');
-      setProposal(null);
-    } catch (e) { setMsg(e.message || 'Resolve failed'); }
-    finally { setBusy(false); }
-  }
-
-  const fmtH = (ms) => {
-    if (ms <= 0) return '0h 0m';
-    const h = Math.floor(ms / 3_600_000), m = Math.floor((ms % 3_600_000) / 60_000);
-    return `${h}h ${m}m`;
-  };
-  const pct = (a, b) => {
-    const tot = a + b;
-    if (tot === 0n) return 0;
-    return Number((a * 100n) / tot);
-  };
-
-  return (
-    <div className="bg-white/[0.015] border border-white/[0.08] rounded-2xl p-4 space-y-3">
-      <div className="flex items-center justify-between">
-        <div className="text-[10px] font-mono font-bold tracking-[0.16em] text-white/55">COMMUNITY TAKEOVER</div>
-        {isCreator && (
-          <button onClick={doHeartbeat} disabled={busy}
-            className={`px-2.5 py-1 rounded-lg text-[9px] font-mono transition-colors ${busy ? 'bg-white/5 text-white/25' : 'bg-lime-400/10 text-lime-400 border border-lime-400/30 hover:bg-lime-400/20'}`}>
-            ♥ HEARTBEAT
-          </button>
-        )}
-      </div>
-
-      {/* No active proposal */}
-      {!proposal && (
-        <div className="space-y-2">
-          <p className="text-[11px] font-mono text-white/40 leading-relaxed">
-            {inactiveFor >= CTO_INACTIVITY_MS
-              ? 'Creator inactive 5+ days. A token holder (\u22651% supply) may nominate a new creator.'
-              : activitySource === 'launch_fallback'
-                ? `Creator has never checked in (no heartbeat on record). Takeover unlocks ${fmtH(CTO_INACTIVITY_MS - inactiveFor)} after launch if they still haven't.`
-                : `Creator active. Takeover unlocks after 5 days of inactivity (currently ${fmtH(CTO_INACTIVITY_MS - inactiveFor)} remaining).`}
-          </p>
-          {canPropose && account && (
-            <div className="flex gap-2">
-              <input value={nominee} onChange={e => setNominee(e.target.value)} placeholder="New creator address (0x...)"
-                className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white placeholder-white/20 focus:outline-none focus:border-lime-400/40 font-mono" />
-              <button onClick={doPropose} disabled={busy || !nominee.trim()}
-                className={`px-3 py-1.5 rounded-lg text-[10px] font-mono transition-colors ${busy || !nominee.trim() ? 'bg-white/5 text-white/25 cursor-not-allowed' : 'bg-lime-400 hover:bg-lime-300 text-black'}`}>
-                NOMINATE
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Active proposal */}
-      {proposal && (
-        <div className="space-y-2.5">
-          <div className="text-[11px] font-mono text-white/50">
-            Nominee: <Link to={`/portfolio/${proposal.nominee}`} className="text-lime-400 hover:underline">{proposal.nominee?.slice(0,6)}...{proposal.nominee?.slice(-4)}</Link>
-          </div>
-          <div className="space-y-1">
-            <div className="flex justify-between text-[10px] font-mono">
-              <span className="text-lime-400">FOR {pct(proposal.forWeight, proposal.againstWeight)}%</span>
-              <span className="text-red-400">{100 - pct(proposal.forWeight, proposal.againstWeight)}% AGAINST</span>
-            </div>
-            <div className="h-1.5 bg-red-400/30 rounded-full overflow-hidden">
-              <div className="h-full bg-lime-400" style={{ width: `${pct(proposal.forWeight, proposal.againstWeight)}%` }} />
-            </div>
-          </div>
-          <div className="text-[10px] font-mono text-white/30">
-            {voteOpen ? `Voting closes in ${fmtH(proposal.closesMs - now)}` : 'Voting closed'}
-          </div>
-          {voteOpen && account && (
-            <div className="flex gap-2">
-              <button onClick={() => doVote(true)} disabled={busy}
-                className={`flex-1 py-1.5 rounded-lg text-[10px] font-mono transition-colors ${busy ? 'bg-white/5 text-white/25' : 'bg-lime-400/15 text-lime-400 border border-lime-400/30 hover:bg-lime-400/25'}`}>
-                VOTE FOR
-              </button>
-              <button onClick={() => doVote(false)} disabled={busy}
-                className={`flex-1 py-1.5 rounded-lg text-[10px] font-mono transition-colors ${busy ? 'bg-white/5 text-white/25' : 'bg-red-400/15 text-red-400 border border-red-400/30 hover:bg-red-400/25'}`}>
-                VOTE AGAINST
-              </button>
-            </div>
-          )}
-          {canResolve && (
-            <button onClick={doResolve} disabled={busy}
-              className={`w-full py-1.5 rounded-lg text-[10px] font-mono transition-colors ${busy ? 'bg-white/5 text-white/25' : 'bg-white/10 text-white/70 border border-white/20 hover:bg-white/20'}`}>
-              RESOLVE PROPOSAL
-            </button>
-          )}
-        </div>
-      )}
-
-      {msg && <div className="text-[10px] font-mono text-white/40">{msg}</div>}
-    </div>
-  );
-}
-
 // -- V10: Creator buyback -- post-launch config + execute -------------------
 // LaunchModal can only SET buyback_bps/burn at launch; there was previously no
 // way to change it afterward, and no UI at all for execute_buyback (the
@@ -1803,7 +1536,7 @@ function CommentGatePanel({ curveId, tokenType, isCreator, packageId, account, i
         typeArguments: [tokenType],
         arguments: [tx.object(capId), curveRef, tx.pure.bool(!gated), tx.object(SUI_CLOCK_ID)],
       });
-      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const res = await executeTx(dAppKit, null, tx, account.address);
       if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Toggle failed');
       setGated(!gated);
       setMsg(!gated ? 'Comments are now HOLDER-GATED - only token holders can post.' : 'Comments are now OPEN - anyone can post.');
@@ -1889,7 +1622,7 @@ function CreatorBuybackPanel({ curveId, tokenType, packageId, isCreator, account
         typeArguments: [tokenType],
         arguments: [tx.object(capId), curveRef(tx, true), tx.pure.u64(BigInt(bpsNum)), tx.pure.bool(burn), tx.object(SUI_CLOCK_ID)],
       });
-      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const res = await executeTx(dAppKit, null, tx, account.address);
       if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Update failed');
       setMsg('Buyback config updated.');
       setTimeout(loadConfig, 1500);
@@ -1907,7 +1640,7 @@ function CreatorBuybackPanel({ curveId, tokenType, packageId, isCreator, account
         typeArguments: [tokenType],
         arguments: [curveRef(tx, true)],
       });
-      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const res = await executeTx(dAppKit, null, tx, account?.address);
       if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Buyback execution failed');
       setMsg('Buyback executed.');
     } catch (e) { setMsg(e.message || 'Buyback execution failed'); }
@@ -2307,27 +2040,40 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
         const impactPct = bq?.priceImpact ?? 0;
         const effectiveSlippage = resolveSlippagePct(slippage, impactPct);
         const minOut = bq?.tokensOut != null ? BigInt(Math.floor(Number(bq.tokensOut) * (1 - effectiveSlippage / 100))) : 0n;
-        // V9: buy(curve, payment, min_out, referral, sui_price_scaled, clock)
-        // Fetch live SUI price for oracle; pass 0 as fallback if unavailable
+        // V13 dispatch (env-gated): once the V13 upgrade is published and the
+        // VITE_SUIPUMP_V13_PACKAGE / VITE_SUIPUMP_PRICE_CONFIG env vars are set,
+        // buys on lineage curves (defining package V10) must target the V13
+        // package - calling the defining address runs OLD bytecode - and pass
+        // the shared PriceConfig object at position 5 instead of the u64 oracle
+        // price (same arity). While the env vars are unset, V13_BUY_ENABLED is
+        // false and every path below is unchanged.
+        const useV13Buy = V13_BUY_ENABLED && isV10OrLater(pkgId);
+        // V9-V12: buy(curve, payment, min_out, referral, sui_price_scaled, clock)
+        // Fetch live SUI price for oracle; pass 0 as fallback if unavailable.
+        // V13 reads the price from the on-chain PriceConfig - no client fetch.
         let suiPriceScaled = 0n;
-        try {
-          const priceRes = await fetch(
-            'https://api.binance.com/api/v3/ticker/price?symbol=SUIUSDT',
-            { signal: AbortSignal.timeout(2000) }
-          );
-          if (priceRes.ok) {
-            const priceData = await priceRes.json();
-            const priceUsd = parseFloat(priceData.price ?? '0');
-            if (priceUsd > 0) suiPriceScaled = BigInt(Math.floor(priceUsd * 1000));
-          }
-        } catch { /* fallback: 0 triggers stored/BASE_GRAD threshold */ }
+        if (!useV13Buy) {
+          try {
+            const priceRes = await fetch(
+              'https://api.binance.com/api/v3/ticker/price?symbol=SUIUSDT',
+              { signal: AbortSignal.timeout(2000) }
+            );
+            if (priceRes.ok) {
+              const priceData = await priceRes.json();
+              const priceUsd = parseFloat(priceData.price ?? '0');
+              if (priceUsd > 0) suiPriceScaled = BigInt(Math.floor(priceUsd * 1000));
+            }
+          } catch { /* fallback: 0 triggers stored/BASE_GRAD threshold */ }
+        }
         const isV9 = isV9OrLater(pkgId);
-        const buyArgs = isV9
+        const buyArgs = useV13Buy
+          ? [curveRef, payment, tx.pure.u64(minOut), tx.pure.option('address', null), tx.object(PRICE_CONFIG_ID), tx.object(SUI_CLOCK_ID)]
+          : isV9
           ? [curveRef, payment, tx.pure.u64(minOut), tx.pure.option('address', null), tx.pure.u64(suiPriceScaled), tx.object(SUI_CLOCK_ID)]
           : isV5
           ? [curveRef, payment, tx.pure.u64(minOut), tx.pure.option('address', null), tx.object(SUI_CLOCK_ID)]
           : [curveRef, payment, tx.pure.u64(minOut)];
-        const [tokens, refund] = tx.moveCall({ target: `${pkgId}::bonding_curve::buy`, typeArguments: [tokenType], arguments: buyArgs });
+        const [tokens, refund] = tx.moveCall({ target: `${useV13Buy ? PACKAGE_ID_V13 : pkgId}::bonding_curve::buy`, typeArguments: [tokenType], arguments: buyArgs });
         tx.transferObjects([tokens, refund], account.address);
       } else {
         const tokInAtomic = BigInt(Math.floor(amtFloat * 10 ** TOKEN_DECIMALS));
@@ -2367,7 +2113,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
         tx.transferObjects([suiOut], account.address);
       }
 
-      const tradeResult = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const tradeResult = await executeTx(dAppKit, null, tx, account.address);
       if (tradeResult.$kind === 'FailedTransaction') throw new Error(tradeResult.FailedTransaction.status.error ?? 'Transaction failed');
       setTxStatus('success'); setTxMsg(side === 'buy' ? 'Buy successful! 🎉' : 'Sell successful!'); setAmount('');
       setTimeout(() => { setTxStatus(null); setTxMsg(''); }, 3000);
@@ -2492,16 +2238,14 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
 
           <TradesHoldersBlock curveId={curveId} tokenType={tokenType} suiUsd={suiUsd} lang={lang} creator={creatorAddr} trades={feedTrades} connected={feedConnected} loading={feedLoading} symbol={symbol} />
           <CommentsBlock curveId={curveId} packageId={pkgId} lang={lang} initialSharedVersion={initialSharedVersionProp ?? curveState?.initial_shared_version ?? null} tokenType={tokenType} />
-          {isV10OrLater(pkgId) && !graduated && (
+          {isV10OrLater(pkgId) && !graduated && PACKAGE_ID_V13 && (
             <CommunityTakeoverPanel
               curveId={curveId}
               tokenType={tokenType}
-              packageId={pkgId}
               creator={creatorAddr}
-              lastCreatorActivityMs={curveState?.last_creator_activity_ms ?? null}
               account={account}
               initialSharedVersion={initialSharedVersionProp ?? curveState?.initial_shared_version ?? null}
-              lang={lang}
+              tokenReserveAtomic={tokensRemaining}
             />
           )}
           {isV10OrLater(pkgId) && (<>

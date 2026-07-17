@@ -504,7 +504,16 @@ function schedule(order, trigger) {
   if (!isWalletTrade && Date.now() < (order._cooldownUntil ?? 0)) return;
   const h = HANDLERS[order.type] ?? HANDLERS.tpsl;
   firing.add(order.id);
-  queue.push(async () => { try { await h.process(order, trigger); } finally { firing.delete(order.id); } });
+  queue.push(async () => {
+    try {
+      // SESSION HARD-GATE (2026-07-16): no handler runs - and therefore no
+      // bridge call happens - for an order without an OPEN agent session.
+      // This queue job is the single funnel every handler's process() goes
+      // through, so the gate covers all five strategies. See gateOrderSession.
+      if (!(await gateOrderSession(order))) return;
+      await h.process(order, trigger);
+    } finally { firing.delete(order.id); }
+  });
   pump();
 }
 
@@ -581,6 +590,103 @@ async function getSessionParkedWhole(sessionId, tokenType) {
   return 0;
 }
 
+// -- Session hard-gate (founder decision 2026-07-16) ----------------------------
+// Strategies fire ONLY through an OPEN agent session. The bridge retired the
+// shared-wallet /buy and /sell endpoints (they now return HTTP 410), so an
+// order without a bound, open session can never execute - it must be closed
+// terminally instead of hammering a dead endpoint.
+const SESSION_GONE_REASON = 'session closed - open a session to re-arm';
+
+// isSessionOpen - live on-chain check that an AgentSession can still trade.
+// getObject-style GraphQL read (same gql() shape the curve reads use). Open
+// means: the object exists, revoked is false, and expiry_ms is neither the 0
+// CLOSED sentinel (V11 close_session) nor in the past. Throws ONLY on
+// transport/GraphQL errors - a missing object is a definitive
+// { open:false }, not an exception, so callers can tell "closed" (terminal)
+// apart from "could not check" (retry later).
+async function isSessionOpen(sessionId) {
+  const data = await gql(
+    `query($id: SuiAddress!) { object(address: $id) { asMoveObject { contents { json } } } }`,
+    { id: sessionId },
+  );
+  const json = data?.object?.asMoveObject?.contents?.json;
+  if (!json) return { open: false, reason: 'session object not found on-chain' };
+  if (json.revoked === true || json.revoked === 'true') return { open: false, reason: 'session revoked' };
+  // u64 arrives as a string in GraphQL json; ms timestamps are Number-safe.
+  const expiryMs = Number(json.expiry_ms ?? 0);
+  if (!(expiryMs > 0)) return { open: false, reason: 'session closed (expiry_ms sentinel 0)' };
+  if (expiryMs <= Date.now()) return { open: false, reason: 'session expired' };
+  return { open: true, reason: 'open' };
+}
+
+// Short-TTL cache so a hot curve's SSE wake storm does not become one GraphQL
+// read per wake. 30s staleness is acceptable: this gate exists to stop DEAD
+// orders from reaching the bridge at all, not to be the security boundary -
+// the contract re-checks revoked/expiry/spend_cap on-chain at execution.
+const SESSION_OPEN_TTL_MS = parseInt(process.env.STRATEGY_SESSION_OPEN_TTL_MS ?? '30000', 10);
+const sessionOpenCache = new Map(); // sessionId -> { at, open, reason }
+
+async function isSessionOpenCached(sessionId) {
+  const hit = sessionOpenCache.get(sessionId);
+  if (hit && Date.now() - hit.at < SESSION_OPEN_TTL_MS) return hit;
+  const r = await isSessionOpen(sessionId);
+  const entry = { at: Date.now(), open: r.open, reason: r.reason };
+  sessionOpenCache.set(sessionId, entry);
+  return entry;
+}
+
+// closeOrderNoSession - terminally close an order that can never fire again
+// (no sessionId bound, or its session is closed/expired/revoked/missing).
+// Marks the order done and persists the engine's terminal status ('done')
+// plus the surfaced reason, using the same params-preserving read-merge-write
+// recordError uses (the PATCH route replaces params wholesale). Loud by
+// design, like recordError.
+async function closeOrderNoSession(order, detail) {
+  order.done = true;
+  console.warn(`${order.id}: CLOSED - ${SESSION_GONE_REASON} (${detail})`);
+  try {
+    const gr = await fetch(`${INDEXER_URL}/orders/${order.id}`, { signal: AbortSignal.timeout(8000) });
+    const cur = gr.ok ? await gr.json().catch(() => null) : null;
+    const params = (cur && cur.params && typeof cur.params === 'object' && !Array.isArray(cur.params)) ? cur.params : {};
+    const nextParams = { ...params, _lastError: { at: Date.now(), kind: 'session', reason: SESSION_GONE_REASON, code: null } };
+    const headers = { 'Content-Type': 'application/json' };
+    if (STRATEGY_API_KEY) headers['x-strategy-key'] = STRATEGY_API_KEY;
+    const pr = await fetch(`${INDEXER_URL}/orders/${order.id}`, {
+      method: 'PATCH', headers, body: JSON.stringify({ params: nextParams, status: 'done' }), signal: AbortSignal.timeout(8000),
+    });
+    if (!pr.ok) { const d = await pr.json().catch(() => ({})); err(`${order.id}: session-close persist ${pr.status} ${d.error ?? ''}`); }
+    if (order.params && typeof order.params === 'object') order.params._lastError = nextParams._lastError;
+  } catch (e) { err(`${order.id}: session-close persist error ${e.message}`); }
+}
+
+// gateOrderSession - THE fire-time session gate. It runs inside schedule()'s
+// queue job, the single funnel every handler's process() goes through
+// (handleEvent, dcaTick, and syncOrders all fire via schedule), so all five
+// strategies (tpsl, sniper, dca, copytrade, autopilot) are covered BEFORE any
+// handler logic - and therefore before ANY bridge call - runs.
+// Returns true when the order may proceed. A missing sessionId or a
+// definitively closed/expired/revoked/missing session closes the order
+// TERMINALLY; a transient check failure only cools the order down.
+async function gateOrderSession(order) {
+  const sessionId = order.params?.sessionId ?? null;
+  if (!sessionId) {
+    await closeOrderNoSession(order, 'no sessionId bound');
+    return false;
+  }
+  let st;
+  try {
+    st = await isSessionOpenCached(sessionId);
+  } catch (e) {
+    // Could not CHECK (GraphQL hiccup) - that is not "closed". Retry later.
+    err(`${order.id}: session open-check failed (${e.message}); retrying after cooldown`);
+    order._cooldownUntil = Date.now() + ERROR_COOLDOWN_MS;
+    return false;
+  }
+  if (st.open) return true;
+  await closeOrderNoSession(order, st.reason);
+  return false;
+}
+
 // -- Fire a sell via the proven runner path (server.js signs) ------------------
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -591,9 +697,19 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const STALE_OBJECT_RE = /unavailable for consumption|needs to be rebuilt|rejected as invalid by more than|not available for consumption|equivocat/i;
 
 async function fireSell(curveId, tokenWhole, minSuiOut, sellAll = false, sessionId = null) {
+  // SESSION HARD-REQUIREMENT (2026-07-16): the bridge retired the shared-wallet
+  // /sell endpoint (it returns HTTP 410). gateOrderSession makes a null
+  // sessionId unreachable by construction on every strategy fire path; this
+  // throw is the loud local backstop so no future caller can ever reach the
+  // retired endpoint.
+  if (!sessionId) {
+    throw new Error('sell requires an open agent session - the shared-wallet /sell endpoint is retired (HTTP 410)');
+  }
   // SELL = bridge settle, SOLE executor (see SINGLE-EXECUTOR RULE below).
   //   - session sells  -> /session-sell (spends the session's parked tokens)
-  //   - non-session    -> /sell (agent wallet)
+  //   - non-session    -> /sell (agent wallet) - UNREACHABLE BY CONSTRUCTION
+  //     since the throw above (kept only so the endpoint dispatch reads
+  //     symmetrically with fireBridgeBuyRaw).
   // The bridge resolves tokenType/version/coins and signs; we pass only
   // curve + amount. Returns { ok, txDigest (settlement), nexusDigest,
   // nexusExecutionId, ... } - the nexus fields are null until the sell DAG
@@ -628,26 +744,17 @@ async function fireSell(curveId, tokenWhole, minSuiOut, sellAll = false, session
   // Whole tokens; the bridge converts to base units itself. 3-try retry for the
   // stale-object class (same as the buy/sell coin-version races).
   //
-  // Session sells go to /session-sell, spending from the session's parked tokens
-  // (Option A - interim until the Nexus sell tool routes /session-sell under the
-  // Leader). The session holds its tokens as a single coin, so "all" is not
-  // supported there: we pass a concrete integer amount. For a whole-balance
-  // session sell, tokenWhole already carries the full known balance.
-  // Session sells go to /session-sell, spending from the session's parked tokens
-  // (Option A - interim until the Nexus sell tool routes /session-sell under the
-  // Leader). For a WHOLE-position session sell, send sellAll:true - the bridge
-  // resolves the exact parked balance on-chain at execution time (no plan/tick
-  // drift, no leftover dust). Partial session sells pass a concrete whole-token
-  // amount.
+  // Session sells spend from the session's parked tokens. For a WHOLE-position
+  // sell, send sellAll:true - the bridge resolves the exact parked balance
+  // on-chain at execution time (no plan/tick drift, no leftover dust). Partial
+  // sells pass a concrete whole-token amount.
   // TODO(nexus-session): when sell.rs branches to /session-sell on a sessionId in
   // the walk, emit the sell with the sessionId so the Leader executes it (Option B).
-  const endpoint = sessionId ? '/session-sell' : '/sell';
+  const endpoint = '/session-sell';
   const sessionTokenAmount = Math.max(0, Math.floor(tokenWhole));
-  const body = sessionId
-    ? (sellAll
-        ? { sessionId, curveId, sellAll: true, minSuiOut: minSuiOut ?? 0 }
-        : { sessionId, curveId, tokenAmount: sessionTokenAmount, minSuiOut: minSuiOut ?? 0 })
-    : { curveId, tokenAmount, minSuiOut: minSuiOut ?? 0 };
+  const body = sellAll
+    ? { sessionId, curveId, sellAll: true, minSuiOut: minSuiOut ?? 0 }
+    : { sessionId, curveId, tokenAmount: sessionTokenAmount, minSuiOut: minSuiOut ?? 0 };
   let lastErr;
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
@@ -719,91 +826,32 @@ async function fireScheduleTask(workflow, payload, schedule) {
   throw lastErr;
 }
 
-// -- C2 DEMO: buy via the Talus leader path (sole executor), bridge fallback ----
-// Emits the buy walk with confirm:true. If a leader settles it (EndState Ok,
-// sender = a leader), the leader path already executed the buy (the Nexus buy
-// tool calls the same bridge endpoint) - we return the LEADER settlement digest
-// as the proof and do NOT call the bridge directly. If the leader path does not
-// confirm in time, we fall back to fireBridgeBuy so the demo always completes.
-// Returns { settleDigest, leaderSettled, nexusExecutionId } shaped like the
-// sniper/dca call sites expect (they read the digest).
-async function fireNexusBuy(curveId, amountSui) {
-  let walkDigest = null, walkExecutionId = null;
-  try {
-    const rr = await fetch(`${RUNNER_URL}/run-dag`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...(AGENT_API_KEY ? { 'x-agent-key': AGENT_API_KEY } : {}) },
-      body: JSON.stringify({ workflow: 'buy', buy: { curveId, amountSui }, confirm: true }),
-      signal: AbortSignal.timeout(190000),
-    });
-    const rd = await rr.json().catch(() => ({}));
-    walkDigest      = rd.digest ?? null;
-    walkExecutionId = rd.executionId ?? null;
-    if (rr.ok && rd.ok && (rd.endState === 'Ok' || rd.endState === 'Empty') && rd.settlementDigest) {
-      log(`buy: DEMO leader-settled endState=${rd.endState} leader=${rd.leaderSender} digest=${rd.settlementDigest} (sole executor)`);
-      return { settleDigest: rd.settlementDigest, leaderSettled: true, leaderSender: rd.leaderSender ?? null, nexusExecutionId: rd.executionId ?? null };
-    }
-    err(`buy: DEMO leader path did not confirm (endState=${rd.endState ?? rd.error ?? rr.status})`);
-  } catch (e) {
-    err(`buy: DEMO leader emit failed: ${e.message}`);
-  }
-  // SINGLE-EXECUTOR RULE: if a walk EXISTS but did not terminally settle in the
-  // confirm window, the Leader can still execute it after we return - a bridge
-  // buy now would double-buy (the C3yGhm.../2Xm4KGbi... incident class). Fail
-  // this fire; the caller's cooldown/next tick retries.
-  if (walkDigest || walkExecutionId) {
-    throw new Error(`buy walk pending (execution ${walkExecutionId ?? '?'} digest ${walkDigest ?? '?'}) - refusing bridge settle to avoid a double-buy; will retry`);
-  }
-  // No walk was created (emit itself failed before an on-chain request
-  // existed) - the proven bridge buy is safe and becomes the sole executor.
-  const settleDigest = await fireBridgeBuyRaw(curveId, amountSui);
-  return { settleDigest, leaderSettled: false, leaderSender: null, nexusExecutionId: null };
-}
-
 // -- Settle a BUY through the bridge (the path that actually moves tokens) ------
-// The scheduler task (fireScheduleTask above) emits the on-chain agentic-decision
-// PROOF, but on testnet no Talus leader consumes the occurrence, so the task
-// alone never moves tokens. This is the sniper analog of fireSell's settle leg:
-// it calls the bridge /buy - the same endpoint the site's wallet buys use, which
-// signs with the bridge's own key and executes the swap now. Returns the
-// settlement txDigest. 3-try retry for the stale-object coin-version race, same
-// as fireSell. The task emit stays best-effort PROOF; this is the money path and
-// must NEVER be gated behind the emit.
-// Demo-aware buy dispatcher used by all call sites. Returns a settlement digest
-// STRING in both modes (call sites read it directly). In DEMO_MODE it routes
-// through the Talus leader path (fireNexusBuy) and returns the LEADER settlement
-// digest when the leader settles; otherwise it returns the bridge digest. In
-// production (DEMO_MODE off) it is the raw bridge buy, unchanged.
-// Demo-aware buy dispatcher used by all call sites. Returns an OBJECT
+// Buy dispatcher used by all call sites. Returns an OBJECT
 // { settleDigest, leaderSettled, leaderSender, nexusExecutionId } so call sites
-// can label the fire truthfully (leader vs bridge). In DEMO_MODE it routes
-// through the Talus leader path (fireNexusBuy) and reports leaderSettled=true
-// when the leader settles; otherwise it returns the bridge digest with
-// leaderSettled=false. In production (DEMO_MODE off) it is the raw bridge buy.
+// can label the fire truthfully (the nexus/leader fields are permanently null:
+// the DEMO leader path (fireNexusBuy) was REMOVED with the session requirement
+// below - the Nexus buy tool executed through the retired shared agent wallet).
+//
+// FOUNDER DECISION 2026-07-16: strategies hard-require an OPEN agent session.
+// The bridge's shared-wallet /buy endpoint is retired (HTTP 410); /session-buy
+// is the only buy path. A missing sessionId here is a caller bug
+// (gateOrderSession closes session-less orders before any fire path reaches
+// this), never a fallback.
 async function fireBridgeBuy(curveId, amountSui, sessionId = null) {
-  if (DEMO_MODE && !sessionId) {
-    // Leader-executed path stays the agent-wallet flow. Session trades currently
-    // settle via the bridge /session-buy endpoint (Option A - interim until the
-    // Nexus buy tool learns to call /session-buy under the Leader).
-    // TODO(nexus-session): when buy.rs branches to /session-buy on a sessionId in
-    // the walk, route session buys through fireNexusBuy with the sessionId so the
-    // Leader executes them through Nexus (Option B) instead of this direct call.
-    return await fireNexusBuy(curveId, amountSui);
-  }
+  if (!sessionId) throw new Error('fireBridgeBuy: sessionId required - non-session strategy buys are retired');
   const settleDigest = await fireBridgeBuyRaw(curveId, amountSui, sessionId);
   return { settleDigest, leaderSettled: false, leaderSender: null, nexusExecutionId: null };
 }
 
-async function fireBridgeBuyRaw(curveId, amountSui, sessionId = null) {
-  // When the order is bound to an agent session, spend the session's escrow via
-  // /session-buy instead of the agent wallet via /buy. No privateKey is sent, so
-  // the bridge signs with its own key (= the session_address the user authorized,
-  // the agent wallet 0x877af0...). The on-chain spend_cap/expiry/revoke protect the
-  // user's funds; key custody does not.
-  const endpoint = sessionId ? '/session-buy' : '/buy';
-  const body = sessionId
-    ? { sessionId, curveId, suiAmount: amountSui }
-    : { curveId, suiAmount: amountSui };
+async function fireBridgeBuyRaw(curveId, amountSui, sessionId) {
+  // Spends the session's escrow via /session-buy. No privateKey is sent; the
+  // bridge signs with the session's provisioned Turnkey/enclave key (sender ==
+  // session_address, enforced on-chain) and the spend_cap/expiry/revoke checks
+  // protect the user's funds.
+  if (!sessionId) throw new Error('fireBridgeBuyRaw: sessionId required - non-session strategy buys are retired');
+  const endpoint = '/session-buy';
+  const body = { sessionId, curveId, suiAmount: amountSui };
   // A snipe fires seconds after launch; the fresh curve's object version / coin
   // state can still be settling, so the first simulate may fail transiently
   // ("Failed to simulate transaction") even though a manual buy moments later
@@ -1687,6 +1735,40 @@ function dcaTick() {
   }
 }
 
+// -- Startup migration (2026-07-16): shared-wallet trading retired --------------
+// The bridge's /buy and /sell endpoints now return HTTP 410, so an active order
+// with no bound session can never fire again. Close every such order ONCE at
+// startup - terminal status ('done') plus the surfaced reason - before the
+// processing loop begins. Orders created behind the brain's back afterwards are
+// still caught by the fire-time gate (gateOrderSession), which is the enforcing
+// boundary; this migration just cleans the store up front so dead orders do not
+// linger as "active" in the UI.
+async function migrateSessionlessOrders() {
+  let remote;
+  try { remote = await fetchActiveOrders(); }
+  catch (e) {
+    err(`[migrate] could not list active orders (${e.message}) - fire-time gate still covers session-less orders`);
+    return;
+  }
+  let closed = 0;
+  for (const R of remote) {
+    const sid = R?.params?.sessionId;
+    if (typeof sid === 'string' && sid.startsWith('0x')) continue; // session-bound - keep
+    const params = (R.params && typeof R.params === 'object' && !Array.isArray(R.params)) ? R.params : {};
+    const nextParams = { ...params, _lastError: { at: Date.now(), kind: 'session', reason: SESSION_GONE_REASON, code: null } };
+    try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (STRATEGY_API_KEY) headers['x-strategy-key'] = STRATEGY_API_KEY;
+      const pr = await fetch(`${INDEXER_URL}/orders/${R.id}`, {
+        method: 'PATCH', headers, body: JSON.stringify({ params: nextParams, status: 'done' }), signal: AbortSignal.timeout(8000),
+      });
+      if (pr.ok) closed++;
+      else { const d = await pr.json().catch(() => ({})); err(`[migrate] ${R.id}: close ${pr.status} ${d.error ?? ''}`); }
+    } catch (e) { err(`[migrate] ${R.id}: close error ${e.message}`); }
+  }
+  log(`[migrate] closed ${closed} session-less strategies (shared-wallet trading retired)`);
+}
+
 async function main() {
   console.log('-'.repeat(52));
   console.log('  SUIPUMP STRATEGY BRAIN (multi-strategy dispatcher)');
@@ -1699,6 +1781,7 @@ async function main() {
   log(`price    : read live from curve object (SSE = wake-up only)`);
   log(`strategies: ${Object.keys(HANDLERS).map(k => `${k}(live)`).join(', ')}`);
 
+  await migrateSessionlessOrders();
   await syncOrders();
   log(`tracking : ${ORDERS.size} active order(s)`);
   setInterval(() => { syncOrders().catch(e => err('sync error:', e?.message ?? e)); }, ORDERS_REFRESH_MS);

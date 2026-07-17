@@ -79,7 +79,7 @@ module suipump::agent_session {
     use sui::dynamic_object_field as dof;
     use sui::dynamic_field as df;
     use std::type_name::{Self, TypeName};
-    use suipump::bonding_curve::{Self, Curve};
+    use suipump::bonding_curve::{Self, Curve, PriceConfig};
 
     // ---------- Errors ----------
     const ENotSessionKey:   u64 = 1; // tx sender != session_address
@@ -266,7 +266,7 @@ module suipump::agent_session {
             return
         };
         let key = type_name::with_defining_ids<T>();
-        if (dof::exists_<TypeName>(&session.id, key)) {
+        if (dof::exists<TypeName>(&session.id, key)) {
             let existing: &mut Coin<T> = dof::borrow_mut(&mut session.id, key);
             coin::join(existing, tokens);
         } else {
@@ -282,13 +282,13 @@ module suipump::agent_session {
     /// This is the NARROW path: only suipump::bonding_curve, coins never
     /// touchable by the PTB. Preferred whenever the curve is current-package.
     public fun buy_with_session<T>(
-        session:          &mut AgentSession,
-        curve:            &mut Curve<T>,
-        amount:           u64,
-        min_tokens_out:   u64,
-        sui_price_scaled: u64,
-        clock:            &Clock,
-        ctx:              &mut TxContext,
+        session:        &mut AgentSession,
+        curve:          &mut Curve<T>,
+        amount:         u64,
+        min_tokens_out: u64,
+        price_cfg:      &PriceConfig,  // V13: replaces sui_price_scaled: u64 (F-2)
+        clock:          &Clock,
+        ctx:            &mut TxContext,
     ) {
         assert_can_trade(session, clock, ctx);
         assert!(balance::value(&session.escrow) >= amount, EInsufficientEscrow);
@@ -299,7 +299,7 @@ module suipump::agent_session {
         let payment = coin::from_balance(balance::split(&mut session.escrow, amount), ctx);
         let (tokens, refund) = bonding_curve::buy<T>(
             curve, payment, min_tokens_out, option::none<address>(),
-            sui_price_scaled, clock, ctx,
+            price_cfg, clock, ctx,
         );
 
         // Refund (graduation tail / overshoot) compounds back to escrow AND is
@@ -372,7 +372,7 @@ module suipump::agent_session {
     /// venue universality, bounded by spend_cap / expiry / revoke.
     public fun enable_universal_trading(session: &mut AgentSession, ctx: &TxContext) {
         assert!(tx_context::sender(ctx) == session.owner, ENotOwner);
-        if (!df::exists_(&session.id, UNIVERSAL_TRADING_KEY)) {
+        if (!df::exists(&session.id, UNIVERSAL_TRADING_KEY)) {
             df::add(&mut session.id, UNIVERSAL_TRADING_KEY, true);
         };
         event::emit(UniversalTradingToggled { session_id: object::id(session), enabled: true });
@@ -381,14 +381,14 @@ module suipump::agent_session {
     /// Owner narrows the envelope back to module-custody trading only.
     public fun disable_universal_trading(session: &mut AgentSession, ctx: &TxContext) {
         assert!(tx_context::sender(ctx) == session.owner, ENotOwner);
-        if (df::exists_(&session.id, UNIVERSAL_TRADING_KEY)) {
+        if (df::exists(&session.id, UNIVERSAL_TRADING_KEY)) {
             let _: bool = df::remove(&mut session.id, UNIVERSAL_TRADING_KEY);
         };
         event::emit(UniversalTradingToggled { session_id: object::id(session), enabled: false });
     }
 
     public fun universal_trading_enabled(session: &AgentSession): bool {
-        df::exists_(&session.id, UNIVERSAL_TRADING_KEY)
+        df::exists(&session.id, UNIVERSAL_TRADING_KEY)
     }
 
     /// Borrow escrow SUI for one atomic buy on any venue. Charges the FULL

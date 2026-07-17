@@ -17,8 +17,9 @@ import { useCurrentAccount, useDAppKit, useCurrentClient } from '@mysten/dapp-ki
 import { Transaction } from '@mysten/sui/transactions';
 import { useNavigate } from 'react-router-dom';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
-import { PACKAGE_ID, PACKAGE_ID_V10, PACKAGE_ID_V11, PACKAGE_ID_V12, MIST_PER_SUI } from './constants.js';
+import { PACKAGE_ID, PACKAGE_ID_V10, PACKAGE_ID_V11, PACKAGE_ID_V12, PACKAGE_ID_V13, PRICE_CONFIG_ID, V13_BUY_ENABLED, MIST_PER_SUI } from './constants.js';
 import { signOwnerAuth } from './authSign.js';
+import { executeTx } from './lib/executeTx.js';
 
 // The agent's execution wallet - the session_address authorized to trade the
 // escrow. buy_with_session/sell_with_session are signed by THIS wallet
@@ -887,7 +888,7 @@ function AgentSessionPanel({ account, onSessionChange }) {
         ? tx.sharedObjectRef({ objectId: session.id, initialSharedVersion: String(session.sharedVersion), mutable: true })
         : tx.object(session.id);
       tx.moveCall({ target: `${PACKAGE_ID}::agent_session::${fn}`, arguments: [ref] });
-      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const res = await executeTx(dAppKit, null, tx, account.address);
       if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Toggle failed');
       setUniversalTrading(!universalTrading);
       setMsg(!universalTrading
@@ -1167,7 +1168,7 @@ function AgentSessionPanel({ account, onSessionChange }) {
           ],
         });
       }
-      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const res = await executeTx(dAppKit, null, tx, account.address);
       if (res.FailedTransaction) {
         const raw = res.FailedTransaction.status?.error;
         const errStr = typeof raw === 'string' ? raw : JSON.stringify(raw ?? {});
@@ -1207,7 +1208,7 @@ function AgentSessionPanel({ account, onSessionChange }) {
         target: `${PACKAGE_ID}::agent_session::top_up_session`,
         arguments: [sessionRef(tx, true), coin],
       });
-      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const res = await executeTx(dAppKit, null, tx, account.address);
       if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Top-up failed');
       setMsg('Escrow topped up.');
       setTimeout(loadSession, 1500);
@@ -1224,7 +1225,7 @@ function AgentSessionPanel({ account, onSessionChange }) {
         target: `${PACKAGE_ID}::agent_session::revoke_session`,
         arguments: [sessionRef(tx, true)],
       });
-      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const res = await executeTx(dAppKit, null, tx, account.address);
       if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Revoke failed');
       setMsg('Session revoked - the agent can no longer spend. Close to withdraw escrow.');
       setTimeout(loadSession, 1500);
@@ -1295,7 +1296,7 @@ function AgentSessionPanel({ account, onSessionChange }) {
         arguments: [ref],
       });
       tx.transferObjects([refund], account.address);
-      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const res = await executeTx(dAppKit, null, tx, account.address);
       if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Close failed');
       rememberClosedSession(session.id);
       // Best-effort leftover-gas sweep: the session's dedicated key still holds
@@ -1432,7 +1433,7 @@ function AgentSessionPanel({ account, onSessionChange }) {
           n++;
         }
       }
-      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const res = await executeTx(dAppKit, null, tx, account.address);
       if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'Sweep failed');
       setMsg(`Swept ${n} token balance${n > 1 ? 's' : ''} from ${targets.length} session${targets.length > 1 ? 's' : ''} - everything sent to your wallet.`);
     } catch (e) { setMsg(e.message || 'Sweep failed'); }
@@ -2327,7 +2328,14 @@ export default function AgentPage({ onBack }) {
 
     const suiMist = BigInt(Math.floor(parseFloat(amountSui) * Number(MIST_PER_SUI)));
     if (suiMist <= 0n) throw new Error('Buy amount must be > 0');
-    const suiPriceScaled = await suiPriceScaledArg();
+    // V13 dispatch (env-gated): once the V13 upgrade is published and the env
+    // vars are set, lineage-curve buys must target the V13 package (calling the
+    // defining/old address runs OLD bytecode) and pass the shared PriceConfig
+    // object at position 5 instead of the client-fetched u64 oracle price. The
+    // curve already passed isLineagePkg above, so V13_BUY_ENABLED alone decides.
+    // While the env vars are unset this is false and behavior is unchanged.
+    const useV13Buy = V13_BUY_ENABLED;
+    const suiPriceScaled = useV13Buy ? 0n : await suiPriceScaledArg();
 
     const tx = new Transaction();
     // Match TokenPage's proven curveRef construction exactly: raw ISV (no
@@ -2337,33 +2345,26 @@ export default function AgentPage({ onBack }) {
       ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: sharedVersion, mutable: true })
       : tx.object(curveId);
     const [payment] = tx.splitCoins(tx.gas, [tx.pure.u64(suiMist)]);
-    // V9+: buy(curve, payment, min_out, referral, sui_price_scaled, clock) -> (Coin<T>, Coin<SUI>)
+    // V9-V12: buy(curve, payment, min_out, referral, sui_price_scaled u64, clock) -> (Coin<T>, Coin<SUI>)
+    // V13:    buy(curve, payment, min_out, referral, &PriceConfig,          clock) - same arity,
+    // position 5 becomes the shared PriceConfig object and the call must target
+    // the V13 package (env-gated above).
     // Clock is passed via tx.object(0x6) - the SDK resolves it. (tx.sharedObjectRef
     // for the clock produced a malformed input that made the wallet SDK throw
     // "reading 'txSignatures'" AFTER signing. TokenPage's working buy uses tx.object.)
     const [tokens, refund] = tx.moveCall({
-      target: `${packageId}::bonding_curve::buy`,
+      target: useV13Buy ? `${PACKAGE_ID_V13}::bonding_curve::buy` : `${packageId}::bonding_curve::buy`,
       typeArguments: [tokenType],
-      arguments: [curveRef, payment, tx.pure.u64(0), tx.pure.option('address', null), tx.pure.u64(suiPriceScaled), tx.object(AGENT_SUI_CLOCK_ID)],
+      arguments: [curveRef, payment, tx.pure.u64(0), tx.pure.option('address', null), useV13Buy ? tx.object(PRICE_CONFIG_ID) : tx.pure.u64(suiPriceScaled), tx.object(AGENT_SUI_CLOCK_ID)],
     });
     tx.transferObjects([tokens, refund], account.address);
 
-    // Build -> wallet-sign -> execute, the SAME pattern the autonomous paths use
-    // (useDCA / useLimitOrder / turnkey_signer): build the tx to bytes against a
-    // client, get the signature, execute via the client. This is what avoids the
-    // Slush "reading 'txSignatures'" crash: signAndExecuteTransaction makes the
-    // WALLET build/serialize the tx itself (its SuiGrpcClient-backed build chokes
-    // on the shared-object refs and throws inside dapp-interface.js), whereas
-    // signTransaction just signs already-built bytes. tx.setSender is required so
-    // the build can resolve gas for the connected wallet.
-    tx.setSender(account.address);
-    const execClient = new SuiGraphQLClient({ url: '/api/rpc' });
+    // Build -> wallet-sign -> execute via the shared executeTx helper (see
+    // lib/executeTx.js for why this avoids the Slush "reading 'txSignatures'"
+    // crash: the wallet only signs already-built bytes, it never builds).
     let digest = null;
     try {
-      const built = await tx.build({ client: execClient });
-      const { signature } = await dAppKit.signTransaction({ transaction: tx });
-      const res = await execClient.executeTransaction({ transaction: built, signatures: [signature] });
-      if (res?.errors) throw new Error(Array.isArray(res.errors) ? (res.errors[0]?.message ?? JSON.stringify(res.errors)) : String(res.errors));
+      const res = await executeTx(dAppKit, null, tx, account.address);
       digest = res?.digest ?? res?.data?.executeTransaction?.digest ?? res?.Transaction?.digest ?? null;
     } catch (e) {
       const msg = String(e?.message ?? e);
@@ -2407,15 +2408,12 @@ export default function AgentPage({ onBack }) {
     });
     tx.transferObjects([suiOut], account.address);
 
-    // Build -> wallet-sign -> execute (see userBuy for why this avoids the Slush
-    // txSignatures crash). Reuse the rpc client built above for coin lookup.
-    tx.setSender(account.address);
+    // Build -> wallet-sign -> execute via the shared executeTx helper (see
+    // lib/executeTx.js for why this avoids the Slush txSignatures crash).
+    // Reuse the rpc client built above for coin lookup.
     let digest = null;
     try {
-      const built = await tx.build({ client: rpc });
-      const { signature } = await dAppKit.signTransaction({ transaction: tx });
-      const res = await rpc.executeTransaction({ transaction: built, signatures: [signature] });
-      if (res?.errors) throw new Error(Array.isArray(res.errors) ? (res.errors[0]?.message ?? JSON.stringify(res.errors)) : String(res.errors));
+      const res = await executeTx(dAppKit, rpc, tx, account.address);
       digest = res?.digest ?? res?.data?.executeTransaction?.digest ?? res?.Transaction?.digest ?? null;
     } catch (e) {
       const msg = String(e?.message ?? e);
@@ -2594,17 +2592,29 @@ export default function AgentPage({ onBack }) {
       const tx = new Transaction();
       const ref = tx.sharedObjectRef({ objectId: activeSessionId, initialSharedVersion: String(sv), mutable: true });
       tx.moveCall({ target: `${PACKAGE_ID}::agent_session::enable_universal_trading`, arguments: [ref] });
-      const res = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const res = await executeTx(dAppKit, null, tx, account?.address);
       if (res.FailedTransaction) throw new Error(res.FailedTransaction.status.error ?? 'enable failed');
       return true;
     } catch (e) {
       setError(`Could not enable universal trading: ${e.message || e}`);
       return false;
     }
-  }, [activeSessionId, client, dAppKit]);
+  }, [activeSessionId, client, dAppKit, account]);
 
   const approve = useCallback(async () => {
     if (!plan || phase === 'running') return;
+    // Strategies hard-require an OPEN session (founder decision 2026-07-16):
+    // the bridge retired shared-wallet /buy /sell, and /api/create-order now
+    // 400s without a sessionId. Bail BEFORE executing - buy_then_tpsl settles
+    // its buy leg first, so a late 400 on the arm leg would leave an
+    // unprotected position.
+    const STRATEGY_WORKFLOWS = ['buy_then_tpsl', 'tpsl', 'sniper', 'dca', 'copytrade', 'autopilot'];
+    if (STRATEGY_WORKFLOWS.includes(plan.workflow) && !activeSessionId) {
+      setError('Strategies require an open agent session - open a session in the panel above first');
+      clearAnim();
+      setPhase('idle');
+      return;
+    }
     setError(null); setResult(null); setPhase('running');
     clearAnim();
 
@@ -2989,7 +2999,7 @@ export default function AgentPage({ onBack }) {
       setError(err.message);
       setPhase('failed');
     }
-  }, [plan, phase, clearAnim, account]);
+  }, [plan, phase, clearAnim, account, activeSessionId]);
 
   const nodeColor = (s) =>
     s === 'done'    ? 'border-violet-400/60 bg-violet-400/10' :
@@ -3323,14 +3333,29 @@ export default function AgentPage({ onBack }) {
               <div key={k}>{k}: <span className="text-white/80">{v}</span></div>
             ))}
           </div>
-          {(phase === 'idle' || phase === 'failed') && !(candidates && candidates.length > 1) && (
-            <button
-              onClick={approve}
-              className="w-full text-[11px] font-mono font-bold tracking-widest px-4 py-3 rounded-lg bg-violet-500 text-white hover:bg-violet-400 transition-colors flex items-center justify-center gap-2"
-            >
-              <Play size={12} /> {phase === 'failed' ? 'RETRY - EXECUTE ON-CHAIN' : 'APPROVE & EXECUTE ON-CHAIN'}
-            </button>
-          )}
+          {(phase === 'idle' || phase === 'failed') && !(candidates && candidates.length > 1) && (() => {
+            // Strategies hard-require an open session - keep the no-session
+            // submission unreachable from the UI (mirrors the approve() guard
+            // and the /api/create-order 400).
+            const needsSession = ['buy_then_tpsl', 'tpsl', 'sniper', 'dca', 'copytrade', 'autopilot'].includes(plan?.workflow);
+            const sessionMissing = needsSession && !activeSessionId;
+            return (
+              <>
+                <button
+                  onClick={approve}
+                  disabled={sessionMissing}
+                  className={`w-full text-[11px] font-mono font-bold tracking-widest px-4 py-3 rounded-lg transition-colors flex items-center justify-center gap-2 ${sessionMissing ? 'bg-violet-500/30 text-white/40 cursor-not-allowed' : 'bg-violet-500 text-white hover:bg-violet-400'}`}
+                >
+                  <Play size={12} /> {phase === 'failed' ? 'RETRY - EXECUTE ON-CHAIN' : 'APPROVE & EXECUTE ON-CHAIN'}
+                </button>
+                {sessionMissing && (
+                  <div className="mt-2 text-[10px] font-mono text-amber-300/80">
+                    Strategies require an open agent session - open a session in the panel above first.
+                  </div>
+                )}
+              </>
+            );
+          })()}
         </div>
       )}
 

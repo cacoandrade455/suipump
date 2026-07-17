@@ -8,6 +8,7 @@ import { Transaction } from '@mysten/sui/transactions';
 import { Send, Reply, ChevronDown, ChevronUp } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { t } from './i18n.js';
+import { executeTx } from './lib/executeTx.js';
 
 function getPfp(addr) { try { return localStorage.getItem(`suipump_pfp_${addr}`) || ''; } catch { return ''; } }
 import {
@@ -15,7 +16,7 @@ import {
   PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6,
   PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8,
   COMMENT_FEE_MIST, isV7OrLater, isV9OrLater, isV10OrLater,
-  PACKAGE_ID, PACKAGE_ID_V12,
+  PACKAGE_ID, PACKAGE_ID_V12, PACKAGE_ID_V13,
 } from './constants.js';
 
 // Sui GraphQL endpoint - same one CommentGatePanel (TokenPage.jsx) reads
@@ -68,7 +69,12 @@ function timeAgo(ts) {
 
 // Build a lineage post_comment moveCall onto `tx`. parentId = ZERO_ADDR for a
 // top-level comment, else the parent comment's tx digest (as an address).
-// Sig (V10..V12): post_comment<T>(curve, text, payment, author, &holder_coin, parent_id, ctx)
+// Per-package dispatch (deployed bytecode is frozen; V13 changed the arity):
+//   V13+ (env-gated): post_comment<T>(curve, text, payment, &holder_coin, parent_id, ctx)
+//     - author derived from the tx sender on-chain (audit F-7), no author arg.
+//   V12 (live today): post_comment<T>(curve, text, payment, author, &holder_coin, parent_id, ctx)
+// PACKAGE_ID_V13 comes from VITE_SUIPUMP_V13_PACKAGE, unset until the V13
+// publish, so comments keep the live V12 shape until the Vercel env flips.
 //
 // TARGET: the ACTIVE package (V12+), NOT the curve-derived packageId. The curve
 // type defines at V10 forever, but V10 bytecode holder-gates UNCONDITIONALLY --
@@ -89,17 +95,26 @@ function buildV10PostComment({ tx, curveRef, packageId: _packageId, tokenType, t
     [zeroCoin] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [tokenType], arguments: [] });
     holderArg = zeroCoin;
   }
+  const useV13 = Boolean(PACKAGE_ID_V13);
   tx.moveCall({
-    target: `${PACKAGE_ID}::bonding_curve::post_comment`,
+    target: `${useV13 ? PACKAGE_ID_V13 : PACKAGE_ID}::bonding_curve::post_comment`,
     typeArguments: [tokenType],
-    arguments: [
-      curveRef,
-      tx.pure.string(text),
-      feeCoin,
-      tx.pure.address(author),
-      holderArg,
-      tx.pure.address(parentId ?? ZERO_ADDR),
-    ],
+    arguments: useV13
+      ? [
+          curveRef,
+          tx.pure.string(text),
+          feeCoin,
+          holderArg,
+          tx.pure.address(parentId ?? ZERO_ADDR),
+        ]
+      : [
+          curveRef,
+          tx.pure.string(text),
+          feeCoin,
+          tx.pure.address(author),
+          holderArg,
+          tx.pure.address(parentId ?? ZERO_ADDR),
+        ],
   });
   if (zeroCoin) {
     tx.moveCall({ target: '0x2::coin::destroy_zero', typeArguments: [tokenType], arguments: [zeroCoin] });
@@ -185,7 +200,7 @@ function CommentItem({ comment, replies, account, curveId, onReplyPosted,
         holderCoinId: coinId, parentId: parentDigest,
       });
 
-      const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const result = await executeTx(dAppKit, null, tx, account.address);
       if (result.FailedTransaction) throw new Error(result.FailedTransaction.status.error ?? 'Reply failed');
       const txDigest = result.digest ?? result.Transaction?.digest ?? null;
 
@@ -537,7 +552,7 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
         });
       }
 
-      const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const result = await executeTx(dAppKit, null, tx, account.address);
       if (result.FailedTransaction) throw new Error(result.FailedTransaction.status.error ?? 'Post failed');
 
       const txDigest = result.digest ?? result.Transaction?.digest ?? null;
