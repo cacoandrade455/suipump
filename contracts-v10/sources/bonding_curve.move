@@ -114,6 +114,7 @@ module suipump::bonding_curve {
     const EReserveTooLow:            u64 = 52; // F-2: graduated reserve below the mint-site floor
     const EPriceOutOfBand:           u64 = 43; // V13: set_sui_price outside [MIN,MAX]_PRICE_SCALED
     const EPreMintedSupply:          u64 = 53; // F-1: TreasuryCap had supply before create_and_return
+    const EPriceConfigExists:        u64 = 54; // V13: create_price_config already called on this AdminCap
 
     /// V12 comments toggle: dynamic-field marker on the curve. Marker ABSENT =
     /// holder-gated (the V10/V11 default, preserved); marker PRESENT = open
@@ -127,6 +128,12 @@ module suipump::bonding_curve {
     // enforced by buy/sell/execute_buyback, so a future reserve-touching function
     // cannot silently re-open the 200M mint.
     const GRAD_CLAIMED_KEY:     vector<u8> = b"grad_funds_claimed";
+    // V13: one-shot marker for create_price_config. Dynamic field on the
+    // AdminCap's UID (which is why create_price_config takes &mut AdminCap).
+    // PRESENT = the admin entrypoint already shared the upgrade-path PriceConfig,
+    // so a second call aborts EPriceConfigExists instead of minting a duplicate
+    // config that could de-synchronize clients pinning SUIPUMP_PRICE_CONFIG.
+    const PRICE_CONFIG_CREATED_KEY: vector<u8> = b"price_config_created";
 
     const MAX_COMMENT_BYTES: u64 = 280;
     const MAX_NAME_BYTES:    u64 = 64;
@@ -261,6 +268,9 @@ module suipump::bonding_curve {
         // V13: one shared PriceConfig per package. Starts UNSET (0), so every buy
         // falls back to the static BASE_GRAD_MIST until the relayer publishes the
         // first price. Launching before the relayer runs is therefore safe.
+        // NOTE: the PRICE_CONFIG_CREATED_KEY marker guards only the admin
+        // entrypoint (create_price_config); fresh publishes still get their
+        // PriceConfig from init, unguarded, exactly as before.
         transfer::share_object(PriceConfig {
             id:               object::new(ctx),
             sui_price_scaled: 0,
@@ -292,6 +302,29 @@ module suipump::bonding_curve {
         event::emit(SuiPriceUpdated {
             price_scaled,
             updated_at_ms: cfg.updated_at_ms,
+        });
+    }
+
+    /// V13 upgrade bootstrap: share the PriceConfig on an UPGRADED package.
+    /// init only runs on a FRESH publish, so the V10-lineage upgrade would
+    /// otherwise land with buy() taking &PriceConfig and NO PriceConfig object
+    /// in existence - every V13-dispatched buy would be unconstructable.
+    /// Shares the exact UNSET state init creates (sui_price_scaled = 0,
+    /// updated_at_ms = 0), so the BASE_GRAD_MIST fallback applies until the
+    /// relayer publishes the first price.
+    /// Must be called EXACTLY ONCE by the AdminCap holder immediately after the
+    /// V13 upgrade; upgrades do not run init. Clients pin the resulting object
+    /// id via SUIPUMP_PRICE_CONFIG.
+    /// One-shot: a dynamic-field marker on the AdminCap's UID
+    /// (PRICE_CONFIG_CREATED_KEY) makes any second call abort
+    /// EPriceConfigExists.
+    public fun create_price_config(admin: &mut AdminCap, ctx: &mut TxContext) {
+        assert!(!df::exists(&admin.id, PRICE_CONFIG_CREATED_KEY), EPriceConfigExists);
+        df::add(&mut admin.id, PRICE_CONFIG_CREATED_KEY, true);
+        transfer::share_object(PriceConfig {
+            id:               object::new(ctx),
+            sui_price_scaled: 0,
+            updated_at_ms:    0,
         });
     }
 

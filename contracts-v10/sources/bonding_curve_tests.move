@@ -76,6 +76,7 @@ module suipump::bonding_curve_tests {
     const E_CREATOR_STILL_ACTIVE:     u64 = 40;
     const E_LP_ALREADY_CLAIMED:       u64 = 51;
     const E_RESERVE_TOO_LOW:          u64 = 52;
+    const E_PRICE_CONFIG_EXISTS:      u64 = 54;
 
     const LP_SUPPLY_ATOMIC:           u64 = 200_000_000 * 1_000_000; // 1B total - 800M curve
 
@@ -1324,6 +1325,124 @@ module suipump::bonding_curve_tests {
         clock::destroy_for_testing(clk);
         ts::return_to_sender(&s, admin);
         ts::return_shared(cfg);
+        ts::end(s);
+    }
+
+    // --- V13: create_price_config (upgrade bootstrap; upgrades never run init) ---
+
+    #[test]
+    fun test_create_price_config_shares_unset_config() {
+        let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
+
+        ts::next_tx(&mut s, CREATOR);
+        // Pin init's config id FIRST so we can prove the admin entrypoint shared
+        // a DIFFERENT object (on an upgraded package only the admin-created one
+        // would exist - init never re-runs on upgrade).
+        let init_cfg_id = option::destroy_some(ts::most_recent_id_shared<PriceConfig>());
+        let mut admin = ts::take_from_sender<AdminCap>(&s);
+        bonding_curve::create_price_config(&mut admin, ts::ctx(&mut s));
+        ts::return_to_sender(&s, admin);
+
+        ts::next_tx(&mut s, CREATOR);
+        let new_cfg_id = option::destroy_some(ts::most_recent_id_shared<PriceConfig>());
+        assert!(new_cfg_id != init_cfg_id, 3000);
+        let cfg = ts::take_shared_by_id<PriceConfig>(&s, new_cfg_id);
+        // Exact UNSET state init creates: the BASE_GRAD_MIST fallback applies
+        // until the relayer publishes the first price.
+        assert!(bonding_curve::price_scaled(&cfg) == 0, 3001);
+        assert!(bonding_curve::price_updated_at_ms(&cfg) == 0, 3002);
+        ts::return_shared(cfg);
+        ts::end(s);
+    }
+
+    #[test]
+    #[expected_failure(abort_code = E_PRICE_CONFIG_EXISTS, location = suipump::bonding_curve)]
+    fun test_create_price_config_second_call_aborts() {
+        let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
+
+        ts::next_tx(&mut s, CREATOR);
+        let mut admin = ts::take_from_sender<AdminCap>(&s);
+        bonding_curve::create_price_config(&mut admin, ts::ctx(&mut s));
+        // The dynamic-field marker on the AdminCap's UID makes any second call
+        // abort - one PriceConfig per lineage, forever.
+        bonding_curve::create_price_config(&mut admin, ts::ctx(&mut s));
+        ts::return_to_sender(&s, admin);
+        ts::end(s);
+    }
+
+    #[test]
+    fun test_buy_via_admin_created_config_matches_init_config() {
+        let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
+
+        // Curve A - will trade against init's PriceConfig.
+        ts::next_tx(&mut s, CREATOR);
+        let (a1, b1) = make_payouts_single();
+        setup_curve(&mut s, a1, b1);
+
+        // Curve B - will trade against the admin-created PriceConfig.
+        ts::next_tx(&mut s, CREATOR);
+        let curve_a_id = option::destroy_some(ts::most_recent_id_shared<Curve<TEST_TOKEN>>());
+        let (a2, b2) = make_payouts_single();
+        setup_curve(&mut s, a2, b2);
+
+        ts::next_tx(&mut s, CREATOR);
+        let curve_b_id = option::destroy_some(ts::most_recent_id_shared<Curve<TEST_TOKEN>>());
+        assert!(curve_a_id != curve_b_id, 3010);
+        let init_cfg_id = option::destroy_some(ts::most_recent_id_shared<PriceConfig>());
+        let mut admin = ts::take_from_sender<AdminCap>(&s);
+        bonding_curve::create_price_config(&mut admin, ts::ctx(&mut s));
+
+        // Publish the SAME price ($0.75) into BOTH configs.
+        ts::next_tx(&mut s, CREATOR);
+        let admin_cfg_id = option::destroy_some(ts::most_recent_id_shared<PriceConfig>());
+        assert!(admin_cfg_id != init_cfg_id, 3011);
+        let mut init_cfg  = ts::take_shared_by_id<PriceConfig>(&s, init_cfg_id);
+        let mut admin_cfg = ts::take_shared_by_id<PriceConfig>(&s, admin_cfg_id);
+        let clk = clock::create_for_testing(ts::ctx(&mut s));
+        bonding_curve::set_sui_price(&admin, &mut init_cfg, 750, &clk);
+        bonding_curve::set_sui_price(&admin, &mut admin_cfg, 750, &clk);
+
+        // Identical 1 SUI buys on two fresh curves, one per config.
+        ts::next_tx(&mut s, BUYER);
+        let mut curve_a = ts::take_shared_by_id<Curve<TEST_TOKEN>>(&s, curve_a_id);
+        let mut curve_b = ts::take_shared_by_id<Curve<TEST_TOKEN>>(&s, curve_b_id);
+        let pay_a = mint_sui(1 * MIST_PER_SUI, &mut s);
+        let (tok_a, ref_a) = bonding_curve::buy<TEST_TOKEN>(
+            &mut curve_a, pay_a, 0, option::none(), &init_cfg, &clk, ts::ctx(&mut s)
+        );
+        let pay_b = mint_sui(1 * MIST_PER_SUI, &mut s);
+        let (tok_b, ref_b) = bonding_curve::buy<TEST_TOKEN>(
+            &mut curve_b, pay_b, 0, option::none(), &admin_cfg, &clk, ts::ctx(&mut s)
+        );
+
+        // Same observable outcome through either config: tokens out, refund,
+        // both reserves, and the dampened threshold ($0.75 -> 10,392,098,152,340
+        // exactly as in test_published_price_dampens_threshold).
+        assert!(coin::value(&tok_a) > 0, 3012);
+        assert!(coin::value(&tok_a) == coin::value(&tok_b), 3013);
+        assert!(coin::value(&ref_a) == coin::value(&ref_b), 3014);
+        assert!(bonding_curve::sui_reserve(&curve_a) == bonding_curve::sui_reserve(&curve_b), 3015);
+        assert!(bonding_curve::token_reserve(&curve_a) == bonding_curve::token_reserve(&curve_b), 3016);
+        assert!(bonding_curve::current_grad_threshold(&curve_b) == 10_392_098_152_340, 3017);
+        assert!(
+            bonding_curve::current_grad_threshold(&curve_a)
+                == bonding_curve::current_grad_threshold(&curve_b),
+            3018,
+        );
+
+        destroy(tok_a); destroy(ref_a);
+        destroy(tok_b); destroy(ref_b);
+        clock::destroy_for_testing(clk);
+        // Taken from CREATOR but the current tx sender is BUYER, so
+        // return_to_sender would abort with ECantReturnObject (code 2).
+        ts::return_to_address(CREATOR, admin);
+        ts::return_shared(init_cfg);
+        ts::return_shared(admin_cfg);
+        ts::return_shared(curve_a);
+        ts::return_shared(curve_b);
         ts::end(s);
     }
 
