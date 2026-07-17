@@ -2,11 +2,20 @@
 // Graduates a SuiPump bonding curve to a DeepBook BalanceManager.
 //
 // DUAL-MODE:
-//   - Exported function: graduateToDeepBook({ curveId, tokenType, pkgId, keypair, client })
-//     Called by indexer/auto_graduate.js - all context passed in, no process.exit.
+//   - Exported function: graduateToDeepBook({ curveId, tokenType, pkgId })
+//     Called by indexer/auto_graduate.js. Callers pass PLAIN STRINGS ONLY.
+//     THIS MODULE OWNS ITS CLIENT AND KEYPAIR: it is pinned to @mysten/sui
+//     2.16.2 (v2 SuiJsonRpcClient), whose classes are NOT interchangeable with
+//     a caller's SDK install - an injected v2 grpc/graphql client has different
+//     call shapes (getObject({objectId}) vs getObject({id, options}), no
+//     signAndExecuteTransaction({signer})), and keypair instances constructed
+//     across node_modules boundaries fail internal checks. Client comes from
+//     defaultClient() (env SUIPUMP_JSONRPC_URL / SUI_RPC_URL), keypair from
+//     defaultKeypair() (env SUI_PRIVATE_KEY). No process.exit.
 //
 //   - Standalone CLI: node graduate_deepbook_full.js <CURVE_ID>
-//     Uses env SUI_PRIVATE_KEY + SUI_RPC_URL, calls process.exit on failure.
+//     Uses env SUI_PRIVATE_KEY + SUIPUMP_JSONRPC_URL (or SUI_RPC_URL), calls
+//     process.exit on failure.
 //
 // Steps:
 //   1. Call graduate() on-chain (if not already graduated)
@@ -74,8 +83,10 @@ function fmtSui(mist) {
 // The endpoint MUST come from env: the Sui Foundation public testnet JSON-RPC
 // fullnode shut off the week of 2026-07-06, so a getFullnodeUrl-style default
 // would be a dead endpoint. SUIPUMP_JSONRPC_URL is a third-party JSON-RPC
-// endpoint; SUI_RPC_URL kept as the legacy alias.
-function defaultClient() {
+// endpoint; SUI_RPC_URL kept as the legacy alias. Exported so read-only
+// tooling (scripts/dryrun_graduation_load.js) can build this module's own
+// client flavor without duplicating the env handling.
+export function defaultClient() {
   const url = process.env.SUIPUMP_JSONRPC_URL || process.env.SUI_RPC_URL;
   if (!url) {
     throw new Error(
@@ -165,17 +176,24 @@ function isReserveTooLow(msg) {
 
 /**
  * Graduates a SuiPump curve to DeepBook.
- * Called by auto_graduate.js - all deps passed in, never calls process.exit.
+ * Called by auto_graduate.js - never calls process.exit.
+ *
+ * Takes plain strings ONLY. The module builds its own client + keypair from
+ * env (SUIPUMP_JSONRPC_URL / SUI_RPC_URL, SUI_PRIVATE_KEY): this dir's pinned
+ * @mysten/sui 2.16.2 classes are not interchangeable with the caller's SDK
+ * install, so injected client/keypair objects are refused by design.
  *
  * @param {object} opts
  * @param {string}   opts.curveId   - Shared curve object ID
  * @param {string}   opts.tokenType - Full Move type e.g. 0x...::template::TEMPLATE
  * @param {string}   opts.pkgId     - Package ID the curve was launched on
- * @param {object}   opts.keypair   - Ed25519Keypair (admin wallet)
- * @param {object}   opts.client    - SuiClient instance
  * @returns {Promise<{ poolId: string, txDigest: string }>}
  */
-export async function graduateToDeepBook({ curveId, tokenType, pkgId, keypair, client }) {
+export async function graduateToDeepBook({ curveId, tokenType, pkgId }) {
+  // Module-owned client + keypair (env-driven) - see module header.
+  const client  = defaultClient();
+  const keypair = defaultKeypair();
+
   const address   = keypair.toSuiAddress();
   const adminCapId = ADMIN_CAPS[pkgId];
   if (!adminCapId) throw new Error(`No AdminCap for package ${pkgId}`);
@@ -184,7 +202,7 @@ export async function graduateToDeepBook({ curveId, tokenType, pkgId, keypair, c
   // upgrade that contains claim_graduation_funds.
   const writePkg = writePackageFor(pkgId);
 
-  console.log(`  [deepbook] Graduating ${curveId.slice(0, 12)}... -> DeepBook`);
+  console.log(`  [deepbook] Graduating ${curveId} -> DeepBook`);
   console.log(`  [deepbook] token: ${tokenType}`);
   console.log(`  [deepbook] pkg:   ${pkgId} (write ${writePkg})`);
 
@@ -414,8 +432,9 @@ if (process.argv[1] && process.argv[1].endsWith('graduate_deepbook_full.js')) {
     process.exit(1);
   }
 
-  const client  = defaultClient();
-  const keypair = defaultKeypair();
+  // CLI-local client for the startup assert + curve metadata fetch;
+  // graduateToDeepBook builds its own client + keypair internally.
+  const client = defaultClient();
 
   // Startup assert (CLI path only - the library export is covered by
   // auto_graduate's startup assert): the write target must expose the
@@ -456,7 +475,7 @@ if (process.argv[1] && process.argv[1].endsWith('graduate_deepbook_full.js')) {
   console.log();
 
   try {
-    const result = await graduateToDeepBook({ curveId, tokenType, pkgId, keypair, client });
+    const result = await graduateToDeepBook({ curveId, tokenType, pkgId });
     console.log();
     console.log(`  txDigest: ${result.txDigest}`);
     console.log(`  poolId:   ${result.poolId}`);

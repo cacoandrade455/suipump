@@ -2,16 +2,16 @@
 // Polls the DB every 30s for curves that have crossed the graduation threshold
 // and fires the appropriate graduation script automatically.
 //
-// IMPORTANT: grpcClient is passed in from index.js which uses GrpcTransport
-// (Node.js native @grpc/grpc-js). Do NOT create a new SuiGrpcClient here
-// with GrpcWebFetchTransport (browser-only fetch) - that causes "fetch failed".
+// IMPORTANT: this watcher passes the graduation modules PLAIN STRINGS ONLY
+// ({ curveId, tokenType, pkgId }). Each module owns its OWN client + keypair
+// (env-driven defaultClient()/defaultKeypair()) because the graduation dirs
+// pin their own @mysten/sui installs (graduation-test: 2.16.2 v2
+// SuiJsonRpcClient; graduation-test-turbos: ^1.45.2 v1 SuiClient) whose call
+// shapes and classes are NOT interchangeable with this indexer's v2 grpc/
+// graphql clients - injecting our client or a cross-install keypair object
+// into them never worked. The watcher's OWN reads stay on GraphQL below.
 
-import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
-import { fromBase64 } from '@mysten/sui/utils';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { homedir } from 'node:os';
 import { pool } from './db.js';
 import { LATEST_WRITE_PACKAGE, assertWriteTarget } from './write_target.js';
 
@@ -72,20 +72,6 @@ const POLL_INTERVAL_MS = 30_000;
 
 const inProgress = new Set();
 
-// -- Keypair -------------------------------------------------------------------
-
-function loadKeypair() {
-  if (process.env.SUI_PRIVATE_KEY) {
-    const raw  = fromBase64(process.env.SUI_PRIVATE_KEY);
-    const seed = (raw.length === 33 || raw.length === 65) ? raw.slice(1) : raw;
-    return Ed25519Keypair.fromSecretKey(seed);
-  }
-  const keystorePath = join(homedir(), '.sui', 'sui_config', 'sui.keystore');
-  const keys = JSON.parse(readFileSync(keystorePath, 'utf-8'));
-  const raw  = fromBase64(keys[0]);
-  return Ed25519Keypair.fromSecretKey(raw[0] === 0x00 ? raw.slice(1) : raw);
-}
-
 // -- Helpers -------------------------------------------------------------------
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -105,7 +91,10 @@ function hasPool(fields) {
 
 // -- DEX pool creation ---------------------------------------------------------
 
-async function createDexPool(client, curveId, tokenType, pkgId, graduationTarget, keypair) {
+// Dispatches to the graduation module for the curve's DEX target. Plain
+// strings only - each module builds its OWN client + keypair from env (see
+// module headers; their pinned SDK installs are not interchangeable with ours).
+async function createDexPool(curveId, tokenType, pkgId, graduationTarget) {
   const target = Number(graduationTarget ?? 0);
 
   if (target === 0) {
@@ -116,7 +105,7 @@ async function createDexPool(client, curveId, tokenType, pkgId, graduationTarget
     console.log(`  [auto-grad] Creating Turbos pool...`);
     try {
       const { graduateToTurbos } = await import('../graduation-test-turbos/graduate_turbos_full.js');
-      return await graduateToTurbos({ curveId, tokenType, pkgId, keypair, client });
+      return await graduateToTurbos({ curveId, tokenType, pkgId });
     } catch (err) {
       console.error(`  [auto-grad] Turbos pool creation failed:`, err.message);
       return null;
@@ -126,7 +115,7 @@ async function createDexPool(client, curveId, tokenType, pkgId, graduationTarget
     console.log(`  [auto-grad] Creating DeepBook pool...`);
     try {
       const { graduateToDeepBook } = await import('../graduation-test/graduate_deepbook_full.js');
-      return await graduateToDeepBook({ curveId, tokenType, pkgId, keypair, client });
+      return await graduateToDeepBook({ curveId, tokenType, pkgId });
     } catch (err) {
       console.error(`  [auto-grad] DeepBook pool creation failed:`, err.message);
       return null;
@@ -136,11 +125,10 @@ async function createDexPool(client, curveId, tokenType, pkgId, graduationTarget
 
 // -- Main graduation flow ------------------------------------------------------
 
-async function graduateCurve(client, curveId, curveData) {
+async function graduateCurve(curveId, curveData) {
   if (inProgress.has(curveId)) return;
   inProgress.add(curveId);
 
-  const keypair    = loadKeypair();
   const pkgId      = curveData.package_id || PACKAGES.V10; // DEFINING pkg; V10 lineage default, never silently V8
   const adminCapId = ADMIN_CAPS[pkgId];
   const tokenType  = curveData.token_type;
@@ -168,7 +156,7 @@ async function graduateCurve(client, curveId, curveData) {
     // auto_graduate no longer graduates/claims itself - doing both here AND in the
     // full script caused a double claim whose second call aborted with
     // ELpAlreadyClaimed (code 51). This is now a thin watcher+dispatcher.
-    const poolResult = await createDexPool(client, curveId, tokenType, pkgId, gradTarget, keypair);
+    const poolResult = await createDexPool(curveId, tokenType, pkgId, gradTarget);
 
     if (poolResult?.skipped) {
       // Terminal skip (e.g. EReserveTooLow / F-2 griefed graduation). Mark handled
@@ -193,9 +181,12 @@ async function graduateCurve(client, curveId, curveData) {
 }
 
 // -- Watcher loop --------------------------------------------------------------
-// grpcClient is passed in from index.js (uses GrpcTransport, not GrpcWebFetchTransport)
+// index.js still calls startGraduationWatcher(grpcClient); the parameter is
+// accepted for call-compat but intentionally UNUSED - the watcher's own reads
+// go through graphqlClient above, and the dispatched graduation modules build
+// their own clients (their pinned SDKs are not interchangeable with ours).
 
-export async function startGraduationWatcher(grpcClient) {
+export async function startGraduationWatcher(_grpcClient) {
   console.log('  [auto-grad] Graduation watcher started - polling every 30s');
 
   // Startup assert: the write target must expose the functions THIS watcher's
@@ -242,7 +233,7 @@ export async function startGraduationWatcher(grpcClient) {
           // pool yet. Driven off (graduated && !pool_id) - NOT off a static SUI
           // reserve threshold, which is dead for V9+ inline graduation.
           if (isGraduated && !poolCreated) {
-            graduateCurve(grpcClient, row.curve_id, {
+            graduateCurve(row.curve_id, {
               ...row,
               token_type:        row.token_type        || fields.token_type,
               graduation_target: row.graduation_target ?? fields.graduation_target ?? 0,
@@ -254,7 +245,7 @@ export async function startGraduationWatcher(grpcClient) {
             await pool.query(`UPDATE curves SET graduated = true WHERE curve_id = $1`, [row.curve_id]);
           }
         } catch (err) {
-          console.error(`  [auto-grad] getObject error for ${row.curve_id.slice(0, 12)}:`, err.message);
+          console.error(`  [auto-grad] getObject error for ${row.curve_id}:`, err.message);
         }
       }
     } catch (err) {
