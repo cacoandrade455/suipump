@@ -20,8 +20,14 @@ Live testnet ids (full, never truncated):
 | V13 package | `0xdf66376f006557b9f81b3455ee786ffd7f2a633488cc3bd31a37ddbdc69bd56b` |
 | PriceConfig (shared) | `0xa5b38690b2883e8e4d2c155c43a438dcbc67f027a2577f529198843a989a21f9` |
 | PriceRelayerCap (relayer wallet) | `0x818e0263bc28f5f6089ed6b120fa818cba61d0378897f197398ed2b860ad7510` |
-| AdminCap V13 (cold, main wallet) | `0xb3d3155ca1bc153664143895928aa77384f5c70f752c306e10fa619f460e039d` |
+| AdminCap V13 (main wallet - see GRAD-1) | `0xb3d3155ca1bc153664143895928aa77384f5c70f752c306e10fa619f460e039d` |
 | UpgradeCap V13 (main wallet) | `0x79ebefc92e5da42720ff4b3e719a71e4ecd5428a9750d4ada8257f61e3556a19` |
+
+**NOTE (GRAD-1, addendum 4):** AdminCap V13 is owned by the main wallet, but that
+wallet's key is NOT fully cold on testnet - it is `GRADUATION_SIGNER_KEY` on the
+always-online graduation worker so graduation can run automated. This is a
+testnet-only expedient that MUST be removed before mainnet (a `GraduationCap` V14
+split). Do not read "main wallet" here as "cold." See addendum 4.
 
 - Publish tx digest: `HFqyRPYV2UXYnqt83KegrhFpUReoGgncXPC42n8rADq1`
 - CLI toolchain: `sui 1.75.2-027e13b2c140`
@@ -661,3 +667,53 @@ longer bundled with the treasury cap).
   reopening of F-2.
 
 `sui move test` = 117/117, zero warnings after this fix.
+
+---
+
+## Addendum 4 (2026-07-17) - GRAD-1 [B, HIGH] OPEN (testnet-accepted, mainnet-blocking)
+
+### [B - HIGH] GRAD-1 - the graduation signer holds the AdminCap holder's key on an always-online server
+
+- **Location:** `indexer/auto_graduate.js` (dispatches graduation) +
+  `graduation-test/graduate_deepbook_full.js` and
+  `graduation-test-turbos/graduate_turbos_full.js` (sign `claim_graduation_funds` /
+  `record_graduation_pool`, both AdminCap-gated). Signer env: `GRADUATION_SIGNER_KEY`.
+- **Provenance:** founder decision 2026-07-17, reversing the earlier "graduation stays
+  manual" plan. Graduation must be automated on testnet.
+- **Description.** `claim_graduation_funds` and `record_graduation_pool` are
+  AdminCap-gated. To automate graduation, the auto-graduate subsystem signs with
+  `GRADUATION_SIGNER_KEY`, which carries the MAIN wallet key that holds AdminCap V13
+  `0xb3d3155ca1bc153664143895928aa77384f5c70f752c306e10fa619f460e039d`. That places
+  the AdminCap holder's private key on an always-online Render worker.
+- **Why B (HIGH), and the honest tension with E-1.** E-1 was raised precisely to keep
+  the AdminCap OFF a hot server: it split the 5-minute price push onto a separate
+  `PriceRelayerCap` so the treasury cap could stay cold. GRAD-1 partially undoes that
+  benefit for a DIFFERENT hot server (the graduation worker), whose key CAN drain any
+  graduated reserve and mint the 200M LP. If that key is stolen, the loss envelope is
+  the same Critical-grade surface E-1 describes. It is a centralization / trust-boundary
+  exposure, conditional on off-chain key theft - not a contract bug - so it is rated B,
+  matching E-1's framing.
+- **Why accepted on testnet.** Testnet faucet money only, and the graduation loop has
+  never been proven end-to-end, so automating it is the way to prove it. The two signer
+  keys are strictly separated in code (see below), so GRAD-1 does not widen the price
+  relayer's blast radius or vice versa.
+- **Status: OPEN - testnet-accepted, MAINNET-BLOCKING.** It MUST NOT reach mainnet.
+- **Mainnet fix (planned, not built): a `GraduationCap`.** An additive (compatible) V14
+  upgrade via UpgradeCap V13
+  `0x79ebefc92e5da42720ff4b3e719a71e4ecd5428a9750d4ada8257f61e3556a19` adds a capability
+  whose ONLY powers are `claim_graduation_funds` and `record_graduation_pool`, plus an
+  `active_graduation_cap_id` rotation field so the cold AdminCap can revoke a compromised
+  graduation cap instantly (the same swap pattern as the CreatorCap CTO takeover). When
+  V14 ships, auto_graduate moves to that cap and `GRADUATION_SIGNER_KEY` is deleted from
+  Render. This is the graduation analogue of the E-1 `PriceRelayerCap` split.
+- **Signer separation (enforced in code, asserted in comments):**
+  `GRADUATION_SIGNER_KEY` (main wallet, AdminCap) is read ONLY by the graduation scripts;
+  `SUI_PRIVATE_KEY` (price relayer wallet
+  `0xce53cb8f9befc490393d70528ef732bbcbe12d951ffcdd76a37af9b0f9624629`, PriceRelayerCap)
+  is read ONLY by the price publisher and CTO sweeper. `auto_graduate` never reads
+  `SUI_PRIVATE_KEY`; `price_publisher` never reads `GRADUATION_SIGNER_KEY`. This is why
+  the audit package must NOT claim the AdminCap is fully cold while GRAD-1 is live.
+- **Cross-references:** E-1 (the split that GRAD-1 partially reverses for a second server),
+  F-14 (the standing multisig-migration surface), `AUDIT_NOTES.md` GRAD-1.
+- **Corpus reference:** Class 10 / Class 12 - a privileged always-online key; the same
+  concentration E-1 addressed, re-introduced on the graduation path under a time-box.

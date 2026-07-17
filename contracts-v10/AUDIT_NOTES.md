@@ -181,3 +181,35 @@ Publish record in `SECURITY_REAUDIT_2026-07-17_PREPUBLISH.md`), so the live caps
   V10-lineage AdminCap
   `0x144d426960a9a6b8db63ce3426e06a9c41273a17e72ed0193cd8c8507d4f6ec5` still governs
   the frozen V4-V12 curves and is a separate F-14 item.
+
+---
+
+## GRAD-1 - graduation signer holds the AdminCap key on a hot server (TESTNET-ONLY)
+
+**Status: OPEN - testnet-accepted, MAINNET-BLOCKING. Reverses the earlier
+"manual graduation" plan; founder decision 2026-07-17.**
+
+Graduation was automated on testnet by giving the auto-graduation subsystem a
+separate signer, `GRADUATION_SIGNER_KEY`, that carries the main wallet key holding
+AdminCap V13. In these words:
+
+> TESTNET-ONLY EXPEDIENT - REMOVE AT V14. GRADUATION_SIGNER_KEY carries the AdminCap
+> holder's private key on an always-online server. This is precisely the
+> concentration that finding E-1 was raised to eliminate, and it is accepted here
+> ONLY because this is testnet faucet money and the graduation loop has never been
+> proven end-to-end. It MUST NOT reach mainnet. The fix is a GraduationCap: an
+> additive (compatible) V14 upgrade via UpgradeCap V13
+> `0x79ebefc92e5da42720ff4b3e719a71e4ecd5428a9750d4ada8257f61e3556a19` adding a cap
+> whose only powers are claim_graduation_funds and record_graduation_pool, plus an
+> active_graduation_cap_id rotation field so the cold AdminCap can revoke a
+> compromised cap instantly (same pattern as the CreatorCap swap). When V14 ships,
+> auto_graduate moves to that cap and GRADUATION_SIGNER_KEY is deleted from Render.
+
+Cross-references: this partially UNDOES E-1's benefit (E-1 kept the AdminCap off the
+hot price server; GRAD-1 now puts the AdminCap holder's key on the hot graduation
+server) and is a live instance of the F-14 centralization surface. The two signer
+keys are strictly separated in code: `GRADUATION_SIGNER_KEY` (main wallet, AdminCap)
+is read ONLY by the graduation scripts; `SUI_PRIVATE_KEY` (price relayer wallet,
+PriceRelayerCap) is read ONLY by the price publisher and CTO sweeper. Neither path
+reads the other's key. Tracked as finding GRAD-1 in
+`SECURITY_REAUDIT_2026-07-17_PREPUBLISH.md`.
