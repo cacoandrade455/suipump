@@ -1,5 +1,41 @@
 # SECURITY_REAUDIT_2026-07-17_PREPUBLISH.md - Full pre-publish adversarial re-audit of the assembled V13 package
 
+## Publish record 2026-07-17
+
+V13 was PUBLISHED to testnet on 2026-07-17 as a **FRESH PUBLISH, not an upgrade of
+the V10 lineage.** Sui's `compatible` upgrade policy rejected upgrading the V10
+package because V13 changes public function signatures (`buy` and `buy_with_session`:
+`sui_price_scaled: u64` -> `&PriceConfig`; `post_comment`: 7 -> 6 params) and the CTO
+struct family. Removing the caller-supplied price is exactly the F-2 fix, so a
+signature-breaking change was unavoidable and a fresh publish was the only path.
+**Consequence:** V13 is a NEW LINEAGE with its own type identity - V13 curves are
+`0xdf66376f006557b9f81b3455ee786ffd7f2a633488cc3bd31a37ddbdc69bd56b::bonding_curve::Curve<T>`,
+NOT V10-typed. Any statement elsewhere that V13 is "the third upgrade of the V10
+lineage" describes the pre-publish plan and is superseded by this record.
+
+Live testnet ids (full, never truncated):
+
+| Object | Id |
+|--------|-----|
+| V13 package | `0xdf66376f006557b9f81b3455ee786ffd7f2a633488cc3bd31a37ddbdc69bd56b` |
+| PriceConfig (shared) | `0xa5b38690b2883e8e4d2c155c43a438dcbc67f027a2577f529198843a989a21f9` |
+| PriceRelayerCap (relayer wallet) | `0x818e0263bc28f5f6089ed6b120fa818cba61d0378897f197398ed2b860ad7510` |
+| AdminCap V13 (cold, main wallet) | `0xb3d3155ca1bc153664143895928aa77384f5c70f752c306e10fa619f460e039d` |
+| UpgradeCap V13 (main wallet) | `0x79ebefc92e5da42720ff4b3e719a71e4ecd5428a9750d4ada8257f61e3556a19` |
+
+- Publish tx digest: `HFqyRPYV2UXYnqt83KegrhFpUReoGgncXPC42n8rADq1`
+- CLI toolchain: `sui 1.75.2-027e13b2c140`
+- Relayer wallet (owns the PriceRelayerCap): `0xce53cb8f9befc490393d70528ef732bbcbe12d951ffcdd76a37af9b0f9624629`
+
+**PREPUBLISH-2 confirmed live on the first publish it applied to.** The one-shot
+marker `init` now sets on the AdminCap (fix `0ef9b032`) was observed on-chain as a
+dynamic field on AdminCap V13 at
+`0x949f7f58bb8e51f9a51af930e2ac38bc94b0bc150731c9fe0be0b4858b701fb7`. Its presence
+means `create_price_config` can never mint a second `PriceConfig`/`PriceRelayerCap`
+on this package - the fix working on the exact fresh-publish path it was written for.
+
+---
+
 - **Scope:** the COMPLETE assembled `contracts-v10` package as it stands on
   `wip-graduation-v13` @ `bebc6eda` (CTO vote window 72h), read as one integrated
   system, not as a base plus bolt-ons:

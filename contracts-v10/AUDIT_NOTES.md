@@ -164,3 +164,20 @@ That migration is a MAINNET-BLOCKING gate (CLAUDE.md). After the E-1 split the
 cap no longer needs to be online for price pushes, so it CAN be held cold in the
 multisig - which is exactly what E-1 makes possible. F-14 is the standing tracker
 for that migration; it is accepted-until-mainnet, not a code defect.
+
+**Post-publish update (2026-07-17): F-14 now applies to the LIVE V13 caps.** V13
+shipped as a FRESH PUBLISH (its own type identity, not a V10 upgrade; see the
+Publish record in `SECURITY_REAUDIT_2026-07-17_PREPUBLISH.md`), so the live caps are:
+
+- AdminCap V13 `0xb3d3155ca1bc153664143895928aa77384f5c70f752c306e10fa619f460e039d`
+  - held COLD on the main wallet. This is what F-14 (multisig migration) now targets;
+  it must never appear in any server env.
+- PriceRelayerCap `0x818e0263bc28f5f6089ed6b120fa818cba61d0378897f197398ed2b860ad7510`
+  - the E-1 price-only split, held by a SEPARATE hot relayer wallet
+  `0xce53cb8f9befc490393d70528ef732bbcbe12d951ffcdd76a37af9b0f9624629`. Its entire
+  power is `set_sui_price` within the clamped band. E-1 is therefore already LIVE
+  on-chain: the always-online price key does not hold the AdminCap, so F-14 can
+  migrate the cold AdminCap to multisig without touching the price cadence. The
+  V10-lineage AdminCap
+  `0x144d426960a9a6b8db63ce3426e06a9c41273a17e72ed0193cd8c8507d4f6ec5` still governs
+  the frozen V4-V12 curves and is a separate F-14 item.

@@ -365,7 +365,12 @@ stated plainly.
 - **This is testnet, not mainnet.** Everything today runs on a test network using play
   money. The move to the real network ("mainnet") is deliberately gated behind the audit
   and the key migration above. Do not treat testnet behavior as a guarantee for
-  real-money behavior.
+  real-money behavior. Note: the fixed software was put onto the test network on July 17
+  as its OWN separate system, not as an update layered on top of the old one. This was
+  required because the price fix (2.2) changes how the software is called, and the
+  network does not allow that kind of change as an in-place update. It also means the
+  everyday price key and the powerful admin key described above are held by two
+  different wallets, with the powerful one kept offline.
 - **The automated trading assistant's key lives on a server.** By its nature, an
   assistant that trades around the clock without you approving each trade needs a key you
   are not personally holding. That key is kept inside protected hardware, and the network

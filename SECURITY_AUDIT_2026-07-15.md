@@ -18,6 +18,14 @@ re-audits `contracts-v10/SECURITY_REAUDIT_2026-07-16.md` and
 `contracts-v10/SECURITY_REAUDIT_2026-07-17_PREPUBLISH.md`. As of 2026-07-17 the full
 suite is `sui move test` = 115/115, zero warnings. Commit hashes are given in full.
 
+**Deployment note (2026-07-17):** the fixes above shipped in V13, which was PUBLISHED
+as a FRESH PUBLISH, not an upgrade of the V10 lineage. The `compatible` upgrade policy
+forbids the public-signature changes that constitute the F-2 fix (`buy` /
+`buy_with_session` `sui_price_scaled: u64` -> `&PriceConfig`, `post_comment` 7 -> 6
+params) and the CTO struct changes, so a fresh publish was the only path. V13 therefore
+has its own type identity (V13 curves are not V10-typed). The full live-id publish
+record is in `SECURITY_REAUDIT_2026-07-17_PREPUBLISH.md`.
+
 | ID | Sev | Status | Resolution (fixing commit + regression test) |
 |----|-----|--------|----------------------------------------------|
 | F-1 | CRITICAL | FIXED | `create_and_return` asserts `coin::total_supply(&treasury) == 0` (`EPreMintedSupply`) before minting, so no unbacked pre-mint can reach the curve. Commit `b0b5dd35d52c7fb4bb26c218d7ed52ffcacd5366` (V13 PriceConfig + graduation source changes). Test `test_f1_premint_aborts_launch`. |
