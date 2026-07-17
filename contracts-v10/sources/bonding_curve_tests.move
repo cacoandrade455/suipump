@@ -10,10 +10,16 @@
 ///   - Curve shape recalibrated: VS=4.369k, BASE_GRAD=12305 SUI @$1.00
 ///   - V13: buy() takes price_cfg: &PriceConfig (protocol-published, AdminCap-set).
 ///     The V9 caller-supplied sui_price_scaled: u64 is GONE (audit F-2).
-///   - Tests use buy_for_testing() which bypasses oracle param
+///   - F-10: buy_for_testing is a ZERO-LOGIC delegator to the real buy() and
+///     takes the same &PriceConfig. Every buy in this file executes the
+///     production pricing/fee/graduation path; tests call init_for_testing
+///     first so the shared PriceConfig exists. Graduation tests reach REAL
+///     thresholds (BASE_GRAD_MIST 9,000 SUI unset, or the dampened value for a
+///     published price) instead of forced 500-SUI ones.
 ///   - New v9 tests: oracle fallback, grad threshold clip, inline graduation,
-///     tail refund conservation, lp_fee returned to buyer
-///   - All v8 tests preserved unchanged
+///     tail refund conservation
+///   - All v8 tests preserved (expectations re-derived from production math
+///     where the pre-F-5/F-10 shadow had baked the bug in as the spec)
 ///
 /// Note on update_metadata: the function requires a real CoinMetadata<T>,
 /// which sui::coin only mints via create_currency (needs a genuine one-time
@@ -160,28 +166,28 @@ module suipump::bonding_curve_tests {
     }
 
     /// Buy enough SUI to drain the entire 800M token supply via tail-clip.
+    /// F-10: routes through the REAL buy() (buy_for_testing is a zero-logic
+    /// delegator), so callers must run init_for_testing first - the shared
+    /// PriceConfig is taken here. The price stays UNSET, so the threshold is
+    /// BASE_GRAD_MIST (9,000 SUI); a 50,000 SUI buy still drains all 800M via
+    /// Path A (needed swap = 12,802.93 SUI) and graduates inline.
     fun drain_curve(scenario: &mut Scenario) {
         ts::next_tx(scenario, BUYER);
         let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(scenario);
+        let cfg = ts::take_shared<PriceConfig>(scenario);
         let payment = mint_sui(50_000 * MIST_PER_SUI, scenario);
         let clk = clock::create_for_testing(ts::ctx(scenario));
         let (tokens, refund) = bonding_curve::buy_for_testing(
             &mut curve, payment, 0,
             option::none(),
+            &cfg,
             &clk,
             ts::ctx(scenario)
         );
         destroy(tokens);
         destroy(refund);
         clock::destroy_for_testing(clk);
-        ts::return_shared(curve);
-    }
-
-    /// Graduate the curve via the test-only helper (skips metadata freeze).
-    fun do_graduate(scenario: &mut Scenario) {
-        ts::next_tx(scenario, BUYER);
-        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(scenario);
-        bonding_curve::graduate_for_testing(&mut curve, ts::ctx(scenario));
+        ts::return_shared(cfg);
         ts::return_shared(curve);
     }
 
@@ -300,20 +306,23 @@ module suipump::bonding_curve_tests {
     #[test]
     fun test_three_way_payout_split_pays_each_recipient() {
         let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
         let (a, b) = make_payouts_three();
         setup_curve(&mut s, a, b);
 
         ts::next_tx(&mut s, BUYER);
         {
             let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+            let cfg = ts::take_shared<PriceConfig>(&s);
             let payment = mint_sui(100 * MIST_PER_SUI, &mut s);
             let clk = clock::create_for_testing(ts::ctx(&mut s));
             let (tokens, refund) = bonding_curve::buy_for_testing(
-                &mut curve, payment, 0, option::none(), &clk, ts::ctx(&mut s)
+                &mut curve, payment, 0, option::none(), &cfg, &clk, ts::ctx(&mut s)
             );
             destroy(tokens);
             destroy(refund);
             clock::destroy_for_testing(clk);
+            ts::return_shared(cfg);
             ts::return_shared(curve);
         };
 
@@ -345,15 +354,17 @@ module suipump::bonding_curve_tests {
     #[test]
     fun test_buy_then_sell_loses_roughly_two_percent() {
         let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
         let (_a, _b) = make_payouts_single();
         setup_curve(&mut s, _a, _b);
 
         ts::next_tx(&mut s, BUYER);
         let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let cfg = ts::take_shared<PriceConfig>(&s);
         let payment = mint_sui(100 * MIST_PER_SUI, &mut s);
         let clk = clock::create_for_testing(ts::ctx(&mut s));
         let (tokens, refund) = bonding_curve::buy_for_testing(
-            &mut curve, payment, 0, option::none(), &clk, ts::ctx(&mut s)
+            &mut curve, payment, 0, option::none(), &cfg, &clk, ts::ctx(&mut s)
         );
         destroy(refund);
         let sui_back = bonding_curve::sell(
@@ -364,6 +375,7 @@ module suipump::bonding_curve_tests {
         assert!(back > 97  * MIST_PER_SUI, 701);
         destroy(sui_back);
         clock::destroy_for_testing(clk);
+        ts::return_shared(cfg);
         ts::return_shared(curve);
         ts::end(s);
     }
@@ -372,19 +384,22 @@ module suipump::bonding_curve_tests {
     #[expected_failure(abort_code = E_ZERO_AMOUNT, location = suipump::bonding_curve)]
     fun test_buy_rejects_zero_amount() {
         let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
         let (_a, _b) = make_payouts_single();
         setup_curve(&mut s, _a, _b);
 
         ts::next_tx(&mut s, BUYER);
         let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let cfg = ts::take_shared<PriceConfig>(&s);
         let payment = mint_sui(0, &mut s);
         let clk = clock::create_for_testing(ts::ctx(&mut s));
         let (tokens, refund) = bonding_curve::buy_for_testing(
-            &mut curve, payment, 0, option::none(), &clk, ts::ctx(&mut s)
+            &mut curve, payment, 0, option::none(), &cfg, &clk, ts::ctx(&mut s)
         );
         destroy(tokens);
         destroy(refund);
         clock::destroy_for_testing(clk);
+        ts::return_shared(cfg);
         ts::return_shared(curve);
         ts::end(s);
     }
@@ -393,19 +408,22 @@ module suipump::bonding_curve_tests {
     #[expected_failure(abort_code = E_SLIPPAGE_EXCEEDED, location = suipump::bonding_curve)]
     fun test_slippage_protection_triggers() {
         let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
         let (_a, _b) = make_payouts_single();
         setup_curve(&mut s, _a, _b);
 
         ts::next_tx(&mut s, BUYER);
         let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let cfg = ts::take_shared<PriceConfig>(&s);
         let payment = mint_sui(10 * MIST_PER_SUI, &mut s);
         let clk = clock::create_for_testing(ts::ctx(&mut s));
         let (tokens, refund) = bonding_curve::buy_for_testing(
-            &mut curve, payment, 999_999_999_999_999, option::none(), &clk, ts::ctx(&mut s)
+            &mut curve, payment, 999_999_999_999_999, option::none(), &cfg, &clk, ts::ctx(&mut s)
         );
         destroy(tokens);
         destroy(refund);
         clock::destroy_for_testing(clk);
+        ts::return_shared(cfg);
         ts::return_shared(curve);
         ts::end(s);
     }
@@ -413,21 +431,24 @@ module suipump::bonding_curve_tests {
     #[test]
     fun test_whale_buy_clips_and_refunds() {
         let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
         let (_a, _b) = make_payouts_single();
         setup_curve(&mut s, _a, _b);
 
         ts::next_tx(&mut s, BUYER);
         let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let cfg = ts::take_shared<PriceConfig>(&s);
         let payment = mint_sui(100_000 * MIST_PER_SUI, &mut s);
         let clk = clock::create_for_testing(ts::ctx(&mut s));
         let (tokens, refund) = bonding_curve::buy_for_testing(
-            &mut curve, payment, 0, option::none(), &clk, ts::ctx(&mut s)
+            &mut curve, payment, 0, option::none(), &cfg, &clk, ts::ctx(&mut s)
         );
         assert!(coin::value(&tokens) == 800_000_000 * 1_000_000, 800);
         assert!(coin::value(&refund) > 0, 801);
         destroy(tokens);
         destroy(refund);
         clock::destroy_for_testing(clk);
+        ts::return_shared(cfg);
         ts::return_shared(curve);
         ts::end(s);
     }
@@ -437,16 +458,19 @@ module suipump::bonding_curve_tests {
     #[test]
     fun test_creator_can_buy_during_antibot_window() {
         let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
         let clk = setup_curve_with_antibot(&mut s, 30, 0);
 
         ts::next_tx(&mut s, CREATOR);
         let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let cfg = ts::take_shared<PriceConfig>(&s);
         let payment = mint_sui(10 * MIST_PER_SUI, &mut s);
         let (tokens, refund) = bonding_curve::buy_for_testing(
-            &mut curve, payment, 0, option::none(), &clk, ts::ctx(&mut s)
+            &mut curve, payment, 0, option::none(), &cfg, &clk, ts::ctx(&mut s)
         );
         destroy(tokens);
         destroy(refund);
+        ts::return_shared(cfg);
         ts::return_shared(curve);
         clock::destroy_for_testing(clk);
         ts::end(s);
@@ -456,16 +480,19 @@ module suipump::bonding_curve_tests {
     #[expected_failure(abort_code = E_ANTI_BOT_BLOCKED, location = suipump::bonding_curve)]
     fun test_non_creator_blocked_during_antibot_window() {
         let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
         let clk = setup_curve_with_antibot(&mut s, 30, 0);
 
         ts::next_tx(&mut s, BUYER);
         let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let cfg = ts::take_shared<PriceConfig>(&s);
         let payment = mint_sui(10 * MIST_PER_SUI, &mut s);
         let (tokens, refund) = bonding_curve::buy_for_testing(
-            &mut curve, payment, 0, option::none(), &clk, ts::ctx(&mut s)
+            &mut curve, payment, 0, option::none(), &cfg, &clk, ts::ctx(&mut s)
         );
         destroy(tokens);
         destroy(refund);
+        ts::return_shared(cfg);
         ts::return_shared(curve);
         clock::destroy_for_testing(clk);
         ts::end(s);
@@ -474,17 +501,20 @@ module suipump::bonding_curve_tests {
     #[test]
     fun test_buyer_can_buy_after_antibot_window_expires() {
         let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
         let mut clk = setup_curve_with_antibot(&mut s, 15, 0);
         clock::set_for_testing(&mut clk, 16_000);
 
         ts::next_tx(&mut s, BUYER);
         let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let cfg = ts::take_shared<PriceConfig>(&s);
         let payment = mint_sui(10 * MIST_PER_SUI, &mut s);
         let (tokens, refund) = bonding_curve::buy_for_testing(
-            &mut curve, payment, 0, option::none(), &clk, ts::ctx(&mut s)
+            &mut curve, payment, 0, option::none(), &cfg, &clk, ts::ctx(&mut s)
         );
         destroy(tokens);
         destroy(refund);
+        ts::return_shared(cfg);
         ts::return_shared(curve);
         clock::destroy_for_testing(clk);
         ts::end(s);
@@ -493,16 +523,19 @@ module suipump::bonding_curve_tests {
     #[test]
     fun test_no_antibot_allows_all_buyers_immediately() {
         let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
         let clk = setup_curve_with_antibot(&mut s, 0, 0);
 
         ts::next_tx(&mut s, BUYER);
         let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let cfg = ts::take_shared<PriceConfig>(&s);
         let payment = mint_sui(10 * MIST_PER_SUI, &mut s);
         let (tokens, refund) = bonding_curve::buy_for_testing(
-            &mut curve, payment, 0, option::none(), &clk, ts::ctx(&mut s)
+            &mut curve, payment, 0, option::none(), &cfg, &clk, ts::ctx(&mut s)
         );
         destroy(tokens);
         destroy(refund);
+        ts::return_shared(cfg);
         ts::return_shared(curve);
         clock::destroy_for_testing(clk);
         ts::end(s);
@@ -513,11 +546,13 @@ module suipump::bonding_curve_tests {
     #[test]
     fun test_buy_no_referral_splits_protocol_bucket_in_half() {
         let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
         let (_a, _b) = make_payouts_single();
         setup_curve(&mut s, _a, _b);
 
         ts::next_tx(&mut s, BUYER);
         let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let cfg = ts::take_shared<PriceConfig>(&s);
         let proto_before   = bonding_curve::protocol_fees(&curve);
         let airdrop_before = bonding_curve::airdrop_fees(&curve);
 
@@ -529,7 +564,7 @@ module suipump::bonding_curve_tests {
         let payment = mint_sui(1_000 * MIST_PER_SUI, &mut s);
         let clk = clock::create_for_testing(ts::ctx(&mut s));
         let (tokens, refund) = bonding_curve::buy_for_testing(
-            &mut curve, payment, 0, option::none(), &clk, ts::ctx(&mut s)
+            &mut curve, payment, 0, option::none(), &cfg, &clk, ts::ctx(&mut s)
         );
         destroy(tokens);
         destroy(refund);
@@ -542,6 +577,7 @@ module suipump::bonding_curve_tests {
         assert!(airdrop_delta > 0, 1202);
 
         clock::destroy_for_testing(clk);
+        ts::return_shared(cfg);
         ts::return_shared(curve);
         ts::end(s);
     }
@@ -549,11 +585,13 @@ module suipump::bonding_curve_tests {
     #[test]
     fun test_buy_with_referral_pays_referrer() {
         let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
         let (_a, _b) = make_payouts_single();
         setup_curve(&mut s, _a, _b);
 
         ts::next_tx(&mut s, BUYER);
         let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let cfg = ts::take_shared<PriceConfig>(&s);
         // V13: BASE_GRAD_MIST dropped 12,305 -> 9,000 SUI. A 10,000 SUI buy
         // now CLIPS at the threshold and graduates inline, and graduation adds
         // a protocol-ONLY bonus (do_graduate_inline: PROTOCOL_GRAD_BONUS_BPS)
@@ -562,11 +600,12 @@ module suipump::bonding_curve_tests {
         let payment = mint_sui(1_000 * MIST_PER_SUI, &mut s);
         let clk = clock::create_for_testing(ts::ctx(&mut s));
         let (tokens, refund) = bonding_curve::buy_for_testing(
-            &mut curve, payment, 0, option::some(REFERRER), &clk, ts::ctx(&mut s)
+            &mut curve, payment, 0, option::some(REFERRER), &cfg, &clk, ts::ctx(&mut s)
         );
         destroy(tokens);
         destroy(refund);
         clock::destroy_for_testing(clk);
+        ts::return_shared(cfg);
         ts::return_shared(curve);
 
         ts::next_tx(&mut s, REFERRER);
@@ -580,19 +619,22 @@ module suipump::bonding_curve_tests {
     #[expected_failure(abort_code = E_SELF_REFERRAL, location = suipump::bonding_curve)]
     fun test_buy_self_referral_rejected() {
         let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
         let (_a, _b) = make_payouts_single();
         setup_curve(&mut s, _a, _b);
 
         ts::next_tx(&mut s, BUYER);
         let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let cfg = ts::take_shared<PriceConfig>(&s);
         let payment = mint_sui(10 * MIST_PER_SUI, &mut s);
         let clk = clock::create_for_testing(ts::ctx(&mut s));
         let (tokens, refund) = bonding_curve::buy_for_testing(
-            &mut curve, payment, 0, option::some(CREATOR), &clk, ts::ctx(&mut s)
+            &mut curve, payment, 0, option::some(CREATOR), &cfg, &clk, ts::ctx(&mut s)
         );
         destroy(tokens);
         destroy(refund);
         clock::destroy_for_testing(clk);
+        ts::return_shared(cfg);
         ts::return_shared(curve);
         ts::end(s);
     }
@@ -601,15 +643,17 @@ module suipump::bonding_curve_tests {
     #[expected_failure(abort_code = E_SELF_REFERRAL, location = suipump::bonding_curve)]
     fun test_sell_self_referral_rejected() {
         let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
         let (_a, _b) = make_payouts_single();
         setup_curve(&mut s, _a, _b);
 
         ts::next_tx(&mut s, BUYER);
         let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let cfg = ts::take_shared<PriceConfig>(&s);
         let payment = mint_sui(100 * MIST_PER_SUI, &mut s);
         let clk = clock::create_for_testing(ts::ctx(&mut s));
         let (tokens, refund) = bonding_curve::buy_for_testing(
-            &mut curve, payment, 0, option::none(), &clk, ts::ctx(&mut s)
+            &mut curve, payment, 0, option::none(), &cfg, &clk, ts::ctx(&mut s)
         );
         destroy(refund);
         let sui_back = bonding_curve::sell(
@@ -617,6 +661,7 @@ module suipump::bonding_curve_tests {
         );
         destroy(sui_back);
         clock::destroy_for_testing(clk);
+        ts::return_shared(cfg);
         ts::return_shared(curve);
         ts::end(s);
     }
@@ -624,15 +669,17 @@ module suipump::bonding_curve_tests {
     #[test]
     fun test_sell_with_referral_pays_referrer() {
         let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
         let (_a, _b) = make_payouts_single();
         setup_curve(&mut s, _a, _b);
 
         ts::next_tx(&mut s, BUYER);
         let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let cfg = ts::take_shared<PriceConfig>(&s);
         let payment = mint_sui(1_000 * MIST_PER_SUI, &mut s);
         let clk = clock::create_for_testing(ts::ctx(&mut s));
         let (tokens, refund) = bonding_curve::buy_for_testing(
-            &mut curve, payment, 0, option::none(), &clk, ts::ctx(&mut s)
+            &mut curve, payment, 0, option::none(), &cfg, &clk, ts::ctx(&mut s)
         );
         destroy(refund);
         let sui_back = bonding_curve::sell(
@@ -640,6 +687,7 @@ module suipump::bonding_curve_tests {
         );
         destroy(sui_back);
         clock::destroy_for_testing(clk);
+        ts::return_shared(cfg);
         ts::return_shared(curve);
 
         ts::next_tx(&mut s, REFERRER);
@@ -654,23 +702,26 @@ module suipump::bonding_curve_tests {
     #[test]
     fun test_lp_fees_accumulated_increases_on_buy() {
         let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
         let (_a, _b) = make_payouts_single();
         setup_curve(&mut s, _a, _b);
 
         ts::next_tx(&mut s, BUYER);
         let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let cfg = ts::take_shared<PriceConfig>(&s);
         assert!(bonding_curve::lp_fees_accumulated(&curve) == 0, 1300);
 
         let payment = mint_sui(1_000 * MIST_PER_SUI, &mut s);
         let clk = clock::create_for_testing(ts::ctx(&mut s));
         let (tokens, refund) = bonding_curve::buy_for_testing(
-            &mut curve, payment, 0, option::none(), &clk, ts::ctx(&mut s)
+            &mut curve, payment, 0, option::none(), &cfg, &clk, ts::ctx(&mut s)
         );
         destroy(tokens);
         destroy(refund);
 
         assert!(bonding_curve::lp_fees_accumulated(&curve) > 0, 1301);
         clock::destroy_for_testing(clk);
+        ts::return_shared(cfg);
         ts::return_shared(curve);
         ts::end(s);
     }
@@ -693,14 +744,16 @@ module suipump::bonding_curve_tests {
         bonding_curve::set_paused(&admin_cap, &mut curve, true);
         ts::return_to_sender(&s, admin_cap);
 
+        let cfg = ts::take_shared<PriceConfig>(&s);
         let payment = mint_sui(10 * MIST_PER_SUI, &mut s);
         let clk = clock::create_for_testing(ts::ctx(&mut s));
         let (tokens, refund) = bonding_curve::buy_for_testing(
-            &mut curve, payment, 0, option::none(), &clk, ts::ctx(&mut s)
+            &mut curve, payment, 0, option::none(), &cfg, &clk, ts::ctx(&mut s)
         );
         destroy(tokens);
         destroy(refund);
         clock::destroy_for_testing(clk);
+        ts::return_shared(cfg);
         ts::return_shared(curve);
         ts::end(s);
     }
@@ -717,13 +770,15 @@ module suipump::bonding_curve_tests {
 
         ts::next_tx(&mut s, BUYER);
         let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let cfg = ts::take_shared<PriceConfig>(&s);
         let payment = mint_sui(100 * MIST_PER_SUI, &mut s);
         let clk = clock::create_for_testing(ts::ctx(&mut s));
         let (tokens, refund) = bonding_curve::buy_for_testing(
-            &mut curve, payment, 0, option::none(), &clk, ts::ctx(&mut s)
+            &mut curve, payment, 0, option::none(), &cfg, &clk, ts::ctx(&mut s)
         );
         destroy(refund);
         clock::destroy_for_testing(clk);
+        ts::return_shared(cfg);
         ts::return_shared(curve);
 
         ts::next_tx(&mut s, CREATOR);
@@ -757,14 +812,16 @@ module suipump::bonding_curve_tests {
         assert!(!bonding_curve::paused(&curve), 1400);
         ts::return_to_sender(&s, admin_cap);
 
+        let cfg = ts::take_shared<PriceConfig>(&s);
         let payment = mint_sui(10 * MIST_PER_SUI, &mut s);
         let clk = clock::create_for_testing(ts::ctx(&mut s));
         let (tokens, refund) = bonding_curve::buy_for_testing(
-            &mut curve, payment, 0, option::none(), &clk, ts::ctx(&mut s)
+            &mut curve, payment, 0, option::none(), &cfg, &clk, ts::ctx(&mut s)
         );
         destroy(tokens);
         destroy(refund);
         clock::destroy_for_testing(clk);
+        ts::return_shared(cfg);
         ts::return_shared(curve);
         ts::end(s);
     }
@@ -776,6 +833,7 @@ module suipump::bonding_curve_tests {
         // In V9, inline graduation fires during drain_curve()'s buy() call.
         // We verify state BEFORE the draining buy, then check state after.
         let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
         let (_a, _b) = make_payouts_single();
         setup_curve(&mut s, _a, _b);
 
@@ -826,11 +884,13 @@ module suipump::bonding_curve_tests {
     #[test]
     #[expected_failure(abort_code = E_ALREADY_GRADUATED, location = suipump::bonding_curve)]
     fun test_cannot_graduate_twice() {
+        // drain_curve graduates inline; the standalone call below is the
+        // SECOND graduation attempt and must abort EAlreadyGraduated.
         let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
         let (_a, _b) = make_payouts_single();
         setup_curve(&mut s, _a, _b);
         drain_curve(&mut s);
-        do_graduate(&mut s);
 
         ts::next_tx(&mut s, BUYER);
         let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
@@ -842,22 +902,25 @@ module suipump::bonding_curve_tests {
     #[test]
     #[expected_failure(abort_code = E_ALREADY_GRADUATED, location = suipump::bonding_curve)]
     fun test_cannot_buy_after_graduation() {
+        // drain_curve graduates inline; the buy below must be the aborting call.
         let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
         let (_a, _b) = make_payouts_single();
         setup_curve(&mut s, _a, _b);
         drain_curve(&mut s);
-        do_graduate(&mut s);
 
         ts::next_tx(&mut s, BUYER);
         let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let cfg = ts::take_shared<PriceConfig>(&s);
         let payment = mint_sui(10 * MIST_PER_SUI, &mut s);
         let clk = clock::create_for_testing(ts::ctx(&mut s));
         let (tokens, refund) = bonding_curve::buy_for_testing(
-            &mut curve, payment, 0, option::none(), &clk, ts::ctx(&mut s)
+            &mut curve, payment, 0, option::none(), &cfg, &clk, ts::ctx(&mut s)
         );
         destroy(tokens);
         destroy(refund);
         clock::destroy_for_testing(clk);
+        ts::return_shared(cfg);
         ts::return_shared(curve);
         ts::end(s);
     }
@@ -865,23 +928,26 @@ module suipump::bonding_curve_tests {
     #[test]
     #[expected_failure(abort_code = E_ALREADY_GRADUATED, location = suipump::bonding_curve)]
     fun test_cannot_sell_after_graduation() {
+        // drain_curve graduates inline; the sell below must be the aborting call.
         let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
         let (_a, _b) = make_payouts_single();
         setup_curve(&mut s, _a, _b);
 
         ts::next_tx(&mut s, BUYER);
         let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let cfg = ts::take_shared<PriceConfig>(&s);
         let payment = mint_sui(100 * MIST_PER_SUI, &mut s);
         let clk = clock::create_for_testing(ts::ctx(&mut s));
         let (tokens, refund) = bonding_curve::buy_for_testing(
-            &mut curve, payment, 0, option::none(), &clk, ts::ctx(&mut s)
+            &mut curve, payment, 0, option::none(), &cfg, &clk, ts::ctx(&mut s)
         );
         destroy(refund);
         clock::destroy_for_testing(clk);
+        ts::return_shared(cfg);
         ts::return_shared(curve);
 
         drain_curve(&mut s);
-        do_graduate(&mut s);
 
         ts::next_tx(&mut s, BUYER);
         let mut curve2 = ts::take_shared<Curve<TEST_TOKEN>>(&s);
@@ -1035,14 +1101,16 @@ module suipump::bonding_curve_tests {
         // Small buy — does NOT graduate the curve.
         ts::next_tx(&mut s, BUYER);
         let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let cfg = ts::take_shared<PriceConfig>(&s);
         let payment = mint_sui(10 * MIST_PER_SUI, &mut s);
         let clk = clock::create_for_testing(ts::ctx(&mut s));
         let (tokens, refund) = bonding_curve::buy_for_testing(
-            &mut curve, payment, 0, option::none(), &clk, ts::ctx(&mut s)
+            &mut curve, payment, 0, option::none(), &cfg, &clk, ts::ctx(&mut s)
         );
         assert!(!bonding_curve::graduated(&curve), 999);
         destroy(tokens); destroy(refund);
         clock::destroy_for_testing(clk);
+        ts::return_shared(cfg);
         ts::return_shared(curve);
 
         // Claim on the non-graduated curve — expected to abort ENotGraduated.
@@ -1095,6 +1163,13 @@ module suipump::bonding_curve_tests {
     fun test_claim_graduation_funds_rejects_trivial_reserve() {
         // F-2 backstop: a curve graduated on a trivially small reserve (the shape
         // an oracle-manipulation attack produces) must NOT be able to mint 200M LP.
+        // F-10: buy() can no longer be fed a forged threshold (it resolves from
+        // the shared PriceConfig), so the trivial graduation is staged on the
+        // STANDALONE graduate() gate instead, which reads the STORED
+        // current_grad_threshold. A real 5 SUI buy funds the reserve first:
+        //   fee = 1% = 50_000_000; swap = 4_950_000_000; lp_fee = 5_000_000
+        //   reserve = swap + lp_fee = 4_955_000_000 (F-5)   -- far below the
+        //   500 SUI MIN_GRAD_RESERVE_MIST floor, above the forced 3 SUI gate.
         let mut s = ts::begin(CREATOR);
         bonding_curve::init_for_testing(ts::ctx(&mut s));
 
@@ -1102,19 +1177,25 @@ module suipump::bonding_curve_tests {
         let (_a, _b) = make_payouts_single();
         setup_curve(&mut s, _a, _b);
 
-        // Force a 3 SUI graduation threshold, then graduate on ~3 SUI of reserve.
         ts::next_tx(&mut s, BUYER);
         let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
-        bonding_curve::set_grad_threshold_for_testing(&mut curve, 3 * MIST_PER_SUI);
+        let cfg = ts::take_shared<PriceConfig>(&s);
         let payment = mint_sui(5 * MIST_PER_SUI, &mut s);
         let clk = clock::create_for_testing(ts::ctx(&mut s));
         let (tokens, refund) = bonding_curve::buy_for_testing(
-            &mut curve, payment, 0, option::none(), &clk, ts::ctx(&mut s)
+            &mut curve, payment, 0, option::none(), &cfg, &clk, ts::ctx(&mut s)
         );
         destroy(tokens); destroy(refund);
         clock::destroy_for_testing(clk);
+        // The real buy did NOT graduate (4.955 SUI << the 9,000 SUI fallback
+        // threshold); the standalone gate fires on the forced stored value.
+        assert!(!bonding_curve::graduated(&curve), 1009);
+        assert!(bonding_curve::sui_reserve(&curve) == 4_955_000_000, 1012);
+        bonding_curve::set_grad_threshold_for_testing(&mut curve, 3 * MIST_PER_SUI);
+        bonding_curve::graduate_for_testing(&mut curve, ts::ctx(&mut s));
         assert!(bonding_curve::graduated(&curve), 1010);
-        assert!(bonding_curve::sui_reserve(&curve) < 1_000 * MIST_PER_SUI, 1011);
+        assert!(bonding_curve::sui_reserve(&curve) < 500 * MIST_PER_SUI, 1011);
+        ts::return_shared(cfg);
         ts::return_shared(curve);
 
         // Claim on the trivially-funded graduated curve — expect EReserveTooLow.
@@ -1154,11 +1235,12 @@ module suipump::bonding_curve_tests {
     // ─── V13: protocol-published price (replaces the F-2 caller-price clamp) ──
 
     /// The V9 caller-supplied sui_price_scaled is GONE, so the clamp that used to
-    /// blunt a hostile price is gone with it. These tests drive the REAL buy()
-    /// oracle path - not buy_for_testing, which reads current_grad_threshold
-    /// directly and never touches resolve_grad_threshold/dampened_grad_threshold.
-    /// That parallel-implementation gap is exactly what hid the F-4 31.6x error
-    /// through 55 green runs (audit F-10).
+    /// blunt a hostile price is gone with it. These tests drive the buy() oracle
+    /// path directly. (F-10 CLOSED: buy_for_testing is now a zero-logic delegator
+    /// to buy(), so every buy in this file - not just these - executes
+    /// resolve_grad_threshold/dampened_grad_threshold. The old shadow read
+    /// current_grad_threshold directly, which is what hid the F-4 31.6x error
+    /// through 55 green runs.)
 
     #[test]
     fun test_price_unset_falls_back_to_base_grad() {
@@ -1498,14 +1580,16 @@ module suipump::bonding_curve_tests {
         ts::next_tx(&mut s, BUYER);
         {
             let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+            let cfg = ts::take_shared<PriceConfig>(&s);
             let payment = mint_sui(1_000 * MIST_PER_SUI, &mut s);
             let clk = clock::create_for_testing(ts::ctx(&mut s));
             let (tokens, refund) = bonding_curve::buy_for_testing(
-                &mut curve, payment, 0, option::none(), &clk, ts::ctx(&mut s)
+                &mut curve, payment, 0, option::none(), &cfg, &clk, ts::ctx(&mut s)
             );
             destroy(tokens);
             destroy(refund);
             clock::destroy_for_testing(clk);
+            ts::return_shared(cfg);
             ts::return_shared(curve);
         };
 
@@ -1933,6 +2017,10 @@ module suipump::bonding_curve_tests {
 
     #[test]
     fun test_threshold_stored_on_curve_after_buy() {
+        // F-10: the display cache current_grad_threshold is stamped by the REAL
+        // buy() from resolve_grad_threshold (previously this test only
+        // exercised the set_grad_threshold_for_testing setter). Price unset ->
+        // resolve_grad_threshold returns BASE_GRAD_MIST = 9_000 SUI.
         let mut s = ts::begin(CREATOR);
         bonding_curve::init_for_testing(ts::ctx(&mut s));
         let (_a, _b) = make_payouts_single();
@@ -1940,20 +2028,27 @@ module suipump::bonding_curve_tests {
 
         ts::next_tx(&mut s, BUYER);
         let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
-        // Before any buy: threshold is 0
+        let cfg = ts::take_shared<PriceConfig>(&s);
+        // Before any buy: threshold is 0 (never stamped)
         assert!(bonding_curve::current_grad_threshold(&curve) == 0, 2000);
-        // Set explicitly via test helper (simulates oracle storing threshold)
-        bonding_curve::set_grad_threshold_for_testing(&mut curve, 12_305 * 1_000_000_000);
-        assert!(bonding_curve::current_grad_threshold(&curve) == 12_305 * 1_000_000_000, 2001);
+        let payment = mint_sui(1 * MIST_PER_SUI, &mut s);
+        let clk = clock::create_for_testing(ts::ctx(&mut s));
+        let (tokens, refund) = bonding_curve::buy_for_testing(
+            &mut curve, payment, 0, option::none(), &cfg, &clk, ts::ctx(&mut s)
+        );
+        destroy(tokens); destroy(refund);
+        assert!(bonding_curve::current_grad_threshold(&curve) == 9_000 * MIST_PER_SUI, 2001);
+        clock::destroy_for_testing(clk);
+        ts::return_shared(cfg);
         ts::return_shared(curve);
         ts::end(s);
     }
 
     #[test]
     fun test_threshold_fallback_to_base_when_not_set() {
-        // When current_grad_threshold == 0 and price_scaled == 0,
-        // buy_for_testing uses BASE_GRAD_MIST. A 100 SUI buy is far
-        // below 12,305 SUI threshold → should NOT graduate.
+        // When the PriceConfig has never been published (price_scaled == 0),
+        // buy() falls back to BASE_GRAD_MIST (9,000 SUI). A 100 SUI buy is far
+        // below that -> should NOT graduate.
         let mut s = ts::begin(CREATOR);
         bonding_curve::init_for_testing(ts::ctx(&mut s));
         let (_a, _b) = make_payouts_single();
@@ -1961,22 +2056,33 @@ module suipump::bonding_curve_tests {
 
         ts::next_tx(&mut s, BUYER);
         let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let cfg = ts::take_shared<PriceConfig>(&s);
         let payment = mint_sui(100 * MIST_PER_SUI, &mut s);
         let clk = clock::create_for_testing(ts::ctx(&mut s));
         let (tokens, refund) = bonding_curve::buy_for_testing(
-            &mut curve, payment, 0, option::none(), &clk, ts::ctx(&mut s)
+            &mut curve, payment, 0, option::none(), &cfg, &clk, ts::ctx(&mut s)
         );
         assert!(!bonding_curve::graduated(&curve), 2100);
         destroy(tokens); destroy(refund);
         clock::destroy_for_testing(clk);
+        ts::return_shared(cfg);
         ts::return_shared(curve);
         ts::end(s);
     }
 
     #[test]
-    fun test_normal_buy_refund_equals_lp_fee() {
-        // In V9, the refund coin = lp_fee for normal (non-clip) buys.
-        // lp_fee is NOT retained in the curve — returned to buyer.
+    fun test_normal_buy_refund_is_zero_lp_fee_in_reserve() {
+        // F-5 + F-10: for a normal (non-clip) buy the payment splits EXACTLY
+        // into fees + reserve, so the returned refund coin is EMPTY. The old
+        // expectation (refund == lp_fee) documented the pre-F-5 shadow bug in
+        // which the lp_fee leaked back to the buyer while lp_fees_accumulated
+        // still incremented. DERIVATION (production buy(), sui_in = 100 SUI =
+        // 100_000_000_000 MIST, Path C so tail_refund = 0):
+        //   fee         = 1%                      =   1_000_000_000
+        //   swap_amount = sui_in - fee            =  99_000_000_000
+        //   lp_fee      = 10% of fee              =     100_000_000
+        //   to_reserve  = swap_amount + lp_fee    =  99_100_000_000   (F-5)
+        //   refund      = sui_in - (fee - lp_fee) - to_reserve = 0
         let mut s = ts::begin(CREATOR);
         bonding_curve::init_for_testing(ts::ctx(&mut s));
         let (_a, _b) = make_payouts_single();
@@ -1984,17 +2090,19 @@ module suipump::bonding_curve_tests {
 
         ts::next_tx(&mut s, BUYER);
         let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let cfg = ts::take_shared<PriceConfig>(&s);
         let sui_in = 100 * MIST_PER_SUI;
         let payment = mint_sui(sui_in, &mut s);
         let clk = clock::create_for_testing(ts::ctx(&mut s));
         let (tokens, refund) = bonding_curve::buy_for_testing(
-            &mut curve, payment, 0, option::none(), &clk, ts::ctx(&mut s)
+            &mut curve, payment, 0, option::none(), &cfg, &clk, ts::ctx(&mut s)
         );
-        // lp_fee = 10% of 1% of sui_in = 0.1% of sui_in
-        let expected_lp = (sui_in * 100 / 10_000) * 1_000 / 10_000;
-        assert!(coin::value(&refund) == expected_lp, 2200);
+        assert!(coin::value(&refund) == 0, 2200);
+        assert!(bonding_curve::sui_reserve(&curve) == 99_100_000_000, 2201);
+        assert!(bonding_curve::lp_fees_accumulated(&curve) == 100_000_000, 2202);
         destroy(tokens); destroy(refund);
         clock::destroy_for_testing(clk);
+        ts::return_shared(cfg);
         ts::return_shared(curve);
         ts::end(s);
     }
@@ -2003,37 +2111,70 @@ module suipump::bonding_curve_tests {
 
     #[test]
     fun test_grad_clip_triggers_inline_graduation() {
-        // Set threshold to 500 SUI so a 1000 SUI buy overshoots it.
+        // F-10: reach a REAL dampened threshold through the production path by
+        // publishing the band ceiling $100.00 (price_scaled = 100_000), the
+        // LOWEST reachable threshold. DERIVATION (dampened_grad_threshold,
+        // precision = 1_000_000):
+        //   num = isqrt(1_000 * 1_000_000)   = isqrt(1e9)  =  31_622
+        //   den = isqrt(100_000 * 1_000_000) = isqrt(1e11) = 316_227
+        //   threshold = 9_000_000_000_000 * 31_622 / 316_227 = 899_980_077_602
+        // A 1,000 SUI buy on the fresh curve: swap_full = 990_000_000_000 >
+        // threshold -> Path B clip:
+        //   used_swap = threshold; tail = 990_000_000_000 - 899_980_077_602
+        //             = 90_019_922_398
+        // and with F-5 the payment leftover is EXACTLY that tail (the lp_fee
+        // goes into the reserve, not back to the buyer).
         let mut s = ts::begin(CREATOR);
         bonding_curve::init_for_testing(ts::ctx(&mut s));
         let (_a, _b) = make_payouts_single();
         setup_curve(&mut s, _a, _b);
 
-        ts::next_tx(&mut s, BUYER);
-        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
-        bonding_curve::set_grad_threshold_for_testing(&mut curve, 500 * 1_000_000_000);
-        ts::return_shared(curve);
+        ts::next_tx(&mut s, CREATOR);
+        let admin = ts::take_from_sender<AdminCap>(&s);
+        let mut cfg = ts::take_shared<PriceConfig>(&s);
+        let clk = clock::create_for_testing(ts::ctx(&mut s));
+        bonding_curve::set_sui_price(&admin, &mut cfg, 100_000, &clk);
 
         ts::next_tx(&mut s, BUYER);
         let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
         let payment = mint_sui(1_000 * MIST_PER_SUI, &mut s);
-        let clk = clock::create_for_testing(ts::ctx(&mut s));
         let (tokens, refund) = bonding_curve::buy_for_testing(
-            &mut curve, payment, 0, option::none(), &clk, ts::ctx(&mut s)
+            &mut curve, payment, 0, option::none(), &cfg, &clk, ts::ctx(&mut s)
         );
         assert!(bonding_curve::graduated(&curve), 2300);
         assert!(coin::value(&tokens) > 0, 2301);
-        // refund > lp_fee (has tail on top)
-        let lp_fee = (1_000 * MIST_PER_SUI * 100 / 10_000) * 1_000 / 10_000;
-        assert!(coin::value(&refund) > lp_fee, 2302);
+        assert!(bonding_curve::current_grad_threshold(&curve) == 899_980_077_602, 2302);
+        assert!(coin::value(&refund) == 90_019_922_398, 2303);
         destroy(tokens); destroy(refund);
         clock::destroy_for_testing(clk);
+        // Taken from CREATOR but the current tx sender is BUYER, so
+        // return_to_sender would abort with ECantReturnObject (code 2).
+        ts::return_to_address(CREATOR, admin);
+        ts::return_shared(cfg);
         ts::return_shared(curve);
         ts::end(s);
     }
 
     #[test]
     fun test_grad_clip_conservation() {
+        // F-10: EXACT conservation through the production path. Price unset ->
+        // threshold = BASE_GRAD_MIST = 9_000_000_000_000. DERIVATION for a
+        // 10,000 SUI buy on a fresh curve (all values MIST, floor division):
+        //   fee_full  = 100_000_000_000; swap_full = 9_900_000_000_000 >
+        //   threshold -> Path B: used_swap = 9_000_000_000_000,
+        //   tail (refund) = 900_000_000_000
+        //   effective = 9_100_000_000_000; fee = 91_000_000_000
+        //   creator 40%          = 36_400_000_000
+        //   lp 10%               =  9_100_000_000
+        //   protocol = airdrop   = 22_750_000_000 (45.5e9 bucket halved)
+        //   to_reserve = (9_100e9 - 91e9) + 9_100_000_000 = 9_018_100_000_000
+        //   grad bonuses (50 bps each of the post-buy reserve):
+        //     9_018_100_000_000 * 50 / 10_000 = 45_090_500_000
+        //     creator bonus leaves as a coin; protocol bonus joins protocol_fees
+        //   reserve after grad = 9_018_100_000_000 - 2 * 45_090_500_000
+        //                      = 8_927_919_000_000
+        // Identity (every MIST accounted): creator_fees + protocol_fees (incl
+        // bonus) + airdrop_fees + reserve + refund + creator_bonus_coin == sui_in.
         let mut s = ts::begin(CREATOR);
         bonding_curve::init_for_testing(ts::ctx(&mut s));
         let (_a, _b) = make_payouts_single();
@@ -2041,12 +2182,8 @@ module suipump::bonding_curve_tests {
 
         ts::next_tx(&mut s, BUYER);
         let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
-        bonding_curve::set_grad_threshold_for_testing(&mut curve, 500 * 1_000_000_000);
-        ts::return_shared(curve);
-
-        ts::next_tx(&mut s, BUYER);
-        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
-        let sui_in = 800 * MIST_PER_SUI;
+        let cfg = ts::take_shared<PriceConfig>(&s);
+        let sui_in = 10_000 * MIST_PER_SUI;
         let proto_before  = bonding_curve::protocol_fees(&curve);
         let creator_before = bonding_curve::creator_fees(&curve);
         let airdrop_before = bonding_curve::airdrop_fees(&curve);
@@ -2055,55 +2192,87 @@ module suipump::bonding_curve_tests {
         let payment = mint_sui(sui_in, &mut s);
         let clk = clock::create_for_testing(ts::ctx(&mut s));
         let (tokens, refund) = bonding_curve::buy_for_testing(
-            &mut curve, payment, 0, option::none(), &clk, ts::ctx(&mut s)
+            &mut curve, payment, 0, option::none(), &cfg, &clk, ts::ctx(&mut s)
         );
+        assert!(bonding_curve::graduated(&curve), 2400);
 
         let refund_amount  = coin::value(&refund);
         let creator_delta  = bonding_curve::creator_fees(&curve)  - creator_before;
         let protocol_delta = bonding_curve::protocol_fees(&curve) - proto_before;
         let airdrop_delta  = bonding_curve::airdrop_fees(&curve)  - airdrop_before;
         let reserve_delta  = bonding_curve::sui_reserve(&curve)   - reserve_before;
-
-        let total = creator_delta + protocol_delta + airdrop_delta + reserve_delta + refund_amount;
-        // creator graduation bonus left system externally (≤ 0.5% of 500 SUI ≈ 2.5 SUI)
-        let diff = if (total > sui_in) { total - sui_in } else { sui_in - total };
-        assert!(diff <= 3 * 1_000_000_000, 2400);
+        assert!(refund_amount  == 900_000_000_000, 2401);
+        assert!(creator_delta  == 36_400_000_000, 2402);
+        assert!(protocol_delta == 22_750_000_000 + 45_090_500_000, 2403);
+        assert!(airdrop_delta  == 22_750_000_000, 2404);
+        assert!(reserve_delta  == 8_927_919_000_000, 2405);
 
         destroy(tokens); destroy(refund);
         clock::destroy_for_testing(clk);
+        ts::return_shared(cfg);
         ts::return_shared(curve);
+
+        // The creator graduation bonus left the curve as a Coin<SUI> to
+        // CREATOR (the only coin at that address). With it counted,
+        // conservation is EXACT - no tolerance window.
+        ts::next_tx(&mut s, CREATOR);
+        let bonus = ts::take_from_address<Coin<SUI>>(&s, CREATOR);
+        assert!(coin::value(&bonus) == 45_090_500_000, 2406);
+        assert!(
+            creator_delta + protocol_delta + airdrop_delta + reserve_delta
+                + refund_amount + coin::value(&bonus) == sui_in,
+            2407,
+        );
+        destroy(bonus);
         ts::end(s);
     }
 
     #[test]
+    #[expected_failure(abort_code = E_ALREADY_GRADUATED, location = suipump::bonding_curve)]
     fun test_cannot_buy_after_inline_graduation() {
+        // F-10: graduate for REAL through buy() (price unset -> threshold
+        // BASE_GRAD_MIST = 9,000 SUI; a 10,000 SUI buy clips at it and
+        // graduates inline), then prove the very next buy aborts
+        // EAlreadyGraduated. The pre-F-10 version never attempted the second
+        // buy - it only asserted the graduated flag.
         let mut s = ts::begin(CREATOR);
         bonding_curve::init_for_testing(ts::ctx(&mut s));
         let (_a, _b) = make_payouts_single();
         setup_curve(&mut s, _a, _b);
 
-        // Set low threshold and trigger inline graduation
         ts::next_tx(&mut s, BUYER);
         let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
-        bonding_curve::set_grad_threshold_for_testing(&mut curve, 500 * 1_000_000_000);
-        ts::return_shared(curve);
-
-        ts::next_tx(&mut s, BUYER);
-        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
-        let payment = mint_sui(1_000 * MIST_PER_SUI, &mut s);
+        let cfg = ts::take_shared<PriceConfig>(&s);
+        let payment = mint_sui(10_000 * MIST_PER_SUI, &mut s);
         let clk = clock::create_for_testing(ts::ctx(&mut s));
         let (tokens, refund) = bonding_curve::buy_for_testing(
-            &mut curve, payment, 0, option::none(), &clk, ts::ctx(&mut s)
+            &mut curve, payment, 0, option::none(), &cfg, &clk, ts::ctx(&mut s)
         );
         assert!(bonding_curve::graduated(&curve), 2500);
         destroy(tokens); destroy(refund);
+
+        // Second buy on the graduated curve - MUST abort EAlreadyGraduated.
+        let payment2 = mint_sui(10 * MIST_PER_SUI, &mut s);
+        let (t2, r2) = bonding_curve::buy_for_testing(
+            &mut curve, payment2, 0, option::none(), &cfg, &clk, ts::ctx(&mut s)
+        );
+        destroy(t2); destroy(r2);
         clock::destroy_for_testing(clk);
+        ts::return_shared(cfg);
         ts::return_shared(curve);
         ts::end(s);
     }
 
     #[test]
     fun test_graduation_via_sui_threshold_not_drain() {
+        // F-10: price unset -> threshold = BASE_GRAD_MIST (9,000 SUI), well
+        // below the 12,802.93 SUI swap needed to drain all 800M tokens, so a
+        // 10,000 SUI buy graduates via Path B with tokens REMAINING.
+        // DERIVATION: used_swap = 9_000_000_000_000 on the fresh curve
+        //   (x = VS = 4_369e9, y = VTR = 1_073_000_000e6):
+        //   tokens_out = y * used / (x + used) = 722_342_733_188_720
+        //   token_reserve after = 800_000_000e6 - tokens_out
+        //                       = 77_657_266_811_280
         let mut s = ts::begin(CREATOR);
         bonding_curve::init_for_testing(ts::ctx(&mut s));
         let (_a, _b) = make_payouts_single();
@@ -2111,23 +2280,19 @@ module suipump::bonding_curve_tests {
 
         ts::next_tx(&mut s, BUYER);
         let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
-        bonding_curve::set_grad_threshold_for_testing(&mut curve, 500 * 1_000_000_000);
-        // Tokens are NOT drained — graduation via SUI threshold only
-        let _tokens_before = bonding_curve::token_reserve(&curve);
-        ts::return_shared(curve);
-
-        ts::next_tx(&mut s, BUYER);
-        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
-        let payment = mint_sui(700 * MIST_PER_SUI, &mut s);
+        let cfg = ts::take_shared<PriceConfig>(&s);
+        let payment = mint_sui(10_000 * MIST_PER_SUI, &mut s);
         let clk = clock::create_for_testing(ts::ctx(&mut s));
         let (tokens, refund) = bonding_curve::buy_for_testing(
-            &mut curve, payment, 0, option::none(), &clk, ts::ctx(&mut s)
+            &mut curve, payment, 0, option::none(), &cfg, &clk, ts::ctx(&mut s)
         );
         // Graduated even though tokens remain
         assert!(bonding_curve::graduated(&curve), 2600);
-        assert!(bonding_curve::token_reserve(&curve) > 0, 2601);
+        assert!(bonding_curve::token_reserve(&curve) == 77_657_266_811_280, 2601);
+        assert!(coin::value(&tokens) == 722_342_733_188_720, 2602);
         destroy(tokens); destroy(refund);
         clock::destroy_for_testing(clk);
+        ts::return_shared(cfg);
         ts::return_shared(curve);
         ts::end(s);
     }

@@ -1112,38 +1112,45 @@ module suipump::bonding_curve {
         // In that case this function is a no-op for the bonuses (already paid)
         // but still needed for the off-chain DEX pool creation PTB to pass
         // metadata. We assert !graduated here for the standalone drain path.
+        let _ = metadata; // used by off-chain PTB for DEX pool; no on-chain mutation needed
+        graduate_impl(curve, ctx);
+    }
+
+    // Single implementation of the standalone-graduation gate (F-10: graduate()
+    // and graduate_for_testing previously carried two hand-synced copies of
+    // these asserts; a test-only fork of gating logic is exactly the shadow
+    // pattern that hid F-4/F-5, so both now delegate here).
+    fun graduate_impl<T>(
+        curve: &mut Curve<T>,
+        ctx:   &mut TxContext,
+    ) {
         assert!(!curve.graduated, EAlreadyGraduated);
         // F-2 (self-audit): production graduate() reads current_grad_threshold
         // directly and NEVER goes through resolve_grad_threshold, so the buy()-path
         // price clamp does NOT protect it. On a fresh curve current_grad_threshold
         // is 0, and without the `> 0` guard "sui_reserve >= 0" is always true, so a
         // permissionless graduate() would brick any brand-new curve for gas. Require
-        // the threshold to have been established by a real oracle-priced buy first
-        // (mirrors graduate_for_testing). The token_reserve==0 drain branch stays.
+        // the threshold to have been established by a real oracle-priced buy first.
+        // The token_reserve==0 drain branch stays.
         assert!(
             balance::value(&curve.token_reserve) == 0 ||
             (curve.current_grad_threshold > 0 &&
              balance::value(&curve.sui_reserve) >= curve.current_grad_threshold),
             ENotGraduated,
         );
-        let _ = metadata; // used by off-chain PTB for DEX pool; no on-chain mutation needed
         do_graduate_inline(curve, ctx);
     }
 
     // ---------- graduate_for_testing (test-only, no metadata param) ----------
+    // Production graduate() requires a CoinMetadata<T> the Move test VM cannot
+    // construct; this drops that parameter and delegates to the SAME
+    // graduate_impl production runs. Zero duplicated gating logic (F-10).
     #[test_only]
     public fun graduate_for_testing<T>(
         curve: &mut Curve<T>,
         ctx:   &mut TxContext,
     ) {
-        assert!(!curve.graduated, EAlreadyGraduated);
-        assert!(
-            balance::value(&curve.token_reserve) == 0 ||
-            (curve.current_grad_threshold > 0 &&
-             balance::value(&curve.sui_reserve) >= curve.current_grad_threshold),
-            ENotGraduated,
-        );
-        do_graduate_inline(curve, ctx);
+        graduate_impl(curve, ctx);
     }
 
     // ---------- Record graduation pool (identical to v8) ----------
@@ -1856,9 +1863,13 @@ module suipump::bonding_curve {
     public fun buyback_fees_pending<T>(c: &Curve<T>): u64 { balance::value(&c.buyback_fees) }
     public fun cto_circulating_supply<T>(c: &Curve<T>): u64 { circulating_supply(c) }
 
-    // ---------- Test-only: set grad threshold without oracle ----------
-    // Allows tests to set a known threshold so graduation tests remain
-    // deterministic without a live Pyth feed.
+    // ---------- Test-only: set STORED grad threshold ----------
+    // F-10: this may ONLY feed the standalone graduate()/graduate_for_testing
+    // gate, which reads the STORED current_grad_threshold. It must never feed
+    // a buy path: buy_for_testing delegates to buy(), which recomputes the
+    // threshold from the shared PriceConfig on every call and OVERWRITES this
+    // field. Kept solely so tests can stage the graduate_impl gate (e.g. the
+    // trivial-reserve claim backstop) without a curve-sized buy.
     #[test_only]
     public fun set_grad_threshold_for_testing<T>(
         curve:     &mut Curve<T>,
@@ -1867,128 +1878,27 @@ module suipump::bonding_curve {
         curve.current_grad_threshold = threshold;
     }
 
-    // ---------- Test-only: buy with explicit price override ----------
-    // Mirrors the buy() logic exactly but accepts a threshold override.
-    // Used by Move unit tests to avoid needing a Pyth shared object.
+    // ---------- Test-only: buy wrapper ----------
+    // F-10 FIX (V13): buy_for_testing was a PARALLEL IMPLEMENTATION of buy().
+    // It read curve.current_grad_threshold directly (never
+    // resolve_grad_threshold), lacked the F-5 `to_reserve = swap_amount +
+    // lp_fee` reserve fix (it split only swap_amount while still incrementing
+    // lp_fees_accumulated), and skipped the V10 buyback carve. ~50 tests
+    // exercised that shadow instead of the real entrypoint, which is how the
+    // F-4 31.6x threshold error and the PriceConfig init blocker survived
+    // green runs. It is now a ZERO-LOGIC delegator: every economic decision
+    // (threshold resolution via a real &PriceConfig, fee split, tail clips,
+    // inline graduation) executes the production buy() path.
     #[test_only]
     public fun buy_for_testing<T>(
         curve:          &mut Curve<T>,
-        mut payment:    Coin<SUI>,
+        payment:        Coin<SUI>,
         min_tokens_out: u64,
         referral:       Option<address>,
+        price_cfg:      &PriceConfig,
         clock:          &Clock,
         ctx:            &mut TxContext,
     ): (Coin<T>, Coin<SUI>) {
-        assert!(!curve.graduated, EAlreadyGraduated);
-        assert!(!curve.paused,    EPaused);
-        let sui_in = coin::value(&payment);
-        assert!(sui_in > 0, EZeroAmount);
-
-        if (option::is_some(&referral)) {
-            assert!(*option::borrow(&referral) != curve.creator, ESelfReferral);
-        };
-
-        if (curve.anti_bot_delay > 0) {
-            let now_ms   = clock::timestamp_ms(clock);
-            let delay_ms = (curve.anti_bot_delay as u64) * 1_000;
-            if (now_ms < curve.created_at_ms + delay_ms) {
-                assert!(tx_context::sender(ctx) == curve.creator, EAntiBotBlocked);
-            };
-        };
-
-        // Use stored threshold (set by set_grad_threshold_for_testing) or BASE
-        let grad_threshold = if (curve.current_grad_threshold > 0) {
-            curve.current_grad_threshold
-        } else {
-            BASE_GRAD_MIST
-        };
-
-        let has_referral     = option::is_some(&referral);
-        let fee_amount_full  = (sui_in * TRADE_FEE_BPS) / BPS_DENOMINATOR;
-        let swap_amount_full = sui_in - fee_amount_full;
-
-        let x = effective_sui_reserve(curve);
-        let y = effective_token_reserve(curve);
-        let naive_tokens_out    = quote_out(swap_amount_full, x, y);
-        let remaining_tokens    = balance::value(&curve.token_reserve);
-        let sui_reserve_after   = balance::value(&curve.sui_reserve) + swap_amount_full;
-
-        let (tokens_out, _actual_swap, tail_refund): (u64, u64, u64) =
-            if (naive_tokens_out >= remaining_tokens) {
-                let needed    = (((x as u128) * (remaining_tokens as u128))
-                                 / ((y as u128) - (remaining_tokens as u128))) as u64;
-                let used_swap = if (needed > swap_amount_full) { swap_amount_full } else { needed };
-                (remaining_tokens, used_swap, swap_amount_full - used_swap)
-            } else if (sui_reserve_after >= grad_threshold) {
-                let current_reserve = balance::value(&curve.sui_reserve);
-                let needed_swap     = if (grad_threshold > current_reserve) {
-                    grad_threshold - current_reserve
-                } else { 0 };
-                let used_swap  = if (needed_swap > swap_amount_full) { swap_amount_full }
-                                 else { needed_swap };
-                let tail       = swap_amount_full - used_swap;
-                let tok_out    = quote_out(used_swap, x, y);
-                let tok_out    = if (tok_out > remaining_tokens) { remaining_tokens } else { tok_out };
-                (tok_out, used_swap, tail)
-            } else {
-                (naive_tokens_out, swap_amount_full, 0)
-            };
-
-        assert!(tokens_out > 0,              EInsufficientTokens);
-        assert!(tokens_out >= min_tokens_out, ESlippageExceeded);
-
-        let effective_sui_in = sui_in - tail_refund;
-        let fee_amount  = (effective_sui_in * TRADE_FEE_BPS) / BPS_DENOMINATOR;
-        let swap_amount = effective_sui_in - fee_amount;
-
-        let (creator_fee, protocol_fee, airdrop_fee, lp_fee, referral_fee) =
-            split_fee_v7(fee_amount, has_referral);
-
-        let creator_coin  = coin::split(&mut payment, creator_fee,  ctx);
-        let protocol_coin = coin::split(&mut payment, protocol_fee, ctx);
-        let airdrop_coin  = coin::split(&mut payment, airdrop_fee,  ctx);
-        balance::join(&mut curve.creator_fees,  coin::into_balance(creator_coin));
-        balance::join(&mut curve.protocol_fees, coin::into_balance(protocol_coin));
-        balance::join(&mut curve.airdrop_fees,  coin::into_balance(airdrop_coin));
-
-        if (referral_fee > 0 && has_referral) {
-            let referral_coin = coin::split(&mut payment, referral_fee, ctx);
-            transfer::public_transfer(referral_coin, *option::borrow(&referral));
-        };
-
-        curve.lp_fees_accumulated = curve.lp_fees_accumulated + lp_fee;
-
-        let reserve_coin = coin::split(&mut payment, swap_amount, ctx);
-        balance::join(&mut curve.sui_reserve, coin::into_balance(reserve_coin));
-
-        let out_balance = balance::split(&mut curve.token_reserve, tokens_out);
-
-        let new_reserve = balance::value(&curve.sui_reserve);
-        let should_graduate =
-            !curve.graduated &&
-            (balance::value(&curve.token_reserve) == 0 ||
-             new_reserve >= grad_threshold);
-        if (should_graduate) {
-            do_graduate_inline(curve, ctx);
-        };
-
-        event::emit(TokensPurchased {
-            curve_id:            object::id(curve),
-            buyer:               tx_context::sender(ctx),
-            sui_in,
-            tokens_out,
-            creator_fee,
-            protocol_fee,
-            airdrop_fee,
-            lp_fee,
-            referral_fee,
-            referral,
-            new_sui_reserve:     balance::value(&curve.sui_reserve),
-            new_token_reserve:   balance::value(&curve.token_reserve),
-            grad_threshold_used: grad_threshold,
-            tail_refund,
-        });
-
-        (coin::from_balance(out_balance, ctx), payment)
+        buy(curve, payment, min_tokens_out, referral, price_cfg, clock, ctx)
     }
 }
