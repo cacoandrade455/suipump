@@ -1434,24 +1434,20 @@ module suipump::bonding_curve_tests {
 
     #[test]
     fun test_create_price_config_shares_unset_config() {
+        // UPGRADE path: init never ran (upgrades do not run init), so no PriceConfig
+        // exists yet and the pre-existing V10 AdminCap carries no marker. Simulated
+        // with a bare test AdminCap. create_price_config shares the one canonical
+        // UNSET PriceConfig.
         let mut s = ts::begin(CREATOR);
-        bonding_curve::init_for_testing(ts::ctx(&mut s));
-
-        ts::next_tx(&mut s, CREATOR);
-        // Pin init's config id FIRST so we can prove the admin entrypoint shared
-        // a DIFFERENT object (on an upgraded package only the admin-created one
-        // would exist - init never re-runs on upgrade).
-        let init_cfg_id = option::destroy_some(ts::most_recent_id_shared<PriceConfig>());
-        let mut admin = ts::take_from_sender<AdminCap>(&s);
+        let mut admin = bonding_curve::new_admin_cap_for_testing(ts::ctx(&mut s));
         bonding_curve::create_price_config(&mut admin, ts::ctx(&mut s));
-        ts::return_to_sender(&s, admin);
+        transfer::public_transfer(admin, CREATOR);
 
         ts::next_tx(&mut s, CREATOR);
-        let new_cfg_id = option::destroy_some(ts::most_recent_id_shared<PriceConfig>());
-        assert!(new_cfg_id != init_cfg_id, 3000);
-        let cfg = ts::take_shared_by_id<PriceConfig>(&s, new_cfg_id);
-        // Exact UNSET state init creates: the BASE_GRAD_MIST fallback applies
-        // until the relayer publishes the first price.
+        let cfg_id = option::destroy_some(ts::most_recent_id_shared<PriceConfig>());
+        let cfg = ts::take_shared_by_id<PriceConfig>(&s, cfg_id);
+        // Exact UNSET state: the BASE_GRAD_MIST fallback applies until the relayer
+        // publishes the first price.
         assert!(bonding_curve::price_scaled(&cfg) == 0, 3001);
         assert!(bonding_curve::price_updated_at_ms(&cfg) == 0, 3002);
         ts::return_shared(cfg);
@@ -1461,16 +1457,15 @@ module suipump::bonding_curve_tests {
     #[test]
     #[expected_failure(abort_code = E_PRICE_CONFIG_EXISTS, location = suipump::bonding_curve)]
     fun test_create_price_config_second_call_aborts() {
+        // UPGRADE path (bare, unmarked AdminCap): the first create_price_config
+        // succeeds and sets the marker; the second aborts EPriceConfigExists.
         let mut s = ts::begin(CREATOR);
-        bonding_curve::init_for_testing(ts::ctx(&mut s));
-
-        ts::next_tx(&mut s, CREATOR);
-        let mut admin = ts::take_from_sender<AdminCap>(&s);
+        let mut admin = bonding_curve::new_admin_cap_for_testing(ts::ctx(&mut s));
         bonding_curve::create_price_config(&mut admin, ts::ctx(&mut s));
         // The dynamic-field marker on the AdminCap's UID makes any second call
         // abort - one PriceConfig per lineage, forever.
         bonding_curve::create_price_config(&mut admin, ts::ctx(&mut s));
-        ts::return_to_sender(&s, admin);
+        transfer::public_transfer(admin, CREATOR);
         ts::end(s);
     }
 
@@ -1494,7 +1489,11 @@ module suipump::bonding_curve_tests {
         let curve_b_id = option::destroy_some(ts::most_recent_id_shared<Curve<TEST_TOKEN>>());
         assert!(curve_a_id != curve_b_id, 3010);
         let init_cfg_id = option::destroy_some(ts::most_recent_id_shared<PriceConfig>());
-        let mut admin = ts::take_from_sender<AdminCap>(&s);
+        // A second PriceConfig can NEVER coexist in production (one-shot per package,
+        // PREPUBLISH-2). To exercise buy() determinism across two config OBJECTS we
+        // construct the second one with a BARE test AdminCap (the upgrade-path cap
+        // shape), which is the only way two configs can be made to exist at all.
+        let mut admin = bonding_curve::new_admin_cap_for_testing(ts::ctx(&mut s));
         bonding_curve::create_price_config(&mut admin, ts::ctx(&mut s));
 
         // Publish the SAME price ($0.75) into BOTH configs.
@@ -1504,8 +1503,8 @@ module suipump::bonding_curve_tests {
         let mut init_cfg  = ts::take_shared_by_id<PriceConfig>(&s, init_cfg_id);
         let mut admin_cfg = ts::take_shared_by_id<PriceConfig>(&s, admin_cfg_id);
         let clk = clock::create_for_testing(ts::ctx(&mut s));
-        // E-1: set_sui_price takes the PriceRelayerCap; `admin` stays the AdminCap
-        // used above for create_price_config. Proves the two authorities are split.
+        // E-1: set_sui_price takes the PriceRelayerCap (init minted one to CREATOR;
+        // the bare-cap create_price_config minted a second). Either works.
         let relayer = ts::take_from_sender<PriceRelayerCap>(&s);
         bonding_curve::set_sui_price(&relayer, &mut init_cfg, 750, &clk);
         bonding_curve::set_sui_price(&relayer, &mut admin_cfg, 750, &clk);
@@ -1543,7 +1542,7 @@ module suipump::bonding_curve_tests {
         clock::destroy_for_testing(clk);
         // Taken from CREATOR but the current tx sender is BUYER, so
         // return_to_sender would abort with ECantReturnObject (code 2).
-        ts::return_to_address(CREATOR, admin);
+        transfer::public_transfer(admin, CREATOR); // bare test cap: minted, not taken
         ts::return_to_address(CREATOR, relayer);
         ts::return_shared(init_cfg);
         ts::return_shared(admin_cfg);
@@ -1605,18 +1604,15 @@ module suipump::bonding_curve_tests {
 
     #[test]
     fun test_create_price_config_mints_relayer_cap() {
-        // (c) The upgrade bootstrap create_price_config mints a WORKING
-        // PriceRelayerCap (transferred to the admin caller) that sets the price on
-        // the config it shared. "Exactly one" is guaranteed by the one-shot marker:
-        // a second create_price_config aborts EPriceConfigExists BEFORE minting a
-        // second cap (proven by test_create_price_config_second_call_aborts).
+        // (c) The UPGRADE bootstrap create_price_config (bare, unmarked AdminCap)
+        // mints a WORKING PriceRelayerCap that sets the price on the config it
+        // shared. "Exactly one" is guaranteed by the one-shot marker: a second call
+        // aborts EPriceConfigExists BEFORE minting a second cap (proven by
+        // test_create_price_config_second_call_aborts).
         let mut s = ts::begin(CREATOR);
-        bonding_curve::init_for_testing(ts::ctx(&mut s));
-
-        ts::next_tx(&mut s, CREATOR);
-        let mut admin = ts::take_from_sender<AdminCap>(&s);
+        let mut admin = bonding_curve::new_admin_cap_for_testing(ts::ctx(&mut s));
         bonding_curve::create_price_config(&mut admin, ts::ctx(&mut s));
-        ts::return_to_sender(&s, admin);
+        transfer::public_transfer(admin, CREATOR);
 
         ts::next_tx(&mut s, CREATOR);
         let new_cfg_id = option::destroy_some(ts::most_recent_id_shared<PriceConfig>());
@@ -1652,6 +1648,43 @@ module suipump::bonding_curve_tests {
         assert!(!bonding_curve::paused(&curve), 4031);
         ts::return_to_sender(&s, admin_cap);
         ts::return_shared(curve);
+        ts::end(s);
+    }
+
+    // --- PREPUBLISH-2: one-shot PriceConfig/PriceRelayerCap uniqueness on both paths ---
+
+    // Regression for PREPUBLISH-2: on the FRESH-PUBLISH path init sets the one-shot
+    // marker on the AdminCap it mints, so the admin entrypoint create_price_config
+    // can NEVER add a second PriceConfig (which, with no identity check in
+    // resolve_grad_threshold, would have let a caller pick the graduation threshold
+    // by choosing which config object to pass - the object-form of F-2).
+    #[test]
+    #[expected_failure(abort_code = E_PRICE_CONFIG_EXISTS, location = suipump::bonding_curve)]
+    fun test_init_marks_price_config_created_fresh_publish() {
+        let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
+
+        ts::next_tx(&mut s, CREATOR);
+        let mut admin = ts::take_from_sender<AdminCap>(&s);
+        // init already created the one canonical PriceConfig AND set the marker, so
+        // this fresh-publish call must abort EPriceConfigExists - no second config.
+        bonding_curve::create_price_config(&mut admin, ts::ctx(&mut s));
+        ts::return_to_sender(&s, admin);
+        ts::end(s);
+    }
+
+    // PREPUBLISH-2 / E-1: the fresh-publish init mints EXACTLY ONE PriceRelayerCap to
+    // the publisher - no duplicate mint.
+    #[test]
+    fun test_init_mints_exactly_one_relayer_cap() {
+        let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
+
+        ts::next_tx(&mut s, CREATOR);
+        // Take the one relayer cap (proves >= 1), then assert none remains (== 1).
+        let cap = ts::take_from_sender<PriceRelayerCap>(&s);
+        assert!(!ts::has_most_recent_for_address<PriceRelayerCap>(CREATOR), 4050);
+        ts::return_to_sender(&s, cap);
         ts::end(s);
     }
 

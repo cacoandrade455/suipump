@@ -286,12 +286,33 @@ module suipump::bonding_curve {
         bps:       u64,
     }
 
+    /// PACKAGE INVARIANT (audit PREPUBLISH-2): EXACTLY ONE PriceConfig and
+    /// EXACTLY ONE PriceRelayerCap exist per package, and the two bootstrap paths
+    /// are mutually exclusive. A FRESH publish runs init, which creates the one
+    /// canonical PriceConfig + relayer cap AND sets the PRICE_CONFIG_CREATED_KEY
+    /// one-shot marker on the AdminCap (so create_price_config can never run and
+    /// mint a duplicate). A V13 UPGRADE does not run init; the admin instead calls
+    /// create_price_config exactly once (its own one-shot marker guards a second
+    /// call). Either way the package ends with a single canonical PriceConfig and a
+    /// single PriceRelayerCap. This uniqueness is load-bearing: resolve_grad_threshold
+    /// performs NO identity check on the &PriceConfig it is handed, so if two shared
+    /// PriceConfig objects could coexist a caller could pick the graduation threshold
+    /// by choosing which config to pass (the object-form of F-2). One-shot uniqueness
+    /// is what makes the missing identity check safe, so the marker must NEVER be
+    /// relaxed on either path. (Defense-in-depth follow-up: pin the canonical config
+    /// id and assert it in buy()/buy_with_session - deferred, post-mainnet.)
     fun init(_witness: BONDING_CURVE, ctx: &mut TxContext) {
         assert!(
             CREATOR_SHARE_BPS + PROTOCOL_SHARE_BPS + LP_SHARE_BPS == BPS_DENOMINATOR,
             EFeeSplitInvalid,
         );
-        transfer::public_transfer(AdminCap { id: object::new(ctx) }, tx_context::sender(ctx));
+        // PREPUBLISH-2: set the one-shot marker on the AdminCap BEFORE transferring
+        // it, so create_price_config aborts EPriceConfigExists on a fresh publish too
+        // - init already created the one canonical PriceConfig below. Without this a
+        // fresh publish could end with a SECOND PriceConfig (and a second relayer cap).
+        let mut admin = AdminCap { id: object::new(ctx) };
+        df::add(&mut admin.id, PRICE_CONFIG_CREATED_KEY, true);
+        transfer::public_transfer(admin, tx_context::sender(ctx));
         // V13 (audit E-1): mint the price-only relayer cap on the FRESH-publish
         // path (the stated mainnet plan) so the hot relayer key never needs the
         // AdminCap. create_price_config mints the analogous cap on the upgrade
@@ -302,9 +323,8 @@ module suipump::bonding_curve {
         // V13: one shared PriceConfig per package. Starts UNSET (0), so every buy
         // falls back to the static BASE_GRAD_MIST until the relayer publishes the
         // first price. Launching before the relayer runs is therefore safe.
-        // NOTE: the PRICE_CONFIG_CREATED_KEY marker guards only the admin
-        // entrypoint (create_price_config); fresh publishes still get their
-        // PriceConfig from init, unguarded, exactly as before.
+        // PREPUBLISH-2: this is the SINGLE canonical PriceConfig for a fresh publish;
+        // the marker set above makes create_price_config unable to add a second one.
         transfer::share_object(PriceConfig {
             id:               object::new(ctx),
             sui_price_scaled: 0,
@@ -360,6 +380,13 @@ module suipump::bonding_curve {
     /// alongside the PriceConfig, transferred to the admin caller, who forwards
     /// it to the hot relayer key. The same one-shot marker bounds it to a single
     /// cap per package, so a second call cannot mint a duplicate relayer cap.
+    /// PREPUBLISH-2 / PACKAGE INVARIANT: EXACTLY ONE PriceConfig and EXACTLY ONE
+    /// PriceRelayerCap per package, on BOTH publish paths, mutually exclusive. On a
+    /// FRESH publish init already set PRICE_CONFIG_CREATED_KEY, so this aborts
+    /// EPriceConfigExists there; it only runs on the UPGRADE path (where init did
+    /// not run), and its own marker check makes a second call abort. resolve_grad_threshold
+    /// does NO identity check on the &PriceConfig it receives; this uniqueness is
+    /// what makes that safe, so the marker must NEVER be relaxed on either path.
     public fun create_price_config(admin: &mut AdminCap, ctx: &mut TxContext) {
         assert!(!df::exists(&admin.id, PRICE_CONFIG_CREATED_KEY), EPriceConfigExists);
         df::add(&mut admin.id, PRICE_CONFIG_CREATED_KEY, true);
@@ -1614,6 +1641,16 @@ module suipump::bonding_curve {
     #[test_only]
     public fun init_for_testing(ctx: &mut TxContext) {
         init(BONDING_CURVE {}, ctx);
+    }
+
+    /// PREPUBLISH-2 test hook: mint a BARE AdminCap with NO PRICE_CONFIG_CREATED_KEY
+    /// marker, to simulate the V13 UPGRADE path where the AdminCap predates V13 (it
+    /// was minted by the V10 init, which had no marker) and init() therefore never
+    /// ran. On this cap create_price_config succeeds once and a second call aborts.
+    /// Fresh-publish init() marks the cap it mints, so it must never be used there.
+    #[test_only]
+    public fun new_admin_cap_for_testing(ctx: &mut TxContext): AdminCap {
+        AdminCap { id: object::new(ctx) }
     }
     // =====================================================================
     // V10 ADDITIONS
