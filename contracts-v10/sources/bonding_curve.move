@@ -104,9 +104,7 @@ module suipump::bonding_curve {
     const ECtoWrongCurve:            u64 = 44; // CTO: proposal/curve id mismatch
     const ECtoVoteClosed:            u64 = 45; // CTO: vote window has closed
     const ECtoVoteStillOpen:         u64 = 46; // CTO: vote window has not yet closed
-    const ECtoAlreadyVoted:          u64 = 47; // CTO: this wallet already voted
     const ECtoAlreadyResolved:       u64 = 48; // CTO: proposal already resolved
-    const ECtoZeroWeight:            u64 = 49; // CTO: voter presented zero balance
     // V12:
     const ECommentGateNoop:          u64 = 50; // toggle called with the current value
     // V13: graduation exit path (restored; lost in the v8->v9 rewrite).
@@ -115,6 +113,11 @@ module suipump::bonding_curve {
     const EPriceOutOfBand:           u64 = 43; // V13: set_sui_price outside [MIN,MAX]_PRICE_SCALED
     const EPreMintedSupply:          u64 = 53; // F-1: TreasuryCap had supply before create_and_return
     const EPriceConfigExists:        u64 = 54; // V13: create_price_config already called on this AdminCap
+    // V13: escrow-weighted CTO redesign (shared proposal + Coin<T> escrow).
+    const ECtoProposalLive:          u64 = 55; // CTO: a live proposal already exists for this curve
+    const ECtoBelowMinVote:          u64 = 56; // CTO: vote coin below the MIN_VOTE spam floor
+    const ECtoNotVoter:              u64 = 57; // CTO: unvote/reclaim by an address with no escrow entry
+    const ECtoNotResolved:           u64 = 58; // CTO: reclaim before the proposal is resolved
 
     /// V12 comments toggle: dynamic-field marker on the curve. Marker ABSENT =
     /// holder-gated (the V10/V11 default, preserved); marker PRESENT = open
@@ -134,6 +137,10 @@ module suipump::bonding_curve {
     // so a second call aborts EPriceConfigExists instead of minting a duplicate
     // config that could de-synchronize clients pinning SUIPUMP_PRICE_CONFIG.
     const PRICE_CONFIG_CREATED_KEY: vector<u8> = b"price_config_created";
+    // V13: escrow-weighted CTO. Dynamic field on curve.id holding the live
+    // TakeoverProposal's ID. PRESENT = a proposal is open for this curve (blocks a
+    // second concurrent proposal); removed at resolve so a later CTO can open.
+    const CTO_LIVE_PROPOSAL_KEY: vector<u8> = b"cto_live_proposal";
 
     const MAX_COMMENT_BYTES: u64 = 280;
     const MAX_NAME_BYTES:    u64 = 64;
@@ -156,7 +163,8 @@ module suipump::bonding_curve {
     const CTO_WINDOW_MS:     u64 = 12 * 60 * 60 * 1_000;      // 12-hour vote window
     const CTO_COOLDOWN_MS:   u64 = 3  * 24 * 60 * 60 * 1_000; // 3-day post-failure cooldown
     const CTO_NOMINATE_BPS:  u64 = 100;   // nominator must hold >= 1% of circulating supply
-    const CTO_QUORUM_BPS:    u64 = 2_500; // quorum: for+against must exceed 25% of circulating
+    const CTO_QUORUM_BPS:    u64 = 2_500; // quorum: escrowed weight must reach 25% of circulating
+    const CTO_MIN_VOTE_BPS:  u64 = 1;     // 0.01% of CURVE_SUPPLY: per-vote table-spam floor
 
     // ---------- Curve constants (v9 recalibrated) ----------
     const CURVE_SUPPLY:          u64 = 800_000_000  * 1_000_000;
@@ -1587,20 +1595,22 @@ module suipump::bonding_curve {
     public struct ProtocolSurchargeCollected has copy, drop {
         curve_id: ID, amount: u64,
     }
+    // V13: escrow-weighted CTO events. Weight is the Coin<T> locked in escrow,
+    // so a vote cannot be double-counted by shuffling coins between wallets.
     public struct TakeoverProposed has copy, drop {
-        curve_id: ID, proposal_id: ID, nominee: address, nominator: address,
-        snapshot_supply: u64, closes_ms: u64,
+        curve_id: ID, proposal_id: ID, proposer: address, deadline_ms: u64,
     }
     public struct TakeoverVoted has copy, drop {
-        curve_id: ID, proposal_id: ID, voter: address, support: bool, weight: u64,
+        proposal_id: ID, voter: address, amount: u64, total_weight: u64,
     }
-    public struct TakeoverSucceeded has copy, drop {
-        curve_id: ID, proposal_id: ID, new_creator: address,
-        for_weight: u64, against_weight: u64,
+    public struct TakeoverUnvoted has copy, drop {
+        proposal_id: ID, voter: address, amount: u64,
     }
-    public struct TakeoverFailed has copy, drop {
-        curve_id: ID, proposal_id: ID, for_weight: u64, against_weight: u64,
-        cooldown_until_ms: u64,
+    public struct TakeoverResolved has copy, drop {
+        proposal_id: ID, curve_id: ID, succeeded: bool, total_weight: u64,
+    }
+    public struct VoteReclaimed has copy, drop {
+        proposal_id: ID, voter: address, amount: u64,
     }
 
     // ---------- V10: buyback configuration (active-creator-gated) ----------
@@ -1700,161 +1710,210 @@ module suipump::bonding_curve {
     }
 
     // =====================================================================
-    // V10: COMMUNITY TAKEOVER (balance-weighted approval vote)
+    // V13: COMMUNITY TAKEOVER (escrow-weighted, shared proposal)
     // =====================================================================
 
-    /// Two-stage takeover: a >=1% holder nominates a candidate after the creator
-    /// has been inactive >= 5 days; holders then cast a 12h balance-weighted
-    /// approval/veto vote. Passes iff for+against > 25% of circulating supply
-    /// AND for > against (both strict; ties favor the incumbent). On success the
-    /// curve's active_creator_cap_id is swapped to a fresh cap minted to the
-    /// nominee, invalidating the old creator's cap across every gated function.
-    public struct TakeoverProposal has key {
-        id:              UID,
-        curve_id:        ID,
-        nominee:         address,
-        nominator:       address,
-        snapshot_supply: u64,
-        opened_ms:       u64,
-        closes_ms:       u64,
-        for_weight:      u64,
-        against_weight:  u64,
-        resolved:        bool,
-        voted:           Table<address, bool>,
+    /// Escrow-weighted takeover. After the creator has been inactive >= 5 days a
+    /// >=1% holder opens a proposal by ESCROWING their stake as the first vote;
+    /// holders then add weight by locking their own Coin<T> into the same escrow
+    /// for a 12h window. Voting weight is the coin PHYSICALLY LOCKED in the
+    /// proposal, so the same coin cannot be moved to a second wallet and voted
+    /// twice (fixes F-3). The proposal is a SHARED object so it is reachable by
+    /// every later transaction (fixes F-AC-1). Passes iff total escrowed weight
+    /// reaches 25% of circulating supply. On success the curve's
+    /// active_creator_cap_id is swapped to a fresh cap minted to the proposer,
+    /// invalidating the old creator's cap across every gated function. Escrow is
+    /// never consumed at resolve: it persists so every voter can reclaim their
+    /// exact stake via the permissionless reclaim_vote.
+    public struct TakeoverProposal<phantom T> has key {
+        id:           UID,
+        curve_id:     ID,
+        proposer:     address,
+        opened_at_ms: u64,
+        deadline_ms:  u64,
+        escrow:       Balance<T>,
+        votes:        Table<address, u64>,
+        total_weight: u64,
+        resolved:     bool,
+        succeeded:    bool,
     }
 
     /// Circulating supply for CTO math = tokens NOT held by the curve itself.
     /// (CURVE_SUPPLY minus the curve's unsold token_reserve = tokens in holders'
-    /// wallets.) Matches the "exclude the bonding curve balance" rule. Vesting
-    /// locks hold tokens outside the curve; they are excluded by construction
-    /// because locked tokens already left token_reserve at lock time and are not
-    /// counted as a passive vote (a locked holder simply cannot present them).
+    /// wallets.) Coins locked in escrow already left token_reserve at buy time,
+    /// so escrowing does not change circulating supply. Vesting locks are
+    /// likewise excluded because locked tokens already left token_reserve.
     fun circulating_supply<T>(curve: &Curve<T>): u64 {
         CURVE_SUPPLY - balance::value(&curve.token_reserve)
     }
 
+    /// Open a takeover. The proposer's nominate stake is ESCROWED as the first
+    /// vote - a locked coin cannot be moved to a second wallet to vote twice
+    /// (fixes F-3). The proposal is shared so later transactions can vote/resolve.
     public fun propose_takeover<T>(
-        curve:       &mut Curve<T>,
-        nominee:     address,
-        holder_coin: &Coin<T>,   // nominator presents balance to prove >= 1%
-        clock:       &Clock,
-        ctx:         &mut TxContext,
-    ): TakeoverProposal {
+        curve: &mut Curve<T>,
+        stake: Coin<T>,
+        clock: &Clock,
+        ctx:   &mut TxContext,
+    ) {
         let now = clock::timestamp_ms(clock);
         assert!(now - curve.last_creator_activity_ms >= CTO_INACTIVITY_MS, ECreatorStillActive);
         assert!(now >= curve.cto_cooldown_until_ms, ECtoOnCooldown);
+        assert!(!df::exists(&curve.id, CTO_LIVE_PROPOSAL_KEY), ECtoProposalLive);
 
         let circ = circulating_supply(curve);
         let threshold = (circ * CTO_NOMINATE_BPS) / BPS_DENOMINATOR;
-        assert!(coin::value(holder_coin) >= threshold, EBelowNominateThreshold);
+        let amount = coin::value(&stake);
+        assert!(amount >= threshold, EBelowNominateThreshold);
 
-        let proposal = TakeoverProposal {
-            id:              object::new(ctx),
-            curve_id:        object::id(curve),
-            nominee,
-            nominator:       tx_context::sender(ctx),
-            snapshot_supply: circ,
-            opened_ms:       now,
-            closes_ms:       now + CTO_WINDOW_MS,
-            for_weight:      0,
-            against_weight:  0,
-            resolved:        false,
-            voted:           table::new<address, bool>(ctx),
+        let sender = tx_context::sender(ctx);
+        let mut votes = table::new<address, u64>(ctx);
+        table::add(&mut votes, sender, amount);
+        let proposal = TakeoverProposal<T> {
+            id:           object::new(ctx),
+            curve_id:     object::id(curve),
+            proposer:     sender,
+            opened_at_ms: now,
+            deadline_ms:  now + CTO_WINDOW_MS,
+            escrow:       coin::into_balance(stake),
+            votes,
+            total_weight: amount,
+            resolved:     false,
+            succeeded:    false,
         };
+        let pid = object::id(&proposal);
+        df::add(&mut curve.id, CTO_LIVE_PROPOSAL_KEY, pid);
         event::emit(TakeoverProposed {
-            curve_id:        object::id(curve),
-            proposal_id:     object::id(&proposal),
-            nominee,
-            nominator:       tx_context::sender(ctx),
-            snapshot_supply: circ,
-            closes_ms:       proposal.closes_ms,
+            curve_id:    object::id(curve),
+            proposal_id: pid,
+            proposer:    sender,
+            deadline_ms: proposal.deadline_ms,
         });
-        proposal
+        transfer::share_object(proposal);
     }
 
+    /// Add weight by LOCKING coins into escrow; voting weight is the coin locked
+    /// into escrow, support-only against quorum.
     public fun vote_takeover<T>(
-        curve:       &Curve<T>,
-        proposal:    &mut TakeoverProposal,
-        support:     bool,
-        holder_coin: &Coin<T>,   // live balance = weight; 12h window deters flash-buy
-        clock:       &Clock,
-        ctx:         &mut TxContext,
+        proposal: &mut TakeoverProposal<T>,
+        coins:    Coin<T>,
+        clock:    &Clock,
+        ctx:      &mut TxContext,
     ) {
-        assert!(proposal.curve_id == object::id(curve), ECtoWrongCurve);
+        assert!(!proposal.resolved, ECtoAlreadyResolved);
         let now = clock::timestamp_ms(clock);
-        assert!(now < proposal.closes_ms, ECtoVoteClosed);
+        assert!(now < proposal.deadline_ms, ECtoVoteClosed);
+        let amount = coin::value(&coins);
+        let min = (CURVE_SUPPLY * CTO_MIN_VOTE_BPS) / BPS_DENOMINATOR;
+        assert!(amount >= min, ECtoBelowMinVote);
+
+        balance::join(&mut proposal.escrow, coin::into_balance(coins));
         let who = tx_context::sender(ctx);
-        assert!(!table::contains(&proposal.voted, who), ECtoAlreadyVoted);
-        let w = coin::value(holder_coin);
-        assert!(w > 0, ECtoZeroWeight);
-        table::add(&mut proposal.voted, who, true);
-        if (support) { proposal.for_weight = proposal.for_weight + w; }
-        else { proposal.against_weight = proposal.against_weight + w; };
+        if (table::contains(&proposal.votes, who)) {
+            let cur = *table::borrow(&proposal.votes, who);
+            *table::borrow_mut(&mut proposal.votes, who) = cur + amount;
+        } else {
+            table::add(&mut proposal.votes, who, amount);
+        };
+        proposal.total_weight = proposal.total_weight + amount;
         event::emit(TakeoverVoted {
-            curve_id:    object::id(curve),
+            proposal_id:  object::id(proposal),
+            voter:        who,
+            amount,
+            total_weight: proposal.total_weight,
+        });
+    }
+
+    /// Withdraw a vote BEFORE the deadline: full escrow returned and total_weight
+    /// decremented so a withdrawn vote cannot count. The clock is required so a
+    /// vote cannot be pulled after the deadline (which could flip a decided tally).
+    public fun unvote_takeover<T>(
+        proposal: &mut TakeoverProposal<T>,
+        clock:    &Clock,
+        ctx:      &mut TxContext,
+    ) {
+        assert!(!proposal.resolved, ECtoAlreadyResolved);
+        let now = clock::timestamp_ms(clock);
+        assert!(now < proposal.deadline_ms, ECtoVoteClosed);
+        let who = tx_context::sender(ctx);
+        assert!(table::contains(&proposal.votes, who), ECtoNotVoter);
+        let amt = table::remove(&mut proposal.votes, who);
+        proposal.total_weight = proposal.total_weight - amt;
+        let bal = balance::split(&mut proposal.escrow, amt);
+        transfer::public_transfer(coin::from_balance(bal, ctx), who);
+        event::emit(TakeoverUnvoted {
             proposal_id: object::id(proposal),
             voter:       who,
-            support,
-            weight:      w,
+            amount:      amt,
         });
     }
 
-    /// Resolve after the window closes. On success, mint a fresh CreatorCap to
-    /// the nominee, swap active_creator_cap_id, transfer the cap to the nominee,
-    /// and stamp activity (so the new creator is not immediately re-takeover-able).
-    /// On failure, set the 3-day cooldown. The proposal object is consumed.
+    /// Resolve after the window closes. Permissionless. The shared proposal
+    /// PERSISTS (it is not consumed) so escrow is never stranded: anyone can
+    /// resolve, then reclaim for every voter. total_weight freezes at resolve.
+    /// On success, mint a fresh CreatorCap to the proposer and swap
+    /// active_creator_cap_id; on failure, start the 3-day cooldown.
     public fun resolve_takeover<T>(
+        proposal: &mut TakeoverProposal<T>,
         curve:    &mut Curve<T>,
-        proposal: TakeoverProposal,
         clock:    &Clock,
         ctx:      &mut TxContext,
     ) {
         assert!(proposal.curve_id == object::id(curve), ECtoWrongCurve);
         let now = clock::timestamp_ms(clock);
-        assert!(now >= proposal.closes_ms, ECtoVoteStillOpen);
+        assert!(now >= proposal.deadline_ms, ECtoVoteStillOpen);
         assert!(!proposal.resolved, ECtoAlreadyResolved);
 
-        let proposal_id = object::id(&proposal);
-        let TakeoverProposal {
-            id, curve_id: _, nominee, nominator: _, snapshot_supply,
-            opened_ms: _, closes_ms: _, for_weight, against_weight,
-            resolved: _, voted,
-        } = proposal;
-        table::drop(voted);
-        object::delete(id);
+        let circ = circulating_supply(curve);
+        let quorum = (circ * CTO_QUORUM_BPS) / BPS_DENOMINATOR;
+        let succeeded = proposal.total_weight >= quorum;
+        proposal.resolved = true;
+        proposal.succeeded = succeeded;
 
-        let total  = for_weight + against_weight;
-        let quorum = (snapshot_supply * CTO_QUORUM_BPS) / BPS_DENOMINATOR;
-        // Strict comparisons: ties / exact-threshold favor the incumbent.
-        let passed = (total > quorum) && (for_weight > against_weight);
+        let _: ID = df::remove(&mut curve.id, CTO_LIVE_PROPOSAL_KEY);
 
-        if (passed) {
+        if (succeeded) {
             let new_cap = CreatorCap {
                 id:       object::new(ctx),
                 curve_id: object::id(curve),
             };
             curve.active_creator_cap_id    = object::id(&new_cap);
-            curve.creator                  = nominee;
+            curve.creator                  = proposal.proposer;
             curve.last_creator_activity_ms = now;
-            transfer::public_transfer(new_cap, nominee);
-            event::emit(TakeoverSucceeded {
-                curve_id:    object::id(curve),
-                proposal_id,
-                new_creator: nominee,
-                for_weight, against_weight,
-            });
+            transfer::public_transfer(new_cap, proposal.proposer);
         } else {
             curve.cto_cooldown_until_ms = now + CTO_COOLDOWN_MS;
-            event::emit(TakeoverFailed {
-                curve_id:    object::id(curve),
-                proposal_id,
-                for_weight, against_weight,
-                cooldown_until_ms: curve.cto_cooldown_until_ms,
-            });
         };
+        event::emit(TakeoverResolved {
+            proposal_id:  object::id(proposal),
+            curve_id:     object::id(curve),
+            succeeded,
+            total_weight: proposal.total_weight,
+        });
     }
 
-    // ---------- V10 accessors ----------
+    /// Reclaim a voter's escrow after resolution (expire_refund pattern): callable
+    /// by ANYONE, funds ALWAYS go to the voter, never the caller. Because resolve
+    /// is permissionless the escrow is always drainable. total_weight is the
+    /// frozen record and is intentionally NOT changed here.
+    public fun reclaim_vote<T>(
+        proposal: &mut TakeoverProposal<T>,
+        voter:    address,
+        ctx:      &mut TxContext,
+    ) {
+        assert!(proposal.resolved, ECtoNotResolved);
+        assert!(table::contains(&proposal.votes, voter), ECtoNotVoter);
+        let amt = table::remove(&mut proposal.votes, voter);
+        let bal = balance::split(&mut proposal.escrow, amt);
+        transfer::public_transfer(coin::from_balance(bal, ctx), voter);
+        event::emit(VoteReclaimed {
+            proposal_id: object::id(proposal),
+            voter,
+            amount:      amt,
+        });
+    }
+
+    // ---------- V10/V13 accessors ----------
     public fun active_creator_cap_id<T>(c: &Curve<T>): ID { c.active_creator_cap_id }
     public fun last_creator_activity_ms<T>(c: &Curve<T>): u64 { c.last_creator_activity_ms }
     public fun cto_cooldown_until_ms<T>(c: &Curve<T>): u64 { c.cto_cooldown_until_ms }
@@ -1862,6 +1921,21 @@ module suipump::bonding_curve {
     public fun buyback_burn<T>(c: &Curve<T>): bool { c.buyback_burn }
     public fun buyback_fees_pending<T>(c: &Curve<T>): u64 { balance::value(&c.buyback_fees) }
     public fun cto_circulating_supply<T>(c: &Curve<T>): u64 { circulating_supply(c) }
+
+    // ---------- V13: TakeoverProposal accessors (tests + frontend) ----------
+    public fun proposal_curve_id<T>(p: &TakeoverProposal<T>): ID { p.curve_id }
+    public fun proposal_proposer<T>(p: &TakeoverProposal<T>): address { p.proposer }
+    public fun proposal_deadline_ms<T>(p: &TakeoverProposal<T>): u64 { p.deadline_ms }
+    public fun proposal_total_weight<T>(p: &TakeoverProposal<T>): u64 { p.total_weight }
+    public fun proposal_resolved<T>(p: &TakeoverProposal<T>): bool { p.resolved }
+    public fun proposal_succeeded<T>(p: &TakeoverProposal<T>): bool { p.succeeded }
+    public fun proposal_escrow_value<T>(p: &TakeoverProposal<T>): u64 { balance::value(&p.escrow) }
+    public fun proposal_voter_weight<T>(p: &TakeoverProposal<T>, addr: address): u64 {
+        if (table::contains(&p.votes, addr)) { *table::borrow(&p.votes, addr) } else { 0 }
+    }
+    public fun proposal_has_voter<T>(p: &TakeoverProposal<T>, addr: address): bool {
+        table::contains(&p.votes, addr)
+    }
 
     // ---------- Test-only: set STORED grad threshold ----------
     // F-10: this may ONLY feed the standalone graduate()/graduate_for_testing

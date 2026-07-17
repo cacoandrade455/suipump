@@ -83,6 +83,16 @@ module suipump::bonding_curve_tests {
     const E_LP_ALREADY_CLAIMED:       u64 = 51;
     const E_RESERVE_TOO_LOW:          u64 = 52;
     const E_PRICE_CONFIG_EXISTS:      u64 = 54;
+    // V13 escrow-weighted CTO error codes (mirror bonding_curve)
+    const E_CTO_ON_COOLDOWN:          u64 = 41;
+    const E_BELOW_NOMINATE_THRESHOLD: u64 = 42;
+    const E_CTO_VOTE_CLOSED:          u64 = 45;
+    const E_CTO_VOTE_STILL_OPEN:      u64 = 46;
+    const E_CTO_ALREADY_RESOLVED:     u64 = 48;
+    const E_CTO_PROPOSAL_LIVE:        u64 = 55;
+    const E_CTO_BELOW_MIN_VOTE:       u64 = 56;
+    const E_CTO_NOT_VOTER:            u64 = 57;
+    const E_CTO_NOT_RESOLVED:         u64 = 58;
 
     const LP_SUPPLY_ATOMIC:           u64 = 200_000_000 * 1_000_000; // 1B total - 800M curve
 
@@ -2303,7 +2313,12 @@ module suipump::bonding_curve_tests {
 
     const CTO_INACTIVITY_MS: u64 = 5  * 24 * 60 * 60 * 1_000;
     const CTO_WINDOW_MS:     u64 = 12 * 60 * 60 * 1_000;
-    const NOMINEE:  address = @0xACE;
+    // Mirror of bonding_curve::CURVE_SUPPLY (for the MIN_VOTE floor computation).
+    const CTO_CURVE_SUPPLY:  u64 = 800_000_000 * 1_000_000;
+    const CTO_MIN_VOTE_BPS:  u64 = 1;
+    const CTO_BPS_DENOM:     u64 = 10_000;
+    const VOTER_A:  address = @0x570A;
+    const VOTER_B:  address = @0x570B;
 
     // ─── Item 4: holder-gated chat ─────────────────────────────────────────
 
@@ -2435,52 +2450,433 @@ module suipump::bonding_curve_tests {
         ts::end(s);
     }
 
-    // ─── Item 3: CTO — the critical cap-swap REVOCATION test ───────────────
+    // ─── Item 3: CTO (V13 escrow-weighted, shared proposal) ────────────────
+    // Cross-transaction test_scenario throughout: the ORIGINAL suite validated
+    // CTO in a SINGLE tx, which is exactly how F-AC-1 (proposal never shared)
+    // survived. Every test below proposes in one tx and votes/resolves/reclaims
+    // in LATER txs against the SHARED proposal object.
 
-    #[test]
-    #[expected_failure(abort_code = E_NOT_ACTIVE_CREATOR, location = suipump::bonding_curve)]
-    fun test_cto_swap_revokes_old_creator() {
+    fun begin_cto(): Scenario {
         let mut s = ts::begin(CREATOR);
-        // V13: init shares the PriceConfig that buy() now reads.
+        // V13: init shares the PriceConfig that buy() reads.
         bonding_curve::init_for_testing(ts::ctx(&mut s));
         let (_a, _b) = make_payouts_single();
         setup_curve(&mut s, _a, _b);
+        s
+    }
 
-        // BUYER buys a large bag so they hold >= 1% of circulating and have weight.
-        ts::next_tx(&mut s, BUYER);
-        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
-        let cfg = ts::take_shared<PriceConfig>(&s);
-        let clk0 = clock::create_for_testing(ts::ctx(&mut s));
-        let payment = mint_sui(5_000 * MIST_PER_SUI, &mut s);
+    /// Buy via the PRODUCTION buy() so the voter gets a REAL Coin<TEST_TOKEN>,
+    /// then park it at `buyer` for a later takeover tx. Buys stay well under the
+    /// 9,000 SUI graduation floor so the curve never graduates mid-test.
+    fun buy_bag(s: &mut Scenario, buyer: address, sui_amt: u64) {
+        ts::next_tx(s, buyer);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(s);
+        let cfg = ts::take_shared<PriceConfig>(s);
+        let clk = clock::create_for_testing(ts::ctx(s));
+        let payment = mint_sui(sui_amt, s);
         let (bag, refund) = bonding_curve::buy(
-            &mut curve, payment, 0, option::none(), &cfg, &clk0, ts::ctx(&mut s),
+            &mut curve, payment, 0, option::none(), &cfg, &clk, ts::ctx(s),
         );
         destroy(refund);
+        transfer::public_transfer(bag, buyer);
+        clock::destroy_for_testing(clk);
         ts::return_shared(cfg);
         ts::return_shared(curve);
-        clock::destroy_for_testing(clk0);
+    }
 
-        // Advance clock past 5-day inactivity, open proposal nominating NOMINEE.
-        ts::next_tx(&mut s, BUYER);
+    /// The per-vote spam floor = 0.01% of CURVE_SUPPLY (mirrors production).
+    fun min_vote(): u64 { (CTO_CURVE_SUPPLY * CTO_MIN_VOTE_BPS) / CTO_BPS_DENOM }
+
+    // F-AC-1 regression: a proposal opened in one tx MUST be a shared object
+    // reachable by a later tx.
+    #[test]
+    fun test_cto_shares_the_object() {
+        let mut s = begin_cto();
+        buy_bag(&mut s, VOTER_A, 3_000 * MIST_PER_SUI);
+
+        ts::next_tx(&mut s, VOTER_A);
         let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let bag = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_A);
+        let stake_amt = coin::value(&bag);
         let mut clk = clock::create_for_testing(ts::ctx(&mut s));
         clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 1);
-        let mut proposal = bonding_curve::propose_takeover(
-            &mut curve, NOMINEE, &bag, &clk, ts::ctx(&mut s),
-        );
-        // Vote FOR with the full bag (passes quorum: bag is ~all circulating).
-        bonding_curve::vote_takeover(&curve, &mut proposal, true, &bag, &clk, ts::ctx(&mut s));
-        // Close the window and resolve -> swap to NOMINEE.
-        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + CTO_WINDOW_MS + 2);
-        bonding_curve::resolve_takeover(&mut curve, proposal, &clk, ts::ctx(&mut s));
+        bonding_curve::propose_takeover(&mut curve, bag, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
 
-        // The OLD creator's cap must now FAIL on a gated call (revoked by swap).
+        // LATER tx: taking the shared proposal must SUCCEED.
+        ts::next_tx(&mut s, BUYER);
+        let proposal = ts::take_shared<bonding_curve::TakeoverProposal<TEST_TOKEN>>(&s);
+        assert!(bonding_curve::proposal_proposer(&proposal) == VOTER_A, 9500);
+        assert!(bonding_curve::proposal_total_weight(&proposal) == stake_amt, 9501);
+        assert!(bonding_curve::proposal_escrow_value(&proposal) == stake_amt, 9502);
+        assert!(!bonding_curve::proposal_resolved(&proposal), 9503);
+        ts::return_shared(proposal);
+        ts::end(s);
+    }
+
+    // F-3 physical impossibility: the vote coin is LOCKED in escrow, so it cannot
+    // be moved to a second wallet to vote twice.
+    #[test]
+    fun test_cto_f3_double_count_impossible() {
+        let mut s = begin_cto();
+        buy_bag(&mut s, VOTER_A, 3_000 * MIST_PER_SUI);
+
+        ts::next_tx(&mut s, VOTER_A);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let bag = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_A);
+        let stake_amt = coin::value(&bag);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 1);
+        bonding_curve::propose_takeover(&mut curve, bag, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+
+        ts::next_tx(&mut s, VOTER_A);
+        // VOTER_A's coin is locked away; VOTER_B never held any: no coin can move.
+        assert!(!ts::has_most_recent_for_address<Coin<TEST_TOKEN>>(VOTER_A), 9510);
+        assert!(!ts::has_most_recent_for_address<Coin<TEST_TOKEN>>(VOTER_B), 9511);
+        let proposal = ts::take_shared<bonding_curve::TakeoverProposal<TEST_TOKEN>>(&s);
+        // Each token is counted EXACTLY once.
+        assert!(bonding_curve::proposal_total_weight(&proposal) == stake_amt, 9512);
+        assert!(bonding_curve::proposal_voter_weight(&proposal, VOTER_A) == stake_amt, 9513);
+        assert!(bonding_curve::proposal_voter_weight(&proposal, VOTER_B) == 0, 9514);
+        assert!(bonding_curve::proposal_escrow_value(&proposal) == stake_amt, 9515);
+        ts::return_shared(proposal);
+        ts::end(s);
+    }
+
+    #[test]
+    #[expected_failure(abort_code = E_BELOW_NOMINATE_THRESHOLD, location = suipump::bonding_curve)]
+    fun test_cto_propose_below_nominate_aborts() {
+        let mut s = begin_cto();
+        buy_bag(&mut s, VOTER_A, 3_000 * MIST_PER_SUI);
+
+        ts::next_tx(&mut s, VOTER_A);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let mut bag = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_A);
+        let circ = bonding_curve::cto_circulating_supply(&curve);
+        let threshold = (circ * 100) / 10_000; // CTO_NOMINATE_BPS = 1%
+        // Stake ONE atomic unit below the nominate threshold.
+        let stake = coin::split(&mut bag, threshold - 1, ts::ctx(&mut s));
+        destroy(bag);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 1);
+        bonding_curve::propose_takeover(&mut curve, stake, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+        ts::end(s);
+    }
+
+    #[test]
+    #[expected_failure(abort_code = E_CTO_PROPOSAL_LIVE, location = suipump::bonding_curve)]
+    fun test_cto_second_live_proposal_aborts() {
+        let mut s = begin_cto();
+        buy_bag(&mut s, VOTER_A, 2_000 * MIST_PER_SUI);
+        buy_bag(&mut s, VOTER_B, 2_000 * MIST_PER_SUI);
+
+        // First proposal shares an object + sets the live marker.
+        ts::next_tx(&mut s, VOTER_A);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let bag_a = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_A);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 1);
+        bonding_curve::propose_takeover(&mut curve, bag_a, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+
+        // Second concurrent proposal on the same curve -> abort.
+        ts::next_tx(&mut s, VOTER_B);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let bag_b = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_B);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 2);
+        bonding_curve::propose_takeover(&mut curve, bag_b, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+        ts::end(s);
+    }
+
+    #[test]
+    #[expected_failure(abort_code = E_CTO_BELOW_MIN_VOTE, location = suipump::bonding_curve)]
+    fun test_cto_vote_below_min_aborts() {
+        let mut s = begin_cto();
+        buy_bag(&mut s, VOTER_A, 3_000 * MIST_PER_SUI);
+
+        ts::next_tx(&mut s, VOTER_A);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let mut bag = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_A);
+        // Carve off a sub-min slice for the illegal vote, propose with the rest.
+        let tiny = coin::split(&mut bag, min_vote() - 1, ts::ctx(&mut s));
+        transfer::public_transfer(tiny, VOTER_A);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 1);
+        bonding_curve::propose_takeover(&mut curve, bag, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+
+        ts::next_tx(&mut s, VOTER_A);
+        let mut proposal = ts::take_shared<bonding_curve::TakeoverProposal<TEST_TOKEN>>(&s);
+        let tiny = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_A);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 2);
+        bonding_curve::vote_takeover(&mut proposal, tiny, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(proposal);
+        ts::end(s);
+    }
+
+    #[test]
+    #[expected_failure(abort_code = E_CTO_VOTE_CLOSED, location = suipump::bonding_curve)]
+    fun test_cto_vote_past_deadline_aborts() {
+        let mut s = begin_cto();
+        buy_bag(&mut s, VOTER_A, 2_000 * MIST_PER_SUI);
+        buy_bag(&mut s, VOTER_B, 2_000 * MIST_PER_SUI);
+
+        ts::next_tx(&mut s, VOTER_A);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let bag_a = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_A);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 1);
+        bonding_curve::propose_takeover(&mut curve, bag_a, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+
+        ts::next_tx(&mut s, VOTER_B);
+        let mut proposal = ts::take_shared<bonding_curve::TakeoverProposal<TEST_TOKEN>>(&s);
+        let bag_b = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_B);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + CTO_WINDOW_MS + 2);
+        bonding_curve::vote_takeover(&mut proposal, bag_b, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(proposal);
+        ts::end(s);
+    }
+
+    #[test]
+    #[expected_failure(abort_code = E_CTO_ALREADY_RESOLVED, location = suipump::bonding_curve)]
+    fun test_cto_vote_on_resolved_aborts() {
+        let mut s = begin_cto();
+        buy_bag(&mut s, VOTER_A, 2_000 * MIST_PER_SUI);
+        buy_bag(&mut s, VOTER_B, 2_000 * MIST_PER_SUI);
+
+        ts::next_tx(&mut s, VOTER_A);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let bag_a = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_A);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 1);
+        bonding_curve::propose_takeover(&mut curve, bag_a, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+
+        // Resolve after the window closes.
+        ts::next_tx(&mut s, BUYER);
+        let mut proposal = ts::take_shared<bonding_curve::TakeoverProposal<TEST_TOKEN>>(&s);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + CTO_WINDOW_MS + 2);
+        bonding_curve::resolve_takeover(&mut proposal, &mut curve, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+        ts::return_shared(proposal);
+
+        // Voting a resolved proposal -> abort (resolved check precedes deadline).
+        ts::next_tx(&mut s, VOTER_B);
+        let mut proposal = ts::take_shared<bonding_curve::TakeoverProposal<TEST_TOKEN>>(&s);
+        let bag_b = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_B);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + CTO_WINDOW_MS + 3);
+        bonding_curve::vote_takeover(&mut proposal, bag_b, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(proposal);
+        ts::end(s);
+    }
+
+    #[test]
+    fun test_cto_unvote_returns_exact_and_decrements() {
+        let mut s = begin_cto();
+        buy_bag(&mut s, VOTER_A, 2_000 * MIST_PER_SUI);
+        buy_bag(&mut s, VOTER_B, 2_000 * MIST_PER_SUI);
+
+        ts::next_tx(&mut s, VOTER_A);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let bag_a = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_A);
+        let a_amt = coin::value(&bag_a);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 1);
+        bonding_curve::propose_takeover(&mut curve, bag_a, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+
+        ts::next_tx(&mut s, VOTER_B);
+        let mut proposal = ts::take_shared<bonding_curve::TakeoverProposal<TEST_TOKEN>>(&s);
+        let bag_b = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_B);
+        let b_amt = coin::value(&bag_b);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 2);
+        bonding_curve::vote_takeover(&mut proposal, bag_b, &clk, ts::ctx(&mut s));
+        assert!(bonding_curve::proposal_total_weight(&proposal) == a_amt + b_amt, 9520);
+        assert!(bonding_curve::proposal_escrow_value(&proposal) == a_amt + b_amt, 9521);
+        clock::destroy_for_testing(clk);
+        ts::return_shared(proposal);
+
+        // B unvotes BEFORE the deadline: exact escrow returned, weight decremented.
+        ts::next_tx(&mut s, VOTER_B);
+        let mut proposal = ts::take_shared<bonding_curve::TakeoverProposal<TEST_TOKEN>>(&s);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 3);
+        bonding_curve::unvote_takeover(&mut proposal, &clk, ts::ctx(&mut s));
+        assert!(bonding_curve::proposal_total_weight(&proposal) == a_amt, 9522);
+        assert!(bonding_curve::proposal_escrow_value(&proposal) == a_amt, 9523);
+        assert!(!bonding_curve::proposal_has_voter(&proposal, VOTER_B), 9524);
+        clock::destroy_for_testing(clk);
+        ts::return_shared(proposal);
+
+        ts::next_tx(&mut s, VOTER_B);
+        let refunded = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_B);
+        assert!(coin::value(&refunded) == b_amt, 9525);
+        destroy(refunded);
+        ts::end(s);
+    }
+
+    #[test]
+    #[expected_failure(abort_code = E_CTO_VOTE_CLOSED, location = suipump::bonding_curve)]
+    fun test_cto_unvote_after_deadline_aborts() {
+        let mut s = begin_cto();
+        buy_bag(&mut s, VOTER_A, 2_000 * MIST_PER_SUI);
+        buy_bag(&mut s, VOTER_B, 2_000 * MIST_PER_SUI);
+
+        ts::next_tx(&mut s, VOTER_A);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let bag_a = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_A);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 1);
+        bonding_curve::propose_takeover(&mut curve, bag_a, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+
+        ts::next_tx(&mut s, VOTER_B);
+        let mut proposal = ts::take_shared<bonding_curve::TakeoverProposal<TEST_TOKEN>>(&s);
+        let bag_b = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_B);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 2);
+        bonding_curve::vote_takeover(&mut proposal, bag_b, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(proposal);
+
+        // Unvote AFTER the deadline -> abort (no post-deadline weight withdrawal).
+        ts::next_tx(&mut s, VOTER_B);
+        let mut proposal = ts::take_shared<bonding_curve::TakeoverProposal<TEST_TOKEN>>(&s);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + CTO_WINDOW_MS + 2);
+        bonding_curve::unvote_takeover(&mut proposal, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(proposal);
+        ts::end(s);
+    }
+
+    #[test]
+    #[expected_failure(abort_code = E_CTO_VOTE_STILL_OPEN, location = suipump::bonding_curve)]
+    fun test_cto_resolve_before_deadline_aborts() {
+        let mut s = begin_cto();
+        buy_bag(&mut s, VOTER_A, 3_000 * MIST_PER_SUI);
+
+        ts::next_tx(&mut s, VOTER_A);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let bag_a = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_A);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 1);
+        bonding_curve::propose_takeover(&mut curve, bag_a, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+
+        ts::next_tx(&mut s, BUYER);
+        let mut proposal = ts::take_shared<bonding_curve::TakeoverProposal<TEST_TOKEN>>(&s);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 2); // still before deadline
+        bonding_curve::resolve_takeover(&mut proposal, &mut curve, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+        ts::return_shared(proposal);
+        ts::end(s);
+    }
+
+    // Intent preserved from the old test_cto_swap_revokes_old_creator: a passing
+    // takeover swaps the cap and REVOKES the old creator's cap.
+    #[test]
+    #[expected_failure(abort_code = E_NOT_ACTIVE_CREATOR, location = suipump::bonding_curve)]
+    fun test_cto_resolve_success_swaps_cap() {
+        let mut s = begin_cto();
+        buy_bag(&mut s, VOTER_A, 3_000 * MIST_PER_SUI);
+
+        // A proposes with the full bag (~all circulating -> clears the 25% quorum).
+        ts::next_tx(&mut s, VOTER_A);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let bag_a = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_A);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 1);
+        bonding_curve::propose_takeover(&mut curve, bag_a, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+
+        // Resolve after the window -> success, cap swapped to VOTER_A.
+        ts::next_tx(&mut s, BUYER);
+        let mut proposal = ts::take_shared<bonding_curve::TakeoverProposal<TEST_TOKEN>>(&s);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + CTO_WINDOW_MS + 2);
+        bonding_curve::resolve_takeover(&mut proposal, &mut curve, &clk, ts::ctx(&mut s));
+        assert!(bonding_curve::proposal_succeeded(&proposal), 9530);
+        assert!(bonding_curve::proposal_resolved(&proposal), 9531);
+        ts::return_shared(proposal);
+
+        // The OLD creator's cap must now FAIL a gated call (revoked by the swap).
         ts::next_tx(&mut s, CREATOR);
         let old_cap = ts::take_from_address<CreatorCap>(&s, CREATOR);
-        // This MUST abort E_NOT_ACTIVE_CREATOR — proving the takeover revoked it.
         bonding_curve::creator_heartbeat(&old_cap, &mut curve, &clk, ts::ctx(&mut s));
 
+        ts::return_to_address(CREATOR, old_cap);
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+        ts::end(s);
+    }
+
+    // A takeover BELOW quorum fails: incumbent keeps the cap, cooldown starts.
+    #[test]
+    fun test_cto_resolve_failure_below_quorum() {
+        let mut s = begin_cto();
+        buy_bag(&mut s, VOTER_A, 3_000 * MIST_PER_SUI);
+
+        ts::next_tx(&mut s, VOTER_A);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let mut bag = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_A);
+        let circ = bonding_curve::cto_circulating_supply(&curve);
+        let slice = (circ * 100) / 10_000; // 1% (>= nominate, < 25% quorum)
+        let stake = coin::split(&mut bag, slice, ts::ctx(&mut s));
         destroy(bag);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 1);
+        bonding_curve::propose_takeover(&mut curve, stake, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+
+        // Resolve after the window -> FAIL.
+        ts::next_tx(&mut s, BUYER);
+        let mut proposal = ts::take_shared<bonding_curve::TakeoverProposal<TEST_TOKEN>>(&s);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + CTO_WINDOW_MS + 2);
+        bonding_curve::resolve_takeover(&mut proposal, &mut curve, &clk, ts::ctx(&mut s));
+        assert!(!bonding_curve::proposal_succeeded(&proposal), 9540);
+        assert!(bonding_curve::proposal_resolved(&proposal), 9541);
+        assert!(bonding_curve::cto_cooldown_until_ms(&curve) > 0, 9542);
+        ts::return_shared(proposal);
+
+        // The OLD creator's cap STILL works (heartbeat succeeds -> no abort).
+        ts::next_tx(&mut s, CREATOR);
+        let old_cap = ts::take_from_address<CreatorCap>(&s, CREATOR);
+        bonding_curve::creator_heartbeat(&old_cap, &mut curve, &clk, ts::ctx(&mut s));
         ts::return_to_address(CREATOR, old_cap);
         clock::destroy_for_testing(clk);
         ts::return_shared(curve);
@@ -2488,31 +2884,344 @@ module suipump::bonding_curve_tests {
     }
 
     #[test]
-    #[expected_failure(abort_code = E_CREATOR_STILL_ACTIVE, location = suipump::bonding_curve)]
-    fun test_cto_blocked_while_creator_active() {
-        let mut s = ts::begin(CREATOR);
-        // V13: init shares the PriceConfig that buy() now reads.
-        bonding_curve::init_for_testing(ts::ctx(&mut s));
-        let (_a, _b) = make_payouts_single();
-        setup_curve(&mut s, _a, _b);
+    #[expected_failure(abort_code = E_CTO_ALREADY_RESOLVED, location = suipump::bonding_curve)]
+    fun test_cto_resolve_twice_aborts() {
+        let mut s = begin_cto();
+        buy_bag(&mut s, VOTER_A, 3_000 * MIST_PER_SUI);
+
+        ts::next_tx(&mut s, VOTER_A);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let bag_a = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_A);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 1);
+        bonding_curve::propose_takeover(&mut curve, bag_a, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
 
         ts::next_tx(&mut s, BUYER);
+        let mut proposal = ts::take_shared<bonding_curve::TakeoverProposal<TEST_TOKEN>>(&s);
         let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
-        let cfg = ts::take_shared<PriceConfig>(&s);
-        let clk = clock::create_for_testing(ts::ctx(&mut s)); // t=0, creator just active
-        let payment = mint_sui(5_000 * MIST_PER_SUI, &mut s);
-        let (bag, refund) = bonding_curve::buy(
-            &mut curve, payment, 0, option::none(), &cfg, &clk, ts::ctx(&mut s),
-        );
-        destroy(refund);
-        // Propose immediately (creator active < 5 days) -> must abort.
-        let proposal = bonding_curve::propose_takeover(
-            &mut curve, NOMINEE, &bag, &clk, ts::ctx(&mut s),
-        );
-        bonding_curve::resolve_takeover(&mut curve, proposal, &clk, ts::ctx(&mut s));
-        destroy(bag);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + CTO_WINDOW_MS + 2);
+        bonding_curve::resolve_takeover(&mut proposal, &mut curve, &clk, ts::ctx(&mut s));
+        // Second resolve -> abort.
+        bonding_curve::resolve_takeover(&mut proposal, &mut curve, &clk, ts::ctx(&mut s));
         clock::destroy_for_testing(clk);
-        ts::return_shared(cfg);
+        ts::return_shared(curve);
+        ts::return_shared(proposal);
+        ts::end(s);
+    }
+
+    #[test]
+    fun test_cto_reclaim_after_success_returns_all() {
+        let mut s = begin_cto();
+        buy_bag(&mut s, VOTER_A, 2_000 * MIST_PER_SUI);
+        buy_bag(&mut s, VOTER_B, 2_000 * MIST_PER_SUI);
+
+        ts::next_tx(&mut s, VOTER_A);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let bag_a = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_A);
+        let a_amt = coin::value(&bag_a);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 1);
+        bonding_curve::propose_takeover(&mut curve, bag_a, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+
+        ts::next_tx(&mut s, VOTER_B);
+        let mut proposal = ts::take_shared<bonding_curve::TakeoverProposal<TEST_TOKEN>>(&s);
+        let bag_b = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_B);
+        let b_amt = coin::value(&bag_b);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 2);
+        bonding_curve::vote_takeover(&mut proposal, bag_b, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(proposal);
+
+        // Resolve (success), then reclaim BOTH voters from a permissionless caller.
+        ts::next_tx(&mut s, BUYER);
+        let mut proposal = ts::take_shared<bonding_curve::TakeoverProposal<TEST_TOKEN>>(&s);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + CTO_WINDOW_MS + 2);
+        bonding_curve::resolve_takeover(&mut proposal, &mut curve, &clk, ts::ctx(&mut s));
+        assert!(bonding_curve::proposal_succeeded(&proposal), 9550);
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+        bonding_curve::reclaim_vote(&mut proposal, VOTER_A, ts::ctx(&mut s));
+        bonding_curve::reclaim_vote(&mut proposal, VOTER_B, ts::ctx(&mut s));
+        assert!(bonding_curve::proposal_escrow_value(&proposal) == 0, 9551);
+        assert!(!bonding_curve::proposal_has_voter(&proposal, VOTER_A), 9552);
+        assert!(!bonding_curve::proposal_has_voter(&proposal, VOTER_B), 9553);
+        ts::return_shared(proposal);
+
+        ts::next_tx(&mut s, BUYER);
+        let ra = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_A);
+        let rb = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_B);
+        assert!(coin::value(&ra) == a_amt, 9554);
+        assert!(coin::value(&rb) == b_amt, 9555);
+        destroy(ra);
+        destroy(rb);
+        ts::end(s);
+    }
+
+    #[test]
+    fun test_cto_reclaim_after_failure_returns_all() {
+        let mut s = begin_cto();
+        buy_bag(&mut s, VOTER_A, 2_000 * MIST_PER_SUI);
+        buy_bag(&mut s, VOTER_B, 2_000 * MIST_PER_SUI);
+
+        ts::next_tx(&mut s, VOTER_A);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let mut bag_a = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_A);
+        let circ = bonding_curve::cto_circulating_supply(&curve);
+        let slice = (circ * 100) / 10_000; // 1% each -> 2% combined < 25% quorum
+        let stake_a = coin::split(&mut bag_a, slice, ts::ctx(&mut s));
+        destroy(bag_a);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 1);
+        bonding_curve::propose_takeover(&mut curve, stake_a, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+
+        ts::next_tx(&mut s, VOTER_B);
+        let mut proposal = ts::take_shared<bonding_curve::TakeoverProposal<TEST_TOKEN>>(&s);
+        let mut bag_b = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_B);
+        let vote_b = coin::split(&mut bag_b, slice, ts::ctx(&mut s));
+        destroy(bag_b);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 2);
+        bonding_curve::vote_takeover(&mut proposal, vote_b, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(proposal);
+
+        // Resolve (fail), reclaim both.
+        ts::next_tx(&mut s, BUYER);
+        let mut proposal = ts::take_shared<bonding_curve::TakeoverProposal<TEST_TOKEN>>(&s);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + CTO_WINDOW_MS + 2);
+        bonding_curve::resolve_takeover(&mut proposal, &mut curve, &clk, ts::ctx(&mut s));
+        assert!(!bonding_curve::proposal_succeeded(&proposal), 9560);
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+        bonding_curve::reclaim_vote(&mut proposal, VOTER_A, ts::ctx(&mut s));
+        bonding_curve::reclaim_vote(&mut proposal, VOTER_B, ts::ctx(&mut s));
+        assert!(bonding_curve::proposal_escrow_value(&proposal) == 0, 9561);
+        ts::return_shared(proposal);
+
+        ts::next_tx(&mut s, BUYER);
+        let ra = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_A);
+        let rb = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_B);
+        assert!(coin::value(&ra) == slice, 9562);
+        assert!(coin::value(&rb) == slice, 9563);
+        destroy(ra);
+        destroy(rb);
+        ts::end(s);
+    }
+
+    #[test]
+    fun test_cto_reclaim_pays_voter_not_caller() {
+        let mut s = begin_cto();
+        buy_bag(&mut s, VOTER_A, 3_000 * MIST_PER_SUI);
+
+        ts::next_tx(&mut s, VOTER_A);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let bag_a = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_A);
+        let a_amt = coin::value(&bag_a);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 1);
+        bonding_curve::propose_takeover(&mut curve, bag_a, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+
+        ts::next_tx(&mut s, BUYER);
+        let mut proposal = ts::take_shared<bonding_curve::TakeoverProposal<TEST_TOKEN>>(&s);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + CTO_WINDOW_MS + 2);
+        bonding_curve::resolve_takeover(&mut proposal, &mut curve, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+        ts::return_shared(proposal);
+
+        // A DIFFERENT sender (REFERRER) reclaims FOR VOTER_A.
+        ts::next_tx(&mut s, REFERRER);
+        let mut proposal = ts::take_shared<bonding_curve::TakeoverProposal<TEST_TOKEN>>(&s);
+        bonding_curve::reclaim_vote(&mut proposal, VOTER_A, ts::ctx(&mut s));
+        ts::return_shared(proposal);
+
+        // VOTER_A received the funds; the caller REFERRER did NOT.
+        ts::next_tx(&mut s, VOTER_A);
+        assert!(!ts::has_most_recent_for_address<Coin<TEST_TOKEN>>(REFERRER), 9570);
+        let ra = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_A);
+        assert!(coin::value(&ra) == a_amt, 9571);
+        destroy(ra);
+        ts::end(s);
+    }
+
+    #[test]
+    #[expected_failure(abort_code = E_CTO_NOT_VOTER, location = suipump::bonding_curve)]
+    fun test_cto_double_reclaim_aborts() {
+        let mut s = begin_cto();
+        buy_bag(&mut s, VOTER_A, 3_000 * MIST_PER_SUI);
+
+        ts::next_tx(&mut s, VOTER_A);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let bag_a = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_A);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 1);
+        bonding_curve::propose_takeover(&mut curve, bag_a, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+
+        ts::next_tx(&mut s, BUYER);
+        let mut proposal = ts::take_shared<bonding_curve::TakeoverProposal<TEST_TOKEN>>(&s);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + CTO_WINDOW_MS + 2);
+        bonding_curve::resolve_takeover(&mut proposal, &mut curve, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+        bonding_curve::reclaim_vote(&mut proposal, VOTER_A, ts::ctx(&mut s));
+        // Second reclaim for the same voter -> entry gone -> abort.
+        bonding_curve::reclaim_vote(&mut proposal, VOTER_A, ts::ctx(&mut s));
+        ts::return_shared(proposal);
+        ts::end(s);
+    }
+
+    #[test]
+    #[expected_failure(abort_code = E_CTO_NOT_RESOLVED, location = suipump::bonding_curve)]
+    fun test_cto_reclaim_before_resolve_aborts() {
+        let mut s = begin_cto();
+        buy_bag(&mut s, VOTER_A, 3_000 * MIST_PER_SUI);
+
+        ts::next_tx(&mut s, VOTER_A);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let bag_a = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_A);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 1);
+        bonding_curve::propose_takeover(&mut curve, bag_a, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+
+        // Reclaim before resolve -> abort.
+        ts::next_tx(&mut s, BUYER);
+        let mut proposal = ts::take_shared<bonding_curve::TakeoverProposal<TEST_TOKEN>>(&s);
+        bonding_curve::reclaim_vote(&mut proposal, VOTER_A, ts::ctx(&mut s));
+        ts::return_shared(proposal);
+        ts::end(s);
+    }
+
+    #[test]
+    #[expected_failure(abort_code = E_CTO_ON_COOLDOWN, location = suipump::bonding_curve)]
+    fun test_cto_propose_after_failed_resolve_aborts() {
+        let mut s = begin_cto();
+        buy_bag(&mut s, VOTER_A, 3_000 * MIST_PER_SUI);
+
+        // Failing proposal (stake 1% only), keep the remainder for a 2nd propose.
+        ts::next_tx(&mut s, VOTER_A);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let mut bag = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_A);
+        let circ = bonding_curve::cto_circulating_supply(&curve);
+        let slice = (circ * 100) / 10_000;
+        let stake = coin::split(&mut bag, slice, ts::ctx(&mut s));
+        transfer::public_transfer(bag, VOTER_A);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 1);
+        bonding_curve::propose_takeover(&mut curve, stake, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+
+        // Resolve -> fail -> cooldown set.
+        ts::next_tx(&mut s, BUYER);
+        let mut proposal = ts::take_shared<bonding_curve::TakeoverProposal<TEST_TOKEN>>(&s);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + CTO_WINDOW_MS + 2);
+        bonding_curve::resolve_takeover(&mut proposal, &mut curve, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(proposal);
+        ts::return_shared(curve);
+
+        // Re-propose immediately (still within cooldown) -> abort.
+        ts::next_tx(&mut s, VOTER_A);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let bag = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_A);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + CTO_WINDOW_MS + 3);
+        bonding_curve::propose_takeover(&mut curve, bag, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+        ts::end(s);
+    }
+
+    #[test]
+    fun test_cto_propose_after_cooldown_succeeds() {
+        let mut s = begin_cto();
+        buy_bag(&mut s, VOTER_A, 3_000 * MIST_PER_SUI);
+
+        // Failing proposal (stake 1%), keep the remainder.
+        ts::next_tx(&mut s, VOTER_A);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let mut bag = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_A);
+        let circ = bonding_curve::cto_circulating_supply(&curve);
+        let slice = (circ * 100) / 10_000;
+        let stake = coin::split(&mut bag, slice, ts::ctx(&mut s));
+        transfer::public_transfer(bag, VOTER_A);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 1);
+        bonding_curve::propose_takeover(&mut curve, stake, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+
+        // Resolve -> fail, capture the cooldown deadline.
+        ts::next_tx(&mut s, BUYER);
+        let mut proposal = ts::take_shared<bonding_curve::TakeoverProposal<TEST_TOKEN>>(&s);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + CTO_WINDOW_MS + 2);
+        bonding_curve::resolve_takeover(&mut proposal, &mut curve, &clk, ts::ctx(&mut s));
+        let cooldown_until = bonding_curve::cto_cooldown_until_ms(&curve);
+        clock::destroy_for_testing(clk);
+        ts::return_shared(proposal);
+        ts::return_shared(curve);
+
+        // After the cooldown, a fresh proposal succeeds and shares a new object.
+        ts::next_tx(&mut s, VOTER_A);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let bag = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_A);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, cooldown_until + 1);
+        bonding_curve::propose_takeover(&mut curve, bag, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+
+        ts::next_tx(&mut s, BUYER);
+        let new_id = option::destroy_some(
+            ts::most_recent_id_shared<bonding_curve::TakeoverProposal<TEST_TOKEN>>()
+        );
+        let proposal = ts::take_shared_by_id<bonding_curve::TakeoverProposal<TEST_TOKEN>>(&s, new_id);
+        assert!(bonding_curve::proposal_proposer(&proposal) == VOTER_A, 9580);
+        assert!(!bonding_curve::proposal_resolved(&proposal), 9581);
+        ts::return_shared(proposal);
+        ts::end(s);
+    }
+
+    // Intent preserved from the old test_cto_blocked_while_creator_active.
+    #[test]
+    #[expected_failure(abort_code = E_CREATOR_STILL_ACTIVE, location = suipump::bonding_curve)]
+    fun test_cto_blocked_while_creator_active() {
+        let mut s = begin_cto();
+        buy_bag(&mut s, VOTER_A, 3_000 * MIST_PER_SUI);
+
+        // Propose at t=0 (creator active < 5 days) -> abort.
+        ts::next_tx(&mut s, VOTER_A);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let bag_a = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_A);
+        let clk = clock::create_for_testing(ts::ctx(&mut s)); // t=0
+        bonding_curve::propose_takeover(&mut curve, bag_a, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
         ts::return_shared(curve);
         ts::end(s);
     }
