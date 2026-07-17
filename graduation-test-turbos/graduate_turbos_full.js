@@ -12,10 +12,15 @@
 //     signAndExecuteTransaction({signer})), and keypair instances constructed
 //     across node_modules boundaries fail internal checks. Client comes from
 //     defaultClient() (env SUIPUMP_JSONRPC_URL / SUI_RPC_URL), keypair from
-//     defaultKeypair() (env SUI_PRIVATE_KEY). No process.exit.
+//     defaultKeypair() (env GRADUATION_SIGNER_KEY).  No process.exit.
+//
+//   SIGNER SEPARATION (do not conflate): the graduation signer reads
+//   GRADUATION_SIGNER_KEY ONLY (the main wallet, which holds the AdminCap). It MUST
+//   NEVER read SUI_PRIVATE_KEY - that is the PRICE RELAYER's key (a different
+//   wallet). See the TESTNET-ONLY EXPEDIENT note in indexer/auto_graduate.js.
 //
 //   - Standalone CLI: node graduate_turbos_full.js <CURVE_ID>
-//     Uses env SUI_PRIVATE_KEY + SUIPUMP_JSONRPC_URL (or SUI_RPC_URL), calls
+//     Uses env GRADUATION_SIGNER_KEY + SUIPUMP_JSONRPC_URL (or SUI_RPC_URL), calls
 //     process.exit on failure.
 //
 // Steps:
@@ -32,7 +37,7 @@ import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { TurbosSdk, Network } from 'turbos-clmm-sdk';
 import Decimal from 'decimal.js';
 import { fromBase64 } from '@mysten/sui/utils';
-import { LATEST_WRITE_PACKAGE, assertWriteTarget } from '../indexer/write_target.js';
+import { LATEST_WRITE_PACKAGE, V13_PACKAGE, assertWriteTarget } from '../indexer/write_target.js';
 
 // -- Constants -----------------------------------------------------------------
 const SUI_TYPE     = '0x2::sui::SUI';
@@ -63,9 +68,15 @@ function writePackageFor(pkgId) {
   return WRITE_PACKAGE[pkgId] ?? pkgId;
 }
 
+// V13 (SEPARATE lineage) AdminCap - held on the MAIN wallet (GRADUATION_SIGNER_KEY).
+// TESTNET-ONLY EXPEDIENT - see the module header + indexer/auto_graduate.js.
+const ADMIN_CAP_V13 = '0xb3d3155ca1bc153664143895928aa77384f5c70f752c306e10fa619f460e039d';
+
 // AdminCap IDs by DEFINING package version - kept in sync with auto_graduate.js.
 // The whole V10 lineage (V10/V11/V12+) shares one AdminCap
-// (0x144d426960a9a6b8db63ce3426e06a9c41273a17e72ed0193cd8c8507d4f6ec5).
+// (0x144d426960a9a6b8db63ce3426e06a9c41273a17e72ed0193cd8c8507d4f6ec5). V13 is its
+// OWN lineage with its OWN AdminCap (env-gated key so the V13 package id is not
+// hardcoded; the cap value follows the existing per-version literal pattern).
 const ADMIN_CAPS = {
   '0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8': '0xfc80d40718e8e9d0bc1fddc1e47a74e46d0c89c3e1e36a2bc8f016efb6d51e0c',
   '0x785c0604cb6c60a8547501e307d2b0ca7a586ff912c8abff4edfb88db65b7236': '0xfc80d40718e8e9d0bc1fddc1e47a74e46d0c89c3e1e36a2bc8f016efb6d51e0c',
@@ -76,6 +87,7 @@ const ADMIN_CAPS = {
   [PKG_V10]: '0x144d426960a9a6b8db63ce3426e06a9c41273a17e72ed0193cd8c8507d4f6ec5',
   [PKG_V11]: '0x144d426960a9a6b8db63ce3426e06a9c41273a17e72ed0193cd8c8507d4f6ec5',
   [PKG_V12]: '0x144d426960a9a6b8db63ce3426e06a9c41273a17e72ed0193cd8c8507d4f6ec5',
+  ...(V13_PACKAGE ? { [V13_PACKAGE]: ADMIN_CAP_V13 } : {}),
 };
 
 // -- Helpers -------------------------------------------------------------------
@@ -102,8 +114,12 @@ export function defaultClient() {
 }
 
 function defaultKeypair() {
-  const raw = process.env.SUI_PRIVATE_KEY;
-  if (!raw) throw new Error('SUI_PRIVATE_KEY env var not set');
+  // GRADUATION signer only: the main wallet that holds the AdminCap. This MUST read
+  // GRADUATION_SIGNER_KEY and NEVER SUI_PRIVATE_KEY - SUI_PRIVATE_KEY is the price
+  // relayer's key (a different wallet with no AdminCap), and conflating the two
+  // would make graduation sign with a wallet that cannot use the AdminCap.
+  const raw = process.env.GRADUATION_SIGNER_KEY;
+  if (!raw) throw new Error('GRADUATION_SIGNER_KEY env var not set (graduation signer; this is NOT SUI_PRIVATE_KEY, the price relayer key)');
   const bytes = fromBase64(raw);
   const seed  = bytes.length === 65 ? bytes.slice(1) : bytes;
   return Ed25519Keypair.fromSecretKey(seed);

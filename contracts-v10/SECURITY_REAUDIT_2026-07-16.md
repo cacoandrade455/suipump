@@ -665,10 +665,16 @@ no change.
 - Locked economic design preserved: escrow-weighted, support-only, `total_weight
   >= quorum`, permissionless resolve + reclaim, one-live-proposal marker. No fee,
   threshold, or graduation semantics changed. Public entry signatures unchanged --
-  only an internal field was added to the unpublished V13 `TakeoverProposal`
-  struct, which is upgrade-safe since V13 is not yet published on
-  `wip-graduation-v13`. Therefore NO new package version and NO
-  `getVirtuals`/`getVSui`/bridge dispatch companion changes are required, and
-  `test_harness_v10.py` does not apply.
+  only an internal field was added to the (at the time unpublished) V13
+  `TakeoverProposal` struct while V13 was still on `wip-graduation-v13`.
+  **Correction (2026-07-17):** V13 was subsequently PUBLISHED as a FRESH PUBLISH
+  (its own type identity, NOT an upgrade of V10 - the signature changes that make up
+  the F-2 fix are forbidden by the `compatible` upgrade policy; see the Publish
+  record in `SECURITY_REAUDIT_2026-07-17_PREPUBLISH.md`). Because it is a fresh
+  publish, the internal-field change carried no upgrade-compatibility risk at all.
+  The `getVirtuals`/`getVSui`/bridge dispatch companion changes DID become required
+  once V13 was live and are delivered on the `wire-v13-lineage` branch (V13 is a
+  new package id the read/price/dispatch paths must recognize); `test_harness_v10.py`
+  still does not apply to this pass.
 - `sui move build`: clean (the `Move.toml` dependency NOTE is pre-existing, not a
   compiler warning). `sui move test`: 106/106 pass, 0 warnings.

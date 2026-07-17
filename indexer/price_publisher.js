@@ -18,6 +18,13 @@
 // is a degraded dampener; a WRONG price moves every curve's graduation target.
 // When in doubt, do not push.
 //
+// SECURITY (audit E-1): this process holds ONLY a price-relayer signing key and
+// the PriceRelayerCap it owns. set_sui_price is gated on &PriceRelayerCap (NOT the
+// AdminCap), so a full compromise of this hot server can push a price clamped to
+// [MIN,MAX]_PRICE_SCALED and NOTHING else - it cannot drain a reserve, mint the
+// 200M LP, pause a curve, or claim fees (all AdminCap, held cold in the multisig).
+// An AdminCap id must NEVER appear in this process's env or code again.
+//
 // IMPORTANT: the client is passed in from index.js (its SuiGraphQLClient).
 // Do NOT create a client here. JSON-RPC is forbidden (SuiClient/getFullnodeUrl).
 
@@ -31,14 +38,16 @@ import { V13_PACKAGE, PRICE_CONFIG_ID as CONFIGURED_PRICE_CONFIG_ID } from './wr
 
 // ---- Config -----------------------------------------------------------------
 
-// Both come from indexer/write_target.js (the single env-driven write-target
-// module): SUIPUMP_V13_PACKAGE and SUIPUMP_PRICE_CONFIG, set by the owner on
-// Render after publishing V13 (both ids are printed by the publish tx).
-// Until they are set the publisher refuses to start rather than silently no-op.
-const PACKAGE         = V13_PACKAGE ?? '';
-const PRICE_CONFIG_ID = CONFIGURED_PRICE_CONFIG_ID ?? '';
-const ADMIN_CAP_ID    = process.env.SUIPUMP_ADMIN_CAP
-  ?? '0x144d426960a9a6b8db63ce3426e06a9c41273a17e72ed0193cd8c8507d4f6ec5';
+// PACKAGE and PRICE_CONFIG_ID come from indexer/write_target.js (the single
+// env-driven write-target module): SUIPUMP_V13_PACKAGE and SUIPUMP_PRICE_CONFIG.
+// PRICE_RELAYER_CAP_ID is the PriceRelayerCap this process owns (audit E-1); it is
+// the ONLY capability set_sui_price accepts. All three are env-only (never
+// hardcoded); until all are set the publisher stays dormant rather than no-op.
+// An AdminCap id must NEVER be read here - E-1 exists to keep the admin key off
+// this hot server.
+const PACKAGE             = V13_PACKAGE ?? '';
+const PRICE_CONFIG_ID     = CONFIGURED_PRICE_CONFIG_ID ?? '';
+const PRICE_RELAYER_CAP_ID = (process.env.SUIPUMP_PRICE_RELAYER_CAP ?? '').trim();
 
 const SUI_CLOCK_ID = '0x6';
 
@@ -182,7 +191,8 @@ async function pushPrice(client, keypair, priceScaled) {
   tx.moveCall({
     target: `${PACKAGE}::bonding_curve::set_sui_price`,
     arguments: [
-      tx.object(ADMIN_CAP_ID),
+      // audit E-1: set_sui_price(_cap: &PriceRelayerCap, cfg, price_scaled, clock).
+      tx.object(PRICE_RELAYER_CAP_ID),
       tx.object(PRICE_CONFIG_ID),
       tx.pure.u64(priceScaled),
       tx.object(SUI_CLOCK_ID),
@@ -210,20 +220,62 @@ async function pushPrice(client, keypair, priceScaled) {
 
 // ---- Loop -------------------------------------------------------------------
 
+// Read the PriceRelayerCap's on-chain owner (address) via GraphQL. Returns null on
+// any transport failure so a network blip never blocks startup - on-chain
+// execution gives the final answer either way.
+async function priceRelayerCapOwner(client) {
+  try {
+    const obj = await client.getObject({ objectId: PRICE_RELAYER_CAP_ID });
+    return obj?.object?.owner?.AddressOwner ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export async function startPricePublisher(client) {
-  if (!PACKAGE || !PRICE_CONFIG_ID) {
-    console.error(
-      '  [price] SUIPUMP_V13_PACKAGE and SUIPUMP_PRICE_CONFIG must be set. ' +
-      'Publisher NOT started - graduation will run undampened at the static ' +
-      '9,000 SUI fallback until they are.'
-    );
+  // Dormancy gate (never crash the worker): require the full V13 price surface AND
+  // a signer key. Missing any -> log dormant and continue; graduation runs
+  // undampened at the static 9,000 SUI fallback until all are set.
+  const missing = [];
+  if (!PACKAGE)              missing.push('SUIPUMP_V13_PACKAGE');
+  if (!PRICE_CONFIG_ID)      missing.push('SUIPUMP_PRICE_CONFIG');
+  if (!PRICE_RELAYER_CAP_ID) missing.push('SUIPUMP_PRICE_RELAYER_CAP');
+  if (!process.env.SUI_PRIVATE_KEY) missing.push('SUI_PRIVATE_KEY');
+  if (missing.length) {
+    console.warn(`  [price] price publisher dormant - missing ${missing.join(', ')}. Graduation runs undampened at the static 9,000 SUI fallback until set.`);
     return;
   }
 
-  const keypair = loadKeypair();
-  console.log(`  [price] Publisher started - every ${PUSH_INTERVAL_MS / 60000}min from ${keypair.toSuiAddress()}`);
+  let keypair;
+  try {
+    keypair = loadKeypair();
+  } catch (err) {
+    console.warn(`  [price] price publisher dormant - no usable signer key: ${err.message}`);
+    return;
+  }
+  const signer = keypair.toSuiAddress();
+
+  // E-1 ownership guard: set_sui_price is an OWNED-object call, so the tx must be
+  // signed by the wallet that OWNS the PriceRelayerCap or it aborts on ownership.
+  // Assert it once at startup and fail LOUD (naming both) rather than push-loop
+  // failing every 5 min. A transport failure only warns (on-chain has final say).
+  const capOwner = await priceRelayerCapOwner(client);
+  if (capOwner && capOwner.toLowerCase() !== signer.toLowerCase()) {
+    console.error(
+      `  [price] price publisher dormant - signer wallet ${signer} does NOT own the ` +
+      `PriceRelayerCap ${PRICE_RELAYER_CAP_ID} (on-chain owner ${capOwner}). ` +
+      `Set SUI_PRIVATE_KEY to the relayer wallet's key.`
+    );
+    return;
+  }
+  if (!capOwner) {
+    console.warn(`  [price] could not verify PriceRelayerCap owner (transport) - proceeding; a wrong signer will be rejected on-chain.`);
+  }
+
+  console.log(`  [price] Publisher started - every ${PUSH_INTERVAL_MS / 60000}min from ${signer}`);
   console.log(`  [price] pkg ${PACKAGE}`);
   console.log(`  [price] cfg ${PRICE_CONFIG_ID}`);
+  console.log(`  [price] relayer cap ${PRICE_RELAYER_CAP_ID}`);
 
   while (true) {
     try {

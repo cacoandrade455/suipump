@@ -54,20 +54,40 @@ mountAgentSession(app, pool);
 // -- Virtual reserves per package -- must match frontend constants.js ---------
 const MIST = 1_000_000_000;
 
+// V13 -- SEPARATE PUBLISHED LINEAGE (fresh publish 2026-07-17, NOT a V10 upgrade),
+// so a V13 curve reports its OWN package id as its type-defining id (NOT V10).
+// Env-driven so the id is never hardcoded here; the '0xdf66' prefix below is only a
+// fallback for when SUIPUMP_V13_PACKAGE is unset.
+// Full V13 id: 0xdf66376f006557b9f81b3455ee786ffd7f2a633488cc3bd31a37ddbdc69bd56b
+const V13_PACKAGE = (process.env.SUIPUMP_V13_PACKAGE ?? '').trim().toLowerCase() || null;
+
 // vTok = virtual token reserve (same across all versions -- defines curve shape)
 // vSui = virtual SUI reserve (varies per version -- sets launch price)
+// V13 curve math is UNCHANGED from V9+: VIRTUAL_SUI_RESERVE = 4_369,
+// VIRTUAL_TOKEN_RESERVE = 1_073_000_000 (confirmed against
+// contracts-v10/sources/bonding_curve.move:177-178). EVERY known package now has an
+// explicit branch, so the final return means "genuinely unknown package" and logs
+// LOUDLY instead of silently returning stale reserves -- the guard the 2026-07
+// -20.2% price-badge incident lacked.
 function getVirtuals(packageId) {
   const vTok = 1_073_000_000; // all versions
   if (!packageId) return { vSui: 3500, vTok };
-  if (packageId.startsWith('0x2154')) return { vSui: 30000, vTok }; // V4
-  if (packageId.startsWith('0x785c')) return { vSui:  9000, vTok }; // V5: contract VIRTUAL_SUI_RESERVE = 9_000
-  if (packageId.startsWith('0x21d5')) return { vSui:  9000, vTok }; // V6: contract VIRTUAL_SUI_RESERVE = 9_000
-  if (packageId.startsWith('0xfb8f')) return { vSui:  3500, vTok }; // V7: contract VIRTUAL_SUI_RESERVE = 3_500 (lowered from 9k)
-  if (packageId.startsWith('0x7196')) return { vSui:  4369, vTok }; // V9: contract VIRTUAL_SUI_RESERVE = 4_369
-  if (packageId.startsWith('0x2ded')) return { vSui:  4369, vTok }; // V10: same shape as V9 (VIRTUAL_SUI_RESERVE = 4_369)
-  if (packageId.startsWith('0xc038')) return { vSui:  4369, vTok }; // V11 (upgrade of V10 -- defensive: curves type as V10)
-  if (packageId.startsWith('0xf5a3')) return { vSui:  4369, vTok }; // V12 (upgrade of V10 -- defensive: curves type as V10)
-  return { vSui: 3500, vTok };                                        // V8, V8_1: contract VIRTUAL_SUI_RESERVE = 3_500
+  const pid = String(packageId).toLowerCase();
+  // V13 (separate lineage): match the full env id first (authoritative), prefix fallback.
+  if ((V13_PACKAGE && pid === V13_PACKAGE) || pid.startsWith('0xdf66')) return { vSui: 4369, vTok }; // V13
+  if (pid.startsWith('0x2154')) return { vSui: 30000, vTok }; // V4
+  if (pid.startsWith('0x785c')) return { vSui:  9000, vTok }; // V5: contract VIRTUAL_SUI_RESERVE = 9_000
+  if (pid.startsWith('0x21d5')) return { vSui:  9000, vTok }; // V6: contract VIRTUAL_SUI_RESERVE = 9_000
+  if (pid.startsWith('0xfb8f')) return { vSui:  3500, vTok }; // V7: contract VIRTUAL_SUI_RESERVE = 3_500 (lowered from 9k)
+  if (pid.startsWith('0x145a')) return { vSui:  3500, vTok }; // V8_1: contract VIRTUAL_SUI_RESERVE = 3_500
+  if (pid.startsWith('0xbb4e')) return { vSui:  3500, vTok }; // V8: contract VIRTUAL_SUI_RESERVE = 3_500
+  if (pid.startsWith('0x7196')) return { vSui:  4369, vTok }; // V9: contract VIRTUAL_SUI_RESERVE = 4_369
+  if (pid.startsWith('0x2ded')) return { vSui:  4369, vTok }; // V10: same shape as V9 (VIRTUAL_SUI_RESERVE = 4_369)
+  if (pid.startsWith('0xc038')) return { vSui:  4369, vTok }; // V11 (upgrade of V10 -- defensive: curves type as V10)
+  if (pid.startsWith('0xf5a3')) return { vSui:  4369, vTok }; // V12 (upgrade of V10 -- defensive: curves type as V10)
+  // Genuinely unknown package -- LOUD, never silently return stale reserves.
+  console.warn(`[getVirtuals] UNKNOWN package id ${pid} - no virtual-reserve branch matched; returning current-lineage default vSui=4369, vTok=1073M. If this is a new lineage, add an explicit branch (this is the guard the -20.2% price-badge incident lacked).`);
+  return { vSui: 4369, vTok };
 }
 
 // Spot price in SUI per whole token -- constant-product formula.

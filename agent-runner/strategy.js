@@ -59,18 +59,35 @@ const err = (...a) => console.error(`[brain]`, ...a);
 process.on('unhandledRejection', (e) => err('unhandledRejection:', e?.message ?? e));
 process.on('uncaughtException',  (e) => err('uncaughtException:',  e?.message ?? e));
 
+// V13 -- SEPARATE PUBLISHED LINEAGE (fresh publish 2026-07-17, NOT a V10 upgrade);
+// a V13 curve reports its OWN package id as its type-defining id (NOT V10).
+// Env-driven so the id is never hardcoded; the '0xdf66' prefix is only a fallback
+// for when SUIPUMP_V13_PACKAGE is unset.
+// Full V13 id: 0xdf66376f006557b9f81b3455ee786ffd7f2a633488cc3bd31a37ddbdc69bd56b
+const V13_PACKAGE = (process.env.SUIPUMP_V13_PACKAGE ?? '').trim().toLowerCase() || null;
+
 // -- Per-package virtual SUI - ported from indexer/api.js getVirtuals ----------
+// V13 curve math is UNCHANGED from V9+: VIRTUAL_SUI_RESERVE = 4_369 (confirmed vs
+// contracts-v10/sources/bonding_curve.move:177). EVERY known package now has an
+// explicit branch, so an unmatched id logs LOUDLY instead of silently returning
+// stale reserves -- the guard the 2026-07 -20.2% price-badge incident lacked.
 function getVSui(packageId) {
   if (!packageId) return 3500;
-  if (packageId.startsWith('0x2154')) return 30000; // V4
-  if (packageId.startsWith('0x785c')) return 9000;  // V5: contract VIRTUAL_SUI_RESERVE = 9_000
-  if (packageId.startsWith('0x21d5')) return 9000;  // V6: contract VIRTUAL_SUI_RESERVE = 9_000
-  if (packageId.startsWith('0xfb8f')) return 3500;  // V7: contract VIRTUAL_SUI_RESERVE = 3_500
-  if (packageId.startsWith('0x7196')) return 4369;  // V9
-  if (packageId.startsWith('0x2ded')) return 4369;  // V10: same shape as V9
-  if (packageId.startsWith('0xc038')) return 4369;  // V11 (upgrade of V10 - defensive: curves type as V10)
-  if (packageId.startsWith('0xf5a3')) return 4369;  // V12 (upgrade of V10 - defensive: curves type as V10)
-  return 3500;                                       // V8 / V8_1
+  const pid = String(packageId).toLowerCase();
+  // V13 (separate lineage): match the full env id first (authoritative), prefix fallback.
+  if ((V13_PACKAGE && pid === V13_PACKAGE) || pid.startsWith('0xdf66')) return 4369; // V13
+  if (pid.startsWith('0x2154')) return 30000; // V4
+  if (pid.startsWith('0x785c')) return 9000;  // V5: contract VIRTUAL_SUI_RESERVE = 9_000
+  if (pid.startsWith('0x21d5')) return 9000;  // V6: contract VIRTUAL_SUI_RESERVE = 9_000
+  if (pid.startsWith('0xfb8f')) return 3500;  // V7: contract VIRTUAL_SUI_RESERVE = 3_500
+  if (pid.startsWith('0x145a')) return 3500;  // V8_1: contract VIRTUAL_SUI_RESERVE = 3_500
+  if (pid.startsWith('0xbb4e')) return 3500;  // V8: contract VIRTUAL_SUI_RESERVE = 3_500
+  if (pid.startsWith('0x7196')) return 4369;  // V9
+  if (pid.startsWith('0x2ded')) return 4369;  // V10: same shape as V9
+  if (pid.startsWith('0xc038')) return 4369;  // V11 (defensive: curves type as V10)
+  if (pid.startsWith('0xf5a3')) return 4369;  // V12 (defensive: curves type as V10)
+  err(`[getVSui] UNKNOWN package id ${pid} - no virtual-SUI branch matched; returning current-lineage default 4369. Add a branch if this is a new lineage (the guard the -20.2% price-badge incident lacked).`);
+  return 4369;
 }
 
 // Spot price in SUI per whole token - constant-product, matches api.js + TokenPage.

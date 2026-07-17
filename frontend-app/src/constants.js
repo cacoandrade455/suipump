@@ -49,11 +49,17 @@ export const PACKAGE_ID_V11 =
 // types define at V10, write targets move here.
 export const PACKAGE_ID_V12 =
   '0xf5a3566ba920a3e3614e8b25da0ca3237879b6e22eb12f21ccf2bceb6520b9cd';
-// V13: UNPUBLISHED third upgrade of the V10 lineage. bonding_curve::buy position
-// 5 changes from sui_price_scaled u64 to &PriceConfig (shared object, same arity).
+// V13: SEPARATE PUBLISHED LINEAGE (published 2026-07-17 as a FRESH PUBLISH, NOT an
+// upgrade of V10). Sui's `compatible` upgrade policy rejected upgrading V10 because
+// V13 changes public signatures (buy / buy_with_session: sui_price_scaled u64 ->
+// &PriceConfig; post_comment 7 -> 6 params) and the CTO struct family; removing the
+// caller-supplied price IS the F-2 fix, so a breaking change was unavoidable and a
+// fresh publish was the only path. CONSEQUENCE: V13 has its OWN type identity - V13
+// curves are <V13_package>::bonding_curve::Curve<T> and do NOT type as V10. Every
+// "V13 is the third upgrade of the V10 lineage" assumption is now false.
 // Env-only wiring: set VITE_SUIPUMP_V13_PACKAGE + VITE_SUIPUMP_PRICE_CONFIG on
-// Vercel AFTER the V13 publish; while unset, all buys use the frozen V9-V12 u64
-// shape. NEVER hardcode these ids here.
+// Vercel; while unset, PACKAGE_ID_V13 is null and V13 tokens are simply absent from
+// read paths. NEVER hardcode these ids here.
 export const PACKAGE_ID_V13 = (import.meta.env.VITE_SUIPUMP_V13_PACKAGE ?? '').toLowerCase() || null;
 export const PRICE_CONFIG_ID = import.meta.env.VITE_SUIPUMP_PRICE_CONFIG || null;
 export const V13_BUY_ENABLED = Boolean(PACKAGE_ID_V13 && PRICE_CONFIG_ID);
@@ -92,6 +98,10 @@ export const ALL_PACKAGE_IDS = [
   PACKAGE_ID_V10,
   PACKAGE_ID_V11,
   PACKAGE_ID_V12,
+  // V13 is a SEPARATE published lineage (not a V10 upgrade); READ paths must
+  // include it once its env id is set. Conditional spread so a null id (env unset)
+  // never enters the array.
+  ...(PACKAGE_ID_V13 ? [PACKAGE_ID_V13] : []),
 ];
 
 export const CURVE_ID    = '0xf7c137e90c5a5c9e716c91fdd3561d55e6ba3c11c37a9741b0bfde03dc9d812f';
@@ -141,7 +151,16 @@ export const VIRTUAL_TOKENS   = VIRTUAL_TOKENS_V9;
 export const DRAIN_SUI_APPROX = DRAIN_SUI_V9;
 
 // -- Per-package curve shape ---------------------------------------------------
+// V13 is a SEPARATE published lineage, but its curve shape is UNCHANGED from V9+
+// (VIRTUAL_SUI_RESERVE = 4_369, VIRTUAL_TOKEN_RESERVE = 1_073_000_000, confirmed vs
+// contracts-v10/sources/bonding_curve.move:177-178). Every known package has an
+// explicit branch; a truthy but UNRECOGNIZED id warns loudly and defaults to the
+// current-lineage (V9) shape rather than silently rendering at the legacy V4 30k
+// shape -- the guard the 2026-07 -20.2% price-badge incident lacked.
 export function curveShapeFor(pkgId) {
+  if (PACKAGE_ID_V13 && pkgId === PACKAGE_ID_V13) { // V13: separate lineage, V9 shape
+    return { virtualSui: VIRTUAL_SUI_V9, virtualTokens: VIRTUAL_TOKENS_V9, drainSui: DRAIN_SUI_V9 };
+  }
   if (pkgId === PACKAGE_ID_V12) { // defensive: lineage curves type as V10
     return { virtualSui: VIRTUAL_SUI_V9, virtualTokens: VIRTUAL_TOKENS_V9, drainSui: DRAIN_SUI_V9 };
   }
@@ -166,58 +185,86 @@ export function curveShapeFor(pkgId) {
   if (pkgId === PACKAGE_ID_V5) {
     return { virtualSui: VIRTUAL_SUI_V5, virtualTokens: VIRTUAL_TOKENS_V5, drainSui: DRAIN_SUI_V5 };
   }
+  if (pkgId === PACKAGE_ID_V4) {
+    return { virtualSui: VIRTUAL_SUI_V4, virtualTokens: VIRTUAL_TOKENS_V4, drainSui: DRAIN_SUI_V4 };
+  }
+  // Genuinely unrecognized id: LOUD, and default to the current-lineage (V9) shape.
+  if (pkgId) {
+    console.warn(`[curveShapeFor] UNKNOWN package id ${pkgId} - no curve-shape branch matched; defaulting to current-lineage V9 shape (vSui 4369). Add a branch if this is a new lineage.`);
+    return { virtualSui: VIRTUAL_SUI_V9, virtualTokens: VIRTUAL_TOKENS_V9, drainSui: DRAIN_SUI_V9 };
+  }
   return { virtualSui: VIRTUAL_SUI_V4, virtualTokens: VIRTUAL_TOKENS_V4, drainSui: DRAIN_SUI_V4 };
 }
 
 // -- Package feature helpers ---------------------------------------------------
+// V13 is a SEPARATE published lineage (fresh publish 2026-07-17), but functionally
+// a SUPERSET of V12: it carries every V5..V12 feature plus the F-2 PriceConfig buy
+// change and the escrow-CTO redesign. So every feature/version helper below must
+// treat a V13 curve as "yes". Guarded (PACKAGE_ID_V13 != null) so that when the env
+// var is unset - PACKAGE_ID_V13 is null - a null pkgId can never spuriously match.
+// NOTE: the buy SHAPE dispatch is NOT one of these - a V13 curve needs the
+// &PriceConfig arg and a V10/V11/V12 curve needs the u64 arg, and the two lineages
+// are NOT interchangeable (V13 is not an upgrade of V10). That dispatch keys on
+// pkgId === PACKAGE_ID_V13 exactly (see TokenPage useV13Buy), never on isV10OrLater.
+const isV13Pkg = (pkgId) => PACKAGE_ID_V13 != null && pkgId === PACKAGE_ID_V13;
+
 export function isNewCurve(pkgId) {
   return pkgId === PACKAGE_ID_V5 || pkgId === PACKAGE_ID_V6
       || pkgId === PACKAGE_ID_V7 || pkgId === PACKAGE_ID_V8_1
       || pkgId === PACKAGE_ID_V8
       || pkgId === PACKAGE_ID_V9 || pkgId === PACKAGE_ID_V10
       || pkgId === PACKAGE_ID_V11
-      || pkgId === PACKAGE_ID_V12;
+      || pkgId === PACKAGE_ID_V12
+      || isV13Pkg(pkgId);
 }
 export function isV5OrLater(pkgId) {
   return pkgId === PACKAGE_ID_V5 || pkgId === PACKAGE_ID_V6
       || pkgId === PACKAGE_ID_V7 || pkgId === PACKAGE_ID_V8_1
       || pkgId === PACKAGE_ID_V8 || pkgId === PACKAGE_ID_V9
       || pkgId === PACKAGE_ID_V10 || pkgId === PACKAGE_ID_V11
-      || pkgId === PACKAGE_ID_V12;
+      || pkgId === PACKAGE_ID_V12
+      || isV13Pkg(pkgId);
 }
 export function supportsMetadataUpdate(pkgId) {
   return pkgId === PACKAGE_ID_V6 || pkgId === PACKAGE_ID_V7
       || pkgId === PACKAGE_ID_V8_1 || pkgId === PACKAGE_ID_V8
       || pkgId === PACKAGE_ID_V9 || pkgId === PACKAGE_ID_V10
       || pkgId === PACKAGE_ID_V11
-      || pkgId === PACKAGE_ID_V12;
+      || pkgId === PACKAGE_ID_V12
+      || isV13Pkg(pkgId);
 }
 export function isV7OrLater(pkgId) {
   return pkgId === PACKAGE_ID_V7 || pkgId === PACKAGE_ID_V8_1
       || pkgId === PACKAGE_ID_V8 || pkgId === PACKAGE_ID_V9
       || pkgId === PACKAGE_ID_V10 || pkgId === PACKAGE_ID_V11
-      || pkgId === PACKAGE_ID_V12;
+      || pkgId === PACKAGE_ID_V12
+      || isV13Pkg(pkgId);
 }
 export function isV8OrLater(pkgId) {
   return pkgId === PACKAGE_ID_V8_1 || pkgId === PACKAGE_ID_V8
       || pkgId === PACKAGE_ID_V9 || pkgId === PACKAGE_ID_V10
       || pkgId === PACKAGE_ID_V11
-      || pkgId === PACKAGE_ID_V12;
+      || pkgId === PACKAGE_ID_V12
+      || isV13Pkg(pkgId);
 }
 export function isV9OrLater(pkgId) {
   return pkgId === PACKAGE_ID_V9 || pkgId === PACKAGE_ID_V10
       || pkgId === PACKAGE_ID_V11
-      || pkgId === PACKAGE_ID_V12;
+      || pkgId === PACKAGE_ID_V12
+      || isV13Pkg(pkgId);
 }
 export function isV10OrLater(pkgId) {
   return pkgId === PACKAGE_ID_V10 || pkgId === PACKAGE_ID_V11
-      || pkgId === PACKAGE_ID_V12;
+      || pkgId === PACKAGE_ID_V12
+      || isV13Pkg(pkgId);
 }
 export function isV11OrLater(pkgId) {
-  return pkgId === PACKAGE_ID_V11 || pkgId === PACKAGE_ID_V12;
+  return pkgId === PACKAGE_ID_V11 || pkgId === PACKAGE_ID_V12
+      || isV13Pkg(pkgId);
 }
 export function isV12OrLater(pkgId) {
-  return pkgId === PACKAGE_ID_V12;
+  return pkgId === PACKAGE_ID_V12
+      || isV13Pkg(pkgId);
 }
 
 // -- Graduation targets --------------------------------------------------------

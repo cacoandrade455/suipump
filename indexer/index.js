@@ -22,6 +22,15 @@ import { startApi } from './api.js';
 
 // -- Config --------------------------------------------------------------------
 
+// V13 -- SEPARATE PUBLISHED LINEAGE (fresh publish 2026-07-17, NOT a V10 upgrade).
+// Sui's `compatible` policy rejected upgrading V10 because V13 changes public
+// signatures (buy/buy_with_session sui_price_scaled u64 -> &PriceConfig;
+// post_comment 7 -> 6 params) and the CTO struct family; that break IS the F-2 fix.
+// CONSEQUENCE: V13 has its OWN type identity - V13 curves and events define under
+// the V13 package id and do NOT type as V10. Env-gated so the id is never hardcoded
+// here; while SUIPUMP_V13_PACKAGE is unset, V13 events are simply not indexed.
+const V13_PACKAGE = (process.env.SUIPUMP_V13_PACKAGE ?? '').trim().toLowerCase() || null;
+
 const ALL_PACKAGE_IDS = [
   '0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8', // V4
   '0x785c0604cb6c60a8547501e307d2b0ca7a586ff912c8abff4edfb88db65b7236', // V5
@@ -46,11 +55,27 @@ const ALL_PACKAGE_IDS = [
   // V12 -- comments toggle + Nautilus. CommentGateSet (bonding_curve) and
   // SessionAttested (agent_session) define under this id.
   '0xf5a3566ba920a3e3614e8b25da0ca3237879b6e22eb12f21ccf2bceb6520b9cd', // V12
+  // V13 -- separate lineage (see note above). All V13 bonding_curve/agent_session/
+  // CTO event types define under the V13 package id. New types start with null
+  // cursors -> swept from genesis on first boot once SUIPUMP_V13_PACKAGE is set.
+  // Conditional spread so a null id (env unset) never enters the list.
+  ...(V13_PACKAGE ? [V13_PACKAGE] : []),
 ];
 
+// The Render worker ALREADY sets a PACKAGE_IDS env override, so the live list and
+// the code default (ALL_PACKAGE_IDS) can silently DRIFT. Capture which source won
+// and log the effective list at boot so drift is visible in the log, not invisible.
+const PACKAGE_IDS_SOURCE = process.env.PACKAGE_IDS
+  ? 'env override PACKAGE_IDS'
+  : 'code default ALL_PACKAGE_IDS';
 const PACKAGE_IDS = process.env.PACKAGE_IDS
   ? process.env.PACKAGE_IDS.split(',').map(s => s.trim()).filter(Boolean)
   : ALL_PACKAGE_IDS;
+console.log(
+  `[indexer] tracking ${PACKAGE_IDS.length} packages from ${PACKAGE_IDS_SOURCE} ` +
+  `(V13 ${V13_PACKAGE ? 'wired: ' + V13_PACKAGE : 'NOT set via SUIPUMP_V13_PACKAGE'}): ` +
+  PACKAGE_IDS.join(', ')
+);
 
 const NETWORK     = process.env.NETWORK          ?? 'testnet';
 const GRPC_URL    = (process.env.SUI_GRPC_URL    ?? `fullnode.${NETWORK}.sui.io:443`).replace(/^https?:\/\//, '');

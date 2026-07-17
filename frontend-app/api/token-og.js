@@ -29,6 +29,12 @@ const MIST_PER_SUI   = 1_000_000_000n;
 // Defining package ids -- event TYPES define here forever (V11/V12 are
 // upgrades of V10, so lineage events keep typing under V10; they never get
 // their own event-type namespace for the legacy events used below).
+// V13 -- SEPARATE PUBLISHED LINEAGE (fresh publish 2026-07-17, NOT a V10 upgrade),
+// so V13 curves/events have their OWN type identity (they do NOT type as V10).
+// Env-driven (Vercel edge env exposes process.env), so the id is never hardcoded.
+// Full V13 id: 0xdf66376f006557b9f81b3455ee786ffd7f2a633488cc3bd31a37ddbdc69bd56b
+const V13_PACKAGE = (process.env.SUIPUMP_V13_PACKAGE ?? '').trim().toLowerCase() || null;
+
 const ALL_PACKAGE_IDS = [
   '0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8', // V4
   '0x785c0604cb6c60a8547501e307d2b0ca7a586ff912c8abff4edfb88db65b7236', // V5
@@ -38,6 +44,9 @@ const ALL_PACKAGE_IDS = [
   '0xbb4ee050239f59dfd983501ce101698ba27857f77aff2d437cec568fe0062546', // V8
   '0x719698e5138582d78ee95317271e8bce05769569a4f58c940a7f1b424d90ffe2', // V9
   '0x2deda2cade65cd5afd5ffbe799d48f2491debf08d3aef6fa11aa6e1c8afe1598', // V10 (whole V10/V11/V12 lineage)
+  // V13 -- separate lineage; its bonding_curve events (TokensPurchased etc.) type
+  // under the V13 id. Env-gated; conditional spread so a null id never enters.
+  ...(V13_PACKAGE ? [V13_PACKAGE] : []),
 ];
 
 // -- GraphQL helpers ----------------------------------------------------------
@@ -128,11 +137,25 @@ const VIRTUAL_PARAMS = {
   '0x2deda2cade65cd5afd5ffbe799d48f2491debf08d3aef6fa11aa6e1c8afe1598': { vSui: 4_369n,  vTok: 1_073_000_000n, drain: 12_305n }, // V10 lineage (curves type as V10)
   '0xc03817bce45ff492e5d0f40f9e46f5a075a952b50c5c6146b8fb38138bd699eb': { vSui: 4_369n,  vTok: 1_073_000_000n, drain: 12_305n }, // V11 (defensive)
   '0xf5a3566ba920a3e3614e8b25da0ca3237879b6e22eb12f21ccf2bceb6520b9cd': { vSui: 4_369n,  vTok: 1_073_000_000n, drain: 12_305n }, // V12 (defensive)
+  // V13 -- SEPARATE lineage. Curve shape is UNCHANGED from V9+ (vSui 4_369, vTok
+  // 1_073_000_000, confirmed vs contracts-v10/sources/bonding_curve.move:177-178),
+  // so PRICE is correct here. `drain` is a fallback-only progress approximation:
+  // V13's real graduation threshold is oracle-dampened (dynamic), resolved by the
+  // indexer primary path; 12_305 keeps the bar consistent with the 4_369-vSui era.
+  // Env-gated key so the id is never hardcoded.
+  ...(V13_PACKAGE ? { [V13_PACKAGE]: { vSui: 4_369n, vTok: 1_073_000_000n, drain: 12_305n } } : {}),
 };
 const DEFAULT_PARAMS = { vSui: 3_500n, vTok: 1_073_000_000n, drain: 9_000n };
 
 function paramsForPackage(pkgId) {
-  return VIRTUAL_PARAMS[pkgId ?? ''] ?? DEFAULT_PARAMS;
+  const key = String(pkgId ?? '').toLowerCase();
+  const hit = VIRTUAL_PARAMS[key];
+  if (hit) return hit;
+  // Genuinely unknown package -- LOUD, do not silently return stale reserves (the
+  // guard the -20.2% price-badge incident lacked). This is a fallback-only path
+  // (the indexer is the primary price source); still surface the misconfiguration.
+  if (key) console.warn(`[token-og] UNKNOWN package id ${key} - no VIRTUAL_PARAMS branch; using DEFAULT (vSui 3500). If this is a new lineage, add a branch.`);
+  return DEFAULT_PARAMS;
 }
 
 function calcPriceAndProgress(fields, typeRepr) {

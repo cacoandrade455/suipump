@@ -2040,14 +2040,17 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
         const impactPct = bq?.priceImpact ?? 0;
         const effectiveSlippage = resolveSlippagePct(slippage, impactPct);
         const minOut = bq?.tokensOut != null ? BigInt(Math.floor(Number(bq.tokensOut) * (1 - effectiveSlippage / 100))) : 0n;
-        // V13 dispatch (env-gated): once the V13 upgrade is published and the
-        // VITE_SUIPUMP_V13_PACKAGE / VITE_SUIPUMP_PRICE_CONFIG env vars are set,
-        // buys on lineage curves (defining package V10) must target the V13
-        // package - calling the defining address runs OLD bytecode - and pass
-        // the shared PriceConfig object at position 5 instead of the u64 oracle
-        // price (same arity). While the env vars are unset, V13_BUY_ENABLED is
-        // false and every path below is unchanged.
-        const useV13Buy = V13_BUY_ENABLED && isV10OrLater(pkgId);
+        // V13 dispatch (env-gated): V13 was published 2026-07-17 as a SEPARATE
+        // LINEAGE, NOT an upgrade of V10. So the V13 buy shape (&PriceConfig at
+        // position 5 in place of the u64 oracle price) applies ONLY to curves that
+        // are THEMSELVES V13 (pkgId === PACKAGE_ID_V13). V10/V11/V12 curves are a
+        // different type identity and MUST keep the u64 shape on their own package;
+        // routing them through V13 would abort on a Curve<T> type mismatch. (The
+        // earlier code keyed this on isV10OrLater, which assumed the upgrade model
+        // and is now wrong on BOTH sides: it missed real V13 curves and wrongly
+        // captured V10/V11/V12 ones.) While the env vars are unset, V13_BUY_ENABLED
+        // is false and every path below is unchanged.
+        const useV13Buy = V13_BUY_ENABLED && pkgId === PACKAGE_ID_V13;
         // V9-V12: buy(curve, payment, min_out, referral, sui_price_scaled, clock)
         // Fetch live SUI price for oracle; pass 0 as fallback if unavailable.
         // V13 reads the price from the on-chain PriceConfig - no client fetch.

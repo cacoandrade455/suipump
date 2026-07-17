@@ -1,20 +1,46 @@
 // indexer/write_target.js
 // Single env-driven WRITE target for the whole repo (V13 closeout, Task E).
 //
-// V13 is UNPUBLISHED. Nothing in the repo may hardcode a V13 package id or a
-// PriceConfig object id - both arrive by ENV ONLY. After the V13 publish,
-// Carlos flips these env vars on Render/Vercel with NO code change:
+// V13 was PUBLISHED 2026-07-17 as a FRESH PUBLISH (its own type identity, NOT an
+// upgrade of V10). Nothing in the repo may hardcode a V13 package id or a
+// PriceConfig object id - both arrive by ENV ONLY. Carlos arms the write path by
+// setting these env vars on Render/Vercel with NO code change:
 //
-//   SUIPUMP_LATEST_WRITE_PACKAGE - the newest published upgrade package id that
-//       every WRITE (moveCall) targets. Defaults to the currently-deployed V12
-//       upgrade 0xf5a3566ba920a3e3614e8b25da0ca3237879b6e22eb12f21ccf2bceb6520b9cd
-//       until the V13 publish. READ paths (ALL_PACKAGE_IDS iteration) are NOT
-//       affected by this module and keep every historical package id.
+//   SUIPUMP_LATEST_WRITE_PACKAGE - the package id that V10-LINEAGE writes (moveCall)
+//       target. Defaults to the V12 upgrade
+//       0xf5a3566ba920a3e3614e8b25da0ca3237879b6e22eb12f21ccf2bceb6520b9cd. Set it
+//       to the V13 package to make new launches target V13. NOTE: this remaps the
+//       V10 lineage only (see PACKAGE_LATEST in bridge.js); a V13 CURVE already
+//       reports V13 as its own defining id, so it writes to V13 without any remap.
+//       READ paths (ALL_PACKAGE_IDS iteration) are NOT affected by this module.
 //   SUIPUMP_PRICE_CONFIG - the shared PriceConfig object id created by the V13
-//       publish (price_cfg). null until the publish.
-//   SUIPUMP_V13_PACKAGE - the V13 package id itself, for consumers that need it
-//       as a version key (event types, dispatch-set entries). null until the
-//       publish.
+//       publish (price_cfg).
+//   SUIPUMP_V13_PACKAGE - the V13 package id itself, for consumers that need it as
+//       a version key (event types, dispatch-set entries, virtual-reserve branch).
+//
+// TWO SIGNER KEYS, NEVER CONFLATED (env contract; this module reads neither):
+//   SUI_PRIVATE_KEY       - the PRICE RELAYER wallet
+//       0xce53cb8f9befc490393d70528ef732bbcbe12d951ffcdd76a37af9b0f9624629 (holds
+//       the PriceRelayerCap). Read by price_publisher.js and cto_reclaim_sweeper.js.
+//   GRADUATION_SIGNER_KEY - the graduation signer = MAIN wallet
+//       0x0be9a8f56ba3b07f295e0c7526e7f47ca3a146649b9d864d2eb47bf3acd90c55 (holds
+//       AdminCap V13). Read ONLY by the graduation-test/graduation-test-turbos
+//       scripts that auto_graduate.js imports. auto_graduate MUST NEVER read
+//       SUI_PRIVATE_KEY; price_publisher MUST NEVER read GRADUATION_SIGNER_KEY.
+//
+// ================= TESTNET-ONLY EXPEDIENT - REMOVE AT V14 =====================
+// GRADUATION_SIGNER_KEY carries the AdminCap holder's private key on an
+// always-online server. This is precisely the concentration that finding E-1 was
+// raised to eliminate, and it is accepted here ONLY because this is testnet faucet
+// money and the graduation loop has never been proven end-to-end. It MUST NOT reach
+// mainnet. The fix is a GraduationCap: an additive (compatible) V14 upgrade via
+// UpgradeCap V13 0x79ebefc92e5da42720ff4b3e719a71e4ecd5428a9750d4ada8257f61e3556a19
+// adding a cap whose only powers are claim_graduation_funds and
+// record_graduation_pool, plus an active_graduation_cap_id rotation field so the
+// cold AdminCap can revoke a compromised cap instantly (same pattern as the
+// CreatorCap swap). When V14 ships, auto_graduate moves to that cap and
+// GRADUATION_SIGNER_KEY is deleted from Render.
+// =============================================================================
 //
 // ZERO imports on purpose: this module is imported from indexer/, from
 // suipump-nexus-tools/ and from the graduation-test dirs, each with its own
@@ -28,8 +54,9 @@ export const LATEST_WRITE_PACKAGE = (
 
 export const PRICE_CONFIG_ID = process.env.SUIPUMP_PRICE_CONFIG ?? null;
 
-// Set only after the V13 publish.
-export const V13_PACKAGE = process.env.SUIPUMP_V13_PACKAGE ?? null;
+// The V13 package id (published 2026-07-17). Normalized to lowercase so every
+// consumer's case-insensitive comparisons and Set membership are consistent.
+export const V13_PACKAGE = (process.env.SUIPUMP_V13_PACKAGE ?? '').trim().toLowerCase() || null;
 
 // assertWriteTarget(client, requiredFunctions)
 //   requiredFunctions: array of [moduleName, functionName] pairs. Each pair is
