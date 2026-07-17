@@ -2313,7 +2313,7 @@ module suipump::bonding_curve_tests {
     // ═══════════════════════════════════════════════════════════════════════
 
     const CTO_INACTIVITY_MS: u64 = 5  * 24 * 60 * 60 * 1_000;
-    const CTO_WINDOW_MS:     u64 = 12 * 60 * 60 * 1_000;
+    const CTO_WINDOW_MS:     u64 = 72 * 60 * 60 * 1_000;
     // Mirror of bonding_curve::CURVE_SUPPLY (for the MIN_VOTE floor computation).
     const CTO_CURVE_SUPPLY:  u64 = 800_000_000 * 1_000_000;
     const CTO_MIN_VOTE_BPS:  u64 = 1;

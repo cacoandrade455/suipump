@@ -161,7 +161,7 @@ module suipump::bonding_curve {
 
     // ---------- V10: Community Takeover (CTO) constants ----------
     const CTO_INACTIVITY_MS: u64 = 5  * 24 * 60 * 60 * 1_000; // 5-day creator inactivity gate
-    const CTO_WINDOW_MS:     u64 = 12 * 60 * 60 * 1_000;      // 12-hour vote window
+    const CTO_WINDOW_MS:     u64 = 72 * 60 * 60 * 1_000;      // 72-hour vote window
     const CTO_COOLDOWN_MS:   u64 = 3  * 24 * 60 * 60 * 1_000; // 3-day post-failure cooldown
     const CTO_NOMINATE_BPS:  u64 = 100;   // nominator must hold >= 1% of circulating supply
     const CTO_QUORUM_BPS:    u64 = 2_500; // quorum: escrowed weight must reach 25% of circulating
