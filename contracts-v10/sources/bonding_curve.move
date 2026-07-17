@@ -118,6 +118,7 @@ module suipump::bonding_curve {
     const ECtoBelowMinVote:          u64 = 56; // CTO: vote coin below the MIN_VOTE spam floor
     const ECtoNotVoter:              u64 = 57; // CTO: unvote/reclaim by an address with no escrow entry
     const ECtoNotResolved:           u64 = 58; // CTO: reclaim before the proposal is resolved
+    const ECtoZeroCirculating:       u64 = 59; // CTO: propose against a curve with 0 circulating supply / 0 stake
 
     /// V12 comments toggle: dynamic-field marker on the curve. Marker ABSENT =
     /// holder-gated (the V10/V11 default, preserved); marker PRESENT = open
@@ -1734,6 +1735,12 @@ module suipump::bonding_curve {
         escrow:       Balance<T>,
         votes:        Table<address, u64>,
         total_weight: u64,
+        // F-4.0 / F-6.0: quorum target SNAPSHOT at propose time = circulating * 25%.
+        // Frozen here so trading during/after the window cannot move the goalposts
+        // (live circulating_supply at resolve was atomically manipulable via an
+        // in-PTB buy->resolve->sell). A snapshot of 0 (tiny circ that rounds the
+        // 25% down to 0) is treated as an automatic FAIL in resolve_takeover.
+        quorum_target: u64,
         resolved:     bool,
         succeeded:    bool,
     }
@@ -1761,10 +1768,20 @@ module suipump::bonding_curve {
         assert!(now >= curve.cto_cooldown_until_ms, ECtoOnCooldown);
         assert!(!df::exists(&curve.id, CTO_LIVE_PROPOSAL_KEY), ECtoProposalLive);
 
+        // F-4.0: a curve with 0 circulating supply has no community to represent,
+        // and the nominate threshold would degenerate to 0 (letting a coin::zero
+        // stake open a proposal with total_weight 0). Reject both the zero-circ
+        // curve and any zero-value stake outright.
         let circ = circulating_supply(curve);
+        assert!(circ > 0, ECtoZeroCirculating);
         let threshold = (circ * CTO_NOMINATE_BPS) / BPS_DENOMINATOR;
         let amount = coin::value(&stake);
+        assert!(amount > 0, ECtoZeroCirculating);
         assert!(amount >= threshold, EBelowNominateThreshold);
+
+        // F-6.0: snapshot the 25%-of-circulating quorum target NOW so post-open
+        // trading cannot move it (resolve compares total_weight against this).
+        let quorum_target = (circ * CTO_QUORUM_BPS) / BPS_DENOMINATOR;
 
         let sender = tx_context::sender(ctx);
         let mut votes = table::new<address, u64>(ctx);
@@ -1778,6 +1795,7 @@ module suipump::bonding_curve {
             escrow:       coin::into_balance(stake),
             votes,
             total_weight: amount,
+            quorum_target,
             resolved:     false,
             succeeded:    false,
         };
@@ -1864,9 +1882,12 @@ module suipump::bonding_curve {
         assert!(now >= proposal.deadline_ms, ECtoVoteStillOpen);
         assert!(!proposal.resolved, ECtoAlreadyResolved);
 
-        let circ = circulating_supply(curve);
-        let quorum = (circ * CTO_QUORUM_BPS) / BPS_DENOMINATOR;
-        let succeeded = proposal.total_weight >= quorum;
+        // F-6.0: use the quorum SNAPSHOT taken at propose time, not the live
+        // circulating supply (which is atomically manipulable inside the resolve
+        // PTB via buy->resolve->sell). F-4.0: a snapshot of 0 (degenerate/near-zero
+        // circulating) is an automatic FAIL, and a zero tally never succeeds.
+        let quorum = proposal.quorum_target;
+        let succeeded = quorum > 0 && proposal.total_weight > 0 && proposal.total_weight >= quorum;
         proposal.resolved = true;
         proposal.succeeded = succeeded;
 
@@ -1927,6 +1948,7 @@ module suipump::bonding_curve {
     public fun proposal_proposer<T>(p: &TakeoverProposal<T>): address { p.proposer }
     public fun proposal_deadline_ms<T>(p: &TakeoverProposal<T>): u64 { p.deadline_ms }
     public fun proposal_total_weight<T>(p: &TakeoverProposal<T>): u64 { p.total_weight }
+    public fun proposal_quorum_target<T>(p: &TakeoverProposal<T>): u64 { p.quorum_target }
     public fun proposal_resolved<T>(p: &TakeoverProposal<T>): bool { p.resolved }
     public fun proposal_succeeded<T>(p: &TakeoverProposal<T>): bool { p.succeeded }
     public fun proposal_escrow_value<T>(p: &TakeoverProposal<T>): u64 { balance::value(&p.escrow) }

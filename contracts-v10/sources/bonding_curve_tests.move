@@ -93,6 +93,7 @@ module suipump::bonding_curve_tests {
     const E_CTO_BELOW_MIN_VOTE:       u64 = 56;
     const E_CTO_NOT_VOTER:            u64 = 57;
     const E_CTO_NOT_RESOLVED:         u64 = 58;
+    const E_CTO_ZERO_CIRCULATING:     u64 = 59;
 
     const LP_SUPPLY_ATOMIC:           u64 = 200_000_000 * 1_000_000; // 1B total - 800M curve
 
@@ -2565,6 +2566,105 @@ module suipump::bonding_curve_tests {
         bonding_curve::propose_takeover(&mut curve, stake, &clk, ts::ctx(&mut s));
         clock::destroy_for_testing(clk);
         ts::return_shared(curve);
+        ts::end(s);
+    }
+
+    // F-4.0 regression: a curve with 0 circulating supply (all supply still in
+    // token_reserve) degenerated the nominate threshold AND the quorum to 0,
+    // letting a coin::zero stake open a proposal that then auto-succeeded. Propose
+    // against a zero-circulating curve MUST abort ECtoZeroCirculating.
+    #[test]
+    #[expected_failure(abort_code = E_CTO_ZERO_CIRCULATING, location = suipump::bonding_curve)]
+    fun test_cto_propose_zero_circulating_aborts() {
+        let mut s = begin_cto(); // no buys: token_reserve == CURVE_SUPPLY -> circ == 0
+
+        ts::next_tx(&mut s, VOTER_A);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        assert!(bonding_curve::cto_circulating_supply(&curve) == 0, 9580);
+        let zero = coin::zero<TEST_TOKEN>(ts::ctx(&mut s));
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 1);
+        bonding_curve::propose_takeover(&mut curve, zero, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+        ts::end(s);
+    }
+
+    // F-4.0 regression (zero-stake floor): even when circulating > 0, a coin::zero
+    // stake must be rejected (the free-nomination path). amount > 0 is checked
+    // before the threshold compare, so this aborts ECtoZeroCirculating.
+    #[test]
+    #[expected_failure(abort_code = E_CTO_ZERO_CIRCULATING, location = suipump::bonding_curve)]
+    fun test_cto_propose_zero_stake_aborts() {
+        let mut s = begin_cto();
+        buy_bag(&mut s, VOTER_A, 3_000 * MIST_PER_SUI);
+
+        ts::next_tx(&mut s, VOTER_A);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        assert!(bonding_curve::cto_circulating_supply(&curve) > 0, 9585);
+        let zero = coin::zero<TEST_TOKEN>(ts::ctx(&mut s));
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 1);
+        bonding_curve::propose_takeover(&mut curve, zero, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+        ts::end(s);
+    }
+
+    // F-6.0 regression: the quorum target is SNAPSHOT at propose time. Inflating
+    // circulating supply with a buy after the proposal opens (buy() has no
+    // live-proposal guard) must NOT raise the quorum above a tally that legitimately
+    // met 25% at open. Old bug: resolve read live circulating supply -> the buy
+    // defeated the takeover; here it succeeds on the frozen snapshot.
+    #[test]
+    fun test_cto_quorum_snapshot_survives_supply_inflation() {
+        let mut s = begin_cto();
+        buy_bag(&mut s, VOTER_A, 3_000 * MIST_PER_SUI);
+
+        // A proposes staking EXACTLY 25% of circulating-at-open (meets quorum).
+        ts::next_tx(&mut s, VOTER_A);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let mut bag = ts::take_from_address<Coin<TEST_TOKEN>>(&s, VOTER_A);
+        let circ0 = bonding_curve::cto_circulating_supply(&curve);
+        let quorum0 = (circ0 * 2_500) / 10_000; // 25%
+        let stake = coin::split(&mut bag, quorum0, ts::ctx(&mut s));
+        destroy(bag);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + 1);
+        bonding_curve::propose_takeover(&mut curve, stake, &clk, ts::ctx(&mut s));
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+
+        // The proposal froze the propose-time 25% as its quorum target.
+        ts::next_tx(&mut s, BUYER);
+        let proposal = ts::take_shared<bonding_curve::TakeoverProposal<TEST_TOKEN>>(&s);
+        assert!(bonding_curve::proposal_quorum_target(&proposal) == quorum0, 9590);
+        assert!(bonding_curve::proposal_total_weight(&proposal) == quorum0, 9591);
+        ts::return_shared(proposal);
+
+        // Attacker inflates circulating supply while the proposal is live.
+        buy_bag(&mut s, BUYER, 3_000 * MIST_PER_SUI);
+        ts::next_tx(&mut s, BUYER);
+        let curve_ro = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let inflate_bag = ts::take_from_address<Coin<TEST_TOKEN>>(&s, BUYER);
+        // Live 25% now exceeds the tally: the old live-read would have failed here.
+        let live_quorum = (bonding_curve::cto_circulating_supply(&curve_ro) * 2_500) / 10_000;
+        assert!(live_quorum > quorum0, 9592);
+        destroy(inflate_bag);
+        ts::return_shared(curve_ro);
+
+        // Resolve after the window -> SUCCEEDS on the snapshot despite inflation.
+        ts::next_tx(&mut s, BUYER);
+        let mut proposal = ts::take_shared<bonding_curve::TakeoverProposal<TEST_TOKEN>>(&s);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let mut clk = clock::create_for_testing(ts::ctx(&mut s));
+        clock::set_for_testing(&mut clk, CTO_INACTIVITY_MS + CTO_WINDOW_MS + 2);
+        bonding_curve::resolve_takeover(&mut proposal, &mut curve, &clk, ts::ctx(&mut s));
+        assert!(bonding_curve::proposal_succeeded(&proposal), 9593);
+        assert!(bonding_curve::proposal_resolved(&proposal), 9594);
+        clock::destroy_for_testing(clk);
+        ts::return_shared(curve);
+        ts::return_shared(proposal);
         ts::end(s);
     }
 
