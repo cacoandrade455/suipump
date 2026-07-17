@@ -242,10 +242,20 @@ module suipump::bonding_curve {
     // ---------- Capabilities ----------
     public struct AdminCap  has key, store { id: UID }
 
+    /// V13 (audit E-1): the ONLY capability that can publish the SUI/USD price
+    /// via set_sui_price. Deliberately split out of AdminCap because the price
+    /// relayer must hold a HOT key online publishing every ~5 min, and AdminCap
+    /// also drains every graduated reserve, mints the 200M LP, and pauses
+    /// trading. SECURITY PROPERTY: compromise of the hot relayer key holding
+    /// this cap can ONLY push a price already clamped to [MIN,MAX]_PRICE_SCALED
+    /// - it can never touch reserves, minting, fees, pause, or the enclave
+    /// registry. Nothing else in the package accepts a &PriceRelayerCap.
+    public struct PriceRelayerCap has key, store { id: UID }
+
     /// V13: the protocol-published SUI/USD reference the dampened graduation
-    /// threshold reads. Shared so buy() can take it by reference; only AdminCap
-    /// can write it (set_sui_price). Replaces V9's caller-supplied
-    /// sui_price_scaled: u64, which was F-2.
+    /// threshold reads. Shared so buy() can take it by reference; only the
+    /// PriceRelayerCap holder can write it (set_sui_price). Replaces V9's
+    /// caller-supplied sui_price_scaled: u64, which was F-2.
     public struct PriceConfig has key {
         id:               UID,
         sui_price_scaled: u64,  // floor(sui_usd * 1000); 0 = never published
@@ -257,6 +267,13 @@ module suipump::bonding_curve {
     public struct SuiPriceUpdated has copy, drop {
         price_scaled:  u64,
         updated_at_ms: u64,
+    }
+
+    /// V13 (audit E-1): emitted at the single site that mints the PriceRelayerCap
+    /// (init on a fresh publish, create_price_config on an upgrade) so the publish
+    /// runbook can capture and hand the hot relayer key its cap id.
+    public struct PriceRelayerCapIssued has copy, drop {
+        cap_id: ID,
     }
     public struct CreatorCap has key, store {
         id:       UID,
@@ -274,6 +291,13 @@ module suipump::bonding_curve {
             EFeeSplitInvalid,
         );
         transfer::public_transfer(AdminCap { id: object::new(ctx) }, tx_context::sender(ctx));
+        // V13 (audit E-1): mint the price-only relayer cap on the FRESH-publish
+        // path (the stated mainnet plan) so the hot relayer key never needs the
+        // AdminCap. create_price_config mints the analogous cap on the upgrade
+        // path. Handed to the publisher, who forwards it to the relayer key.
+        let relayer_cap = PriceRelayerCap { id: object::new(ctx) };
+        event::emit(PriceRelayerCapIssued { cap_id: object::id(&relayer_cap) });
+        transfer::public_transfer(relayer_cap, tx_context::sender(ctx));
         // V13: one shared PriceConfig per package. Starts UNSET (0), so every buy
         // falls back to the static BASE_GRAD_MIST until the relayer publishes the
         // first price. Launching before the relayer runs is therefore safe.
@@ -287,17 +311,21 @@ module suipump::bonding_curve {
         });
     }
 
-    /// V13: publish the SUI/USD reference. AdminCap-gated; called by the protocol
-    /// relayer every ~5 min with the median of three independent sources. Bounds
-    /// asserted here, so a garbage source / fat-finger / compromised cap cannot
-    /// write an out-of-band value. Reads then need no clamp.
-    /// CENTRALIZATION (disclose): the protocol publishes the number the
+    /// V13: publish the SUI/USD reference. PriceRelayerCap-gated (audit E-1);
+    /// called by the protocol relayer every ~5 min with the median of three
+    /// independent sources. Bounds asserted here, so a garbage source /
+    /// fat-finger / compromised RELAYER cap cannot write an out-of-band value.
+    /// Reads then need no clamp.
+    /// E-1: this is the ONLY function gated on PriceRelayerCap, and it is NO
+    /// LONGER callable with an AdminCap - the parameter type is PriceRelayerCap
+    /// and Move type-checks the argument, so there is no dual-path escape hatch.
+    /// A compromised hot relayer key can therefore only shift graduation timing
+    /// within the clamped [MIN,MAX]_PRICE_SCALED band; it can never drain a
+    /// reserve, mint the 200M LP, claim fees, or pause a curve (all AdminCap).
+    /// CENTRALIZATION (disclose): the protocol still publishes the number the
     /// graduation threshold is computed from; every write emits SuiPriceUpdated.
-    /// AdminCap already pauses any curve and (V13) drains any graduated reserve +
-    /// mints the 200M LP, so this is strictly smaller than powers already granted
-    /// - and is why the AdminCap/UpgradeCap multisig migration is MAINNET-BLOCKING.
     public fun set_sui_price(
-        _cap:         &AdminCap,
+        _cap:         &PriceRelayerCap,
         cfg:          &mut PriceConfig,
         price_scaled: u64,
         clock:        &Clock,
@@ -327,9 +355,16 @@ module suipump::bonding_curve {
     /// One-shot: a dynamic-field marker on the AdminCap's UID
     /// (PRICE_CONFIG_CREATED_KEY) makes any second call abort
     /// EPriceConfigExists.
+    /// E-1: mints exactly one PriceRelayerCap (the ONLY price-setting authority)
+    /// alongside the PriceConfig, transferred to the admin caller, who forwards
+    /// it to the hot relayer key. The same one-shot marker bounds it to a single
+    /// cap per package, so a second call cannot mint a duplicate relayer cap.
     public fun create_price_config(admin: &mut AdminCap, ctx: &mut TxContext) {
         assert!(!df::exists(&admin.id, PRICE_CONFIG_CREATED_KEY), EPriceConfigExists);
         df::add(&mut admin.id, PRICE_CONFIG_CREATED_KEY, true);
+        let relayer_cap = PriceRelayerCap { id: object::new(ctx) };
+        event::emit(PriceRelayerCapIssued { cap_id: object::id(&relayer_cap) });
+        transfer::public_transfer(relayer_cap, tx_context::sender(ctx));
         transfer::share_object(PriceConfig {
             id:               object::new(ctx),
             sui_price_scaled: 0,

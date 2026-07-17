@@ -39,7 +39,7 @@ module suipump::bonding_curve_tests {
     use std::ascii;
     use std::string;
 
-    use suipump::bonding_curve::{Self, Curve, CreatorCap, AdminCap, PriceConfig};
+    use suipump::bonding_curve::{Self, Curve, CreatorCap, AdminCap, PriceConfig, PriceRelayerCap};
 
     public struct TEST_TOKEN has drop {}
 
@@ -1295,7 +1295,9 @@ module suipump::bonding_curve_tests {
         // Publish $1.00 -> threshold is EXACTLY BASE_GRAD_MIST by definition
         // (BASE is the anchor the sqrt pivots on: sqrt(1000)/sqrt(1000) == 1).
         ts::next_tx(&mut s, CREATOR);
-        let admin = ts::take_from_sender<AdminCap>(&s);
+        // E-1: set_sui_price is now gated on PriceRelayerCap, not AdminCap. This
+        // local is the price-relayer cap (minted to CREATOR by init_for_testing).
+        let admin = ts::take_from_sender<PriceRelayerCap>(&s);
         let mut cfg = ts::take_shared<PriceConfig>(&s);
         let clk = clock::create_for_testing(ts::ctx(&mut s));
         bonding_curve::set_sui_price(&admin, &mut cfg, 1000, &clk);
@@ -1351,7 +1353,9 @@ module suipump::bonding_curve_tests {
         setup_curve(&mut s, _a, _b);
 
         ts::next_tx(&mut s, CREATOR);
-        let admin = ts::take_from_sender<AdminCap>(&s);
+        // E-1: set_sui_price is now gated on PriceRelayerCap, not AdminCap. This
+        // local is the price-relayer cap (minted to CREATOR by init_for_testing).
+        let admin = ts::take_from_sender<PriceRelayerCap>(&s);
         let mut cfg = ts::take_shared<PriceConfig>(&s);
         let mut clk = clock::create_for_testing(ts::ctx(&mut s));
 
@@ -1387,7 +1391,9 @@ module suipump::bonding_curve_tests {
         bonding_curve::init_for_testing(ts::ctx(&mut s));
 
         ts::next_tx(&mut s, CREATOR);
-        let admin = ts::take_from_sender<AdminCap>(&s);
+        // E-1: set_sui_price is now gated on PriceRelayerCap, not AdminCap. This
+        // local is the price-relayer cap (minted to CREATOR by init_for_testing).
+        let admin = ts::take_from_sender<PriceRelayerCap>(&s);
         let mut cfg = ts::take_shared<PriceConfig>(&s);
         let clk = clock::create_for_testing(ts::ctx(&mut s));
 
@@ -1408,7 +1414,9 @@ module suipump::bonding_curve_tests {
         bonding_curve::init_for_testing(ts::ctx(&mut s));
 
         ts::next_tx(&mut s, CREATOR);
-        let admin = ts::take_from_sender<AdminCap>(&s);
+        // E-1: set_sui_price is now gated on PriceRelayerCap, not AdminCap. This
+        // local is the price-relayer cap (minted to CREATOR by init_for_testing).
+        let admin = ts::take_from_sender<PriceRelayerCap>(&s);
         let mut cfg = ts::take_shared<PriceConfig>(&s);
         let clk = clock::create_for_testing(ts::ctx(&mut s));
 
@@ -1495,8 +1503,11 @@ module suipump::bonding_curve_tests {
         let mut init_cfg  = ts::take_shared_by_id<PriceConfig>(&s, init_cfg_id);
         let mut admin_cfg = ts::take_shared_by_id<PriceConfig>(&s, admin_cfg_id);
         let clk = clock::create_for_testing(ts::ctx(&mut s));
-        bonding_curve::set_sui_price(&admin, &mut init_cfg, 750, &clk);
-        bonding_curve::set_sui_price(&admin, &mut admin_cfg, 750, &clk);
+        // E-1: set_sui_price takes the PriceRelayerCap; `admin` stays the AdminCap
+        // used above for create_price_config. Proves the two authorities are split.
+        let relayer = ts::take_from_sender<PriceRelayerCap>(&s);
+        bonding_curve::set_sui_price(&relayer, &mut init_cfg, 750, &clk);
+        bonding_curve::set_sui_price(&relayer, &mut admin_cfg, 750, &clk);
 
         // Identical 1 SUI buys on two fresh curves, one per config.
         ts::next_tx(&mut s, BUYER);
@@ -1532,6 +1543,7 @@ module suipump::bonding_curve_tests {
         // Taken from CREATOR but the current tx sender is BUYER, so
         // return_to_sender would abort with ECantReturnObject (code 2).
         ts::return_to_address(CREATOR, admin);
+        ts::return_to_address(CREATOR, relayer);
         ts::return_shared(init_cfg);
         ts::return_shared(admin_cfg);
         ts::return_shared(curve_a);
@@ -1539,7 +1551,110 @@ module suipump::bonding_curve_tests {
         ts::end(s);
     }
 
-    // ─── F-1: unbacked pre-mint (CRITICAL) ────────────────────────
+    // --- E-1: PriceRelayerCap split (set_sui_price gated on the relayer cap ONLY) ---
+
+    #[test]
+    fun test_price_relayer_cap_sets_price() {
+        // (a) The PriceRelayerCap (minted to the publisher by init) publishes the
+        // price successfully - it is the sole price authority after the E-1 split.
+        let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
+
+        ts::next_tx(&mut s, CREATOR);
+        let relayer = ts::take_from_sender<PriceRelayerCap>(&s);
+        let mut cfg = ts::take_shared<PriceConfig>(&s);
+        let clk = clock::create_for_testing(ts::ctx(&mut s));
+        bonding_curve::set_sui_price(&relayer, &mut cfg, 1000, &clk);
+        assert!(bonding_curve::price_scaled(&cfg) == 1000, 4000);
+        assert!(bonding_curve::price_updated_at_ms(&cfg) == clock::timestamp_ms(&clk), 4001);
+
+        clock::destroy_for_testing(clk);
+        ts::return_to_sender(&s, relayer);
+        ts::return_shared(cfg);
+        ts::end(s);
+    }
+
+    #[test]
+    fun test_set_sui_price_gated_on_relayer_cap_only() {
+        // (b) PROOF BY ABSENCE (compile-time). set_sui_price's first parameter is
+        // &PriceRelayerCap. There is NO overload and NO alternate entry that
+        // accepts an &AdminCap for the price: the AdminCap-gated version was
+        // DELETED, not kept as a dual path. Passing the AdminCap held below into
+        // set_sui_price would fail to type-check, so this file cannot even express
+        // the old AdminCap price path. We hold BOTH caps to make the split
+        // explicit, and drive the price with the ONLY authority that compiles.
+        let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
+
+        ts::next_tx(&mut s, CREATOR);
+        let relayer = ts::take_from_sender<PriceRelayerCap>(&s);
+        let admin = ts::take_from_sender<AdminCap>(&s);
+        let mut cfg = ts::take_shared<PriceConfig>(&s);
+        let clk = clock::create_for_testing(ts::ctx(&mut s));
+        // bonding_curve::set_sui_price(&admin, &mut cfg, 2000, &clk); // WOULD NOT COMPILE
+        bonding_curve::set_sui_price(&relayer, &mut cfg, 2000, &clk);
+        assert!(bonding_curve::price_scaled(&cfg) == 2000, 4010);
+
+        clock::destroy_for_testing(clk);
+        ts::return_to_sender(&s, relayer);
+        ts::return_to_sender(&s, admin);
+        ts::return_shared(cfg);
+        ts::end(s);
+    }
+
+    #[test]
+    fun test_create_price_config_mints_relayer_cap() {
+        // (c) The upgrade bootstrap create_price_config mints a WORKING
+        // PriceRelayerCap (transferred to the admin caller) that sets the price on
+        // the config it shared. "Exactly one" is guaranteed by the one-shot marker:
+        // a second create_price_config aborts EPriceConfigExists BEFORE minting a
+        // second cap (proven by test_create_price_config_second_call_aborts).
+        let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
+
+        ts::next_tx(&mut s, CREATOR);
+        let mut admin = ts::take_from_sender<AdminCap>(&s);
+        bonding_curve::create_price_config(&mut admin, ts::ctx(&mut s));
+        ts::return_to_sender(&s, admin);
+
+        ts::next_tx(&mut s, CREATOR);
+        let new_cfg_id = option::destroy_some(ts::most_recent_id_shared<PriceConfig>());
+        let mut cfg = ts::take_shared_by_id<PriceConfig>(&s, new_cfg_id);
+        let relayer = ts::take_from_sender<PriceRelayerCap>(&s);
+        let clk = clock::create_for_testing(ts::ctx(&mut s));
+        bonding_curve::set_sui_price(&relayer, &mut cfg, 5000, &clk);
+        assert!(bonding_curve::price_scaled(&cfg) == 5000, 4020);
+
+        clock::destroy_for_testing(clk);
+        ts::return_to_sender(&s, relayer);
+        ts::return_shared(cfg);
+        ts::end(s);
+    }
+
+    #[test]
+    fun test_admin_cap_still_pauses_after_relayer_split() {
+        // (d) The split did not weaken AdminCap authority: an AdminCap-gated power
+        // (set_paused) still works after set_sui_price moved to PriceRelayerCap.
+        let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
+
+        ts::next_tx(&mut s, CREATOR);
+        let (_a, _b) = make_payouts_single();
+        setup_curve(&mut s, _a, _b);
+
+        ts::next_tx(&mut s, CREATOR);
+        let admin_cap = ts::take_from_sender<AdminCap>(&s);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        bonding_curve::set_paused(&admin_cap, &mut curve, true);
+        assert!(bonding_curve::paused(&curve), 4030);
+        bonding_curve::set_paused(&admin_cap, &mut curve, false);
+        assert!(!bonding_curve::paused(&curve), 4031);
+        ts::return_to_sender(&s, admin_cap);
+        ts::return_shared(curve);
+        ts::end(s);
+    }
+
+    // --- F-1: unbacked pre-mint (CRITICAL) ---
 
     #[test]
     #[expected_failure(abort_code = 53)] // EPreMintedSupply
@@ -2141,7 +2256,9 @@ module suipump::bonding_curve_tests {
         setup_curve(&mut s, _a, _b);
 
         ts::next_tx(&mut s, CREATOR);
-        let admin = ts::take_from_sender<AdminCap>(&s);
+        // E-1: set_sui_price is now gated on PriceRelayerCap, not AdminCap. This
+        // local is the price-relayer cap (minted to CREATOR by init_for_testing).
+        let admin = ts::take_from_sender<PriceRelayerCap>(&s);
         let mut cfg = ts::take_shared<PriceConfig>(&s);
         let clk = clock::create_for_testing(ts::ctx(&mut s));
         bonding_curve::set_sui_price(&admin, &mut cfg, 100_000, &clk);
