@@ -118,6 +118,12 @@ const ALL_PACKAGE_IDS = [
   // registry (Nautilus), attested session open. CommentGateSet and
   // SessionAttested event types define under this id.
   '0xf5a3566ba920a3e3614e8b25da0ca3237879b6e22eb12f21ccf2bceb6520b9cd', // V12
+  // V13 -- SEPARATE PUBLISHED LINEAGE (fresh publish 2026-07-17, not a V10 upgrade;
+  // its curves have their OWN type identity and do NOT type as V10). Env-gated via
+  // SUIPUMP_V13_PACKAGE (imported as V13_PACKAGE from ../indexer/write_target.js);
+  // conditional spread so a null id never enters the list. Read-path membership is
+  // what lets a V13 curve pass the universal-trading known-package guard below.
+  ...(V13_PACKAGE ? [String(V13_PACKAGE).toLowerCase()] : []),
 ];
 
 // -- Package upgrade targets ------------------------------------------------------
@@ -169,10 +175,12 @@ const V10_PLUS = new Set([
 // Packages that use the V13+ buy()/buy_with_session() signature: arg position 5
 // becomes price_cfg: &PriceConfig (shared object) in place of
 // sui_price_scaled: u64 (same arity). sell paths are UNCHANGED in V13.
-// V13 is UNPUBLISHED, so this set is populated from env ONLY (never hardcoded):
-// it requires BOTH SUIPUMP_V13_PACKAGE and SUIPUMP_PRICE_CONFIG, because the
-// V13 shape is unusable without the shared PriceConfig object id. While either
-// is unset the set is empty and every V13 branch below is unreachable.
+// V13 is a SEPARATE PUBLISHED LINEAGE (fresh publish 2026-07-17), so a V13 curve
+// reports its OWN package id as its type-defining id (NOT V10). This set is still
+// populated from env ONLY (never hardcoded): it requires BOTH SUIPUMP_V13_PACKAGE
+// and SUIPUMP_PRICE_CONFIG, because the V13 shape is unusable without the shared
+// PriceConfig object id. While either is unset the set is empty and every V13
+// branch below is unreachable.
 const V13_PLUS = new Set(
   (V13_PACKAGE && PRICE_CONFIG_ID) ? [String(V13_PACKAGE).toLowerCase()] : []
 );
