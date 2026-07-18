@@ -71,11 +71,13 @@ export default function S1AirdropCounter() {
 
           const d      = event.data ?? {};
           const isBuy  = event.type !== 'TokensSold';
-          const sui    = Number(isBuy ? d.sui_in ?? 0 : d.sui_out ?? 0) / MIST_PER_SUI;
-          const proto  = Number(d.protocol_fee ?? 0) / MIST_PER_SUI;
+          const sui = Number(isBuy ? d.sui_in ?? 0 : d.sui_out ?? 0) / MIST_PER_SUI;
 
           setVolumeSui(prev => prev + sui);
-          setPoolSui(prev => prev + proto * 0.5);
+          // Airdrop bucket = 0.25% of trade volume (C-5 five-way split: 40/25/25/10).
+          // Matches indexer /stats: s1PoolSui = totalVolume * 0.0025, so live
+          // accumulation never drifts from the initial /stats baseline.
+          setPoolSui(prev => prev + sui * 0.0025);
           setTradeCount(prev => prev + 1);
         } catch {}
       };
@@ -101,7 +103,7 @@ export default function S1AirdropCounter() {
             🎁 SEASON 1 AIRDROP POOL
           </div>
           <div className="text-[10px] font-mono text-lime-900">
-            EST. 50% OF PROTOCOL FEES · DISTRIBUTED AT SEASON CLOSE
+            EST. AIRDROP BUCKET · 0.25% OF EVERY TRADE · DISTRIBUTED AT SEASON CLOSE
           </div>
         </div>
         <div className="text-[9px] font-mono text-amber-800 border border-amber-900/40 px-2 py-1 text-right">

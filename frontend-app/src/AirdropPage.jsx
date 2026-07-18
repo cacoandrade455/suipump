@@ -40,13 +40,15 @@ export default function AirdropPage({ onBack, lang = 'en' }) {
 
         <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-6 space-y-4">
           <div className="text-[10px] font-mono tracking-widest text-lime-400">
-            {t(lang, 'eligibilityTitle')}
+            HOW THE POOL IS FUNDED
           </div>
           <p className="text-sm font-mono text-white/50 leading-relaxed">
-            SuiPump charges a 1% fee on every trade. Of that, 0.50% goes to the protocol.
-            At the end of Season 1, 50% of all accumulated protocol fees are distributed
-            proportionally to users based on their points. Final amount determined at season
-            close. Nothing is locked ahead of time.
+            SuiPump charges a 1.00% fee on every trade, split five ways: 40% creator,
+            25% protocol, 25% airdrop bucket, 10% LP. The S1 pool is the airdrop
+            bucket - 0.25% of every trade. $50M monthly volume -&gt; $500k total fees
+            -&gt; $125k S1 airdrop pool (0.25% of volume). Distributed proportionally
+            to users based on their points at season close. Nothing is locked ahead
+            of time.
           </p>
           <p className="text-sm font-mono text-white/50 leading-relaxed">
             Distribution happens in SUI. No vesting. No governance token. No strings.

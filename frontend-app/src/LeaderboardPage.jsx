@@ -166,7 +166,7 @@ export default function LeaderboardPage({ onBack, lang = 'en' }) {
       ) : tab === 'points' ? (
         <div className="space-y-2">
           <div className="text-[10px] font-mono text-white/30 pb-1">
-            Earn {pointsPerSui} points per SUI bought. Points are tracked from testnet and carry to the mainnet airdrop at the end of Season 1.
+            Earn {pointsPerSui} points per SUI bought. Testnet points do not carry to mainnet - Season 1 points start fresh at mainnet launch. Testnet users are covered by a fixed 10% allocation of the S1 distribution instead.
           </div>
           {pointsLeaders.length === 0 ? (
             <div className="text-center text-white/20 text-xs font-mono py-12">No points yet — start trading to climb the board.</div>
