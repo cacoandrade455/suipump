@@ -16,26 +16,31 @@
 // GRADUATION_SIGNER_KEY ONLY. auto_graduate itself signs nothing and MUST NEVER read
 // SUI_PRIVATE_KEY; price_publisher.js signs set_sui_price with SUI_PRIVATE_KEY and
 // MUST NEVER read GRADUATION_SIGNER_KEY. They are two different wallets:
-//   GRADUATION_SIGNER_KEY = main wallet 0x0be9a8f56ba3b07f295e0c7526e7f47ca3a146649b9d864d2eb47bf3acd90c55 (holds AdminCap V13)
+//   GRADUATION_SIGNER_KEY = the graduation signer. GraduationCap mode (V14 env
+//       triplet set): the DEDICATED graduation wallet
+//       0x7334d47632af5386d9b16326ade55be642fc8a569a1672b0cbaaf4d0e7e6180a, which
+//       owns ONLY the GraduationCap - NOT the AdminCap key. AdminCap fallback
+//       (triplet unset): main wallet
+//       0x0be9a8f56ba3b07f295e0c7526e7f47ca3a146649b9d864d2eb47bf3acd90c55
+//       (holds AdminCap V13) - TESTNET-ONLY EXPEDIENT, see write_target.js.
 //   SUI_PRIVATE_KEY       = price relayer wallet 0xce53cb8f9befc490393d70528ef732bbcbe12d951ffcdd76a37af9b0f9624629 (holds PriceRelayerCap)
 //
-// ================= TESTNET-ONLY EXPEDIENT - REMOVE AT V14 =====================
-// GRADUATION_SIGNER_KEY carries the AdminCap holder's private key on an
-// always-online server. This is precisely the concentration that finding E-1 was
-// raised to eliminate, and it is accepted here ONLY because this is testnet faucet
-// money and the graduation loop has never been proven end-to-end. It MUST NOT reach
-// mainnet. The fix is a GraduationCap: an additive (compatible) V14 upgrade via
-// UpgradeCap V13 0x79ebefc92e5da42720ff4b3e719a71e4ecd5428a9750d4ada8257f61e3556a19
-// adding a cap whose only powers are claim_graduation_funds and
-// record_graduation_pool, plus an active_graduation_cap_id rotation field so the
-// cold AdminCap can revoke a compromised cap instantly (same pattern as the
-// CreatorCap swap). When V14 ships, auto_graduate moves to that cap and
-// GRADUATION_SIGNER_KEY is deleted from Render.
+// ========== V14 SHIPPED (GRAD-1) - ADMIN FALLBACK IS TESTNET-ONLY =============
+// V14 0xb6e7cef4d36b3cf0fd84888dd9930ce9abfcc0ed56f01384f1e02b55eeac1b03 (a
+// COMPATIBLE additive upgrade of V13 via UpgradeCap V13
+// 0x79ebefc92e5da42720ff4b3e719a71e4ecd5428a9750d4ada8257f61e3556a19) ships the
+// GraduationCap path: with SUIPUMP_V14_PACKAGE + SUIPUMP_GRADUATION_CAP +
+// SUIPUMP_GRADUATION_REGISTRY set, the dispatched graduation scripts call
+// claim_graduation_funds_with_cap / record_graduation_pool_with_cap on the V14
+// package and the AdminCap key moves cold. The AdminCap fallback (any of the
+// triplet unset) carries the AdminCap holder's private key on an always-online
+// server - the E-1/GRAD-1 concentration - and MUST NOT reach mainnet. Full
+// details + object ids in indexer/write_target.js.
 // =============================================================================
 
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { pool } from './db.js';
-import { LATEST_WRITE_PACKAGE, V13_PACKAGE, assertWriteTarget, graduationAuthority } from './write_target.js';
+import { LATEST_WRITE_PACKAGE, V13_PACKAGE, V14_PACKAGE, assertWriteTarget, graduationAuthority } from './write_target.js';
 
 const NETWORK     = process.env.NETWORK         ?? 'testnet';
 const GRAPHQL_URL = process.env.SUI_GRAPHQL_URL ?? 'https://graphql.' + NETWORK + '.sui.io/graphql';
@@ -82,17 +87,22 @@ const ADMIN_CAPS = {
 };
 
 // WRITE-target remap: a curve's package_id in the DB is its DEFINING package (V10
-// for the whole lineage), but graduate/claim/record WRITES must target the LATEST
-// upgrade that actually contains claim_graduation_funds. Types stay V10-defined.
-// LATEST_WRITE_PACKAGE is env-driven (SUIPUMP_LATEST_WRITE_PACKAGE) via
-// ./write_target.js - after the V13 publish, Carlos flips the env var on Render
-// with no code change. Until then it defaults to V12, which genuinely lacks
-// claim_graduation_funds, so claim writes abort until V13 ships.
+// for the whole V10 lineage; V13 for the V13 lineage), but graduate/claim/record
+// WRITES must target the LATEST upgrade of the curve's OWN lineage - calls to an
+// old package address run OLD bytecode. Types stay defined by the defining
+// package. LATEST_WRITE_PACKAGE is env-driven (SUIPUMP_LATEST_WRITE_PACKAGE) via
+// ./write_target.js; the V13 -> V14 entry is env-gated on SUIPUMP_V13_PACKAGE +
+// SUIPUMP_V14_PACKAGE (V14 is the V13 lineage's compatible additive upgrade).
 
 const WRITE_PACKAGE = {
   [PACKAGES.V10]: LATEST_WRITE_PACKAGE,
   [PACKAGES.V11]: LATEST_WRITE_PACKAGE,
   [PACKAGES.V12]: LATEST_WRITE_PACKAGE,
+  // V13 lineage: V14 is its latest COMPATIBLE (additive) upgrade - V13 stays the
+  // curves' type identity forever; WRITES run the newest bytecode. Env-gated,
+  // null-safe conditional spread: with either id unset, V13 passes through to
+  // itself (pre-V14 behavior).
+  ...(V13_PACKAGE && V14_PACKAGE ? { [V13_PACKAGE]: V14_PACKAGE } : {}),
 };
 
 function writePackageFor(pkgId) {
@@ -173,7 +183,11 @@ async function graduateCurve(curveId, curveData) {
     inProgress.delete(curveId);
     return;
   }
-  if (!adminCapId) {
+  // V14 (GRAD-1): in 'cap' mode the dispatched scripts never pass the AdminCap
+  // on-chain, so a missing ADMIN_CAPS entry must not block the GraduationCap
+  // path (e.g. a V13 curve while SUIPUMP_V13_PACKAGE is unset in this process).
+  // In 'admin' mode a missing AdminCap is still fatal for this curve.
+  if (graduationAuthority().mode !== 'cap' && !adminCapId) {
     console.error(`  [auto-grad] x No AdminCap for package ${pkgId} - skipping`);
     inProgress.delete(curveId);
     return;
@@ -241,6 +255,14 @@ export async function startGraduationWatcher(_grpcClient) {
   if (process.env.SUIPUMP_LATEST_WRITE_PACKAGE) {
     requiredFns.push(['bonding_curve', 'claim_graduation_funds']);
     requiredFns.push(['bonding_curve', 'grad_funds_claimed']);
+  }
+  // V14 (GRAD-1): when the GraduationCap triplet is armed, the dispatched scripts
+  // call the _with_cap entrypoints on the V14 package - assert them THERE via the
+  // per-pair package override (they do not exist on pre-V14 lineage packages, and
+  // asserting only LATEST_WRITE_PACKAGE would leave the cap path unverified).
+  if (gradAuth.mode === 'cap') {
+    requiredFns.push(['bonding_curve', 'claim_graduation_funds_with_cap', gradAuth.pkg]);
+    requiredFns.push(['bonding_curve', 'record_graduation_pool_with_cap', gradAuth.pkg]);
   }
   await assertWriteTarget(graphqlClient, requiredFns);
 

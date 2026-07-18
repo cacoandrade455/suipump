@@ -14,9 +14,14 @@
 //     defaultKeypair() (env GRADUATION_SIGNER_KEY).  No process.exit.
 //
 //   SIGNER SEPARATION (do not conflate): the graduation signer reads
-//   GRADUATION_SIGNER_KEY ONLY (the main wallet, which holds the AdminCap). It MUST
-//   NEVER read SUI_PRIVATE_KEY - that is the PRICE RELAYER's key (a different
-//   wallet). See the TESTNET-ONLY EXPEDIENT note in indexer/auto_graduate.js.
+//   GRADUATION_SIGNER_KEY ONLY. In GraduationCap mode (SUIPUMP_V14_PACKAGE +
+//   SUIPUMP_GRADUATION_CAP + SUIPUMP_GRADUATION_REGISTRY set) that key is the
+//   DEDICATED graduation wallet
+//   0x7334d47632af5386d9b16326ade55be642fc8a569a1672b0cbaaf4d0e7e6180a (owns only
+//   the GraduationCap; the AdminCap key stays cold). In the pre-V14 AdminCap
+//   fallback it is the main wallet holding the AdminCap - TESTNET-ONLY EXPEDIENT,
+//   see indexer/write_target.js. It MUST NEVER read SUI_PRIVATE_KEY - that is the
+//   PRICE RELAYER's key (a different wallet).
 //
 //   - Standalone CLI: node graduate_deepbook_full.js <CURVE_ID>
 //     Uses env GRADUATION_SIGNER_KEY + SUIPUMP_JSONRPC_URL (or SUI_RPC_URL), calls
@@ -36,7 +41,7 @@ import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { DeepBookClient } from '@mysten/deepbook-v3';
 import { fromBase64 } from '@mysten/sui/utils';
-import { LATEST_WRITE_PACKAGE, V13_PACKAGE, assertWriteTarget, graduationAuthority } from '../indexer/write_target.js';
+import { LATEST_WRITE_PACKAGE, V13_PACKAGE, V14_PACKAGE, assertWriteTarget, graduationAuthority } from '../indexer/write_target.js';
 
 // -- Constants -----------------------------------------------------------------
 const SUI_CLOCK_ID = '0x6';
@@ -48,16 +53,20 @@ const PKG_V11 = '0xc03817bce45ff492e5d0f40f9e46f5a075a952b50c5c6146b8fb38138bd69
 const PKG_V12 = '0xf5a3566ba920a3e3614e8b25da0ca3237879b6e22eb12f21ccf2bceb6520b9cd';
 
 // LATEST_WRITE_PACKAGE is env-driven (SUIPUMP_LATEST_WRITE_PACKAGE) via
-// ../indexer/write_target.js - after the V13 publish, Carlos flips the env var
-// with no code change. Until then it defaults to V12, which genuinely lacks
-// claim_graduation_funds, so claim writes abort until V13 ships.
+// ../indexer/write_target.js - Carlos flips the env var with no code change.
 
-// Remap a curve's DEFINING package -> latest upgrade that contains
-// claim_graduation_funds. Non-lineage packages pass through unchanged.
+// Remap a curve's DEFINING package -> the latest upgrade of ITS OWN lineage
+// (calls to an old package address run OLD bytecode; types stay defined by the
+// defining package). Unmapped packages pass through unchanged.
 const WRITE_PACKAGE = {
   [PKG_V10]: LATEST_WRITE_PACKAGE,
   [PKG_V11]: LATEST_WRITE_PACKAGE,
   [PKG_V12]: LATEST_WRITE_PACKAGE,
+  // V13 lineage: V14 is its latest COMPATIBLE (additive) upgrade - V13 stays the
+  // curves' type identity forever; WRITES run the newest bytecode. Env-gated,
+  // null-safe conditional spread: with either id unset, V13 passes through to
+  // itself (pre-V14 behavior).
+  ...(V13_PACKAGE && V14_PACKAGE ? { [V13_PACKAGE]: V14_PACKAGE } : {}),
 };
 function writePackageFor(pkgId) {
   return WRITE_PACKAGE[pkgId] ?? pkgId;
@@ -110,10 +119,16 @@ export function defaultClient() {
 }
 
 function defaultKeypair() {
-  // GRADUATION signer only: the main wallet that holds the AdminCap. This MUST read
+  // GRADUATION signer only. GraduationCap mode (V14 env triplet set): the
+  // DEDICATED graduation wallet
+  // 0x7334d47632af5386d9b16326ade55be642fc8a569a1672b0cbaaf4d0e7e6180a, owner of
+  // the GraduationCap
+  // 0xe1eeaf7620fe62bc4e0d207821760c69a84758c757c47000790292f1a8d905ee (the
+  // AdminCap key stays cold). AdminCap fallback: the main wallet that holds the
+  // AdminCap - TESTNET-ONLY EXPEDIENT. Either way this MUST read
   // GRADUATION_SIGNER_KEY and NEVER SUI_PRIVATE_KEY - SUI_PRIVATE_KEY is the price
-  // relayer's key (a different wallet with no AdminCap), and conflating the two
-  // would make graduation sign with a wallet that cannot use the AdminCap.
+  // relayer's key (a different wallet holding neither cap), and conflating the two
+  // would make graduation sign with a wallet that cannot use either capability.
   const raw = process.env.GRADUATION_SIGNER_KEY;
   if (!raw) throw new Error('GRADUATION_SIGNER_KEY env var not set (graduation signer; this is NOT SUI_PRIVATE_KEY, the price relayer key)');
   const bytes = fromBase64(raw);
@@ -161,10 +176,13 @@ async function isGradFundsClaimed({ client, writePkg, curveId, tokenType, sender
 }
 
 // Recover the claimed pool SUI size from the GraduationFundsClaimed event
-// { curve_id, sui_amount, lp_amount } (a V13 event, typed on writePkg). Used to
-// re-size the pool when a prior run claimed but failed before creating the pool.
-async function fetchClaimedSuiAmount({ client, writePkg, curveId }) {
-  const eventType = `${writePkg}::bonding_curve::GraduationFundsClaimed`;
+// { curve_id, sui_amount, lp_amount }. Used to re-size the pool when a prior run
+// claimed but failed before creating the pool. eventPkg is the curve's DEFINING
+// package (V13 for the V13 lineage): events keep their defining ids forever, even
+// when emitted by upgraded V14 bytecode (claim_graduation_funds_with_cap), so the
+// event TYPE must NOT track the write package.
+async function fetchClaimedSuiAmount({ client, eventPkg, curveId }) {
+  const eventType = `${eventPkg}::bonding_curve::GraduationFundsClaimed`;
   let cursor = null;
   for (let page = 0; page < 40; page++) {
     const res = await client.queryEvents({
@@ -195,9 +213,9 @@ function isReserveTooLow(msg) {
  * Called by auto_graduate.js - never calls process.exit.
  *
  * Takes plain strings ONLY. The module builds its own client + keypair from
- * env (SUIPUMP_JSONRPC_URL / SUI_RPC_URL, SUI_PRIVATE_KEY): this dir's pinned
- * @mysten/sui 2.16.2 classes are not interchangeable with the caller's SDK
- * install, so injected client/keypair objects are refused by design.
+ * env (SUIPUMP_JSONRPC_URL / SUI_RPC_URL, GRADUATION_SIGNER_KEY): this dir's
+ * pinned @mysten/sui 2.16.2 classes are not interchangeable with the caller's
+ * SDK install, so injected client/keypair objects are refused by design.
  *
  * @param {object} opts
  * @param {string}   opts.curveId   - Shared curve object ID
@@ -211,18 +229,22 @@ export async function graduateToDeepBook({ curveId, tokenType, pkgId }) {
   const keypair = defaultKeypair();
 
   const address   = keypair.toSuiAddress();
+  // V14 (GRAD-1): resolve the graduation authority FIRST. In 'cap' mode the
+  // AdminCap is never passed on-chain, so a missing ADMIN_CAPS entry (e.g. a V13
+  // curve while SUIPUMP_V13_PACKAGE is unset in this process) must not block the
+  // GraduationCap path; in 'admin' mode a missing AdminCap is still fatal.
+  const gradAuth   = graduationAuthority();
   const adminCapId = ADMIN_CAPS[pkgId];
-  if (!adminCapId) throw new Error(`No AdminCap for package ${pkgId}`);
+  if (gradAuth.mode !== 'cap' && !adminCapId) throw new Error(`No AdminCap for package ${pkgId}`);
 
   // pkgId is the DEFINING package; graduate/claim/record must target the latest
-  // upgrade that contains claim_graduation_funds.
+  // upgrade of its lineage that contains claim_graduation_funds.
   const writePkg = writePackageFor(pkgId);
 
   console.log(`  [deepbook] Graduating ${curveId} -> DeepBook`);
   console.log(`  [deepbook] token: ${tokenType}`);
   console.log(`  [deepbook] pkg:   ${pkgId} (write ${writePkg})`);
   // V14 (GRAD-1): state which graduation authority is active, with full ids.
-  const gradAuth = graduationAuthority();
   console.log(gradAuth.mode === 'cap'
     ? `  [deepbook] auth:  GraduationCap ${gradAuth.cap} (registry ${gradAuth.registry}, pkg ${gradAuth.pkg})`
     : `  [deepbook] auth:  AdminCap ${adminCapId} (pre-V14 path; set SUIPUMP_V14_PACKAGE+SUIPUMP_GRADUATION_CAP+SUIPUMP_GRADUATION_REGISTRY to use the GraduationCap)`);
@@ -354,7 +376,7 @@ export async function graduateToDeepBook({ curveId, tokenType, pkgId }) {
     // State C: claimed in a prior run but pool creation failed. The SUI + 200M LP
     // are already in the admin wallet. Recover the pool SUI size from the
     // GraduationFundsClaimed event and rebuild the pool - do NOT throw.
-    const recovered = await fetchClaimedSuiAmount({ client, writePkg, curveId });
+    const recovered = await fetchClaimedSuiAmount({ client, eventPkg: pkgId, curveId });
     if (recovered == null || recovered === 0n) {
       throw new Error(`Claimed but GraduationFundsClaimed event not found for ${curveId} - cannot recover pool SUI size`);
     }
@@ -481,6 +503,14 @@ if (process.argv[1] && process.argv[1].endsWith('graduate_deepbook_full.js')) {
   if (process.env.SUIPUMP_LATEST_WRITE_PACKAGE) {
     requiredFns.push(['bonding_curve', 'claim_graduation_funds']);
     requiredFns.push(['bonding_curve', 'grad_funds_claimed']);
+  }
+  // V14 (GRAD-1): when the GraduationCap triplet is armed, this script calls the
+  // _with_cap entrypoints on the V14 package - assert them THERE via the per-pair
+  // package override (they do not exist on pre-V14 lineage packages).
+  const cliGradAuth = graduationAuthority();
+  if (cliGradAuth.mode === 'cap') {
+    requiredFns.push(['bonding_curve', 'claim_graduation_funds_with_cap', cliGradAuth.pkg]);
+    requiredFns.push(['bonding_curve', 'record_graduation_pool_with_cap', cliGradAuth.pkg]);
   }
   try {
     await assertWriteTarget(client, requiredFns);
