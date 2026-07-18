@@ -1561,9 +1561,9 @@ function AgentSessionPanel({ account, onSessionChange }) {
               <div className="rounded-lg bg-amber-400/[0.06] border border-amber-400/20 px-2.5 py-1.5">
                 <div className="text-[8px] font-mono text-amber-300/90 tracking-widest">SIGNER: SHARED AGENT WALLET</div>
                 <div className="text-[8px] font-mono text-amber-200/50 leading-relaxed mt-0.5">
-                  This session signs via the shared agent key, not a dedicated per-user key.
-                  Your funds stay protected by the on-chain spend cap, expiry, and revoke - but
-                  for isolated per-user custody, close and reopen once enclave signing is available.
+                  Legacy session bound to the retired shared agent wallet. The shared
+                  signer is disabled, so this session can no longer execute trades.
+                  Close or revoke the session and withdraw your escrow.
                 </div>
               </div>
             ) : (
