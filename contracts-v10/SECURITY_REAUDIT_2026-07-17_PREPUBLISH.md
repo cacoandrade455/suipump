@@ -23,11 +23,13 @@ Live testnet ids (full, never truncated):
 | AdminCap V13 (main wallet - see GRAD-1) | `0xb3d3155ca1bc153664143895928aa77384f5c70f752c306e10fa619f460e039d` |
 | UpgradeCap V13 (main wallet) | `0x79ebefc92e5da42720ff4b3e719a71e4ecd5428a9750d4ada8257f61e3556a19` |
 
-**NOTE (GRAD-1, addendum 4):** AdminCap V13 is owned by the main wallet, but that
-wallet's key is NOT fully cold on testnet - it is `GRADUATION_SIGNER_KEY` on the
-always-online graduation worker so graduation can run automated. This is a
-testnet-only expedient that MUST be removed before mainnet (a `GraduationCap` V14
-split). Do not read "main wallet" here as "cold." See addendum 4.
+**NOTE (GRAD-1, addendum 4; RESOLVED in code per addendum 5):** AdminCap V13 is owned
+by the main wallet, and on testnet that wallet's key is NOT yet fully cold - it is
+`GRADUATION_SIGNER_KEY` on the always-online graduation worker so graduation can run
+automated. The V14 `GraduationCap` (commit `01d4c38d`) fixes this: after the V14
+upgrade + `init_graduation` + swapping `GRADUATION_SIGNER_KEY` to a graduation-only
+wallet, the AdminCap key leaves every server and can go fully cold. Until that operator
+step lands, do not read "main wallet" here as "cold." See addenda 4 and 5.
 
 - Publish tx digest: `HFqyRPYV2UXYnqt83KegrhFpUReoGgncXPC42n8rADq1`
 - CLI toolchain: `sui 1.75.2-027e13b2c140`
@@ -670,9 +672,20 @@ longer bundled with the treasury cap).
 
 ---
 
-## Addendum 4 (2026-07-17) - GRAD-1 [B, HIGH] OPEN (testnet-accepted, mainnet-blocking)
+## Addendum 4 (2026-07-17) - GRAD-1 [B, HIGH] RESOLVED by the V14 GraduationCap upgrade (pending the on-chain upgrade + operator key swap)
 
-### [B - HIGH] GRAD-1 - the graduation signer holds the AdminCap holder's key on an always-online server
+> **Update (2026-07-18, Addendum 5):** GRAD-1 is RESOLVED in code by the V14
+> `GraduationCap` + rotation registry (commit `01d4c38d`, additive `compatible`
+> upgrade; 125/125 Move tests, zero warnings; off-chain path env-gated in commit
+> `1d300530`). It closes on-chain the moment Carlos (a) runs the V14 `sui client
+> upgrade` with UpgradeCap V13, (b) calls `init_graduation` with AdminCap V13 to mint
+> the `GraduationCap` + share the `GraduationRegistry`, and (c) sets
+> `GRADUATION_SIGNER_KEY` on Render to a DEDICATED graduation wallet that holds ONLY
+> the `GraduationCap` (never the AdminCap again). After that swap the AdminCap key is
+> off every server and can move fully cold to the F-14 multisig. The original OPEN
+> writeup is retained below for the record.
+
+### [B - HIGH] GRAD-1 - the graduation signer holds the AdminCap holder's key on an always-online server (original writeup, now resolved - see Addendum 5 above)
 
 - **Location:** `indexer/auto_graduate.js` (dispatches graduation) +
   `graduation-test/graduate_deepbook_full.js` and
@@ -697,15 +710,29 @@ longer bundled with the treasury cap).
   never been proven end-to-end, so automating it is the way to prove it. The two signer
   keys are strictly separated in code (see below), so GRAD-1 does not widen the price
   relayer's blast radius or vice versa.
-- **Status: OPEN - testnet-accepted, MAINNET-BLOCKING.** It MUST NOT reach mainnet.
-- **Mainnet fix (planned, not built): a `GraduationCap`.** An additive (compatible) V14
-  upgrade via UpgradeCap V13
-  `0x79ebefc92e5da42720ff4b3e719a71e4ecd5428a9750d4ada8257f61e3556a19` adds a capability
-  whose ONLY powers are `claim_graduation_funds` and `record_graduation_pool`, plus an
-  `active_graduation_cap_id` rotation field so the cold AdminCap can revoke a compromised
-  graduation cap instantly (the same swap pattern as the CreatorCap CTO takeover). When
-  V14 ships, auto_graduate moves to that cap and `GRADUATION_SIGNER_KEY` is deleted from
-  Render. This is the graduation analogue of the E-1 `PriceRelayerCap` split.
+- **Status: RESOLVED in code (V14), pending the on-chain upgrade + operator key swap.**
+  Was OPEN / testnet-accepted / mainnet-blocking; the V14 `GraduationCap` closes it.
+- **Fix (built in V14): a `GraduationCap` + rotation registry.** Commit `01d4c38d` -
+  an additive (`compatible`) upgrade via UpgradeCap V13
+  `0x79ebefc92e5da42720ff4b3e719a71e4ecd5428a9750d4ada8257f61e3556a19` - adds
+  `GraduationCap` whose ONLY powers are `claim_graduation_funds_with_cap` and
+  `record_graduation_pool_with_cap` (delegating to the SAME internal impls the AdminCap
+  functions call - zero duplicated economic logic), plus a shared `GraduationRegistry`
+  holding `active_cap_id`. `rotate_graduation_cap` (AdminCap-gated) repoints the registry
+  and instantly revokes a compromised cap, because every graduation call asserts
+  `registry.active_cap_id == object::id(cap)` (aborts `EGraduationCapRevoked`). Verified
+  additive: no existing public signature or struct layout changed; 125/125 Move tests,
+  zero warnings, including cap-claims/records, rotated-cap-aborts-both, rotated-in-new-cap
+  works, AdminCap path unchanged, `init_graduation` twice aborts, and the with_cap vs
+  AdminCap paths produce byte-identical effects. This is the graduation analogue of the
+  E-1 `PriceRelayerCap` split. The AdminCap functions remain as the cold backstop.
+- **Operator step that actually closes it:** after `sui client upgrade` (UpgradeCap V13)
+  and `init_graduation` (AdminCap V13, one-shot), set `GRADUATION_SIGNER_KEY` on Render
+  to a DEDICATED graduation wallet that holds ONLY the minted `GraduationCap` - NOT the
+  main wallet key and NOT the AdminCap. The AdminCap key then leaves every server and can
+  move fully cold to the multisig (F-14). The off-chain path is already env-gated
+  (`SUIPUMP_V14_PACKAGE` + `SUIPUMP_GRADUATION_CAP` + `SUIPUMP_GRADUATION_REGISTRY`,
+  commit `1d300530`): unset -> unchanged AdminCap path; set -> the `_with_cap` path.
 - **Signer separation (enforced in code, asserted in comments):**
   `GRADUATION_SIGNER_KEY` (main wallet, AdminCap) is read ONLY by the graduation scripts;
   `SUI_PRIVATE_KEY` (price relayer wallet
