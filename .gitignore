@@ -68,6 +68,8 @@ contracts-v*/build/
 \'
 *.pem
 suipump-nexus-tools/register_enclave.js
-CLAUDE.md
 .claude/
 design/
+
+# Local dev ship log (never commit)
+SHIP_LOG.md
