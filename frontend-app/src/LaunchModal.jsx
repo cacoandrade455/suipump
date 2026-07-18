@@ -96,8 +96,8 @@ const STEPS = [
 
 function TokenPreview({ name, symbol, iconUrl }) {
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-      <div className="text-[9px] font-mono text-white/20 tracking-widest mb-3">PREVIEW</div>
+    <div className="rounded-xl border border-white/[0.09] bg-white/[0.02] p-4">
+      <div className="text-[9px] font-mono font-semibold tracking-[0.14em] text-white/[0.35] mb-3">PREVIEW</div>
       <div className="flex items-center gap-3">
         <div className="w-12 h-12 rounded-full border-2 border-white/10 flex items-center justify-center bg-lime-950/30 overflow-hidden shrink-0">
           {iconUrl
@@ -106,16 +106,16 @@ function TokenPreview({ name, symbol, iconUrl }) {
           <span className="text-2xl" style={{ display: iconUrl ? 'none' : 'block' }}>🔥</span>
         </div>
         <div className="flex-1 min-w-0">
-          <div className="text-sm font-bold text-white font-mono truncate">{name || 'Token Name'}</div>
-          <div className="text-xs text-lime-400/70 font-mono">${symbol || 'SYMBOL'}</div>
+          <div className="text-[13px] font-semibold text-white font-mono truncate">{name || 'Token Name'}</div>
+          <div className="text-xs text-sp-glow/70 font-mono font-semibold">${symbol || 'SYMBOL'}</div>
         </div>
         <div className="text-right">
-          <div className="text-[9px] text-white/20 font-mono">BONDING CURVE</div>
+          <div className="text-[9px] font-mono font-semibold tracking-[0.12em] text-white/30">BONDING CURVE</div>
           <div className="text-xs text-white/40 font-mono">0.0%</div>
         </div>
       </div>
-      <div className="mt-3 h-1.5 bg-white/5 rounded-full overflow-hidden">
-        <div className="h-full w-0 bg-gradient-to-r from-lime-600 to-lime-400 rounded-full" />
+      <div className="mt-3 h-1 bg-white/[0.12] rounded-[3px] overflow-hidden">
+        <div className="h-full w-0 bg-sp-pump rounded-[3px]" />
       </div>
     </div>
   );
@@ -671,72 +671,89 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
   }, [form, payouts, devBuy, account, client, dAppKit, onLaunched, epochSite]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm px-4">
-      <div className="w-full max-w-lg rounded-3xl border border-white/10 bg-[#0a0a0a] font-mono shadow-2xl shadow-black/50 overflow-hidden max-h-[90vh] overflow-y-auto">
+    <div className="fixed inset-0 z-50 flex items-stretch sm:items-start justify-center bg-black/[0.62] backdrop-blur-sm sm:px-4 sm:pt-9 sm:pb-6">
+      <div className="w-full sm:max-w-[620px] rounded-none sm:rounded-[20px] border border-white/[0.12] bg-sp-ink font-mono shadow-[0_50px_120px_rgba(0,0,0,0.8)] max-h-full sm:max-h-[90vh] overflow-y-auto">
 
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-white/5">
-          <div>
-            <div className="text-[9px] tracking-widest text-white/20">SUIPUMP</div>
-            <div className="text-lg font-bold text-white">{t(lang, 'launchATokenTitle')}</div>
-          </div>
-          <button onClick={onClose} className="text-white/30 hover:text-white transition-colors rounded-xl p-1.5 hover:bg-white/5">
-            <X size={18} />
-          </button>
-        </div>
-
-        {/* Step indicator */}
-        <div className="flex px-6 pt-5 gap-2">
-          {STEPS.map((s, i) => (
-            <div key={s.id} className="flex-1 flex flex-col items-center gap-1.5">
-              <div className={`w-full h-1 rounded-full transition-all duration-300 ${
-                i < step ? 'bg-lime-400' : i === step ? 'bg-lime-400/60' : 'bg-white/10'
-              }`} />
-              <div className={`text-[9px] font-mono tracking-widest transition-colors ${
-                i === step ? 'text-lime-400' : i < step ? 'text-lime-400/50' : 'text-white/20'
-              }`}>
-                {i < step ? '✓' : t(lang, s.labelKey).toUpperCase()}
-              </div>
+        <div className="px-4 sm:px-7 pt-4 sm:pt-6">
+          <div className="flex items-center justify-between mb-1.5">
+            <div className="text-[15px] sm:text-[17px] font-extrabold text-white">{t(lang, 'launchATokenTitle')}</div>
+            <div className="flex items-center gap-3">
+              <span className="text-[10px] font-semibold text-white/40">STEP {step + 1}/4</span>
+              <button onClick={onClose} className="w-8 h-8 -mr-2 flex items-center justify-center text-white/[0.35] hover:text-white transition-colors">
+                <X size={16} />
+              </button>
             </div>
-          ))}
+          </div>
+          <div className="text-[10.5px] font-medium text-white/[0.38] mb-4">2 SUI · fair launch · no pre-mine · 1B supply, 800M on the curve</div>
+
+          {/* Step indicator */}
+          <div className="flex gap-1.5 mb-3">
+            {STEPS.map((s, i) => (
+              <div key={s.id} className={`flex-1 h-1 rounded-[3px] transition-colors duration-300 ${
+                i <= step ? 'bg-sp-pump' : 'bg-white/[0.12]'
+              }`} />
+            ))}
+          </div>
+          <div className="text-[9.5px] font-semibold tracking-[0.16em] text-white/[0.35]">
+            {t(lang, STEPS[step].labelKey).toUpperCase()}
+          </div>
         </div>
 
-        <div className="px-6 py-5 space-y-4 min-h-[320px]">
+        <div className="px-4 sm:px-7 py-4 sm:py-5 space-y-4 min-h-[320px]">
 
           {/* Step 0: Token details */}
           {step === 0 && (
             <div className="space-y-4">
               <TokenPreview name={form.name} symbol={form.symbol} iconUrl={form.iconUrl} />
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[9px] tracking-widest text-white/30 mb-1.5">{t(lang, 'tokenName')} *</label>
-                  <input
-                    value={form.name}
-                    onChange={e => setForm({ ...form, name: e.target.value })}
-                    placeholder="Moon Coin"
-                    className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-lime-400/50 transition-colors"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[9px] tracking-widest text-white/30 mb-1.5">{t(lang, 'symbol')} *</label>
-                  <input
-                    value={form.symbol}
-                    onChange={e => setForm({ ...form, symbol: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 9) })}
-                    placeholder="MOON"
-                    className={`w-full bg-white/5 border rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none transition-colors ${
-                      form.symbol && !symbolValid ? 'border-red-500/50 focus:border-red-400' : 'border-white/10 focus:border-lime-400/50'
-                    }`}
-                  />
+              {/* Icon tile + name / symbol / description */}
+              <div className="flex gap-4">
+                <label className="w-[92px] h-[92px] shrink-0 border-[1.5px] border-dashed border-lime-400/40 rounded-2xl flex flex-col items-center justify-center gap-1.5 bg-lime-400/[0.04] cursor-pointer overflow-hidden">
+                  {form.iconUrl ? (
+                    <img src={form.iconUrl} alt="icon" className="w-full h-full object-cover" />
+                  ) : form.uploading ? (
+                    <span className="text-sp-glow animate-pulse text-lg">…</span>
+                  ) : (
+                    <>
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#a3e635" strokeWidth="1.6" strokeLinecap="round"><path d="M12 16V4m0 0L7 9m5-5 5 5" /><path d="M4 17v2a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-2" /></svg>
+                      <span className="text-[8.5px] font-semibold text-white/40">ICON 512²</span>
+                    </>
+                  )}
+                  <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
+                </label>
+                <div className="flex-1 min-w-0 flex flex-col gap-2.5">
+                  <div className="grid grid-cols-[1fr_110px] gap-2.5">
+                    <div className="border border-white/[0.12] focus-within:border-lime-400/50 rounded-[11px] px-[13px] py-[11px] transition-colors">
+                      <div className="text-[8.5px] font-semibold tracking-[0.12em] text-white/30 mb-1.5">{t(lang, 'tokenName')} *</div>
+                      <input
+                        value={form.name}
+                        onChange={e => setForm({ ...form, name: e.target.value })}
+                        placeholder="Moon Coin"
+                        className="w-full bg-transparent text-[13px] font-semibold text-white placeholder:text-white/25 focus:outline-none"
+                      />
+                    </div>
+                    <div className={`border rounded-[11px] px-[13px] py-[11px] transition-colors ${
+                      form.symbol && !symbolValid ? 'border-sp-dump/50' : 'border-white/[0.12] focus-within:border-lime-400/50'
+                    }`}>
+                      <div className="text-[8.5px] font-semibold tracking-[0.12em] text-white/30 mb-1.5">{t(lang, 'symbol')} *</div>
+                      <input
+                        value={form.symbol}
+                        onChange={e => setForm({ ...form, symbol: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 9) })}
+                        placeholder="MOON"
+                        className="w-full bg-transparent text-[13px] font-semibold text-white placeholder:text-white/25 focus:outline-none"
+                      />
+                    </div>
+                  </div>
                 </div>
               </div>
 
-              <div>
+              <div className="border border-white/[0.12] focus-within:border-lime-400/50 rounded-[11px] px-[13px] py-[11px] transition-colors">
                 <div className="flex items-center justify-between mb-1.5">
-                  <label className="block text-[9px] tracking-widest text-white/30">{t(lang, 'description')}</label>
-                  <span className={`text-[9px] font-mono ${
+                  <div className="text-[8.5px] font-semibold tracking-[0.12em] text-white/30">{t(lang, 'description')}</div>
+                  <span className={`text-[9px] ${
                     form.description.length > MAX_DESCRIPTION_CHARS * 0.9
-                      ? form.description.length >= MAX_DESCRIPTION_CHARS ? 'text-red-400' : 'text-lime-400'
+                      ? form.description.length >= MAX_DESCRIPTION_CHARS ? 'text-sp-dump' : 'text-sp-glow'
                       : 'text-white/20'
                   }`}>
                     {form.description.length}/{MAX_DESCRIPTION_CHARS}
@@ -747,56 +764,55 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
                   onChange={e => setForm({ ...form, description: e.target.value.slice(0, MAX_DESCRIPTION_CHARS) })}
                   placeholder={'Describe your token…'}
                   rows={3}
-                  className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-lime-400/50 transition-colors resize-none"
+                  className="w-full bg-transparent text-[11.5px] leading-[1.5] text-white/60 placeholder:text-white/25 focus:outline-none resize-none"
                 />
               </div>
 
               {/* Icon URL */}
-              <div>
-                <label className="block text-[9px] tracking-widest text-white/30 mb-1.5">{t(lang, 'iconUrl')}</label>
-                <div className="flex gap-2">
-                  <input
-                    value={form.iconUrl}
-                    onChange={e => setForm({ ...form, iconUrl: e.target.value })}
-                    placeholder="https://i.imgur.com/..."
-                    className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-lime-400/50 transition-colors"
-                  />
-                  <label className="shrink-0 px-3 py-2.5 bg-white/5 border border-white/10 rounded-xl text-[10px] font-mono text-white/50 hover:text-white hover:border-lime-400/30 transition-colors cursor-pointer">
-                    {form.uploading ? <span className="animate-pulse">…</span> : t(lang, 'uploadImage')}
-                    <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
-                  </label>
-                </div>
+              <div className="border border-white/[0.12] focus-within:border-lime-400/50 rounded-[11px] px-[13px] py-[11px] transition-colors">
+                <div className="text-[8.5px] font-semibold tracking-[0.12em] text-white/30 mb-1.5">{t(lang, 'iconUrl')}</div>
+                <input
+                  value={form.iconUrl}
+                  onChange={e => setForm({ ...form, iconUrl: e.target.value })}
+                  placeholder="https://i.imgur.com/..."
+                  className="w-full bg-transparent text-[11px] text-white/[0.75] placeholder:text-white/25 focus:outline-none"
+                />
                 {form.uploadError && (
-                  <div className="mt-1 text-[10px] font-mono text-red-400">{form.uploadError}</div>
+                  <div className="mt-1 text-[10px] text-sp-dump">{form.uploadError}</div>
                 )}
-                <div className="mt-1 text-[9px] font-mono text-white/20">{t(lang, 'orPasteUrl')}</div>
+                <div className="mt-1 text-[9px] text-white/20">{t(lang, 'orPasteUrl')}</div>
               </div>
 
               {/* Graduation DEX toggle */}
               <div className="space-y-2 pt-1">
-                <div className="text-[9px] tracking-widest text-white/20">GRADUATES TO</div>
-                <div className="flex gap-2">
+                <div className="text-[9px] font-semibold tracking-[0.14em] text-white/[0.35]">GRADUATION TARGET</div>
+                <div className="grid grid-cols-3 gap-2.5">
                   {[
-                    { id: 'cetus',    label: 'Cetus',    sub: 'AMM · LP position' },
-                    { id: 'deepbook', label: 'DeepBook', sub: 'CLOB · Order book' },
-                    { id: 'turbos',   label: 'Turbos',   sub: 'CLMM · Concentrated' },
+                    { id: 'cetus',    label: 'Cetus',    sub: 'AMM · deepest liquidity · recommended' },
+                    { id: 'deepbook', label: 'DeepBook', sub: 'CLOB · pro order-book flow' },
+                    { id: 'turbos',   label: 'Turbos',   sub: 'CLMM · concentrated liquidity' },
                   ].map(({ id, label, sub }) => (
                     <button
                       key={id}
                       onClick={() => setForm(f => ({ ...f, graduationDex: id }))}
-                      className={`flex-1 flex flex-col items-center gap-0.5 py-2.5 rounded-xl border text-[10px] font-mono transition-colors ${
+                      className={`text-left rounded-xl border px-[13px] py-3 transition-colors ${
                         form.graduationDex === id
-                          ? 'border-lime-400/50 bg-lime-400/10 text-lime-400'
-                          : 'border-white/10 text-white/30 hover:border-white/25 hover:text-white/50'
+                          ? 'border-lime-400/[0.45] bg-lime-400/[0.07]'
+                          : 'border-white/[0.12] hover:border-white/25'
                       }`}
                     >
-                      <span className="font-bold">{label}</span>
-                      <span className="text-[8px] opacity-60">{sub}</span>
+                      <div className="flex items-center justify-between">
+                        <span className={`text-xs font-bold ${form.graduationDex === id ? 'text-sp-glow' : 'text-white/70'}`}>{label}</span>
+                        {form.graduationDex === id && (
+                          <span className="w-3.5 h-3.5 rounded-full bg-sp-pump flex items-center justify-center text-[9px] font-extrabold text-sp-void">✓</span>
+                        )}
+                      </div>
+                      <div className="text-[9.5px] leading-[1.5] text-white/40 mt-1.5">{sub}</div>
                     </button>
                   ))}
                 </div>
                 {!PACKAGE_ID_V5 && (
-                  <div className="text-[8px] font-mono text-white/15 text-center">
+                  <div className="text-[8px] text-white/15 text-center">
                     Cetus · DeepBook · Turbos — selection stored on-chain
                   </div>
                 )}
@@ -805,94 +821,117 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
               {/* Anti-bot delay — v5 only */}
               {PACKAGE_ID_V5 && (
                 <div className="space-y-2 pt-1">
-                  <div className="text-[9px] tracking-widest text-white/20">ANTI-BOT DELAY</div>
-                  <div className="flex gap-2">
+                  <div className="text-[9px] font-semibold tracking-[0.14em] text-white/[0.35]">ANTI-BOT COOLDOWN <span className="text-white/20 tracking-normal">· only your wallet can buy during the delay</span></div>
+                  <div className="flex gap-1.5">
                     {[
-                      { val: ANTI_BOT_NONE, label: 'None',  sub: 'No delay' },
-                      { val: ANTI_BOT_15S,  label: '15s',   sub: 'Block bots 15s' },
-                      { val: ANTI_BOT_30S,  label: '30s',   sub: 'Block bots 30s' },
-                    ].map(({ val, label, sub }) => (
+                      { val: ANTI_BOT_NONE, label: 'OFF' },
+                      { val: ANTI_BOT_15S,  label: '15s' },
+                      { val: ANTI_BOT_30S,  label: '30s' },
+                    ].map(({ val, label }) => (
                       <button
                         key={val}
                         onClick={() => setForm(f => ({ ...f, antiBotDelay: val }))}
-                        className={`flex-1 flex flex-col items-center gap-0.5 py-2.5 rounded-xl border text-[10px] font-mono transition-colors ${
+                        className={`flex-1 text-center py-[9px] rounded-[9px] border text-[10.5px] transition-colors ${
                           form.antiBotDelay === val
-                            ? 'border-lime-400/50 bg-lime-400/10 text-lime-400'
-                            : 'border-white/10 text-white/30 hover:border-white/25 hover:text-white/50'
+                            ? 'border-lime-400/[0.45] bg-lime-400/[0.08] font-bold text-sp-glow'
+                            : 'border-white/[0.12] font-semibold text-white/[0.45] hover:text-white/70'
                         }`}
                       >
-                        <span className="font-bold">{label}</span>
-                        <span className="text-[8px] opacity-60">{sub}</span>
+                        {label}
                       </button>
                     ))}
-                  </div>
-                  <div className="text-[8px] font-mono text-white/15 text-center">
-                    Only your wallet can buy during the delay window
                   </div>
                 </div>
               )}
 
-              {/* Social links — website row pairs with Create Token Page side by side */}
+              {/* Social links */}
               <div className="space-y-2 pt-1">
-                <div className="text-[9px] tracking-widest text-white/20">SOCIAL LINKS (OPTIONAL)</div>
-                <input
-                  value={form.twitter}
-                  onChange={e => setForm({ ...form, twitter: e.target.value })}
-                  placeholder="https://x.com/yourtoken"
-                  className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-lime-400/50 transition-colors"
-                />
-                <input
-                  value={form.telegram}
-                  onChange={e => setForm({ ...form, telegram: e.target.value })}
-                  placeholder="https://t.me/yourtoken"
-                  className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-lime-400/50 transition-colors"
-                />
-                {/* Website + Create Token Page, side by side, same height */}
-                <div className="flex gap-2">
-                  <input
-                    value={form.website}
-                    onChange={e => setForm({ ...form, website: e.target.value })}
-                    placeholder="https://yourtoken.xyz"
-                    className="flex-1 min-w-0 bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-lime-400/50 transition-colors"
-                  />
-                  {epochSite ? (
-                    <button
-                      type="button"
-                      onClick={() => { setEpochSite(null); setEpochName(''); }}
-                      title="Site attached — click to remove"
-                      className="shrink-0 px-4 py-2.5 rounded-xl text-[11px] font-mono font-bold whitespace-nowrap transition-colors"
-                      style={{ background: 'rgba(59,130,246,0.15)', border: '1px solid rgba(59,130,246,0.5)', color: '#60a5fa' }}
-                    >
-                      {epochSite.name} ✓
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={startEpochSite}
-                      disabled={epochVerifying}
-                      className="shrink-0 px-4 py-2.5 rounded-xl text-[11px] font-mono font-bold whitespace-nowrap transition-colors disabled:opacity-40"
-                      style={{ background: '#3b82f6', color: '#ffffff' }}
-                    >
-                      {epochVerifying ? 'Verifying…' : 'Create Token Page (+5 SUI)'}
-                    </button>
-                  )}
+                <div className="text-[9px] font-semibold tracking-[0.14em] text-white/[0.35]">SOCIAL LINKS <span className="text-white/20 tracking-normal">· optional</span></div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                  <div className="border border-white/[0.12] focus-within:border-lime-400/50 rounded-[11px] px-[13px] py-2.5 flex items-center gap-2 transition-colors">
+                    <span className="text-[10px] font-semibold text-white/[0.35]">X</span>
+                    <input
+                      value={form.twitter}
+                      onChange={e => setForm({ ...form, twitter: e.target.value })}
+                      placeholder="https://x.com/yourtoken"
+                      className="w-full min-w-0 bg-transparent text-[11px] text-white/[0.75] placeholder:text-white/[0.35] focus:outline-none"
+                    />
+                  </div>
+                  <div className="border border-white/[0.12] focus-within:border-lime-400/50 rounded-[11px] px-[13px] py-2.5 flex items-center gap-2 transition-colors">
+                    <span className="text-[10px] font-semibold text-white/[0.35]">TG</span>
+                    <input
+                      value={form.telegram}
+                      onChange={e => setForm({ ...form, telegram: e.target.value })}
+                      placeholder="https://t.me/yourtoken"
+                      className="w-full min-w-0 bg-transparent text-[11px] text-white/[0.75] placeholder:text-white/[0.35] focus:outline-none"
+                    />
+                  </div>
+                  <div className="border border-white/[0.12] focus-within:border-lime-400/50 rounded-[11px] px-[13px] py-2.5 flex items-center gap-2 transition-colors">
+                    <span className="text-[10px] font-semibold text-white/[0.35]">WEB</span>
+                    <input
+                      value={form.website}
+                      onChange={e => setForm({ ...form, website: e.target.value })}
+                      placeholder="https://yourtoken.xyz"
+                      className="w-full min-w-0 bg-transparent text-[11px] text-white/[0.75] placeholder:text-white/[0.35] focus:outline-none"
+                    />
+                  </div>
                 </div>
-                {epochError && (
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="text-[9px] font-mono text-red-400">{epochError}</div>
-                    {epochPending && !epochSite && (
-                      <button
-                        type="button"
-                        onClick={retryEpochVerify}
-                        disabled={epochVerifying}
-                        className="shrink-0 px-3 py-1.5 rounded-lg text-[10px] font-mono font-bold whitespace-nowrap transition-colors disabled:opacity-40"
-                        style={{ background: 'rgba(59,130,246,0.15)', border: '1px solid rgba(59,130,246,0.5)', color: '#60a5fa' }}
-                      >
-                        {epochVerifying ? 'Verifying…' : 'Verify'}
-                      </button>
+              </div>
+
+              {/* Epoch site card */}
+              <div className="space-y-2 pt-1">
+                <div className="text-[9px] font-semibold tracking-[0.14em] text-white/[0.35]">EPOCH SITE <span className="text-white/20 tracking-normal">· launch with a .epoch website in the same tx</span></div>
+                <div className="border border-lime-400/[0.35] bg-lime-400/[0.05] rounded-xl px-[15px] py-[13px]">
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-2.5 sm:gap-3">
+                    {epochSite ? (
+                      <>
+                        <div className="flex-1 min-w-0 flex items-center gap-2 border border-white/[0.14] rounded-[9px] px-3 py-[9px] bg-black/30">
+                          <span className="text-xs font-semibold text-white truncate">{epochSite.name.replace(/\.epoch$/i, '')}</span>
+                          <span className="text-xs font-semibold text-white/[0.35]">.epoch</span>
+                          <span className="ml-auto text-[9px] font-semibold text-sp-glow whitespace-nowrap">attached ✓</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => { setEpochSite(null); setEpochName(''); }}
+                          title="Site attached — click to remove"
+                          className="h-[34px] px-3.5 rounded-[9px] border border-white/[0.14] text-[10.5px] font-bold text-white/50 hover:text-sp-dump hover:border-sp-dump/40 transition-colors shrink-0"
+                        >
+                          REMOVE
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={startEpochSite}
+                          disabled={epochVerifying}
+                          className="h-[34px] w-full sm:w-auto px-3.5 rounded-[9px] bg-sp-pump text-sp-void text-[10.5px] font-bold whitespace-nowrap transition-colors disabled:opacity-40 shrink-0"
+                        >
+                          {epochVerifying ? 'VERIFYING…' : 'AUTHORIZE & BUILD ↗'}
+                        </button>
+                        <span className="text-[11px] font-bold text-sp-glow shrink-0">+5 SUI</span>
+                      </>
                     )}
                   </div>
-                )}
+                  <div className="text-[9.5px] leading-[1.5] text-white/40 mt-2.5">
+                    authorizes a comped session → redirects to <span className="text-white/[0.65]">names.epochsui.com/build</span> → sign your site there → returns here → deploys in your launch PTB · 3 SUI → Epoch treasury · 2 SUI → protocol
+                  </div>
+                  {epochError && (
+                    <div className="flex items-center justify-between gap-2 mt-2">
+                      <div className="text-[9px] text-sp-dump">{epochError}</div>
+                      {epochPending && !epochSite && (
+                        <button
+                          type="button"
+                          onClick={retryEpochVerify}
+                          disabled={epochVerifying}
+                          className="shrink-0 px-3 py-1.5 rounded-[7px] border border-lime-400/[0.45] bg-lime-400/[0.08] text-[10px] font-bold text-sp-glow whitespace-nowrap transition-colors disabled:opacity-40"
+                        >
+                          {epochVerifying ? 'VERIFYING…' : 'VERIFY'}
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           )}
@@ -900,44 +939,48 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
           {/* Step 1: Payouts */}
           {step === 1 && (
             <div className="space-y-3">
-              <div className="text-[9px] font-mono text-white/30 tracking-widest mb-2">FEE RECIPIENTS</div>
+              <div className="text-[9px] font-semibold tracking-[0.14em] text-white/[0.35]">FEE RECIPIENTS <span className="text-white/20 tracking-normal">· up to 10 · bps must sum to 10000</span></div>
               {payouts.map((p, i) => (
                 <div key={i} className="flex gap-2 items-start">
                   <div className="flex-1 space-y-1.5">
-                    <input
-                      value={p.address}
-                      onChange={e => updatePayout(i, 'address', e.target.value)}
-                      placeholder="0x…"
-                      className={`w-full bg-white/5 border rounded-xl px-3 py-2 text-white text-xs focus:outline-none transition-colors ${
-                        p.address && (!p.address.startsWith('0x') || p.address.length !== 66)
-                          ? 'border-red-500/40' : 'border-white/10 focus:border-lime-400/50'
-                      }`}
-                    />
-                    <div className="flex items-center gap-2">
+                    <div className={`border rounded-[11px] px-[13px] py-2.5 transition-colors ${
+                      p.address && (!p.address.startsWith('0x') || p.address.length !== 66)
+                        ? 'border-sp-dump/40' : 'border-white/[0.12] focus-within:border-lime-400/50'
+                    }`}>
                       <input
-                        type="number"
-                        value={p.bps}
-                        onChange={e => updatePayout(i, 'bps', e.target.value)}
-                        min={1} max={10000}
-                        className="w-24 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-lime-400/50 transition-colors"
+                        value={p.address}
+                        onChange={e => updatePayout(i, 'address', e.target.value)}
+                        placeholder="0x…"
+                        className="w-full bg-transparent text-xs text-white placeholder:text-white/25 focus:outline-none"
                       />
-                      <span className="text-[10px] font-mono text-white/30">bps = {((parseInt(p.bps)||0)/100).toFixed(2)}%</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="w-28 border border-white/[0.12] focus-within:border-lime-400/50 rounded-[9px] px-[13px] py-2 transition-colors">
+                        <input
+                          type="number"
+                          value={p.bps}
+                          onChange={e => updatePayout(i, 'bps', e.target.value)}
+                          min={1} max={10000}
+                          className="w-full bg-transparent text-xs text-white focus:outline-none"
+                        />
+                      </div>
+                      <span className="text-[10px] text-white/30">bps = {((parseInt(p.bps)||0)/100).toFixed(2)}%</span>
                     </div>
                   </div>
                   {payouts.length > 1 && (
-                    <button onClick={() => removePayout(i)} className="mt-2 text-white/20 hover:text-red-400 transition-colors">
+                    <button onClick={() => removePayout(i)} className="mt-2 text-white/20 hover:text-sp-dump transition-colors">
                       <Trash2 size={14} />
                     </button>
                   )}
                 </div>
               ))}
-              <div className={`text-[10px] font-mono ${payoutSum === 10000 ? 'text-lime-400' : 'text-red-400'}`}>
+              <div className={`text-[10px] ${payoutSum === 10000 ? 'text-sp-glow' : 'text-sp-dump'}`}>
                 Total: {payoutSum} / 10000 bps ({(payoutSum/100).toFixed(2)}%)
               </div>
               {payouts.length < 10 && (
                 <button
                   onClick={addPayout}
-                  className="flex items-center gap-1.5 text-[10px] font-mono text-white/30 hover:text-lime-400 transition-colors"
+                  className="flex items-center gap-1.5 text-[10px] font-semibold text-white/30 hover:text-sp-glow transition-colors"
                 >
                   <Plus size={12} /> {t(lang, 'addPayout')}
                 </button>
@@ -949,53 +992,56 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
           {step === 2 && (
             <div className="space-y-4">
               <div>
-                <label className="block text-[9px] tracking-widest text-white/30 mb-1.5">{t(lang, 'devBuyAmount')}</label>
-                <input
-                  type="number"
-                  value={devBuy}
-                  onChange={e => setDevBuy(e.target.value)}
-                  placeholder="0"
-                  min="0"
-                  step="0.1"
-                  className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-lime-400/50 transition-colors"
-                />
-                <div className="mt-1.5 text-[9px] font-mono text-white/20">{t(lang, 'devBuyHint')}</div>
+                <div className="text-[9px] font-semibold tracking-[0.14em] text-white/[0.35] mb-2">{t(lang, 'devBuyAmount')} <span className="text-white/20 tracking-normal">· same tx, before anyone</span></div>
+                <div className="flex items-center border border-white/[0.12] focus-within:border-lime-400/50 rounded-[9px] px-[13px] py-[9px] transition-colors">
+                  <input
+                    type="number"
+                    value={devBuy}
+                    onChange={e => setDevBuy(e.target.value)}
+                    placeholder="0"
+                    min="0"
+                    step="0.1"
+                    className="w-full min-w-0 bg-transparent text-xs font-bold text-white placeholder:text-white/25 focus:outline-none"
+                  />
+                  <span className="ml-auto pl-2 text-[10px] font-semibold text-white/40">SUI</span>
+                </div>
+                <div className="mt-1.5 text-[9px] text-white/20">{t(lang, 'devBuyHint')}</div>
               </div>
               {parseFloat(devBuy) > 5 && (
-                <div className="rounded-xl border border-yellow-500/20 bg-yellow-950/20 p-3 text-[10px] font-mono text-yellow-400">
+                <div className="rounded-xl border border-amber-500/20 bg-amber-950/20 p-3 text-[10px] text-sp-creator">
                   {t(lang, 'devBuyWarning')}
                 </div>
               )}
 
               {/* Optional dev-buy vesting lock — V7+ only */}
               {parseFloat(devBuy) > 0 && isV7OrLater(PACKAGE_ID) && (
-                <div className="rounded-2xl border border-white/5 bg-white/[0.02] p-4 space-y-3">
-                  <label className="flex items-center gap-2.5 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={lockDevBuy}
-                      onChange={e => setLockDevBuy(e.target.checked)}
-                      className="accent-lime-400 w-3.5 h-3.5"
-                    />
-                    <span className="text-[11px] font-mono text-white/70">
-                      Lock my dev-buy tokens (anti-rug)
-                    </span>
-                  </label>
-                  <p className="text-[9px] font-mono text-white/25 leading-relaxed">
-                    Your dev-buy tokens go into an on-chain vesting lock. The terms
-                    are immutable — you cannot shorten or cancel the lock once set.
-                  </p>
+                <div className="space-y-2">
+                  <div className="text-[9px] font-semibold tracking-[0.14em] text-white/[0.35]">LOCK DEV BUY <span className="text-white/20 tracking-normal">· immutable on-chain vesting · signal you can't dump</span></div>
+                  <div className="border border-amber-500/30 bg-amber-500/[0.03] rounded-xl px-[15px] py-3 space-y-3">
+                    <label className="flex items-center gap-3 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={lockDevBuy}
+                        onChange={e => setLockDevBuy(e.target.checked)}
+                        className="sr-only"
+                      />
+                      <span className={`relative w-[34px] h-5 rounded-[20px] transition-colors shrink-0 ${lockDevBuy ? 'bg-sp-creator' : 'bg-white/[0.12]'}`}>
+                        <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-sp-void transition-all ${lockDevBuy ? 'left-4' : 'left-0.5'}`} />
+                      </span>
+                      <span className={`text-[10.5px] font-semibold ${lockDevBuy ? 'text-sp-creator' : 'text-white/[0.75]'}`}>
+                        Lock my dev-buy tokens (anti-rug)
+                      </span>
+                      <span className="ml-auto text-[9px] leading-[1.4] text-white/30 text-right">terms immutable<br />once set</span>
+                    </label>
 
-                  {lockDevBuy && (
-                    <div className="space-y-3 pt-1">
-                      {/* Mode */}
-                      <div>
-                        <div className="text-[9px] tracking-widest text-white/30 mb-1.5">VESTING MODE</div>
-                        <div className="grid grid-cols-3 gap-1.5">
+                    {lockDevBuy && (
+                      <div className="space-y-3 pt-1">
+                        {/* Mode */}
+                        <div className="flex flex-wrap items-center gap-1.5">
                           {[
-                            { v: VEST_MODE_CLIFF,   label: 'Cliff' },
-                            { v: VEST_MODE_LINEAR,  label: 'Linear' },
-                            { v: VEST_MODE_MONTHLY, label: 'Monthly' },
+                            { v: VEST_MODE_CLIFF,   label: 'CLIFF' },
+                            { v: VEST_MODE_LINEAR,  label: 'LINEAR' },
+                            { v: VEST_MODE_MONTHLY, label: 'MONTHLY' },
                           ].map(({ v, label }) => {
                             // Monthly requires >= 30d
                             const disabled = v === VEST_MODE_MONTHLY && lockDuration === '7d';
@@ -1004,24 +1050,20 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
                                 key={v}
                                 disabled={disabled}
                                 onClick={() => setLockMode(v)}
-                                className={`py-2 rounded-lg text-[10px] font-mono transition-colors ${
+                                className={`px-[9px] py-1.5 rounded-[7px] border text-[9.5px] transition-colors ${
                                   disabled
-                                    ? 'bg-white/5 text-white/15 cursor-not-allowed'
+                                    ? 'border-white/[0.08] font-semibold text-white/15 cursor-not-allowed'
                                     : lockMode === v
-                                      ? 'bg-lime-400 text-black'
-                                      : 'bg-white/5 text-white/40 hover:text-white/70'
+                                      ? 'border-amber-500/[0.45] bg-amber-500/[0.08] font-bold text-sp-creator'
+                                      : 'border-white/[0.12] font-semibold text-white/40 hover:text-white/70'
                                 }`}
                               >
                                 {label}
                               </button>
                             );
                           })}
-                        </div>
-                      </div>
-                      {/* Duration */}
-                      <div>
-                        <div className="text-[9px] tracking-widest text-white/30 mb-1.5">DURATION</div>
-                        <div className="grid grid-cols-4 gap-1.5">
+                          <span className="w-px h-4 bg-white/[0.12] mx-1" />
+                          {/* Duration */}
                           {['7d', '30d', '180d', '365d'].map(d => (
                             <button
                               key={d}
@@ -1032,110 +1074,118 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
                                   setLockMode(VEST_MODE_CLIFF);
                                 }
                               }}
-                              className={`py-2 rounded-lg text-[10px] font-mono transition-colors ${
+                              className={`px-[9px] py-1.5 rounded-[7px] border text-[9.5px] transition-colors ${
                                 lockDuration === d
-                                  ? 'bg-lime-400 text-black'
-                                  : 'bg-white/5 text-white/40 hover:text-white/70'
+                                  ? 'border-amber-500/[0.45] bg-amber-500/[0.08] font-bold text-sp-creator'
+                                  : 'border-white/[0.12] font-semibold text-white/40 hover:text-white/70'
                               }`}
                             >
                               {d}
                             </button>
                           ))}
                         </div>
+                        <p className="text-[9px] text-sp-creator/70 leading-relaxed">
+                          {lockMode === VEST_MODE_CLIFF   && `100% unlocks at the end of ${lockDuration}.`}
+                          {lockMode === VEST_MODE_LINEAR  && `Tokens unlock continuously over ${lockDuration}.`}
+                          {lockMode === VEST_MODE_MONTHLY && `Tokens unlock in equal monthly steps over ${lockDuration}.`}
+                        </p>
                       </div>
-                      <p className="text-[9px] font-mono text-lime-400/70 leading-relaxed">
-                        {lockMode === VEST_MODE_CLIFF   && `100% unlocks at the end of ${lockDuration}.`}
-                        {lockMode === VEST_MODE_LINEAR  && `Tokens unlock continuously over ${lockDuration}.`}
-                        {lockMode === VEST_MODE_MONTHLY && `Tokens unlock in equal monthly steps over ${lockDuration}.`}
-                      </p>
-                    </div>
-                  )}
+                    )}
+                  </div>
                 </div>
               )}
 
               {/* V10: creator buyback config — carved from the creator's own fee slice */}
               {isV10OrLater(PACKAGE_ID) && (
-                <div className="rounded-2xl border border-white/5 bg-white/[0.02] p-4 space-y-3">
-                  <label className="flex items-center gap-2.5 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={buybackEnabled}
-                      onChange={e => setBuybackEnabled(e.target.checked)}
-                      className="accent-lime-400 w-3.5 h-3.5"
-                    />
-                    <span className="text-[11px] font-mono text-white/70">
-                      Enable creator buyback
-                    </span>
-                  </label>
-                  <p className="text-[9px] font-mono text-white/25 leading-relaxed">
-                    A slice of YOUR creator fees (not the total fee) is set aside on
-                    every trade. You trigger the buyback later; bought tokens are
-                    burned or returned to you. Does not change the 1% trade fee.
-                  </p>
+                <div className="space-y-2">
+                  <div className="text-[9px] font-semibold tracking-[0.14em] text-white/[0.35]">CREATOR SETTINGS</div>
+                  <div className="border border-amber-500/30 bg-amber-500/[0.04] rounded-xl p-[13px] space-y-3">
+                    <label className="flex items-center gap-3 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={buybackEnabled}
+                        onChange={e => setBuybackEnabled(e.target.checked)}
+                        className="sr-only"
+                      />
+                      <span className={`relative w-[34px] h-5 rounded-[20px] transition-colors shrink-0 ${buybackEnabled ? 'bg-sp-creator' : 'bg-white/[0.12]'}`}>
+                        <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-sp-void transition-all ${buybackEnabled ? 'left-4' : 'left-0.5'}`} />
+                      </span>
+                      <span className={`text-[10.5px] font-semibold ${buybackEnabled ? 'text-sp-creator' : 'text-white/[0.75]'}`}>
+                        on-chain auto buyback
+                      </span>
+                      {buybackEnabled && (
+                        <span className="ml-auto text-[13px] font-extrabold text-sp-creator">{(buybackBps / 100).toFixed(0)}%</span>
+                      )}
+                    </label>
+                    <p className="text-[9px] text-white/[0.35] leading-[1.4]">
+                      A slice of YOUR creator fees (not the total fee) is set aside on
+                      every trade. You trigger the buyback later; bought tokens are
+                      burned or returned to you. Does not change the 1% trade fee.
+                    </p>
 
-                  {buybackEnabled && (
-                    <div className="space-y-3 pt-1">
-                      <div>
-                        <div className="flex justify-between text-[9px] tracking-widest text-white/30 mb-1.5">
-                          <span>BUYBACK % OF CREATOR FEES</span>
-                          <span className="text-lime-400">{(buybackBps / 100).toFixed(0)}%</span>
+                    {buybackEnabled && (
+                      <div className="space-y-3 pt-1">
+                        <div>
+                          <div className="flex justify-between text-[9px] font-semibold tracking-[0.1em] text-white/[0.35] mb-1.5">
+                            <span>BUYBACK % OF CREATOR FEES</span>
+                            <span className="text-sp-creator">{(buybackBps / 100).toFixed(0)}%</span>
+                          </div>
+                          <input
+                            type="range" min={0} max={10000} step={500}
+                            value={buybackBps}
+                            onChange={e => setBuybackBps(parseInt(e.target.value, 10))}
+                            className="w-full accent-[#f59e0b]"
+                          />
                         </div>
-                        <input
-                          type="range" min={0} max={10000} step={500}
-                          value={buybackBps}
-                          onChange={e => setBuybackBps(parseInt(e.target.value, 10))}
-                          className="w-full accent-lime-400"
-                        />
-                      </div>
-                      <div>
-                        <div className="text-[9px] tracking-widest text-white/30 mb-1.5">BOUGHT TOKENS</div>
-                        <div className="grid grid-cols-2 gap-1.5">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-[9px] font-semibold tracking-[0.1em] text-white/[0.35]">TOKENS GO TO:</span>
                           <button
                             onClick={() => setBuybackBurn(true)}
-                            className={`py-1.5 rounded-lg text-[10px] font-mono transition-colors ${buybackBurn ? 'bg-lime-400/10 text-lime-400 border border-lime-400/30' : 'text-white/30 hover:text-white/60 border border-white/10'}`}>
-                            Burn 🔥
+                            className={`px-2.5 py-1.5 rounded-[7px] border text-[9.5px] transition-colors ${buybackBurn ? 'border-amber-500/50 bg-amber-500/10 font-bold text-sp-creator' : 'border-white/[0.12] font-semibold text-white/40 hover:text-white/70'}`}>
+                            BURN
                           </button>
                           <button
                             onClick={() => setBuybackBurn(false)}
-                            className={`py-1.5 rounded-lg text-[10px] font-mono transition-colors ${!buybackBurn ? 'bg-lime-400/10 text-lime-400 border border-lime-400/30' : 'text-white/30 hover:text-white/60 border border-white/10'}`}>
-                            Return to me
+                            className={`px-2.5 py-1.5 rounded-[7px] border text-[9.5px] transition-colors ${!buybackBurn ? 'border-amber-500/50 bg-amber-500/10 font-bold text-sp-creator' : 'border-white/[0.12] font-semibold text-white/40 hover:text-white/70'}`}>
+                            RETURN TO WALLET
                           </button>
+                          <span className="ml-auto text-[9px] leading-[1.4] text-white/[0.35]">burn destroys supply · return sends tokens to you</span>
                         </div>
                       </div>
-                    </div>
-                  )}
+                    )}
+                  </div>
                 </div>
               )}
 
-              <div className="rounded-2xl border border-white/5 bg-white/[0.02] p-4 space-y-2">
-                <div className="flex justify-between text-[10px] font-mono">
-                  <span className="text-white/30">{t(lang, 'launchFee')}</span>
-                  <span className="text-white">{epochSite ? '7 SUI' : '2 SUI'}</span>
+              <div className="rounded-xl border border-white/[0.09] bg-white/[0.02] px-[15px] py-[13px] space-y-[7px]">
+                <div className="flex justify-between text-[10.5px] font-medium">
+                  <span className="text-white/40">{t(lang, 'launchFee')}</span>
+                  <span className="text-white/[0.75]">2.0 SUI</span>
                 </div>
                 {parseFloat(devBuy) > 0 && (
-                  <div className="flex justify-between text-[10px] font-mono">
-                    <span className="text-white/30">{t(lang, 'devBuyAmount')}</span>
-                    <span className="text-white">{parseFloat(devBuy).toFixed(2)} SUI</span>
+                  <div className="flex justify-between text-[10.5px] font-medium">
+                    <span className="text-white/40">{t(lang, 'devBuyAmount')}</span>
+                    <span className="text-white/[0.75]">{parseFloat(devBuy).toFixed(2)} SUI</span>
                   </div>
                 )}
                 {epochSite && (
-                  <div className="flex justify-between text-[10px] font-mono">
-                    <span className="text-white/30">Token page ({epochSite.name})</span>
-                    <span className="text-white">5.00 SUI</span>
+                  <div className="flex justify-between text-[10.5px] font-medium">
+                    <span className="text-white/40">epoch site (3 epoch · 2 protocol) · {epochSite.name}</span>
+                    <span className="text-white/[0.75]">5.0 SUI</span>
                   </div>
                 )}
                 {isV10OrLater(PACKAGE_ID) && buybackEnabled && buybackBps > 0 && (
-                  <div className="flex justify-between text-[10px] font-mono">
-                    <span className="text-white/30">Creator buyback</span>
-                    <span className="text-white">{(buybackBps / 100).toFixed(0)}% · {buybackBurn ? 'burn' : 'return'}</span>
+                  <div className="flex justify-between text-[10.5px] font-medium">
+                    <span className="text-white/40">creator buyback</span>
+                    <span className="text-sp-creator">{(buybackBps / 100).toFixed(0)}% · {buybackBurn ? 'burn' : 'return'}</span>
                   </div>
                 )}
-                <div className="border-t border-white/5 pt-2 flex justify-between text-[10px] font-mono font-bold">
-                  <span className="text-white/50">{t(lang, 'total')}</span>
-                  <span className="text-lime-400">{(2 + (parseFloat(devBuy) || 0) + (epochSite ? 5 : 0)).toFixed(2)} SUI + gas</span>
+                <div className="border-t border-white/[0.08] pt-[9px] flex justify-between text-[11.5px] font-bold">
+                  <span className="text-white/60">{t(lang, 'total')}</span>
+                  <span className="text-white">{(2 + (parseFloat(devBuy) || 0) + (epochSite ? 5 : 0)).toFixed(2)} SUI + gas</span>
                 </div>
               </div>
-              <div className="text-[9px] font-mono text-white/20 text-center">{t(lang, 'twoSignaturesRequired')}</div>
+              <div className="text-[9px] text-white/25 text-center">{t(lang, 'twoSignaturesRequired')}</div>
             </div>
           )}
 
@@ -1145,42 +1195,42 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
               {!txStep && !error && (
                 <>
                   <TokenPreview name={form.name} symbol={form.symbol} iconUrl={form.iconUrl} />
-                  <div className="rounded-2xl border border-white/5 bg-white/[0.02] p-4 space-y-2 text-[10px] font-mono">
+                  <div className="rounded-xl border border-white/[0.09] bg-white/[0.02] px-[15px] py-[13px] space-y-[7px] text-[10.5px] font-medium">
                     <div className="flex justify-between">
-                      <span className="text-white/30">Name</span>
-                      <span className="text-white">{form.name}</span>
+                      <span className="text-white/40">Name</span>
+                      <span className="text-white/[0.75]">{form.name}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-white/30">Symbol</span>
-                      <span className="text-lime-400">${form.symbol}</span>
+                      <span className="text-white/40">Symbol</span>
+                      <span className="text-sp-glow">${form.symbol}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-white/30">Graduates to</span>
-                      <span className="text-white capitalize">{form.graduationDex}</span>
+                      <span className="text-white/40">Graduates to</span>
+                      <span className="text-white/[0.75] capitalize">{form.graduationDex}</span>
                     </div>
                     {PACKAGE_ID_V5 && (
                       <div className="flex justify-between">
-                        <span className="text-white/30">Anti-bot delay</span>
-                        <span className="text-white">{form.antiBotDelay === 0 ? 'None' : `${form.antiBotDelay}s`}</span>
+                        <span className="text-white/40">Anti-bot delay</span>
+                        <span className="text-white/[0.75]">{form.antiBotDelay === 0 ? 'None' : `${form.antiBotDelay}s`}</span>
                       </div>
                     )}
                     <div className="flex justify-between">
-                      <span className="text-white/30">Recipients</span>
-                      <span className="text-white">{payouts.length}</span>
+                      <span className="text-white/40">Recipients</span>
+                      <span className="text-white/[0.75]">{payouts.length}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-white/30">Dev buy</span>
-                      <span className="text-white">{parseFloat(devBuy) > 0 ? `${parseFloat(devBuy)} SUI` : 'none'}</span>
+                      <span className="text-white/40">Dev buy</span>
+                      <span className="text-white/[0.75]">{parseFloat(devBuy) > 0 ? `${parseFloat(devBuy)} SUI` : 'none'}</span>
                     </div>
                     {epochSite && (
                       <div className="flex justify-between">
-                        <span className="text-white/30">Token page</span>
-                        <span className="text-white">{epochSite.name} · 5 SUI</span>
+                        <span className="text-white/40">Token page</span>
+                        <span className="text-white/[0.75]">{epochSite.name} · 5 SUI</span>
                       </div>
                     )}
-                    <div className="border-t border-white/5 pt-2 flex justify-between font-bold">
-                      <span className="text-white/50">{t(lang, 'total')}</span>
-                      <span className="text-lime-400">{(2 + (parseFloat(devBuy) || 0) + (epochSite ? 5 : 0)).toFixed(2)} SUI + gas</span>
+                    <div className="border-t border-white/[0.08] pt-[9px] flex justify-between text-[11.5px] font-bold">
+                      <span className="text-white/60">{t(lang, 'total')}</span>
+                      <span className="text-white">{(2 + (parseFloat(devBuy) || 0) + (epochSite ? 5 : 0)).toFixed(2)} SUI + gas</span>
                     </div>
                   </div>
                 </>
@@ -1189,15 +1239,15 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
               {txStep === 'tx1' && (
                 <div className="space-y-4 py-4">
                   <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-full border-2 border-lime-400 border-t-transparent animate-spin" />
+                    <div className="w-8 h-8 rounded-full border-2 border-sp-pump border-t-transparent animate-spin" />
                     <div>
                       <div className="text-sm text-white font-bold">{t(lang, 'publishing')}</div>
                       <div className="text-[10px] text-white/30">{t(lang, 'approveInWallet')} — Tx 1 {t(lang, 'of')} 2</div>
                     </div>
                   </div>
-                  <div className="flex gap-2">
-                    <div className="flex-1 h-1.5 bg-lime-400/60 rounded-full animate-pulse" />
-                    <div className="flex-1 h-1.5 bg-white/10 rounded-full" />
+                  <div className="flex gap-1.5">
+                    <div className="flex-1 h-1 bg-sp-pump/60 rounded-[3px] animate-pulse" />
+                    <div className="flex-1 h-1 bg-white/[0.12] rounded-[3px]" />
                   </div>
                 </div>
               )}
@@ -1205,39 +1255,39 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
               {txStep === 'tx2' && (
                 <div className="space-y-4 py-4">
                   <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-full border-2 border-lime-400 border-t-transparent animate-spin" />
+                    <div className="w-8 h-8 rounded-full border-2 border-sp-pump border-t-transparent animate-spin" />
                     <div>
                       <div className="text-sm text-white font-bold">{t(lang, 'creating')}</div>
                       <div className="text-[10px] text-white/30">{t(lang, 'approveInWallet')} — Tx 2 {t(lang, 'of')} 2</div>
                     </div>
                   </div>
-                  <div className="flex gap-2">
-                    <div className="flex-1 h-1.5 bg-lime-400 rounded-full" />
-                    <div className="flex-1 h-1.5 bg-lime-400/60 rounded-full animate-pulse" />
+                  <div className="flex gap-1.5">
+                    <div className="flex-1 h-1 bg-sp-pump rounded-[3px]" />
+                    <div className="flex-1 h-1 bg-sp-pump/60 rounded-[3px] animate-pulse" />
                   </div>
                 </div>
               )}
 
               {txStep === 'done' && (
                 <div className="space-y-4 py-4 text-center">
-                  <CheckCircle size={40} className="text-lime-400 mx-auto" />
-                  <div className="text-lg font-bold text-white">{t(lang, 'success')}</div>
+                  <CheckCircle size={40} className="text-sp-pump mx-auto" />
+                  <div className="text-lg font-extrabold text-white">{t(lang, 'success')}</div>
                   {newCurveId && (
                     <>
-                      <div className="bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 flex items-center gap-2">
+                      <div className="bg-black/30 border border-white/[0.14] rounded-[9px] px-3 py-2.5 flex items-center gap-2">
                         <span className="text-[10px] font-mono text-white/40 flex-1 truncate text-left">
                           suipump.org/token/{newCurveId.slice(0,8)}…
                         </span>
                         <button
                           onClick={() => navigator.clipboard.writeText(`${window.location.origin}/token/${newCurveId}`)}
-                          className="text-[9px] font-mono text-lime-400 hover:text-lime-300 whitespace-nowrap border border-lime-400/30 px-2 py-1 rounded-lg transition-colors"
+                          className="text-[9px] font-mono font-bold text-sp-glow hover:text-sp-pump whitespace-nowrap border border-lime-400/30 px-2 py-1 rounded-[7px] transition-colors"
                         >
                           COPY LINK
                         </button>
                       </div>
                       <button
                         onClick={() => { onClose(); window.location.href = `/token/${newCurveId}`; }}
-                        className="w-full py-3 bg-lime-400 text-black font-bold rounded-xl text-sm font-mono hover:bg-lime-300 transition-colors"
+                        className="w-full h-12 bg-sp-pump text-sp-void font-extrabold rounded-[13px] text-sm font-mono hover:bg-sp-glow transition-colors shadow-[0_10px_32px_rgba(132,204,22,0.3)]"
                       >
                         {t(lang, 'viewToken')}
                       </button>
@@ -1247,7 +1297,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
               )}
 
               {error && (
-                <div className="rounded-xl border border-red-500/20 bg-red-950/20 p-4 text-xs font-mono text-red-400">
+                <div className="rounded-xl border border-sp-dump/20 bg-red-950/20 p-4 text-xs font-mono text-sp-dump">
                   {error}
                 </div>
               )}
@@ -1257,66 +1307,72 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
 
         {/* Footer nav */}
         {!txStep && !error && (
-          <div className="px-6 pb-6 flex gap-3">
-            {step > 0 && step < 3 && (
-              <button
-                onClick={() => setStep(s => s - 1)}
-                className="flex-1 py-3 rounded-xl border border-white/10 text-sm font-mono text-white/50 hover:text-white hover:border-white/25 transition-colors"
-              >
-                {t(lang, 'back')}
-              </button>
-            )}
-            {step === 3 && !txStep && (
-              <button
-                onClick={() => setStep(2)}
-                className="flex-1 py-3 rounded-xl border border-white/10 text-sm font-mono text-white/50 hover:text-white hover:border-white/25 transition-colors"
-              >
-                {t(lang, 'back')}
-              </button>
-            )}
-            {step < 3 ? (
-              <button
-                onClick={() => canNext && setStep(s => s + 1)}
-                disabled={!canNext}
-                className={`flex-1 py-3 rounded-xl text-sm font-mono font-bold transition-colors ${
-                  canNext
-                    ? 'bg-lime-400 text-black hover:bg-lime-300'
-                    : 'bg-white/5 text-white/20 cursor-not-allowed'
-                }`}
-              >
-                {t(lang, 'next')}
-              </button>
-            ) : (
-              !txStep && (
+          <div className="sticky bottom-0 bg-[rgba(7,7,7,0.97)] border-t border-white/[0.08] px-4 sm:px-7 pt-3 pb-4 sm:pb-5">
+            <div className="flex justify-between text-[10px] font-medium mb-2.5 sm:hidden">
+              <span className="text-white/40">total so far</span>
+              <span className="text-white/80">{(2 + (parseFloat(devBuy) || 0) + (epochSite ? 5 : 0)).toFixed(2)} SUI + gas</span>
+            </div>
+            <div className="flex gap-3">
+              {step > 0 && step < 3 && (
                 <button
-                  onClick={handleLaunch}
-                  disabled={!account || launching}
-                  className={`flex-1 py-3 rounded-xl text-sm font-mono font-bold transition-colors flex items-center justify-center gap-2 ${
-                    !account || launching
-                      ? 'bg-white/5 text-white/20 cursor-not-allowed'
-                      : 'bg-lime-400 text-black hover:bg-lime-300'
+                  onClick={() => setStep(s => s - 1)}
+                  className="flex-1 h-12 rounded-[13px] border border-white/[0.12] text-sm font-mono font-semibold text-white/50 hover:text-white hover:border-white/25 transition-colors"
+                >
+                  {t(lang, 'back')}
+                </button>
+              )}
+              {step === 3 && !txStep && (
+                <button
+                  onClick={() => setStep(2)}
+                  className="flex-1 h-12 rounded-[13px] border border-white/[0.12] text-sm font-mono font-semibold text-white/50 hover:text-white hover:border-white/25 transition-colors"
+                >
+                  {t(lang, 'back')}
+                </button>
+              )}
+              {step < 3 ? (
+                <button
+                  onClick={() => canNext && setStep(s => s + 1)}
+                  disabled={!canNext}
+                  className={`flex-1 h-12 rounded-[13px] text-sm font-mono font-extrabold transition-colors ${
+                    canNext
+                      ? 'bg-sp-pump text-sp-void hover:bg-sp-glow shadow-[0_10px_32px_rgba(132,204,22,0.3)]'
+                      : 'bg-white/5 text-white/20 cursor-not-allowed'
                   }`}
                 >
-                  <Rocket size={14} />
-                  {t(lang, 'launchATokenTitle')}
+                  {t(lang, 'next')} →
                 </button>
-              )
-            )}
+              ) : (
+                !txStep && (
+                  <button
+                    onClick={handleLaunch}
+                    disabled={!account || launching}
+                    className={`flex-1 h-12 rounded-[13px] text-sm font-mono font-extrabold transition-colors flex items-center justify-center gap-2 ${
+                      !account || launching
+                        ? 'bg-white/5 text-white/20 cursor-not-allowed'
+                        : 'bg-sp-pump text-sp-void hover:bg-sp-glow shadow-[0_10px_32px_rgba(132,204,22,0.3)]'
+                    }`}
+                  >
+                    <Rocket size={14} />
+                    {symbolValid ? `LAUNCH $${form.symbol}` : t(lang, 'launchATokenTitle')}
+                  </button>
+                )
+              )}
+            </div>
           </div>
         )}
 
         {/* Error retry */}
         {error && (
-          <div className="px-6 pb-6 flex gap-3">
+          <div className="sticky bottom-0 bg-[rgba(7,7,7,0.97)] border-t border-white/[0.08] px-4 sm:px-7 pt-3 pb-4 sm:pb-5 flex gap-3">
             <button
               onClick={() => { setError(null); setStep(3); }}
-              className="flex-1 py-3 rounded-xl border border-white/10 text-sm font-mono text-white/50 hover:text-white transition-colors"
+              className="flex-1 h-12 rounded-[13px] border border-white/[0.12] text-sm font-mono font-semibold text-white/50 hover:text-white transition-colors"
             >
               {t(lang, 'back')}
             </button>
             <button
               onClick={handleLaunch}
-              className="flex-1 py-3 rounded-xl bg-lime-400 text-black font-bold text-sm font-mono hover:bg-lime-300 transition-colors"
+              className="flex-1 h-12 rounded-[13px] bg-sp-pump text-sp-void font-extrabold text-sm font-mono hover:bg-sp-glow transition-colors shadow-[0_10px_32px_rgba(132,204,22,0.3)]"
             >
               Retry
             </button>
