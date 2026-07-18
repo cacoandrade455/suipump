@@ -1076,12 +1076,13 @@ function AgentSessionPanel({ account, onSessionChange }) {
       // Per-user enclave key (Phase 1 trust minimization). Ask the bridge to
       // provision a fresh Turnkey-held key for THIS session; its address goes
       // on-chain as session_address, so only that enclave key can ever sign
-      // this session's trades - isolated from the shared agent wallet and from
-      // every other user's session. If provisioning is unavailable (Turnkey
-      // not configured yet, bridge down, timeout), fall back to the shared
-      // agent wallet so opening a session NEVER breaks; the on-chain caps
-      // (spend cap / expiry / revoke) protect the user on both paths.
-      let sessionAddress = AGENT_SESSION_WALLET;
+      // this session's trades - isolated from every other user's session. If
+      // provisioning fails (Turnkey not configured, bridge down, timeout) the
+      // open HARD-FAILS in BOTH modes: the shared agent wallet is retired as
+      // a signer on the bridge, so a session opened against it could never
+      // execute a trade. No provisioned key means no transaction is built and
+      // no session object is created.
+      let sessionAddress = null;
       let enclaveKey = false;   // per-session Turnkey-held key provisioned
       let attested = false;     // Nautilus: chain-attested enclave key
       try {
@@ -1102,28 +1103,31 @@ function AgentSessionPanel({ account, onSessionChange }) {
           enclaveKey = true;
           attested = signerMode === 'enclave';
         } else {
-          // A5.1 loud fallback: provisioning responded but did NOT yield a
-          // per-user key (Turnkey/DB not configured, or an unexpected shape).
-          // In turnkey mode this silently downgrades to the shared wallet -
-          // exactly the "looks like success" class that bit us. Make it visible.
-          console.warn('[agent] session key provisioning did not return a dedicated key; ' +
-            (signerMode === 'enclave' ? 'enclave mode will hard-fail below' : 'TURNKEY mode falling back to the SHARED agent wallet'),
+          // Provisioning responded but did NOT yield a per-user key
+          // (Turnkey/DB not configured, or an unexpected shape). Both modes
+          // hard-fail below - no session may open without a live signer.
+          console.warn('[agent] session key provisioning did not return a dedicated key; open will hard-fail',
             { status: pr.status, reason: pd?.reason ?? pd?.error ?? null, configured: pd?.configured });
         }
       } catch (e) {
-        // A5.1 loud fallback: provisioning unreachable (bridge down / timeout).
-        // Same silent-downgrade risk in turnkey mode - warn loudly.
-        console.warn('[agent] session key provisioning unreachable; ' +
-          (signerMode === 'enclave' ? 'enclave mode will hard-fail below' : 'TURNKEY mode falling back to the SHARED agent wallet'),
+        // Provisioning unreachable (bridge down / timeout). Both modes
+        // hard-fail below - no session may open without a live signer.
+        console.warn('[agent] session key provisioning unreachable; open will hard-fail',
           e?.message ?? e);
       }
 
       // ENCLAVE mode is an explicit trust upgrade the user selected: NEVER
       // silently downgrade it to the shared wallet (that would hand back the
-      // exact trust claim they asked to remove). TURNKEY mode keeps the
-      // always-works shared-wallet fallback; on-chain caps protect both.
+      // exact trust claim they asked to remove).
       if (signerMode === 'enclave' && !attested) {
         throw new Error('Enclave key unavailable - the enclave signer may be offline. Retry, or open in TURNKEY mode.');
+      }
+      // TURNKEY mode hard-fails too: the shared agent wallet is a retired
+      // signer (the bridge refuses to execute for unprovisioned sessions), so
+      // opening a session against it would create an escrow no signer can
+      // ever trade. Better no session than a dead one.
+      if (!enclaveKey || !sessionAddress) {
+        throw new Error('Session key provisioning failed - no session was opened and no funds were moved. Try again in a moment.');
       }
 
       const depMist = BigInt(Math.round(dep * 1e9));
@@ -1131,10 +1135,9 @@ function AgentSessionPanel({ account, onSessionChange }) {
       const expiryMs = BigInt(Date.now() + Math.round(dd * 24 * 60 * 60 * 1000));
       const tx = new Transaction();
       const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(depMist)]);
-      // Self-funded gas grant: only when a DEDICATED session key was
-      // provisioned (a fresh address holds zero SUI and pays its own gas per
-      // trade). The shared-wallet fallback carries its own gas - no grant.
-      // For the enclave's single shared address this is a harmless top-up.
+      // Self-funded gas grant: the DEDICATED session key's fresh address
+      // holds zero SUI and pays its own gas per trade. For the enclave's
+      // single shared address this is a harmless top-up.
       if (enclaveKey) {
         const [gasGrant] = tx.splitCoins(tx.gas, [tx.pure.u64(SESSION_GAS_GRANT_MIST)]);
         tx.transferObjects([gasGrant], sessionAddress);
