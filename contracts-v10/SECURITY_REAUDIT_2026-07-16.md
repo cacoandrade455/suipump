@@ -117,6 +117,15 @@ downgrade is auditable, not silent.
   `Curve` and gate mutating entrypoints on it, so future old bytecode is
   fenced; (3) soften the `187-192` "deleted at the root" comment to note it
   holds only for a fresh publish.
+- **Clarification (2026-07-18):** the "V14+" above is a HYPOTHETICAL class of
+  future SIGNATURE-CHANGING upgrades, written before the actual V14 existed. The
+  REAL V14 published on testnet 2026-07-18
+  (`0xb6e7cef4d36b3cf0fd84888dd9930ce9abfcc0ed56f01384f1e02b55eeac1b03`, a
+  compatible upgrade of V13 via UpgradeCap V13 adding only the `GraduationCap` /
+  `GraduationRegistry` split and `_with_cap` entrypoints) is additive-only, changes
+  no `buy()` signature, and does NOT create the old-`buy()` brick vector this
+  finding describes. F-U1's residual concern remains about a future upgrade that
+  changes money-path signatures, not about the live V14.
 
 ### F-U2 - `buy()` / `buy_with_session()` accept ANY `&PriceConfig`, not pinned to the canonical config
 

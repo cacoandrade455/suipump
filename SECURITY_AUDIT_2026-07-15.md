@@ -43,6 +43,18 @@ Findings first surfaced in later passes (F-AC-1, the CTO-4.0/CTO-6.0 B findings,
 E-1, PASS-C-1) are tracked in the re-audit reports and `AUDIT_NOTES.md`; E-1 and
 PASS-C-1 were fixed 2026-07-17 (commits `9fcbd6d5192ba15bc49b993c432bccdccabd77a2`, `2b2d764dea07398403515998cff2b9a69e279889`).
 
+**GRAD-1 / V14 closure (2026-07-18):** GRAD-1 (the graduation signer holding the
+AdminCap key on a hot server) is CLOSED ON-CHAIN. V14
+`0xb6e7cef4d36b3cf0fd84888dd9930ce9abfcc0ed56f01384f1e02b55eeac1b03` was published as
+a COMPATIBLE upgrade of V13 via UpgradeCap V13 (existing curves stay V13-typed; V14
+defines `GraduationCap`/`GraduationRegistry` and the `_with_cap` graduation
+entrypoints and is the write target for new graduations), `init_graduation` was run,
+and the graduation signer was swapped to a dedicated graduation-only wallet. F-14 now
+covers a strictly smaller AdminCap: no price authority (E-1) and no graduation
+authority (V14). Full ids and record:
+`contracts-v10/SECURITY_REAUDIT_2026-07-17_PREPUBLISH.md` (V14 upgrade record +
+Addendum 6).
+
 ---
 
 ## Summary

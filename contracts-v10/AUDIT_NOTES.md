@@ -164,10 +164,12 @@ legitimate protocol authority that stays a disclosed centralization surface unti
 SMALLER and, crucially, fully COLD-able:
 - **E-1 (`PriceRelayerCap`, live):** the 5-minute price push runs off a separate hot
   cap, so the AdminCap no longer needs to be online for prices.
-- **V14 (`GraduationCap`, built - commit `01d4c38d`):** graduation automation runs off
-  a separate `GraduationCap`, so the AdminCap no longer needs to be online for
-  graduation either (this was GRAD-1). After the V14 upgrade + operator key swap, NO
-  server holds the AdminCap key.
+- **V14 (`GraduationCap`, LIVE 2026-07-18 - package
+  `0xb6e7cef4d36b3cf0fd84888dd9930ce9abfcc0ed56f01384f1e02b55eeac1b03`, built in
+  commit `01d4c38d`):** graduation automation runs off a separate `GraduationCap`,
+  so the AdminCap no longer needs to be online for graduation either (this was
+  GRAD-1). The V14 upgrade + operator key swap are DONE: NO server holds the
+  AdminCap key.
 So F-14 now migrates an AdminCap whose day-to-day powers are neither price nor
 graduation automation - it can move cold to the multisig with nothing online depending
 on it. F-14 is the standing tracker for that migration; accepted-until-mainnet, not a
@@ -178,10 +180,13 @@ shipped as a FRESH PUBLISH (its own type identity, not a V10 upgrade; see the
 Publish record in `SECURITY_REAUDIT_2026-07-17_PREPUBLISH.md`), so the live caps are:
 
 - AdminCap V13 `0xb3d3155ca1bc153664143895928aa77384f5c70f752c306e10fa619f460e039d`
-  - owned by the main wallet, and the target of the F-14 multisig migration. On testnet
-  its key is currently `GRADUATION_SIGNER_KEY` on the graduation worker (GRAD-1); the
-  V14 `GraduationCap` (commit `01d4c38d`) removes that need, and after the upgrade +
-  operator key swap the AdminCap key must never appear in any server env again.
+  - owned by the main wallet, and the target of the F-14 multisig migration. As of
+  2026-07-18 its key is OFF every server: the V14 `GraduationCap` upgrade is live and
+  `GRADUATION_SIGNER_KEY` on the graduation worker now holds the DEDICATED graduation
+  wallet `0x7334d47632af5386d9b16326ade55be642fc8a569a1672b0cbaaf4d0e7e6180a`, which
+  holds ONLY the `GraduationCap`
+  `0xe1eeaf7620fe62bc4e0d207821760c69a84758c757c47000790292f1a8d905ee` (GRAD-1,
+  CLOSED ON-CHAIN below). The AdminCap key must never appear in any server env again.
 - PriceRelayerCap `0x818e0263bc28f5f6089ed6b120fa818cba61d0378897f197398ed2b860ad7510`
   - the E-1 price-only split, held by a SEPARATE hot relayer wallet
   `0xce53cb8f9befc490393d70528ef732bbcbe12d951ffcdd76a37af9b0f9624629`. Its entire
@@ -194,13 +199,33 @@ Publish record in `SECURITY_REAUDIT_2026-07-17_PREPUBLISH.md`), so the live caps
 
 ---
 
-## GRAD-1 - graduation signer held the AdminCap key on a hot server (RESOLVED in V14)
+## GRAD-1 - graduation signer held the AdminCap key on a hot server (CLOSED ON-CHAIN in V14)
 
-**Status: RESOLVED in code by the V14 `GraduationCap` (commit `01d4c38d`); closes
-on-chain at the V14 upgrade + `init_graduation` + the operator key swap below.** The
-testnet interim (a separate `GRADUATION_SIGNER_KEY` carrying the main wallet key that
-holds AdminCap V13) was an expedient reversing the earlier "manual graduation" plan;
-it is NO LONGER the plan of record - V14 removes the need for it.
+**Status: CLOSED ON-CHAIN, 2026-07-18.** The V14 `GraduationCap` upgrade (commit
+`01d4c38d`) is LIVE on testnet, `init_graduation` has been run, and the operator key
+swap is DONE. Live ids (full, never truncated):
+
+- V14 package (COMPATIBLE UPGRADE of V13 via UpgradeCap V13; DEFINING package of
+  `GraduationCap`, `GraduationRegistry`, `GraduationCapIssued`,
+  `GraduationCapRotated`, and the `_with_cap` entrypoints):
+  `0xb6e7cef4d36b3cf0fd84888dd9930ce9abfcc0ed56f01384f1e02b55eeac1b03`
+- GraduationRegistry (shared):
+  `0xe1d895aec204ec64e2ad9755080d3dad20d053af6d480c149ae601d375281e8a`
+- GraduationCap (dedicated graduation wallet):
+  `0xe1eeaf7620fe62bc4e0d207821760c69a84758c757c47000790292f1a8d905ee`
+- Dedicated graduation wallet (holds ONLY the GraduationCap, never the AdminCap):
+  `0x7334d47632af5386d9b16326ade55be642fc8a569a1672b0cbaaf4d0e7e6180a`
+
+V14 does NOT replace V13: existing curves stay TYPED at V13
+`0xdf66376f006557b9f81b3455ee786ffd7f2a633488cc3bd31a37ddbdc69bd56b` forever, both
+ids coexist in read paths, and V14 is the WRITE target for new graduations (the
+`_with_cap` path). The AdminCap key is off every server; the `GraduationCap` remains
+instantly revocable from the cold AdminCap via `rotate_graduation_cap`, and F-14 now
+migrates an AdminCap with NO price authority and NO graduation authority.
+
+The testnet interim (a separate `GRADUATION_SIGNER_KEY` carrying the main wallet key
+that holds AdminCap V13) was an expedient reversing the earlier "manual graduation"
+plan; it is NO LONGER in effect - V14 removed the need for it.
 
 **The fix (V14 GraduationCap + rotation registry).** An additive (`compatible`)
 upgrade via UpgradeCap V13
@@ -225,16 +250,24 @@ by 125/125 Move tests, zero warnings. This is the graduation analogue of the E-1
 `PriceRelayerCap` split, and it RESTORES E-1's benefit: the AdminCap functions remain
 as the cold backstop but are no longer needed on any server.
 
-**Operator step that closes it on-chain:** run the V14 `sui client upgrade`
-(UpgradeCap V13), call `init_graduation` with AdminCap V13, then set
-`GRADUATION_SIGNER_KEY` on Render to a DEDICATED graduation wallet holding ONLY the
-minted `GraduationCap` (never the AdminCap). After that, the AdminCap key is off every
-server. The off-chain path is env-gated (`SUIPUMP_V14_PACKAGE` +
-`SUIPUMP_GRADUATION_CAP` + `SUIPUMP_GRADUATION_REGISTRY`, commit `1d300530`): unset
-keeps the AdminCap path, set switches to `_with_cap`.
+**Operator step that closed it on-chain (COMPLETED 2026-07-18):** the V14
+`sui client upgrade` was run with UpgradeCap V13 (toolchain `sui 1.75.2`), publishing
+`0xb6e7cef4d36b3cf0fd84888dd9930ce9abfcc0ed56f01384f1e02b55eeac1b03`;
+`init_graduation` was called with AdminCap V13, sharing the `GraduationRegistry`
+`0xe1d895aec204ec64e2ad9755080d3dad20d053af6d480c149ae601d375281e8a` and minting the
+`GraduationCap` `0xe1eeaf7620fe62bc4e0d207821760c69a84758c757c47000790292f1a8d905ee`
+to the DEDICATED graduation wallet
+`0x7334d47632af5386d9b16326ade55be642fc8a569a1672b0cbaaf4d0e7e6180a`; and
+`GRADUATION_SIGNER_KEY` on Render was swapped to that wallet's key (never the
+AdminCap). The AdminCap key is off every server. The off-chain env gate (commit
+`1d300530`) is now SET: `SUIPUMP_V14_PACKAGE` + `SUIPUMP_GRADUATION_CAP` +
+`SUIPUMP_GRADUATION_REGISTRY` carry the three ids above, switching graduation writes
+to the `_with_cap` path targeting V14 - while V13 remains the type identity of every
+existing curve.
 
 **Signer separation (still enforced, still in code):** `GRADUATION_SIGNER_KEY` is read
 ONLY by the graduation scripts; `SUI_PRIVATE_KEY` (price relayer wallet,
 PriceRelayerCap) ONLY by the price publisher and CTO sweeper. Neither path reads the
 other's key. Tracked as finding GRAD-1 in
-`SECURITY_REAUDIT_2026-07-17_PREPUBLISH.md` (addenda 4 and 5).
+`SECURITY_REAUDIT_2026-07-17_PREPUBLISH.md` (addenda 4 and 5; closure recorded in
+addendum 6).
