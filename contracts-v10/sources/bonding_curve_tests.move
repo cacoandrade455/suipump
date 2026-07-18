@@ -39,7 +39,7 @@ module suipump::bonding_curve_tests {
     use std::ascii;
     use std::string;
 
-    use suipump::bonding_curve::{Self, Curve, CreatorCap, AdminCap, PriceConfig, PriceRelayerCap};
+    use suipump::bonding_curve::{Self, Curve, CreatorCap, AdminCap, PriceConfig, PriceRelayerCap, GraduationCap, GraduationRegistry};
 
     public struct TEST_TOKEN has drop {}
 
@@ -95,6 +95,8 @@ module suipump::bonding_curve_tests {
     const E_CTO_NOT_RESOLVED:         u64 = 58;
     const E_CTO_ZERO_CIRCULATING:     u64 = 59;
     const E_CTO_PROPOSER_BOND_LOCKED: u64 = 60;
+    const E_GRADUATION_CAP_REVOKED:   u64 = 61; // V14
+    const E_GRADUATION_EXISTS:        u64 = 62; // V14
 
     const LP_SUPPLY_ATOMIC:           u64 = 200_000_000 * 1_000_000; // 1B total - 800M curve
 
@@ -1685,6 +1687,305 @@ module suipump::bonding_curve_tests {
         let cap = ts::take_from_sender<PriceRelayerCap>(&s);
         assert!(!ts::has_most_recent_for_address<PriceRelayerCap>(CREATOR), 4050);
         ts::return_to_sender(&s, cap);
+        ts::end(s);
+    }
+
+    // --- V14 (GRAD-1): GraduationCap + rotation registry ---------------------
+
+    // Drain a SPECIFIC curve (by id) to graduation, so a test can graduate two
+    // curves independently. Mirrors drain_curve but targets the given id instead of
+    // the most-recent shared Curve.
+    #[test_only]
+    fun drain_curve_by_id(scenario: &mut Scenario, curve_id: object::ID) {
+        ts::next_tx(scenario, BUYER);
+        let mut curve = ts::take_shared_by_id<Curve<TEST_TOKEN>>(scenario, curve_id);
+        let cfg = ts::take_shared<PriceConfig>(scenario);
+        let payment = mint_sui(50_000 * MIST_PER_SUI, scenario);
+        let clk = clock::create_for_testing(ts::ctx(scenario));
+        let (tokens, refund) = bonding_curve::buy_for_testing(
+            &mut curve, payment, 0, option::none(), &cfg, &clk, ts::ctx(scenario)
+        );
+        destroy(tokens);
+        destroy(refund);
+        clock::destroy_for_testing(clk);
+        ts::return_shared(cfg);
+        ts::return_shared(curve);
+    }
+
+    // The fresh-publish init mints EXACTLY ONE GraduationCap + ONE GraduationRegistry
+    // to the publisher (mirrors the relayer-cap bootstrap).
+    #[test]
+    fun test_init_mints_one_graduation_cap_and_registry() {
+        let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
+
+        ts::next_tx(&mut s, CREATOR);
+        // Exactly one GraduationCap to the publisher.
+        let gcap = ts::take_from_sender<GraduationCap>(&s);
+        assert!(!ts::has_most_recent_for_address<GraduationCap>(CREATOR), 5000);
+        // Exactly one shared GraduationRegistry, and it names this cap as active.
+        let registry = ts::take_shared<GraduationRegistry>(&s);
+        assert!(
+            bonding_curve::active_graduation_cap_id(&registry) == object::id(&gcap),
+            5001,
+        );
+        ts::return_shared(registry);
+        ts::return_to_sender(&s, gcap);
+        ts::end(s);
+    }
+
+    // FRESH publish: init set GRADUATION_INITED_KEY on the AdminCap it minted, so the
+    // upgrade entrypoint init_graduation must abort - no second cap+registry.
+    #[test]
+    #[expected_failure(abort_code = E_GRADUATION_EXISTS, location = suipump::bonding_curve)]
+    fun test_init_marks_graduation_fresh_publish() {
+        let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
+
+        ts::next_tx(&mut s, CREATOR);
+        let mut admin = ts::take_from_sender<AdminCap>(&s);
+        bonding_curve::init_graduation(&mut admin, ts::ctx(&mut s));
+        ts::return_to_sender(&s, admin);
+        ts::end(s);
+    }
+
+    // UPGRADE path (bare, unmarked AdminCap): init_graduation succeeds once and sets
+    // the marker; a second call aborts EGraduationExists.
+    #[test]
+    #[expected_failure(abort_code = E_GRADUATION_EXISTS, location = suipump::bonding_curve)]
+    fun test_init_graduation_twice_aborts() {
+        let mut s = ts::begin(CREATOR);
+        let mut admin = bonding_curve::new_admin_cap_for_testing(ts::ctx(&mut s));
+        bonding_curve::init_graduation(&mut admin, ts::ctx(&mut s));
+        bonding_curve::init_graduation(&mut admin, ts::ctx(&mut s));
+        transfer::public_transfer(admin, CREATOR);
+        ts::end(s);
+    }
+
+    // The GraduationCap path claims the reserve + mints the 200M LP, and records the
+    // pool - the two powers the cap is for.
+    #[test]
+    fun test_graduation_cap_claims_and_records() {
+        let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
+
+        ts::next_tx(&mut s, CREATOR);
+        let (_a, _b) = make_payouts_single();
+        setup_curve(&mut s, _a, _b);
+        drain_curve(&mut s); // inline graduation fires
+
+        ts::next_tx(&mut s, CREATOR);
+        let gcap     = ts::take_from_sender<GraduationCap>(&s);
+        let registry = ts::take_shared<GraduationRegistry>(&s);
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        assert!(bonding_curve::graduated(&curve), 5100);
+
+        let reserve_before = bonding_curve::sui_reserve(&curve);
+        assert!(reserve_before > 0, 5101);
+
+        let (sui_coin, lp_coin) = bonding_curve::claim_graduation_funds_with_cap<TEST_TOKEN>(
+            &gcap, &registry, &mut curve, ts::ctx(&mut s)
+        );
+        assert!(bonding_curve::sui_reserve(&curve) == 0, 5102);
+        assert!(coin::value(&sui_coin) == reserve_before, 5103);
+        assert!(coin::value(&lp_coin) == LP_SUPPLY_ATOMIC, 5104);
+
+        // Record a pool via the cap path.
+        let uid_pool = object::new(ts::ctx(&mut s));
+        let pool_id  = object::uid_to_inner(&uid_pool);
+        object::delete(uid_pool);
+        let uid_nft  = object::new(ts::ctx(&mut s));
+        let nft_id   = object::uid_to_inner(&uid_nft);
+        object::delete(uid_nft);
+        bonding_curve::record_graduation_pool_with_cap<TEST_TOKEN>(
+            &gcap, &registry, &mut curve, pool_id, nft_id
+        );
+        assert!(option::is_some(&bonding_curve::pool_id(&curve)), 5105);
+
+        destroy(sui_coin);
+        destroy(lp_coin);
+        ts::return_shared(curve);
+        ts::return_shared(registry);
+        ts::return_to_sender(&s, gcap);
+        ts::end(s);
+    }
+
+    // Rotation revokes the old cap: after rotate_graduation_cap, a claim with the OLD
+    // cap aborts EGraduationCapRevoked.
+    #[test]
+    #[expected_failure(abort_code = E_GRADUATION_CAP_REVOKED, location = suipump::bonding_curve)]
+    fun test_rotated_cap_aborts_claim() {
+        let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
+
+        ts::next_tx(&mut s, CREATOR);
+        let (_a, _b) = make_payouts_single();
+        setup_curve(&mut s, _a, _b);
+        drain_curve(&mut s);
+
+        ts::next_tx(&mut s, CREATOR);
+        let admin        = ts::take_from_sender<AdminCap>(&s);
+        let old_gcap     = ts::take_from_sender<GraduationCap>(&s);
+        let mut registry = ts::take_shared<GraduationRegistry>(&s);
+        let mut curve    = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+
+        // Cold AdminCap rotates - old_gcap is now revoked.
+        bonding_curve::rotate_graduation_cap(&admin, &mut registry, ts::ctx(&mut s));
+
+        // Claiming with the OLD cap must abort.
+        let (sui_coin, lp_coin) = bonding_curve::claim_graduation_funds_with_cap<TEST_TOKEN>(
+            &old_gcap, &registry, &mut curve, ts::ctx(&mut s)
+        );
+        destroy(sui_coin);
+        destroy(lp_coin);
+        ts::return_shared(curve);
+        ts::return_shared(registry);
+        ts::return_to_sender(&s, old_gcap);
+        ts::return_to_sender(&s, admin);
+        ts::end(s);
+    }
+
+    // Rotation also revokes the old cap for record_graduation_pool_with_cap.
+    #[test]
+    #[expected_failure(abort_code = E_GRADUATION_CAP_REVOKED, location = suipump::bonding_curve)]
+    fun test_rotated_cap_aborts_record() {
+        let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
+
+        ts::next_tx(&mut s, CREATOR);
+        let (_a, _b) = make_payouts_single();
+        setup_curve(&mut s, _a, _b);
+        drain_curve(&mut s);
+
+        ts::next_tx(&mut s, CREATOR);
+        let admin        = ts::take_from_sender<AdminCap>(&s);
+        let old_gcap     = ts::take_from_sender<GraduationCap>(&s);
+        let mut registry = ts::take_shared<GraduationRegistry>(&s);
+        let mut curve    = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+
+        bonding_curve::rotate_graduation_cap(&admin, &mut registry, ts::ctx(&mut s));
+
+        let uid_pool = object::new(ts::ctx(&mut s));
+        let pool_id  = object::uid_to_inner(&uid_pool);
+        object::delete(uid_pool);
+        let uid_nft  = object::new(ts::ctx(&mut s));
+        let nft_id   = object::uid_to_inner(&uid_nft);
+        object::delete(uid_nft);
+
+        bonding_curve::record_graduation_pool_with_cap<TEST_TOKEN>(
+            &old_gcap, &registry, &mut curve, pool_id, nft_id
+        );
+        ts::return_shared(curve);
+        ts::return_shared(registry);
+        ts::return_to_sender(&s, old_gcap);
+        ts::return_to_sender(&s, admin);
+        ts::end(s);
+    }
+
+    // A freshly-rotated cap (the new active one) CAN claim - rotation revokes only
+    // the old cap, it does not break the graduation path.
+    #[test]
+    fun test_rotated_new_cap_can_claim() {
+        let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
+
+        ts::next_tx(&mut s, CREATOR);
+        let (_a, _b) = make_payouts_single();
+        setup_curve(&mut s, _a, _b);
+        drain_curve(&mut s);
+
+        ts::next_tx(&mut s, CREATOR);
+        let admin        = ts::take_from_sender<AdminCap>(&s);
+        let old_gcap     = ts::take_from_sender<GraduationCap>(&s);
+        let mut registry = ts::take_shared<GraduationRegistry>(&s);
+        bonding_curve::rotate_graduation_cap(&admin, &mut registry, ts::ctx(&mut s));
+
+        // The new cap was transferred to CREATOR by rotate; take it in a new tx.
+        ts::next_tx(&mut s, CREATOR);
+        let new_gcap  = ts::take_from_sender<GraduationCap>(&s);
+        assert!(
+            bonding_curve::active_graduation_cap_id(&registry) == object::id(&new_gcap),
+            5200,
+        );
+        let mut curve = ts::take_shared<Curve<TEST_TOKEN>>(&s);
+        let (sui_coin, lp_coin) = bonding_curve::claim_graduation_funds_with_cap<TEST_TOKEN>(
+            &new_gcap, &registry, &mut curve, ts::ctx(&mut s)
+        );
+        assert!(coin::value(&lp_coin) == LP_SUPPLY_ATOMIC, 5201);
+
+        destroy(sui_coin);
+        destroy(lp_coin);
+        ts::return_shared(curve);
+        ts::return_shared(registry);
+        ts::return_to_sender(&s, new_gcap);
+        ts::return_to_sender(&s, old_gcap);
+        ts::return_to_sender(&s, admin);
+        ts::end(s);
+    }
+
+    // BYTE-IDENTICAL EFFECTS: the AdminCap path and the GraduationCap path claim the
+    // SAME reserve and mint the SAME LP on two identically-prepared curves, because
+    // both delegate to claim_graduation_funds_impl (F-10: one implementation only).
+    #[test]
+    fun test_with_cap_and_admin_paths_identical_effects() {
+        let mut s = ts::begin(CREATOR);
+        bonding_curve::init_for_testing(ts::ctx(&mut s));
+
+        // Curve A (admin path) and Curve B (cap path), identical setup. The shared
+        // Curve is only queryable after its creating tx commits, so read each id in
+        // the FOLLOWING tx (mirrors test_buy_via_admin_created_config_matches_init_config).
+        ts::next_tx(&mut s, CREATOR);
+        let (a1, b1) = make_payouts_single();
+        setup_curve(&mut s, a1, b1);
+
+        ts::next_tx(&mut s, CREATOR);
+        let id_a = option::destroy_some(ts::most_recent_id_shared<Curve<TEST_TOKEN>>());
+        let (a2, b2) = make_payouts_single();
+        setup_curve(&mut s, a2, b2);
+
+        ts::next_tx(&mut s, CREATOR);
+        let id_b = option::destroy_some(ts::most_recent_id_shared<Curve<TEST_TOKEN>>());
+        assert!(id_a != id_b, 5300);
+
+        // Graduate both with the identical 50,000 SUI drain buy.
+        drain_curve_by_id(&mut s, id_a);
+        drain_curve_by_id(&mut s, id_b);
+
+        // Claim A via the AdminCap path.
+        ts::next_tx(&mut s, CREATOR);
+        let admin     = ts::take_from_sender<AdminCap>(&s);
+        let mut curve_a = ts::take_shared_by_id<Curve<TEST_TOKEN>>(&s, id_a);
+        let reserve_a = bonding_curve::sui_reserve(&curve_a);
+        let (sui_a, lp_a) = bonding_curve::claim_graduation_funds<TEST_TOKEN>(
+            &admin, &mut curve_a, ts::ctx(&mut s)
+        );
+
+        // Claim B via the GraduationCap path.
+        let gcap     = ts::take_from_sender<GraduationCap>(&s);
+        let registry = ts::take_shared<GraduationRegistry>(&s);
+        let mut curve_b = ts::take_shared_by_id<Curve<TEST_TOKEN>>(&s, id_b);
+        let reserve_b = bonding_curve::sui_reserve(&curve_b);
+        let (sui_b, lp_b) = bonding_curve::claim_graduation_funds_with_cap<TEST_TOKEN>(
+            &gcap, &registry, &mut curve_b, ts::ctx(&mut s)
+        );
+
+        // Identical setup -> identical pre-claim reserve -> identical effects.
+        assert!(reserve_a == reserve_b, 5301);
+        assert!(coin::value(&sui_a) == coin::value(&sui_b), 5302);
+        assert!(coin::value(&lp_a) == coin::value(&lp_b), 5303);
+        assert!(coin::value(&lp_a) == LP_SUPPLY_ATOMIC, 5304);
+        assert!(bonding_curve::sui_reserve(&curve_a) == 0, 5305);
+        assert!(bonding_curve::sui_reserve(&curve_b) == 0, 5306);
+
+        destroy(sui_a);
+        destroy(lp_a);
+        destroy(sui_b);
+        destroy(lp_b);
+        ts::return_shared(curve_a);
+        ts::return_shared(curve_b);
+        ts::return_shared(registry);
+        ts::return_to_sender(&s, gcap);
+        ts::return_to_sender(&s, admin);
         ts::end(s);
     }
 

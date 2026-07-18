@@ -28,8 +28,8 @@ import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { Transaction } from '@mysten/sui/transactions';
 import { saveTPSL, makeLevel } from './useTPSL.js';
 import {
-  PACKAGE_ID_V8, MIST_PER_SUI,
-  isV5OrLater, isV9OrLater, isV7OrLater, curveShapeFor,
+  PACKAGE_ID_V8, PACKAGE_ID_V13, MIST_PER_SUI,
+  isV5OrLater, isV9OrLater, isV7OrLater, curveShapeFor, resolveGradThresholdSui,
 } from './constants.js';
 import { buyQuote, sellQuote } from './curve.js';
 
@@ -402,7 +402,14 @@ export function useSniper({ walletAddress, keypair }) {
           if (!curveId || !tokenType || gradBought.current.has(curveId)) return;
           const reserveSui = Number(d.new_sui_reserve ?? d.sui_reserve ?? 0) / 1e9;
           const { drainSui, virtualSui, virtualTokens } = curveShapeFor(pkgId);
-          if ((reserveSui / drainSui) * 100 < cfg2.gradSnipeThreshold) return;
+          // V13/V14 target is dynamic: this buy event carries grad_threshold_used
+          // (== the contract's current_grad_threshold). Use it so the grad-snipe
+          // gate fires at the REAL threshold, not a static constant. Sells/legacy
+          // fall back to drainSui (the V13 floor, or the legacy static target).
+          const effectiveDrain = (pkgId === PACKAGE_ID_V13)
+            ? resolveGradThresholdSui({ currentGradThresholdSui: Number(d.grad_threshold_used ?? 0) / 1e9 })
+            : drainSui;
+          if ((reserveSui / effectiveDrain) * 100 < cfg2.gradSnipeThreshold) return;
           gradBought.current.add(curveId);
           const kp        = keypairRef.current;
           const client    = new SuiGraphQLClient({ url: '/api/rpc' });

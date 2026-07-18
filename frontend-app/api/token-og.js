@@ -34,6 +34,10 @@ const MIST_PER_SUI   = 1_000_000_000n;
 // Env-driven (Vercel edge env exposes process.env), so the id is never hardcoded.
 // Full V13 id: 0xdf66376f006557b9f81b3455ee786ffd7f2a633488cc3bd31a37ddbdc69bd56b
 const V13_PACKAGE = (process.env.SUIPUMP_V13_PACKAGE ?? '').trim().toLowerCase() || null;
+// V14 (GRAD-1): ADDITIVE upgrade of V13; V14 curves keep the V13 type, so this id
+// appears only via the new GraduationCapIssued/Rotated events. Env-gated; null when
+// SUIPUMP_V14_PACKAGE is unset (then this module behaves exactly as pre-V14).
+const V14_PACKAGE = (process.env.SUIPUMP_V14_PACKAGE ?? '').trim().toLowerCase() || null;
 
 const ALL_PACKAGE_IDS = [
   '0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8', // V4
@@ -47,6 +51,8 @@ const ALL_PACKAGE_IDS = [
   // V13 -- separate lineage; its bonding_curve events (TokensPurchased etc.) type
   // under the V13 id. Env-gated; conditional spread so a null id never enters.
   ...(V13_PACKAGE ? [V13_PACKAGE] : []),
+  // V14 -- ADDITIVE upgrade of V13; only the new GraduationCap events type under it.
+  ...(V14_PACKAGE ? [V14_PACKAGE] : []),
 ];
 
 // -- GraphQL helpers ----------------------------------------------------------
@@ -139,11 +145,12 @@ const VIRTUAL_PARAMS = {
   '0xf5a3566ba920a3e3614e8b25da0ca3237879b6e22eb12f21ccf2bceb6520b9cd': { vSui: 4_369n,  vTok: 1_073_000_000n, drain: 12_305n }, // V12 (defensive)
   // V13 -- SEPARATE lineage. Curve shape is UNCHANGED from V9+ (vSui 4_369, vTok
   // 1_073_000_000, confirmed vs contracts-v10/sources/bonding_curve.move:177-178),
-  // so PRICE is correct here. `drain` is a fallback-only progress approximation:
-  // V13's real graduation threshold is oracle-dampened (dynamic), resolved by the
-  // indexer primary path; 12_305 keeps the bar consistent with the 4_369-vSui era.
-  // Env-gated key so the id is never hardcoded.
-  ...(V13_PACKAGE ? { [V13_PACKAGE]: { vSui: 4_369n, vTok: 1_073_000_000n, drain: 12_305n } } : {}),
+  // so PRICE is correct here. `drain` is the price-unset FLOOR (9_000 = BASE_GRAD),
+  // NOT a live target: V13's real graduation threshold is oracle-dampened (dynamic),
+  // resolved from the indexer's per-curve grad_threshold_sui (the contract's
+  // current_grad_threshold). This floor is used only when that value is absent - a
+  // static 12_305 here would render a wrong target. Env-gated so the id is never hardcoded.
+  ...(V13_PACKAGE ? { [V13_PACKAGE]: { vSui: 4_369n, vTok: 1_073_000_000n, drain: 9_000n } } : {}),
 };
 const DEFAULT_PARAMS = { vSui: 3_500n, vTok: 1_073_000_000n, drain: 9_000n };
 
@@ -270,7 +277,13 @@ async function tokenMeta(curveId) {
       const symbol = d.symbol ?? '???';
       const name   = d.name   ?? 'Unknown Token';
       const img    = cleanIcon(d.icon_url ?? d.iconUrl) ?? FALLBACK_IMAGE;
-      const drain  = Number(paramsForPackage(d.package_id).drain);
+      // V13/V14 target is dynamic: prefer the indexer's per-curve grad_threshold_sui
+      // (the contract's current_grad_threshold from the last buy) over the static
+      // per-package floor. Legacy V4-V12 keep their static drain.
+      const isV13 = V13_PACKAGE && String(d.package_id ?? '').toLowerCase() === V13_PACKAGE;
+      const drain  = (isV13 && Number(d.grad_threshold_sui) > 0)
+        ? Number(d.grad_threshold_sui)
+        : Number(paramsForPackage(d.package_id).drain);
       const desc   = buildTokenDesc({
         priceSui:    Number(d.last_price ?? 0),
         reserveSui:  Number(d.reserve_sui ?? 0),

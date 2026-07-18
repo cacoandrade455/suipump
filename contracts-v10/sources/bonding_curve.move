@@ -11,7 +11,8 @@
 ///      The PTB caller fetches a fresh Pyth price and passes it as sui_price_scaled.
 ///      grad_threshold = BASE_GRAD_MIST * sqrt(1000) / sqrt(price_scaled)
 ///        where price_scaled = price_in_usd * 1000  (e.g. $1.03 → 1030)
-///      Calibrated so that at $1.03 threshold = 12,305 SUI (~$12.7k pool).
+///      Calibrated so that at $1.00 threshold = BASE_GRAD_MIST = 9,000 SUI,
+///      scaled by sqrt(1000/price_scaled) either side of $1.
 ///      Graduation mcap in USD = 47,680 * sqrt(sui_price) — rises with
 ///      price but is dampened (not linear), preventing runaway thresholds.
 ///      Price table: $1→$49k  $2→$67k  $3→$82k  $5→$107k  $10→$151k mcap.
@@ -19,7 +20,9 @@
 ///   3. PYTH STALENESS FALLBACK (combine options 2+3)
 ///      If sui_price_scaled == 0 (caller signals stale/unavailable):
 ///        a. Use curve.current_grad_threshold if it was set at least once.
-///        b. Otherwise fall back to BASE_GRAD_MIST (static 12,305 SUI).
+///        b. Otherwise fall back to BASE_GRAD_MIST (static 9,000 SUI at $1;
+///           see the BASE = 9,000 threshold table below - 12,305 was the
+///           pre-F-4 anchor and is computed by nothing today).
 ///      Buys NEVER abort due to oracle unavailability.
 ///
 ///   4. GRADUATION TAIL-CLIP BUG FIX
@@ -120,6 +123,9 @@ module suipump::bonding_curve {
     const ECtoNotResolved:           u64 = 58; // CTO: reclaim before the proposal is resolved
     const ECtoZeroCirculating:       u64 = 59; // CTO: propose against a curve with 0 circulating supply / 0 stake
     const ECtoProposerBondLocked:    u64 = 60; // PASS-C-1: proposer may not unvote below the nominate bond while live
+    // V14 (GRAD-1): GraduationCap + rotation registry.
+    const EGraduationCapRevoked:     u64 = 61; // V14: the GraduationCap passed is not the registry's active cap (rotated away)
+    const EGraduationExists:         u64 = 62; // V14: init_graduation already ran on this AdminCap (one-shot)
 
     /// V12 comments toggle: dynamic-field marker on the curve. Marker ABSENT =
     /// holder-gated (the V10/V11 default, preserved); marker PRESENT = open
@@ -143,6 +149,14 @@ module suipump::bonding_curve {
     // TakeoverProposal's ID. PRESENT = a proposal is open for this curve (blocks a
     // second concurrent proposal); removed at resolve so a later CTO can open.
     const CTO_LIVE_PROPOSAL_KEY: vector<u8> = b"cto_live_proposal";
+    // V14 (GRAD-1): one-shot marker for init_graduation. Dynamic field on the
+    // AdminCap's UID (which is why init_graduation takes &mut AdminCap), EXACTLY
+    // mirroring PRICE_CONFIG_CREATED_KEY / create_price_config. PRESENT = the
+    // canonical GraduationCap + GraduationRegistry already exist for this package
+    // (minted by init on a fresh publish, or by init_graduation on the V13 upgrade),
+    // so a second init_graduation aborts EGraduationExists rather than minting a
+    // duplicate cap+registry that would fork the active_cap_id revocation state.
+    const GRADUATION_INITED_KEY: vector<u8> = b"graduation_inited";
 
     const MAX_COMMENT_BYTES: u64 = 280;
     const MAX_NAME_BYTES:    u64 = 64;
@@ -312,6 +326,11 @@ module suipump::bonding_curve {
         // fresh publish could end with a SECOND PriceConfig (and a second relayer cap).
         let mut admin = AdminCap { id: object::new(ctx) };
         df::add(&mut admin.id, PRICE_CONFIG_CREATED_KEY, true);
+        // V14 (GRAD-1): set the one-shot graduation marker on the AdminCap BEFORE
+        // transferring it, same reasoning as the price marker above - init below
+        // mints the one canonical GraduationCap + GraduationRegistry, so the admin
+        // entrypoint init_graduation must abort EGraduationExists on a fresh publish.
+        df::add(&mut admin.id, GRADUATION_INITED_KEY, true);
         transfer::public_transfer(admin, tx_context::sender(ctx));
         // V13 (audit E-1): mint the price-only relayer cap on the FRESH-publish
         // path (the stated mainnet plan) so the hot relayer key never needs the
@@ -330,6 +349,17 @@ module suipump::bonding_curve {
             sui_price_scaled: 0,
             updated_at_ms:    0,
         });
+        // V14 (GRAD-1): mint the graduation cap + share the registry on the
+        // FRESH-publish path, mirroring the PriceRelayerCap/PriceConfig bootstrap
+        // above. init_graduation handles the V13 UPGRADE path (upgrades never run
+        // init). Exactly one GraduationCap and one GraduationRegistry per package,
+        // on both paths, mutually exclusive via GRADUATION_INITED_KEY.
+        let grad_cap = GraduationCap { id: object::new(ctx) };
+        let grad_cap_id = object::id(&grad_cap);
+        let grad_registry = GraduationRegistry { id: object::new(ctx), active_cap_id: grad_cap_id };
+        event::emit(GraduationCapIssued { cap_id: grad_cap_id, registry_id: object::id(&grad_registry) });
+        transfer::public_transfer(grad_cap, tx_context::sender(ctx));
+        transfer::share_object(grad_registry);
     }
 
     /// V13: publish the SUI/USD reference. PriceRelayerCap-gated (audit E-1);
@@ -658,13 +688,15 @@ module suipump::bonding_curve {
     /// Formula: BASE_GRAD_MIST * sqrt(1_000) / sqrt(price_scaled)
     ///   price_scaled = sui_price_usd * 1_000  (e.g. $1.03 → 1030)
     ///
-    /// To avoid precision loss with integer sqrt we scale up:
+    /// To avoid precision loss with integer sqrt we scale up (F-4: den is
+    /// isqrt(price_scaled * PRECISION), NOT .../1_000 - that asymmetry was the bug):
     ///   num = isqrt(1_000 * PRECISION)
-    ///   den = isqrt(price_scaled * PRECISION / 1_000)
+    ///   den = isqrt(price_scaled * PRECISION)
     ///   threshold = BASE_GRAD_MIST * num / den
     ///
-    /// At $1.09 (price_scaled=1090): num=31622, den=33015 → ≈12,303 SUI ≈ 12,305 SUI.
-    /// Within ~0.02% of the 12,305 target — acceptable integer-sqrt error.
+    /// At $1.09 (price_scaled=1090): num=31622, den=33015 → 9000*31622/33015 ≈ 8,620 SUI
+    /// (BASE_GRAD_MIST = 9,000). Within ~0.01% of the exact 8,620 - acceptable
+    /// integer-sqrt error. (12,305 was the pre-F-4 anchor and no longer appears.)
     /// threshold = BASE_GRAD_MIST * sqrt(1000) / sqrt(price_scaled)
     /// F-4 FIX (V13): den previously computed isqrt(price_scaled * precision / 1_000)
     /// while num was isqrt(1_000 * precision) - ASYMMETRIC. den divided by 1,000
@@ -1226,8 +1258,21 @@ module suipump::bonding_curve {
     }
 
     // ---------- Record graduation pool (identical to v8) ----------
+    // AdminCap entrypoint (the cold backstop). V14 adds record_graduation_pool_with_cap
+    // for the hot graduation signer; both delegate to the SAME private impl below so
+    // there is ZERO duplicated economic logic (F-10: a parallel implementation is how
+    // the 31.6x threshold error survived 55 green runs).
     public fun record_graduation_pool<T>(
         _cap:             &AdminCap,
+        curve:            &mut Curve<T>,
+        pool_id:          ID,
+        creator_lp_nft_id: ID,
+    ) {
+        record_graduation_pool_impl(curve, pool_id, creator_lp_nft_id);
+    }
+
+    // V14: shared body for the AdminCap and GraduationCap record entrypoints.
+    fun record_graduation_pool_impl<T>(
         curve:            &mut Curve<T>,
         pool_id:          ID,
         creator_lp_nft_id: ID,
@@ -1258,8 +1303,21 @@ module suipump::bonding_curve {
     //      graduated on ~3 SUI) can never mint 200M against it. This bounds the
     //      OUTPUT and is immune to any dampened_grad_threshold / oracle bug.
     //   3. AdminCap gate (caller authority).
+    // AdminCap entrypoint (the cold backstop). V14 adds claim_graduation_funds_with_cap
+    // for the hot graduation signer; both delegate to the SAME private impl below so
+    // the three guard barriers and the 200M mint exist in exactly ONE place (F-10).
     public fun claim_graduation_funds<T>(
         _cap:  &AdminCap,
+        curve: &mut Curve<T>,
+        ctx:   &mut TxContext,
+    ): (Coin<SUI>, Coin<T>) {
+        claim_graduation_funds_impl(curve, ctx)
+    }
+
+    // V14: shared body for the AdminCap and GraduationCap claim entrypoints. Holds
+    // ALL THREE mint barriers; the public wrappers add only the authority gate
+    // (AdminCap type, or GraduationCap-vs-registry check).
+    fun claim_graduation_funds_impl<T>(
         curve: &mut Curve<T>,
         ctx:   &mut TxContext,
     ): (Coin<SUI>, Coin<T>) {
@@ -1297,6 +1355,126 @@ module suipump::bonding_curve {
     // retry needs (claimed-but-no-pool vs nothing-to-claim).
     public fun grad_funds_claimed<T>(c: &Curve<T>): bool {
         df::exists(&c.id, GRAD_CLAIMED_KEY)
+    }
+
+    // =====================================================================
+    // V14 ADDITIONS (GRAD-1): GraduationCap + rotation registry
+    //
+    // Additive upgrade under the `compatible` policy: two NEW structs, two NEW
+    // events, four NEW public functions, and body-only edits to init /
+    // claim_graduation_funds / record_graduation_pool (their signatures and every
+    // existing struct layout are UNCHANGED). No field is added, removed, or
+    // reordered on any existing struct - the registry's mutable rotation state
+    // lives on a NEW shared object, never on the frozen Curve/AdminCap/PriceConfig.
+    //
+    // WHY: before V14, claim_graduation_funds and record_graduation_pool were
+    // AdminCap-gated, so the always-online graduation signer had to carry the
+    // AdminCap key on a hot server (finding GRAD-1) - exactly the key concentration
+    // E-1 split PriceRelayerCap out to prevent. V14 gives graduation its own narrow
+    // capability so the AdminCap key goes cold.
+    //
+    // SECURITY PROPERTY (one line): a compromised GraduationCap can drain the
+    // reserves of curves that have already graduated but not yet been drained, and
+    // NOTHING else - it cannot mint on a live curve, pause, claim fees, publish a
+    // price, touch the enclave registry, or govern the lineage - and the cold
+    // AdminCap revokes it instantly by calling rotate_graduation_cap (every
+    // graduation call re-checks registry.active_cap_id, so the old cap dies the
+    // moment the rotation tx lands).
+    // =====================================================================
+
+    /// V14: narrow capability whose ONLY powers are claim_graduation_funds_with_cap
+    /// and record_graduation_pool_with_cap. Held by the hot graduation signer so the
+    /// AdminCap key never touches an online server (GRAD-1). Revocable via the
+    /// registry below - see rotate_graduation_cap.
+    public struct GraduationCap has key, store { id: UID }
+
+    /// V14: shared registry naming the single ACTIVE GraduationCap. Every graduation
+    /// call asserts the cap it was handed == active_cap_id, so rotating this field
+    /// (AdminCap-gated) instantly revokes a compromised cap. Rotation state MUST live
+    /// here, not on a Curve/AdminCap field, because those struct layouts are frozen
+    /// under the upgrade rules.
+    public struct GraduationRegistry has key { id: UID, active_cap_id: ID }
+
+    /// V14: emitted at the single site that mints a GraduationCap on bootstrap
+    /// (init on a fresh publish, init_graduation on the V13 upgrade), so the runbook
+    /// can capture the cap id and the registry id to hand the graduation signer.
+    public struct GraduationCapIssued has copy, drop { cap_id: ID, registry_id: ID }
+
+    /// V14: emitted by rotate_graduation_cap. old_cap_id is dead the instant this
+    /// lands (the next graduation call rejects it EGraduationCapRevoked).
+    public struct GraduationCapRotated has copy, drop { old_cap_id: ID, new_cap_id: ID }
+
+    /// V14 upgrade bootstrap (GRAD-1): mint the canonical GraduationCap and share the
+    /// GraduationRegistry on an UPGRADED package. init only runs on a FRESH publish,
+    /// so the V13 lineage (published before V14 existed) has no cap or registry until
+    /// the AdminCap holder calls this exactly once. Mirrors create_price_config.
+    /// One-shot: a dynamic-field marker on the AdminCap's UID (GRADUATION_INITED_KEY)
+    /// makes any second call abort EGraduationExists. On a FRESH publish init already
+    /// set that marker (and minted the cap+registry), so this aborts there - it only
+    /// runs on the upgrade path. Exactly one GraduationCap and one GraduationRegistry
+    /// per package, on both paths, mutually exclusive.
+    public fun init_graduation(admin: &mut AdminCap, ctx: &mut TxContext) {
+        assert!(!df::exists(&admin.id, GRADUATION_INITED_KEY), EGraduationExists);
+        df::add(&mut admin.id, GRADUATION_INITED_KEY, true);
+        let cap = GraduationCap { id: object::new(ctx) };
+        let cap_id = object::id(&cap);
+        let registry = GraduationRegistry { id: object::new(ctx), active_cap_id: cap_id };
+        event::emit(GraduationCapIssued { cap_id, registry_id: object::id(&registry) });
+        transfer::public_transfer(cap, tx_context::sender(ctx));
+        transfer::share_object(registry);
+    }
+
+    /// V14 revocation (GRAD-1): the COLD AdminCap mints a fresh GraduationCap and
+    /// repoints the registry to it. The previous cap is instantly dead because every
+    /// graduation call re-reads registry.active_cap_id. This is the whole reason the
+    /// registry exists: rotation state cannot live on the frozen AdminCap/Curve, and
+    /// a compromised hot graduation key must be killable without a package upgrade.
+    /// The new cap is transferred to the caller (the admin), who hands it to a fresh
+    /// graduation signer.
+    public fun rotate_graduation_cap(
+        _admin:   &AdminCap,
+        registry: &mut GraduationRegistry,
+        ctx:      &mut TxContext,
+    ) {
+        let old_cap_id = registry.active_cap_id;
+        let cap = GraduationCap { id: object::new(ctx) };
+        let new_cap_id = object::id(&cap);
+        registry.active_cap_id = new_cap_id;
+        event::emit(GraduationCapRotated { old_cap_id, new_cap_id });
+        transfer::public_transfer(cap, tx_context::sender(ctx));
+    }
+
+    /// V14: read accessor - the registry's active GraduationCap id (relayer/UI).
+    public fun active_graduation_cap_id(registry: &GraduationRegistry): ID {
+        registry.active_cap_id
+    }
+
+    /// V14: GraduationCap-gated claim (GRAD-1). Identical effects to the AdminCap
+    /// claim_graduation_funds - both call claim_graduation_funds_impl - plus the
+    /// active-cap check that makes the cap revocable. Aborts EGraduationCapRevoked if
+    /// this cap has been rotated away.
+    public fun claim_graduation_funds_with_cap<T>(
+        cap:      &GraduationCap,
+        registry: &GraduationRegistry,
+        curve:    &mut Curve<T>,
+        ctx:      &mut TxContext,
+    ): (Coin<SUI>, Coin<T>) {
+        assert!(registry.active_cap_id == object::id(cap), EGraduationCapRevoked);
+        claim_graduation_funds_impl(curve, ctx)
+    }
+
+    /// V14: GraduationCap-gated pool record (GRAD-1). Identical effects to the
+    /// AdminCap record_graduation_pool - both call record_graduation_pool_impl - plus
+    /// the active-cap check. Aborts EGraduationCapRevoked if rotated away.
+    public fun record_graduation_pool_with_cap<T>(
+        cap:               &GraduationCap,
+        registry:          &GraduationRegistry,
+        curve:             &mut Curve<T>,
+        pool_id:           ID,
+        creator_lp_nft_id: ID,
+    ) {
+        assert!(registry.active_cap_id == object::id(cap), EGraduationCapRevoked);
+        record_graduation_pool_impl(curve, pool_id, creator_lp_nft_id);
     }
 
     // ---------- Update metadata (identical to v8) ----------

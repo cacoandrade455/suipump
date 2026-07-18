@@ -30,6 +30,12 @@ import { startApi } from './api.js';
 // the V13 package id and do NOT type as V10. Env-gated so the id is never hardcoded
 // here; while SUIPUMP_V13_PACKAGE is unset, V13 events are simply not indexed.
 const V13_PACKAGE = (process.env.SUIPUMP_V13_PACKAGE ?? '').trim().toLowerCase() || null;
+// V14 (GRAD-1): ADDITIVE upgrade of V13. Curve/buy events keep their V13-typed names
+// (emitted by V14 code but defined in V13), so they are already indexed via V13
+// above; only the NEW V14 event structs (GraduationCapIssued/Rotated) type under the
+// V14 package id. Env-gated; while SUIPUMP_V14_PACKAGE is unset those events are
+// simply not indexed and the worker behaves exactly as pre-V14.
+const V14_PACKAGE = (process.env.SUIPUMP_V14_PACKAGE ?? '').trim().toLowerCase() || null;
 
 const ALL_PACKAGE_IDS = [
   '0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8', // V4
@@ -60,6 +66,9 @@ const ALL_PACKAGE_IDS = [
   // cursors -> swept from genesis on first boot once SUIPUMP_V13_PACKAGE is set.
   // Conditional spread so a null id (env unset) never enters the list.
   ...(V13_PACKAGE ? [V13_PACKAGE] : []),
+  // V14 -- ADDITIVE upgrade of V13 (see note above). Only the new
+  // GraduationCapIssued/Rotated event types define under this id; conditional spread.
+  ...(V14_PACKAGE ? [V14_PACKAGE] : []),
 ];
 
 // The Render worker ALREADY sets a PACKAGE_IDS env override, so the live list and
@@ -462,13 +471,25 @@ async function main() {
   // env is NORMAL pre-publish: the worker must run fine without it. The signer
   // check is SUI_PRIVATE_KEY specifically (the Render reality; the publisher's
   // keystore fallback is a local-dev convenience, not an arming signal).
-  const pricePublisherArmed = Boolean(
-    process.env.SUIPUMP_V13_PACKAGE &&
-    process.env.SUIPUMP_PRICE_CONFIG &&
-    process.env.SUI_PRIVATE_KEY
+  //
+  // This gate MUST list the SAME vars the publisher's own dormancy gate checks
+  // (price_publisher.js startPricePublisher). The E-1 cap split (9eb5acc9) added
+  // SUIPUMP_PRICE_RELAYER_CAP as a hard requirement there; omitting it here made
+  // this gate say "armed", call the publisher, and let it go silently dormant on
+  // the missing cap - the split-brain that left PriceConfig at 0 on testnet. Keep
+  // the two lists identical, and name the ACTUAL missing var (not a fixed hint).
+  const PRICE_PUBLISHER_REQUIRED_ENV = [
+    'SUIPUMP_V13_PACKAGE',
+    'SUIPUMP_PRICE_CONFIG',
+    'SUIPUMP_PRICE_RELAYER_CAP',
+    'SUI_PRIVATE_KEY',
+  ];
+  const pricePublisherMissing = PRICE_PUBLISHER_REQUIRED_ENV.filter(
+    (v) => !(process.env[v] && String(process.env[v]).trim())
   );
+  const pricePublisherArmed = pricePublisherMissing.length === 0;
   if (!pricePublisherArmed) {
-    console.log('  [price] price publisher dormant (set SUIPUMP_V13_PACKAGE + SUIPUMP_PRICE_CONFIG + SUI_PRIVATE_KEY to arm)');
+    console.log(`  [price] price publisher dormant: missing ${pricePublisherMissing.join(', ')}`);
   }
 
   // V13 CTO reclaim sweeper arming, same posture as the price publisher. Needs

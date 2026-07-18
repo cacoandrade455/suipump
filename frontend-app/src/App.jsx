@@ -20,7 +20,7 @@ import StatsPage from './StatsPage.jsx';
 import AgentPage from './AgentPage.jsx';
 import GamePage from './GamePage.jsx';
 import { LANGUAGES, translations, t } from './i18n.js';
-import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8, ALL_PACKAGE_IDS, DRAIN_SUI_APPROX, DRAIN_SUI_V4, DRAIN_SUI_V5, DRAIN_SUI_V6, DRAIN_SUI_V7, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_SUI_V6, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, VIRTUAL_TOKENS_V6, TOKEN_DECIMALS, isNewCurve, isV7OrLater, curveShapeFor } from './constants.js';
+import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8, PACKAGE_ID_V13, ALL_PACKAGE_IDS, DRAIN_SUI_APPROX, DRAIN_SUI_V4, DRAIN_SUI_V5, DRAIN_SUI_V6, DRAIN_SUI_V7, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_SUI_V6, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, VIRTUAL_TOKENS_V6, TOKEN_DECIMALS, isNewCurve, isV7OrLater, curveShapeFor, resolveGradThresholdSui } from './constants.js';
 import { mistToSui, priceMistPerToken } from './curve.js';
 import { paginateEvents, paginateMultipleEvents, fetchRecentTrades } from './paginateEvents.js';
 import LiveFeedSidebar from './LiveFeedSidebar.jsx';
@@ -228,7 +228,12 @@ function TokenCard({ token, stats, curveState: curveStateProp, isCrown, suiUsd =
   const iconUrl = token.iconUrl || null;
 
   const cardShape   = curveShapeFor(token.packageId);
-  const cardDrain   = cardShape.drainSui;
+  // V13/V14 target is dynamic: prefer the indexer's per-curve grad_threshold_sui
+  // (the contract's current_grad_threshold), else the price-unset floor. Legacy
+  // V4-V12 keep their static drainSui.
+  const cardDrain   = (token.packageId === PACKAGE_ID_V13)
+    ? resolveGradThresholdSui({ currentGradThresholdSui: stats?.grad_threshold_sui })
+    : cardShape.drainSui;
   const cardVSui    = cardShape.virtualSui;
   const cardVTok    = cardShape.virtualTokens;
   const reserveSui  = curveStateProp?.reserveSui ?? 0;
@@ -1378,7 +1383,9 @@ function HomePage({ onLaunch, lang = 'en' }) {
           const token = tokens.find(t => t.curveId === s.curve_id);
           if (!token) continue;
           const reserveSui    = Number(s.reserve_sui ?? 0);
-          const tokenDrain    = curveShapeFor(token.packageId).drainSui;
+          const tokenDrain    = (token.packageId === PACKAGE_ID_V13)
+            ? resolveGradThresholdSui({ currentGradThresholdSui: s.grad_threshold_sui })
+            : curveShapeFor(token.packageId).drainSui;
           const progress      = Math.min(100, (reserveSui / tokenDrain) * 100);
           map[s.curve_id]     = { reserveSui, progress, lastTradeTime: s.last_trade_time || 0, graduated: s.graduated ?? false };
         }

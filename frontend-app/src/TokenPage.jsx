@@ -13,7 +13,7 @@ import { useTokenPageFeed } from './useRealtimeFeed.js';
 import HolderList from './HolderList.jsx';
 import Comments from './Comments.jsx';
 import AIAnalysis from './AIAnalysis.jsx';
-import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8, PACKAGE_ID_V9, PACKAGE_ID_V10, PACKAGE_ID_V12, PACKAGE_ID_V13, PRICE_CONFIG_ID, V13_BUY_ENABLED, ALL_PACKAGE_IDS, MIST_PER_SUI, DRAIN_SUI_APPROX, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_SUI_V6, VIRTUAL_SUI_V7, VIRTUAL_SUI_V8, VIRTUAL_SUI_V9, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, VIRTUAL_TOKENS_V6, VIRTUAL_TOKENS_V7, VIRTUAL_TOKENS_V8, VIRTUAL_TOKENS_V9, DRAIN_SUI_V4, DRAIN_SUI_V5, DRAIN_SUI_V6, DRAIN_SUI_V7, DRAIN_SUI_V8, DRAIN_SUI_V9, isNewCurve, isV5OrLater, isV7OrLater, isV8OrLater, isV9OrLater, isV10OrLater, supportsMetadataUpdate, curveShapeFor } from './constants.js';
+import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8, PACKAGE_ID_V9, PACKAGE_ID_V10, PACKAGE_ID_V12, PACKAGE_ID_V13, PRICE_CONFIG_ID, V13_BUY_ENABLED, ALL_PACKAGE_IDS, MIST_PER_SUI, DRAIN_SUI_APPROX, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_SUI_V6, VIRTUAL_SUI_V7, VIRTUAL_SUI_V8, VIRTUAL_SUI_V9, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, VIRTUAL_TOKENS_V6, VIRTUAL_TOKENS_V7, VIRTUAL_TOKENS_V8, VIRTUAL_TOKENS_V9, DRAIN_SUI_V4, DRAIN_SUI_V5, DRAIN_SUI_V6, DRAIN_SUI_V7, DRAIN_SUI_V8, DRAIN_SUI_V9, isNewCurve, isV5OrLater, isV7OrLater, isV8OrLater, isV9OrLater, isV10OrLater, supportsMetadataUpdate, curveShapeFor, resolveGradThresholdSui } from './constants.js';
 import { buyQuote, sellQuote } from './curve.js';
 import { t } from './i18n.js';
 import { executeTx } from './lib/executeTx.js';
@@ -1904,11 +1904,20 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   // wrong defaults, causing the displayed quote to differ from the executed tx.
   const { virtualSui: vSui, virtualTokens: vTok, drainSui } = curveShapeFor(pkgId);
 
+  // V13/V14 target is DYNAMIC (oracle-dampened), so drainSui from curveShapeFor is
+  // only the price-unset floor for this lineage. Prefer the real per-curve target
+  // the indexer surfaces (grad_threshold_sui = the contract's current_grad_threshold
+  // from the last buy). Legacy V4-V12 keep their static drainSui. resolveGradThresholdSui
+  // applies the exact contract fallback chain (curve value -> recompute -> floor).
+  const effectiveDrainSui = (pkgId === PACKAGE_ID_V13)
+    ? resolveGradThresholdSui({ currentGradThresholdSui: curveState?.grad_threshold_sui })
+    : drainSui;
+
   // Fresh reserves override stale curveState for quote accuracy
   const reserveMist     = freshReserveMist     ?? (curveState ? BigInt(curveState.sui_reserve)   : 0n);
   const tokensRemaining = freshTokensRemaining ?? (curveState ? BigInt(curveState.token_reserve) : 0n);
   const tokensSold      = BigInt(800_000_000) * 10n ** BigInt(TOKEN_DECIMALS) - tokensRemaining;
-  const progress        = Math.min(100, (mistToSui(reserveMist) / drainSui) * 100);
+  const progress        = Math.min(100, (mistToSui(reserveMist) / effectiveDrainSui) * 100);
   const priceMist       = curveState ? priceMistPerToken(reserveMist, tokensSold, vSui, vTok) : 0n;
   const priceSui        = Number(priceMist) / 1e9;
   const priceUsd        = priceSui * suiUsd;
@@ -2223,7 +2232,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
               </div>
               <div className="flex items-center justify-between text-[10px] font-mono text-white/40 mt-2.5">
                 <span>{fmt(mistToSui(reserveMist))} {t(lang, 'suiRaised')}</span>
-                <span>{fmt(drainSui)} {t(lang, 'suiTarget')}</span>
+                <span>{fmt(effectiveDrainSui)} {t(lang, 'suiTarget')}</span>
               </div>
               {!graduated && (
                 <div className="mt-2.5 pt-2.5 border-t border-lime-400/15 flex items-center gap-1.5">
