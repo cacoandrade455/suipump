@@ -1056,6 +1056,7 @@ function TPSLPanel({
   reserveMist, tokensRemaining, vSui, vTok,
   slippage,
   keypair,        // Ed25519Keypair | null - if set, signs autonomously (no Slush popup)
+  onOpenStrategies = null,  // opens the App-level strategies modal (trading key setup lives there)
 }) {
   const client = useCurrentClient();
   const dAppKit = useDAppKit();
@@ -1220,7 +1221,10 @@ function TPSLPanel({
           )}
         </div>
         <div className="flex items-center gap-2">
-          <span className={`text-[8.5px] font-mono font-semibold px-[7px] py-[3px] rounded-full border ${keypair ? 'text-lime-400 border-lime-400/30' : 'text-[#f59e0b] border-amber-500/30'}`}>TRADING KEY</span>
+          <button
+            onClick={() => { if (onOpenStrategies) onOpenStrategies(); }}
+            className={`text-[8.5px] font-mono font-semibold px-[7px] py-[3px] rounded-full border transition-colors ${keypair ? 'text-lime-400 border-lime-400/30 hover:border-lime-400/60' : 'text-[#f59e0b] border-amber-500/30 hover:border-amber-500/60'}`}
+          >TRADING KEY</button>
           {isActive && (
             <button onClick={deactivate}
               className="text-[9px] font-mono text-red-400/60 hover:text-red-400 transition-colors">
@@ -1712,7 +1716,7 @@ function CreatorBuybackPanel({ curveId, tokenType, packageId, isCreator, account
 
 // -- Main component ----------------------------------------------------------
 
-export default function TokenPage({ curveId, tokenType, packageId: packageIdHint, initialSharedVersion: initialSharedVersionProp = null, onBack, lang = 'en', tradeKeypair = null, tradeKeyReady = false }) {
+export default function TokenPage({ curveId, tokenType, packageId: packageIdHint, initialSharedVersion: initialSharedVersionProp = null, onBack, lang = 'en', tradeKeypair = null, tradeKeyReady = false, onOpenStrategies = null }) {
   const navigate = useNavigate();
   const account  = useCurrentAccount();
   const client   = useCurrentClient();
@@ -2308,6 +2312,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
                   vTok={vTok}
                   slippage={slippage}
                   keypair={tradeKeyReady ? tradeKeypair : null}
+                  onOpenStrategies={onOpenStrategies}
                 />
               </div>
             )}
@@ -2343,6 +2348,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
             vTok={vTok}
             slippage={slippage}
             keypair={tradeKeyReady ? tradeKeypair : null}
+            onOpenStrategies={onOpenStrategies}
           />
           <VestingPanel curveId={curveId} tokenType={tokenType} packageId={pkgId} account={account} tokenBalance={tokenBalance} lang={lang} initialSharedVersion={curveState?.initial_shared_version ?? null} />
           {isCreator && (

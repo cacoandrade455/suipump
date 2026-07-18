@@ -1670,7 +1670,7 @@ function HomePage({ onLaunch, lang = 'en' }) {
 }
 
 // ── Token page wrapper ────────────────────────────────────────────────────────
-function TokenPageWrapper({ lang, tradeKey }) {
+function TokenPageWrapper({ lang, tradeKey, onOpenStrategies }) {
   const { curveId } = useParams();
   const navigate = useNavigate();
   const client = useCurrentClient();
@@ -1738,7 +1738,7 @@ function TokenPageWrapper({ lang, tradeKey }) {
       <div className="h-3 bg-white/5 rounded w-32" />
     </div>
   );
-  return <TokenPage curveId={curveId} tokenType={tokenType} packageId={packageId} initialSharedVersion={initialSharedVersion} onBack={() => navigate('/')} lang={lang} tradeKeypair={tradeKey?.keypair ?? null} tradeKeyReady={tradeKey?.isReady ?? false} />;
+  return <TokenPage curveId={curveId} tokenType={tokenType} packageId={packageId} initialSharedVersion={initialSharedVersion} onBack={() => navigate('/')} lang={lang} tradeKeypair={tradeKey?.keypair ?? null} tradeKeyReady={tradeKey?.isReady ?? false} onOpenStrategies={onOpenStrategies} />;
 }
 
 // ── 404 ───────────────────────────────────────────────────────────────────────
@@ -1814,7 +1814,7 @@ export default function App() {
       <main className="max-w-[1440px] mx-auto px-4 py-6 pb-24 lg:pb-6">
         <Routes>
           <Route path="/" element={<HomePage onLaunch={() => setShowLaunch(true)} lang={lang} />} />
-          <Route path="/token/:curveId" element={<TokenPageWrapper lang={lang} tradeKey={tradeKey} />} />
+          <Route path="/token/:curveId" element={<TokenPageWrapper lang={lang} tradeKey={tradeKey} onOpenStrategies={() => setShowStrategies(true)} />} />
           <Route path="/airdrop" element={<AirdropPage onBack={() => navigate('/')} lang={lang} />} />
           <Route path="/stats" element={<StatsPage onBack={() => navigate('/')} lang={lang} />} />
           <Route path="/whitepaper" element={<WhitepaperPage onBack={() => navigate('/')} lang={lang} />} />
