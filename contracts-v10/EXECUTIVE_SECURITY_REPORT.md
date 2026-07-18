@@ -5,9 +5,10 @@ community member, a journalist. Every section is meant to be understood by a sma
 person who has never used a blockchain. Where a technical word is unavoidable, it is
 defined in one line the first time it appears, and there is a full glossary at the end.
 
-Date: 2026-07-17. This covers the code that runs SuiPump's token launches and its
-automated trading assistant, as it stands just before the planned outside audit and
-mainnet launch. The small notes in parentheses (like this) point to the exact test or
+Date: 2026-07-17, updated 2026-07-18 to record that the graduation key fix described
+in section 3 has now been applied and is live. This covers the code that runs
+SuiPump's token launches and its automated trading assistant, as it stands just
+before the planned outside audit and mainnet launch. The small notes in parentheses (like this) point to the exact test or
 document that proves each claim, so a technical reader can check the work. They do not
 change the plain-language meaning.
 
@@ -348,24 +349,26 @@ stated plainly.
 
 - **The administrator key.** One powerful key can still freeze tokens, move graduated
   tokens' money, and collect fees. As of the July 17 fix (2.7) the everyday price job is
-  no longer part of this key, so the powerful key no longer needs to be online all the
-  time and can be kept offline. Until it is placed under multiple-approval control you
-  are still trusting whoever holds it, and that migration is a stated requirement before
-  real-money launch. The separate, online price-only key is deliberately limited: the
-  worst its holder can do is nudge the published price within a fixed safe band.
-- **The graduation key: the fix is now built.** When a token gets popular enough to
-  "graduate" and move to a real exchange, that final step is done automatically by a
-  server. On the test network, to do that step the server has been holding the powerful
-  admin key described above, so that key has been online rather than offline. This was a
-  deliberate choice: it is only test money, the graduation step had never been fully
-  proven from start to finish, and automating it is how we prove it. We have now built
-  the permanent fix. Graduation gets its own limited key that can do nothing except
-  finish a graduation. It cannot drain a normal token, cannot pause anything, cannot
-  touch fees, and cannot touch the price. The offline master key has an instant
-  off-switch for it: if the limited key is ever stolen, one action from the offline key
-  turns it off on the spot, with no software upgrade needed. Once we apply this upgrade
-  and point the server at the limited key, the powerful admin key comes off every server
-  and can be kept fully offline. The everyday price key and this graduation key are two
+  no longer part of this key, and as of July 18 the graduation job is not either (next
+  bullet), so nothing that runs on a server needs the powerful key anymore: it is now
+  off every server and kept offline. Until it is placed under multiple-approval control
+  you are still trusting whoever holds it, and that migration is a stated requirement
+  before real-money launch. The separate, online price-only key is deliberately limited:
+  the worst its holder can do is nudge the published price within a fixed safe band.
+- **The graduation key: the fix is now applied and live.** When a token gets popular
+  enough to "graduate" and move to a real exchange, that final step is done
+  automatically by a server. On the test network, to do that step the server had been
+  holding the powerful admin key described above, so that key was online rather than
+  offline. This was a deliberate choice: it is only test money, the graduation step had
+  never been fully proven from start to finish, and automating it is how we prove it.
+  The permanent fix is now applied and live on the test network. Graduation has its own
+  limited key that can do nothing except finish a graduation. It cannot drain a normal
+  token, cannot pause anything, cannot touch fees, and cannot touch the price. The
+  offline master key has an instant off-switch for it: if the limited key is ever
+  stolen, one action from the offline key turns it off on the spot, with no software
+  upgrade needed. The upgrade has been applied, the server now uses the limited
+  graduation key on its own dedicated wallet, and the powerful admin key is off every
+  server and kept fully offline. The everyday price key and this graduation key are two
   different keys on two different wallets, and the code keeps them strictly separate.
 - **The price feed.** The graduation target depends on an official SUI price published
   by the operator through the price-only key above. The operator can only publish a value

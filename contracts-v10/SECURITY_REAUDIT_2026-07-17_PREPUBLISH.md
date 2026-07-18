@@ -31,6 +31,40 @@ upgrade + `init_graduation` + swapping `GRADUATION_SIGNER_KEY` to a graduation-o
 wallet, the AdminCap key leaves every server and can go fully cold. Until that operator
 step lands, do not read "main wallet" here as "cold." See addenda 4 and 5.
 
+> **Update (2026-07-18, addendum 6):** the operator step HAS landed - the V14 upgrade
+> is live, `init_graduation` was run, and `GRADUATION_SIGNER_KEY` now carries the
+> dedicated graduation wallet
+> `0x7334d47632af5386d9b16326ade55be642fc8a569a1672b0cbaaf4d0e7e6180a` (GraduationCap
+> only). "Main wallet" here may now be read as COLD: the AdminCap key is off every
+> server. See the V14 upgrade record below and Addendum 6.
+
+## V14 upgrade record 2026-07-18
+
+V14 was published to testnet on 2026-07-18 as a **COMPATIBLE UPGRADE of V13 via
+UpgradeCap V13 `0x79ebefc92e5da42720ff4b3e719a71e4ecd5428a9750d4ada8257f61e3556a19`**
+(toolchain `sui 1.75.2`). It is NOT a new lineage and does NOT replace V13: existing
+curves stay typed at V13
+(`0xdf66376f006557b9f81b3455ee786ffd7f2a633488cc3bd31a37ddbdc69bd56b::bonding_curve::Curve<T>`)
+forever, and both package ids coexist in all read paths. V14 is the DEFINING package
+of the new graduation structs and events (`GraduationCap`, `GraduationRegistry`,
+`GraduationCapIssued`, `GraduationCapRotated`) and of the `_with_cap` entrypoints
+(`claim_graduation_funds_with_cap`, `record_graduation_pool_with_cap`), and it is the
+WRITE target for new graduations.
+
+Live V14 testnet ids (full, never truncated):
+
+| Object | Id |
+|--------|-----|
+| V14 package (compatible upgrade of V13) | `0xb6e7cef4d36b3cf0fd84888dd9930ce9abfcc0ed56f01384f1e02b55eeac1b03` |
+| GraduationRegistry (shared) | `0xe1d895aec204ec64e2ad9755080d3dad20d053af6d480c149ae601d375281e8a` |
+| GraduationCap (dedicated graduation wallet) | `0xe1eeaf7620fe62bc4e0d207821760c69a84758c757c47000790292f1a8d905ee` |
+| Dedicated graduation wallet | `0x7334d47632af5386d9b16326ade55be642fc8a569a1672b0cbaaf4d0e7e6180a` |
+
+**Transcription caution:** after an upgrade, the UpgradeCap object's on-chain
+`package` field does NOT show the live package id recorded here. Never copy a package
+id out of the UpgradeCap object; the V14 package id above is the only correct one for
+this upgrade.
+
 - Publish tx digest: `HFqyRPYV2UXYnqt83KegrhFpUReoGgncXPC42n8rADq1`
 - CLI toolchain: `sui 1.75.2-027e13b2c140`
 - Relayer wallet (owns the PriceRelayerCap): `0xce53cb8f9befc490393d70528ef732bbcbe12d951ffcdd76a37af9b0f9624629`
@@ -744,3 +778,48 @@ longer bundled with the treasury cap).
   F-14 (the standing multisig-migration surface), `AUDIT_NOTES.md` GRAD-1.
 - **Corpus reference:** Class 10 / Class 12 - a privileged always-online key; the same
   concentration E-1 addressed, re-introduced on the graduation path under a time-box.
+
+---
+
+## Addendum 6 (2026-07-18) - GRAD-1 CLOSED ON-CHAIN: V14 live, init_graduation done, operator key swap done
+
+The three closing steps from Addendum 5 have all landed:
+
+- **(a) V14 upgrade LIVE.** Published as a COMPATIBLE upgrade of V13 via UpgradeCap
+  V13 `0x79ebefc92e5da42720ff4b3e719a71e4ecd5428a9750d4ada8257f61e3556a19`
+  (toolchain `sui 1.75.2`). V14 package:
+  `0xb6e7cef4d36b3cf0fd84888dd9930ce9abfcc0ed56f01384f1e02b55eeac1b03`. Existing
+  curves remain typed at V13
+  `0xdf66376f006557b9f81b3455ee786ffd7f2a633488cc3bd31a37ddbdc69bd56b`; both ids
+  coexist in read paths; V14 is the write target for new graduations (`_with_cap`).
+  See the "V14 upgrade record 2026-07-18" section at the top of this document.
+- **(b) `init_graduation` DONE (AdminCap V13, one-shot).** GraduationRegistry
+  (shared): `0xe1d895aec204ec64e2ad9755080d3dad20d053af6d480c149ae601d375281e8a`.
+  GraduationCap:
+  `0xe1eeaf7620fe62bc4e0d207821760c69a84758c757c47000790292f1a8d905ee`, held by the
+  DEDICATED graduation wallet
+  `0x7334d47632af5386d9b16326ade55be642fc8a569a1672b0cbaaf4d0e7e6180a` (which holds
+  ONLY the GraduationCap, never the AdminCap).
+- **(c) Operator key swap DONE.** `GRADUATION_SIGNER_KEY` on Render now carries the
+  dedicated graduation wallet's key. The env gate from commit `1d300530` is SET
+  (`SUIPUMP_V14_PACKAGE` + `SUIPUMP_GRADUATION_CAP` + `SUIPUMP_GRADUATION_REGISTRY`),
+  so graduation writes take the `_with_cap` path targeting V14.
+
+**Consequences:**
+
+- **GRAD-1 is CLOSED.** The AdminCap key is off every server. The always-online
+  graduation signer can do nothing except finish a graduation
+  (`claim_graduation_funds_with_cap` / `record_graduation_pool_with_cap`), and its
+  cap is instantly revocable from the cold AdminCap via `rotate_graduation_cap`
+  (registry check `EGraduationCapRevoked`).
+- The constraint at the end of Addendum 4's signer-separation note ("the audit
+  package must NOT claim the AdminCap is fully cold while GRAD-1 is live") is now
+  SATISFIED: GRAD-1 is no longer live, and the AdminCap may be described as fully
+  cold. The original writeup is retained above for the record.
+- **F-14 now migrates a strictly smaller AdminCap:** no price authority (E-1
+  `PriceRelayerCap` split) and no graduation authority (V14 `GraduationCap` split).
+  Nothing online depends on the AdminCap; it can move cold to the multisig intact.
+- Signer separation is unchanged: `GRADUATION_SIGNER_KEY` (now the graduation-only
+  wallet) is read only by the graduation scripts; `SUI_PRIVATE_KEY` (price relayer
+  wallet `0xce53cb8f9befc490393d70528ef732bbcbe12d951ffcdd76a37af9b0f9624629`,
+  PriceRelayerCap) only by the price publisher and CTO sweeper.

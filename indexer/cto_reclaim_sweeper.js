@@ -20,10 +20,18 @@
 //
 // ARMING
 //   Armed by index.js when SUIPUMP_V13_PACKAGE and SUI_PRIVATE_KEY are both set
-//   (mirrors the price publisher's arming). Dormant otherwise. The WRITE target
-//   package is never hardcoded: it comes from write_target.js
-//   (LATEST_WRITE_PACKAGE), which the owner flips by env after the V13 publish.
-//   V13_PACKAGE is imported purely as the arming signal / guard.
+//   (mirrors the price publisher's arming). Dormant otherwise.
+//
+// WRITE TARGET - lineage-latest, never hardcoded
+//   The escrow CTO surface (TakeoverProposal<T>, reclaim_vote, the Takeover*/
+//   VoteReclaimed events) FIRST EXISTS in V13: no V4-V12 package ever emits a
+//   Takeover event, and events keep their DEFINING package id forever (V14
+//   emissions still type under V13), so every sweepable proposal here is
+//   necessarily V13-lineage. reclaim_vote must therefore run the LATEST bytecode
+//   of the V13 lineage: V14 (SUIPUMP_V14_PACKAGE - a COMPATIBLE additive upgrade
+//   of V13; V13 stays the proposals' type identity) when set, else the V13
+//   package itself. NOT LATEST_WRITE_PACKAGE: that env var carries the
+//   V10-lineage / new-launch write target and may legitimately differ.
 //
 // TRANSPORT
 //   JSON-RPC is FORBIDDEN (no SuiClient/getFullnodeUrl). The SuiGraphQLClient is
@@ -53,7 +61,7 @@ import { fromBase64 } from '@mysten/sui/utils';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { LATEST_WRITE_PACKAGE, V13_PACKAGE } from './write_target.js';
+import { V13_PACKAGE, V14_PACKAGE } from './write_target.js';
 
 // ---- Config -----------------------------------------------------------------
 
@@ -61,6 +69,12 @@ const POLL_INTERVAL_MS = 60 * 1000;   // 60s per tick
 // reclaim_vote calls batched into one atomic PTB on the happy path. Kept modest
 // so a single PTB stays well under the transaction command/gas ceiling.
 const BATCH_SIZE = 20;
+
+// reclaim_vote write target: the latest upgrade of the V13 lineage - V14 when
+// SUIPUMP_V14_PACKAGE is set, else the V13 package (see the WRITE TARGET header
+// note; every sweepable proposal is necessarily V13-lineage). Null only when
+// V13_PACKAGE is unset, in which case startCtoReclaimSweeper refuses to start.
+const RECLAIM_WRITE_PACKAGE = V14_PACKAGE ?? V13_PACKAGE;
 
 // ---- Keypair (same pattern as price_publisher.js / auto_graduate.js) ---------
 
@@ -166,7 +180,7 @@ async function resolveTokenType(pool, curveId) {
 
 // Fire reclaim_vote for a set of voters in ONE atomic PTB. Returns the digest or
 // throws (FailedTransaction or build/execute error). All calls share the single
-// proposal ref. Target is LATEST_WRITE_PACKAGE (never hardcoded).
+// proposal ref. Target is RECLAIM_WRITE_PACKAGE (lineage-latest, never hardcoded).
 async function fireReclaimBatch(client, keypair, proposalId, isv, tokenType, voters) {
   const tx = new Transaction();
   const ref = (isv !== null && isv !== undefined)
@@ -175,7 +189,7 @@ async function fireReclaimBatch(client, keypair, proposalId, isv, tokenType, vot
 
   for (const voter of voters) {
     tx.moveCall({
-      target: `${LATEST_WRITE_PACKAGE}::bonding_curve::reclaim_vote`,
+      target: `${RECLAIM_WRITE_PACKAGE}::bonding_curve::reclaim_vote`,
       typeArguments: [tokenType],
       arguments: [ref, tx.pure.address(voter)],
     });
@@ -279,7 +293,7 @@ export async function startCtoReclaimSweeper(client, pool) {
 
   const keypair = loadKeypair();
   console.log(`  [cto-sweep] reclaim sweeper started - every ${POLL_INTERVAL_MS / 1000}s from ${keypair.toSuiAddress()}`);
-  console.log(`  [cto-sweep] write target ${LATEST_WRITE_PACKAGE}`);
+  console.log(`  [cto-sweep] write target ${RECLAIM_WRITE_PACKAGE} (V13-lineage latest: ${V14_PACKAGE ? 'V14 via SUIPUMP_V14_PACKAGE' : 'V13 - set SUIPUMP_V14_PACKAGE to run the latest bytecode'})`);
 
   while (true) {
     try {

@@ -11,6 +11,17 @@ services:
         fromDatabase:
           name: suipump-db
           property: connectionString
+      # NOTE: the LIVE env is set in the Render dashboard, which supersedes this
+      # file. A PACKAGE_IDS override WINS over the code default ALL_PACKAGE_IDS in
+      # index.js (V4..V12 hardcoded plus env-gated SUIPUMP_V13_PACKAGE /
+      # SUIPUMP_V14_PACKAGE), so any live override must contain EVERY package id,
+      # including V14 0xb6e7cef4d36b3cf0fd84888dd9930ce9abfcc0ed56f01384f1e02b55eeac1b03
+      # (a COMPATIBLE additive upgrade of V13
+      # 0xdf66376f006557b9f81b3455ee786ffd7f2a633488cc3bd31a37ddbdc69bd56b; the two
+      # ids COEXIST in read paths - V13 stays the type identity of existing curves,
+      # V14 defines the new GraduationCap events + entrypoints). See .env.example
+      # for the full current list; prefer leaving PACKAGE_IDS unset so the code
+      # default applies. The value below is a stale bootstrap example (V4 only).
       - key: PACKAGE_IDS
         value: 0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8
       - key: POLL_MS

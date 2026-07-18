@@ -61,6 +61,15 @@ const MIST = 1_000_000_000;
 // Full V13 id: 0xdf66376f006557b9f81b3455ee786ffd7f2a633488cc3bd31a37ddbdc69bd56b
 const V13_PACKAGE = (process.env.SUIPUMP_V13_PACKAGE ?? '').trim().toLowerCase() || null;
 
+// V14 (GRAD-1) -- COMPATIBLE ADDITIVE upgrade of V13 (published via UpgradeCap V13),
+// so curves stay TYPED at V13 and the V14 id should normally never appear as a
+// curve-type package. Defensive branch: if a row ever carries the V14 id, it MUST
+// resolve to the SAME V13/V9+ shape, never fall through to the unknown default.
+// Env-driven; the '0xb6e7cef4' prefix below is only a fallback for when
+// SUIPUMP_V14_PACKAGE is unset.
+// Full V14 id: 0xb6e7cef4d36b3cf0fd84888dd9930ce9abfcc0ed56f01384f1e02b55eeac1b03
+const V14_PACKAGE = (process.env.SUIPUMP_V14_PACKAGE ?? '').trim().toLowerCase() || null;
+
 // vTok = virtual token reserve (same across all versions -- defines curve shape)
 // vSui = virtual SUI reserve (varies per version -- sets launch price)
 // V13 curve math is UNCHANGED from V9+: VIRTUAL_SUI_RESERVE = 4_369,
@@ -75,6 +84,8 @@ function getVirtuals(packageId) {
   const pid = String(packageId).toLowerCase();
   // V13 (separate lineage): match the full env id first (authoritative), prefix fallback.
   if ((V13_PACKAGE && pid === V13_PACKAGE) || pid.startsWith('0xdf66')) return { vSui: 4369, vTok }; // V13
+  // V14 (upgrade of V13 -- defensive: curves type as V13; same V9+ shape).
+  if ((V14_PACKAGE && pid === V14_PACKAGE) || pid.startsWith('0xb6e7cef4')) return { vSui: 4369, vTok }; // V14
   if (pid.startsWith('0x2154')) return { vSui: 30000, vTok }; // V4
   if (pid.startsWith('0x785c')) return { vSui:  9000, vTok }; // V5: contract VIRTUAL_SUI_RESERVE = 9_000
   if (pid.startsWith('0x21d5')) return { vSui:  9000, vTok }; // V6: contract VIRTUAL_SUI_RESERVE = 9_000

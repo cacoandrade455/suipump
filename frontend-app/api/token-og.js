@@ -151,6 +151,13 @@ const VIRTUAL_PARAMS = {
   // current_grad_threshold). This floor is used only when that value is absent - a
   // static 12_305 here would render a wrong target. Env-gated so the id is never hardcoded.
   ...(V13_PACKAGE ? { [V13_PACKAGE]: { vSui: 4_369n, vTok: 1_073_000_000n, drain: 9_000n } } : {}),
+  // V14 (GRAD-1) -- ADDITIVE upgrade of V13: a V14 curve IS a V13 curve, so this id
+  // should never appear as a curve-type package. Defensive row: if it ever does, it
+  // MUST resolve to the SAME V13/V9+ shape (drain 9_000 = price-unset FLOOR, live
+  // per-curve grad_threshold_sui preferred), never fall through to DEFAULT_PARAMS.
+  // Env-gated; see also the '0xb6e7cef4' prefix fallback in paramsForPackage.
+  // Full V14 id: 0xb6e7cef4d36b3cf0fd84888dd9930ce9abfcc0ed56f01384f1e02b55eeac1b03
+  ...(V14_PACKAGE ? { [V14_PACKAGE]: { vSui: 4_369n, vTok: 1_073_000_000n, drain: 9_000n } } : {}),
 };
 const DEFAULT_PARAMS = { vSui: 3_500n, vTok: 1_073_000_000n, drain: 9_000n };
 
@@ -158,6 +165,10 @@ function paramsForPackage(pkgId) {
   const key = String(pkgId ?? '').toLowerCase();
   const hit = VIRTUAL_PARAMS[key];
   if (hit) return hit;
+  // V14 (GRAD-1) prefix fallback for when SUIPUMP_V14_PACKAGE is unset: a V14 curve
+  // IS a V13 curve (same V9+ shape; drain 9_000 = price-unset FLOOR).
+  // Full V14 id: 0xb6e7cef4d36b3cf0fd84888dd9930ce9abfcc0ed56f01384f1e02b55eeac1b03
+  if (key.startsWith('0xb6e7cef4')) return { vSui: 4_369n, vTok: 1_073_000_000n, drain: 9_000n };
   // Genuinely unknown package -- LOUD, do not silently return stale reserves (the
   // guard the -20.2% price-badge incident lacked). This is a fallback-only path
   // (the indexer is the primary price source); still surface the misconfiguration.
