@@ -836,11 +836,19 @@ function fmtSui(mist) {
   return n.toLocaleString(undefined, { maximumFractionDigits: 4 });
 }
 
-function AgentSessionPanel({ account, onSessionChange }) {
+function AgentSessionPanel({ account, onSessionChange, onAttestedChange }) {
   const dAppKit = useDAppKit();
   const client  = useCurrentClient();
 
-  const [session, setSession] = useState(null); // { id, sharedVersion, escrow, spent, spendCap, expiryMs, revoked }
+  const [session, setSession] = useState(null); // { id, sharedVersion, escrow, spent, spendCap, expiryMs, revoked, attested }
+  // Optimistic in-session attestation: set the moment an attested open
+  // confirms on-chain, so the NAUTILUS chip can show before the indexer has
+  // ingested the SessionAttested event. The PERSISTENT source read in
+  // loadSession (indexer /agent/session `attested`, GraphQL event scan as
+  // fallback) is authoritative on any load/refresh - this flag only bridges
+  // the ingest gap within the session that performed the open.
+  const [justOpenedAttested, setJustOpenedAttested] = useState(false);
+  useEffect(() => { setJustOpenedAttested(false); }, [account]);
   // Survives session=null (after close/no-session-found) so sweep_token can
   // still target the last session this wallet had, since a stuck token can
   // legitimately be discovered AFTER the SUI side has already been closed.
@@ -1033,6 +1041,34 @@ function AgentSessionPanel({ account, onSessionChange }) {
       const sessAddr = typeof fields.session_address === 'string' ? fields.session_address.toLowerCase() : null;
       const isSharedWallet = sessAddr != null && sessAddr === AGENT_SESSION_WALLET.toLowerCase();
 
+      // Nautilus attestation - PERSISTENT source, so the chip survives a
+      // refresh. The live AgentSession object cannot carry this (the V10-
+      // defined type has no attested field and upgrades cannot add one), so
+      // the SessionAttested event is the ground truth: emitted exactly once
+      // by open_and_share_attested in the SAME tx as SessionOpened, with no
+      // un-attest path - event existence IS the state. Fast path: the indexer
+      // surfaces it as a boolean on /agent/session. Fallback (indexer
+      // unreachable, or a deploy that predates the field): a bounded live
+      // GraphQL scan of the event. Event TYPES keep their DEFINING package
+      // id - SessionAttested is V12-defined, unlike the lineage's V10-defined
+      // SessionOpened, so this filter uses PACKAGE_ID_V12.
+      let attested = idxData?.attested === true;
+      if (!attested && typeof idxData?.attested !== 'boolean') {
+        try {
+          const aType = `${PACKAGE_ID_V12}::agent_session::SessionAttested`;
+          const aq = `{ events(filter: { type: "${aType}" }, last: 50) { nodes { contents { json } } } }`;
+          const ar = await fetch(GQL_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query: aq }),
+            signal: AbortSignal.timeout(8000),
+          });
+          const ad = await ar.json();
+          attested = (ad?.data?.events?.nodes ?? [])
+            .some(n => (n.contents?.json?.session_id ?? '').toLowerCase() === sessionId.toLowerCase());
+        } catch { /* stay false - the chip simply does not render */ }
+      }
+
       setSession({
         id:            sessionId,
         sharedVersion,
@@ -1043,6 +1079,7 @@ function AgentSessionPanel({ account, onSessionChange }) {
         revoked,
         sessionAddress: sessAddr,
         isSharedWallet,
+        attested,
       });
     } catch (e) {
       // Degrade to "no session" rather than blocking the open flow.
@@ -1065,6 +1102,15 @@ function AgentSessionPanel({ account, onSessionChange }) {
     const usable = session && !session.revoked && !expired ? session.id : null;
     onSessionChange(usable);
   }, [session, onSessionChange]);
+
+  // Report attestation up to AgentPage for the NAUTILUS TEE chip (ledger B-3:
+  // the chip is driven by the session's ACTUAL state, never static). The
+  // persisted flag from loadSession wins; justOpenedAttested only covers the
+  // indexer-ingest gap right after an attested open in this same session.
+  useEffect(() => {
+    if (!onAttestedChange) return;
+    onAttestedChange(!!session && (session.attested === true || justOpenedAttested));
+  }, [session, justOpenedAttested, onAttestedChange]);
 
   async function doOpen() {
     if (busy || !account) return;
@@ -1180,6 +1226,10 @@ function AgentSessionPanel({ account, onSessionChange }) {
         }
         throw new Error(errStr || 'Open failed');
       }
+      // Optimistic: the chain just verified the attested open (the tx above
+      // succeeded), so show the chip immediately; loadSession's persistent
+      // source takes over from the next load.
+      setJustOpenedAttested(attested);
       setMsg(attested
         ? 'Session opened with a CHAIN-ATTESTED enclave key - Sui itself verified the signer is enclave-held (Nautilus). Gas grant (0.5 SUI) funded from your wallet.'
         : enclaveKey
@@ -1319,6 +1369,7 @@ function AgentSessionPanel({ account, onSessionChange }) {
       } catch { /* non-fatal */ }
       setMsg(`Session closed - unspent escrow${parked.length > 0 ? ` and ${parked.length} parked token type${parked.length > 1 ? 's' : ''}` : ''} returned to your wallet.` + sweepNote);
       setSession(null);
+      setJustOpenedAttested(false);
       setTimeout(loadSession, 1500);
     } catch (e) { setMsg(e.message || 'Close failed'); }
     finally { setBusy(false); }
@@ -1671,6 +1722,11 @@ export default function AgentPage({ onBack }) {
   // /session-buy /session-sell (spending session escrow) instead of /buy /sell
   // (the agent wallet). See orders.js POST /orders for how it's persisted.
   const [activeSessionId, setActiveSessionId] = useState(null);
+  // Reported by AgentSessionPanel: true only when the CURRENT session was
+  // opened via open_and_share_attested (Nautilus chain attestation), from the
+  // persisted SessionAttested event so it survives refresh. Drives the
+  // NAUTILUS TEE chip (ledger B-3: conditional, never static).
+  const [sessionAttested, setSessionAttested] = useState(false);
 
   const [goal, setGoal]         = useState('');
   const [guideOpen, setGuideOpen]     = useState(false);  // tutorial collapsed by default - page loads compact
@@ -3174,6 +3230,9 @@ export default function AgentPage({ onBack }) {
             SESSION ACTIVE
           </span>
         )}
+        {activeSessionId && sessionAttested && (
+          <span className="text-[9.5px] leading-none font-mono font-semibold text-white/45 border border-white/[0.12] rounded-full px-[9px] py-[5px] whitespace-nowrap">NAUTILUS TEE · ATTESTED ✓</span>
+        )}
         <span className="text-[9.5px] leading-none font-mono font-semibold text-white/45 border border-white/[0.12] rounded-full px-[9px] py-[5px] whitespace-nowrap">AGENT RUNNER · 24/7</span>
         <span className="ml-auto hidden md:block text-[10px] font-mono text-white/30">keys never leave the enclave · revocable anytime</span>
       </div>
@@ -3185,7 +3244,7 @@ export default function AgentPage({ onBack }) {
 
       {/* -- Agent session (escrow authorization) ------------------------- */}
       <div className="lg:col-start-2 lg:row-start-1 min-w-0">
-        <AgentSessionPanel account={account} onSessionChange={setActiveSessionId} />
+        <AgentSessionPanel account={account} onSessionChange={setActiveSessionId} onAttestedChange={setSessionAttested} />
       </div>
 
       {/* -- Left column (goal / plan / execution / history) ---------------- */}
