@@ -82,7 +82,8 @@ const PACKAGE_IDS = process.env.PACKAGE_IDS
   : ALL_PACKAGE_IDS;
 console.log(
   `[indexer] tracking ${PACKAGE_IDS.length} packages from ${PACKAGE_IDS_SOURCE} ` +
-  `(V13 ${V13_PACKAGE ? 'wired: ' + V13_PACKAGE : 'NOT set via SUIPUMP_V13_PACKAGE'}): ` +
+  `(V13 ${V13_PACKAGE ? 'wired: ' + V13_PACKAGE : 'NOT set via SUIPUMP_V13_PACKAGE'}; ` +
+  `V14 ${V14_PACKAGE ? 'wired: ' + V14_PACKAGE : 'NOT set via SUIPUMP_V14_PACKAGE'}): ` +
   PACKAGE_IDS.join(', ')
 );
 
