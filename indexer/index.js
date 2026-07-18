@@ -462,13 +462,25 @@ async function main() {
   // env is NORMAL pre-publish: the worker must run fine without it. The signer
   // check is SUI_PRIVATE_KEY specifically (the Render reality; the publisher's
   // keystore fallback is a local-dev convenience, not an arming signal).
-  const pricePublisherArmed = Boolean(
-    process.env.SUIPUMP_V13_PACKAGE &&
-    process.env.SUIPUMP_PRICE_CONFIG &&
-    process.env.SUI_PRIVATE_KEY
+  //
+  // This gate MUST list the SAME vars the publisher's own dormancy gate checks
+  // (price_publisher.js startPricePublisher). The E-1 cap split (9eb5acc9) added
+  // SUIPUMP_PRICE_RELAYER_CAP as a hard requirement there; omitting it here made
+  // this gate say "armed", call the publisher, and let it go silently dormant on
+  // the missing cap - the split-brain that left PriceConfig at 0 on testnet. Keep
+  // the two lists identical, and name the ACTUAL missing var (not a fixed hint).
+  const PRICE_PUBLISHER_REQUIRED_ENV = [
+    'SUIPUMP_V13_PACKAGE',
+    'SUIPUMP_PRICE_CONFIG',
+    'SUIPUMP_PRICE_RELAYER_CAP',
+    'SUI_PRIVATE_KEY',
+  ];
+  const pricePublisherMissing = PRICE_PUBLISHER_REQUIRED_ENV.filter(
+    (v) => !(process.env[v] && String(process.env[v]).trim())
   );
+  const pricePublisherArmed = pricePublisherMissing.length === 0;
   if (!pricePublisherArmed) {
-    console.log('  [price] price publisher dormant (set SUIPUMP_V13_PACKAGE + SUIPUMP_PRICE_CONFIG + SUI_PRIVATE_KEY to arm)');
+    console.log(`  [price] price publisher dormant: missing ${pricePublisherMissing.join(', ')}`);
   }
 
   // V13 CTO reclaim sweeper arming, same posture as the price publisher. Needs

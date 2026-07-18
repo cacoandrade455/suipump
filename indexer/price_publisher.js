@@ -242,7 +242,7 @@ export async function startPricePublisher(client) {
   if (!PRICE_RELAYER_CAP_ID) missing.push('SUIPUMP_PRICE_RELAYER_CAP');
   if (!process.env.SUI_PRIVATE_KEY) missing.push('SUI_PRIVATE_KEY');
   if (missing.length) {
-    console.warn(`  [price] price publisher dormant - missing ${missing.join(', ')}. Graduation runs undampened at the static 9,000 SUI fallback until set.`);
+    console.warn(`  [price] price publisher dormant: missing ${missing.join(', ')}. Graduation runs undampened at the static 9,000 SUI fallback until set.`);
     return;
   }
 
@@ -272,10 +272,11 @@ export async function startPricePublisher(client) {
     console.warn(`  [price] could not verify PriceRelayerCap owner (transport) - proceeding; a wrong signer will be rejected on-chain.`);
   }
 
-  console.log(`  [price] Publisher started - every ${PUSH_INTERVAL_MS / 60000}min from ${signer}`);
+  // Unambiguous arming line (full ids, never truncated). Cadence in seconds so it
+  // matches the "cadence Xs" contract in the ops runbook.
+  console.log(`  [price] price publisher ARMED (relayer ${signer}, cap ${PRICE_RELAYER_CAP_ID}, cadence ${PUSH_INTERVAL_MS / 1000}s)`);
   console.log(`  [price] pkg ${PACKAGE}`);
   console.log(`  [price] cfg ${PRICE_CONFIG_ID}`);
-  console.log(`  [price] relayer cap ${PRICE_RELAYER_CAP_ID}`);
 
   while (true) {
     try {
