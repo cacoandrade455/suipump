@@ -56,6 +56,7 @@ export async function initSchema() {
       comment_count         INT              DEFAULT 0,
       reserve_sui           DOUBLE PRECISION DEFAULT 0,
       creator_fees_sui      DOUBLE PRECISION DEFAULT 0,
+      grad_threshold_sui    DOUBLE PRECISION,
       updated_at            BIGINT
     );
 
@@ -86,6 +87,7 @@ export async function initSchema() {
     ALTER TABLE curves ADD COLUMN IF NOT EXISTS initial_shared_version BIGINT;
     ALTER TABLE token_stats ADD COLUMN IF NOT EXISTS reserve_sui        DOUBLE PRECISION DEFAULT 0;
     ALTER TABLE token_stats ADD COLUMN IF NOT EXISTS creator_fees_sui    DOUBLE PRECISION DEFAULT 0;
+    ALTER TABLE token_stats ADD COLUMN IF NOT EXISTS grad_threshold_sui  DOUBLE PRECISION;
     ALTER TABLE curves ADD COLUMN IF NOT EXISTS metadata_object_id      TEXT;
     ALTER TABLE curves ADD COLUMN IF NOT EXISTS metadata_shared_version BIGINT;
 
@@ -251,6 +253,15 @@ export async function recomputeStats(curveId) {
   let recentTrades = 0;
   let lastReserveSui = 0;
   let creatorFeesSui = 0; // 0.40% of each buy (40% of 1% fee goes to creator)
+  // V13/V14: the on-chain graduation threshold is DYNAMIC (oracle-dampened), so
+  // there is no static per-package target for the V13 lineage. buy() recomputes it
+  // every trade via resolve_grad_threshold and emits it as grad_threshold_used
+  // (== curve.current_grad_threshold). We surface the MOST RECENT buy's value as
+  // grad_threshold_sui so the UI renders the real target instead of a static
+  // constant. Only buys carry it; sells do not. Absent (curve never bought) -> null,
+  // and the frontend applies the V13 price-unset floor (BASE_GRAD 9,000 SUI).
+  let lastGradThresholdSui = null;
+  let lastGradBuyTs = 0;
 
   for (const row of buysRes.rows) {
     const d  = row.data;
@@ -264,6 +275,14 @@ export async function recomputeStats(curveId) {
     if (!lastTradeTime || ts > lastTradeTime) {
       lastTradeTime  = ts;
       lastReserveSui = Number(d.new_sui_reserve ?? 0) / MIST;
+    }
+    // Capture the newest buy's dynamic threshold (by max buy timestamp, so this is
+    // order-independent of the query). grad_threshold_used is u64 MIST < 2^53, safe
+    // as a JS number; store as SUI to match reserve_sui.
+    const gradUsed = Number(d.grad_threshold_used ?? 0);
+    if (gradUsed > 0 && ts >= lastGradBuyTs) {
+      lastGradBuyTs = ts;
+      lastGradThresholdSui = gradUsed / MIST;
     }
     const tokensOut = Number(d.tokens_out ?? 0) / 1e6;
     if (tokensOut > 0) {
@@ -299,8 +318,8 @@ export async function recomputeStats(curveId) {
     `INSERT INTO token_stats
        (curve_id, volume_sui, volume_24h, trades, buys, sells,
         last_trade_time, last_price, first_price, recent_trades, comment_count,
-        reserve_sui, creator_fees_sui, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+        reserve_sui, creator_fees_sui, grad_threshold_sui, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
      ON CONFLICT (curve_id) DO UPDATE SET
        volume_sui        = $2,
        volume_24h        = $3,
@@ -314,10 +333,11 @@ export async function recomputeStats(curveId) {
        comment_count     = $11,
        reserve_sui       = $12,
        creator_fees_sui  = $13,
-       updated_at        = $14`,
+       grad_threshold_sui = $14,
+       updated_at        = $15`,
     [curveId, volumeSui, volume24h, buys + sells, buys, sells,
      lastTradeTime, lastPrice, firstPrice, recentTrades, commentCount,
-     lastReserveSui, creatorFeesSui, now]
+     lastReserveSui, creatorFeesSui, lastGradThresholdSui, now]
   );
 }
 

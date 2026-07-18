@@ -145,6 +145,14 @@ export const VIRTUAL_SUI_V9    = 4_369;
 export const VIRTUAL_TOKENS_V9 = 1_073_000_000;
 export const DRAIN_SUI_V9      = 12_305;
 
+// V13/V14: the graduation threshold is DYNAMIC (oracle-dampened), so there is NO
+// correct static drain constant for this lineage. BASE_GRAD_SUI is the price-unset
+// FLOOR the contract falls back to (bonding_curve.move BASE_GRAD_MIST = 9,000 SUI at
+// $1) - used ONLY when the real per-curve target (indexer grad_threshold_sui, i.e.
+// the contract's current_grad_threshold) is unavailable. It is the floor, NOT the
+// live threshold. See resolveGradThresholdSui below.
+export const BASE_GRAD_SUI     = 9_000;
+
 // -- Active virtual reserves ---------------------------------------------------
 export const VIRTUAL_SUI      = VIRTUAL_SUI_V9;
 export const VIRTUAL_TOKENS   = VIRTUAL_TOKENS_V9;
@@ -159,7 +167,12 @@ export const DRAIN_SUI_APPROX = DRAIN_SUI_V9;
 // shape -- the guard the 2026-07 -20.2% price-badge incident lacked.
 export function curveShapeFor(pkgId) {
   if (PACKAGE_ID_V13 && pkgId === PACKAGE_ID_V13) { // V13: separate lineage, V9 shape
-    return { virtualSui: VIRTUAL_SUI_V9, virtualTokens: VIRTUAL_TOKENS_V9, drainSui: DRAIN_SUI_V9 };
+    // drainSui here is the price-unset FLOOR (9,000), NOT a live target: V13's real
+    // graduation threshold is oracle-dampened and per-curve. curveShapeFor is keyed
+    // only on pkgId so it cannot know the dynamic value - consumers MUST prefer the
+    // per-curve grad_threshold_sui (indexer) and fall back to this floor. Using the
+    // legacy 12,305 here would render a wrong static target (the bug this fixes).
+    return { virtualSui: VIRTUAL_SUI_V9, virtualTokens: VIRTUAL_TOKENS_V9, drainSui: BASE_GRAD_SUI };
   }
   if (pkgId === PACKAGE_ID_V12) { // defensive: lineage curves type as V10
     return { virtualSui: VIRTUAL_SUI_V9, virtualTokens: VIRTUAL_TOKENS_V9, drainSui: DRAIN_SUI_V9 };
@@ -194,6 +207,56 @@ export function curveShapeFor(pkgId) {
     return { virtualSui: VIRTUAL_SUI_V9, virtualTokens: VIRTUAL_TOKENS_V9, drainSui: DRAIN_SUI_V9 };
   }
   return { virtualSui: VIRTUAL_SUI_V4, virtualTokens: VIRTUAL_TOKENS_V4, drainSui: DRAIN_SUI_V4 };
+}
+
+// V13/V14: a published price older than this is IGNORED (buy() falls back to the
+// static floor). Mirrors bonding_curve.move PRICE_MAX_AGE_MS = 30 min.
+export const PRICE_MAX_AGE_MS = 30 * 60 * 1000;
+
+// Integer sqrt (floor), BigInt-safe, matching the Move isqrt used by
+// dampened_grad_threshold. Inputs here are <= ~1e11 so Number is exact, but we do a
+// correcting step so a rare Math.sqrt rounding never shifts the threshold.
+function isqrtFloor(n) {
+  if (n <= 0) return 0;
+  let x = Math.floor(Math.sqrt(n));
+  while ((x + 1) * (x + 1) <= n) x += 1;
+  while (x * x > n) x -= 1;
+  return x;
+}
+
+// Mirror of bonding_curve.move dampened_grad_threshold, returned in SUI:
+//   threshold_mist = BASE_GRAD_MIST * isqrt(1000*1e6) / isqrt(price_scaled*1e6)
+// price_scaled = floor(sui_usd * 1000). Returns the price-unset floor for 0.
+export function dampenedGradThresholdSui(priceScaled) {
+  const p = Number(priceScaled) || 0;
+  if (p <= 0) return BASE_GRAD_SUI;
+  const num = isqrtFloor(1000 * 1_000_000);
+  const den = isqrtFloor(p * 1_000_000);
+  if (den === 0) return BASE_GRAD_SUI;
+  return (BASE_GRAD_SUI * num) / den;
+}
+
+// Mirror of bonding_curve.move resolve_grad_threshold, in SUI. Resolves the V13
+// graduation target using the SAME fallback chain the contract uses, in order:
+//   1. currentGradThresholdSui (the contract's current_grad_threshold, surfaced
+//      off-chain as the indexer grad_threshold_sui = the last buy's grad_threshold_used)
+//   2. recompute from the published price if non-zero AND not older than PRICE_MAX_AGE_MS
+//   3. BASE_GRAD_SUI (9,000) - the price-unset / stale floor
+// Every argument is optional; with none available this returns the floor.
+export function resolveGradThresholdSui({
+  currentGradThresholdSui = null,
+  priceScaled = 0,
+  priceUpdatedAtMs = 0,
+  nowMs = Date.now(),
+} = {}) {
+  if (currentGradThresholdSui != null && Number(currentGradThresholdSui) > 0) {
+    return Number(currentGradThresholdSui);                       // 1
+  }
+  const p = Number(priceScaled) || 0;
+  if (p > 0 && Number(nowMs) <= Number(priceUpdatedAtMs) + PRICE_MAX_AGE_MS) {
+    return dampenedGradThresholdSui(p);                           // 2
+  }
+  return BASE_GRAD_SUI;                                           // 3
 }
 
 // -- Package feature helpers ---------------------------------------------------

@@ -232,7 +232,7 @@ app.get('/tokens/stats', async (req, res) => {
 app.get('/token/:curveId', async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT c.*, ts.volume_sui, ts.trades, ts.buys, ts.sells, ts.last_trade_time, ts.last_price, ts.first_price, ts.recent_trades, ts.comment_count, ts.reserve_sui, ts.creator_fees_sui, ts.updated_at, ts.volume_24h, c.graduated FROM curves c LEFT JOIN token_stats ts ON ts.curve_id = c.curve_id WHERE c.curve_id = $1`,
+      `SELECT c.*, ts.volume_sui, ts.trades, ts.buys, ts.sells, ts.last_trade_time, ts.last_price, ts.first_price, ts.recent_trades, ts.comment_count, ts.reserve_sui, ts.creator_fees_sui, ts.grad_threshold_sui, ts.updated_at, ts.volume_24h, c.graduated FROM curves c LEFT JOIN token_stats ts ON ts.curve_id = c.curve_id WHERE c.curve_id = $1`,
       [req.params.curveId]
     );
     if (!result.rows[0]) return res.status(404).json({ error: 'Not found' });

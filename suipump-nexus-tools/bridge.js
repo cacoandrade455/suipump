@@ -1111,6 +1111,7 @@ async function handleStatus(body) {
         graduated:      false,
         paused:         false,
         graduation_target: 0,
+        grad_threshold_sui: s.grad_threshold_sui ?? null,
       };
     }
   } catch {}
@@ -1126,7 +1127,13 @@ async function handleStatus(body) {
 
   const VS_MIST            = 3_500n * MIST_PER_SUI;
   const VT_ATOMIC          = 1_000_000_000_000n; // 1M tokens * 1e6
-  const GRAD_THRESHOLD_MIST = 9_000n * MIST_PER_SUI;
+  // V13/V14 graduation target is DYNAMIC (oracle-dampened). For a V13 curve prefer
+  // the indexer's per-curve grad_threshold_sui (the contract's current_grad_threshold);
+  // legacy V4-V12 keep the static 9,000 SUI floor unchanged (do not touch legacy).
+  const isV13Curve = V13_PACKAGE && String(pkgId ?? '').toLowerCase() === String(V13_PACKAGE).toLowerCase();
+  const GRAD_THRESHOLD_MIST = (isV13Curve && Number(fields.grad_threshold_sui) > 0)
+    ? BigInt(Math.round(Number(fields.grad_threshold_sui) * 1e9))
+    : 9_000n * MIST_PER_SUI;
 
   const effectiveSui   = suiReserveMist + VS_MIST;
   const effectiveTok   = tokenReserveAtomic + VT_ATOMIC;

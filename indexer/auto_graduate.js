@@ -259,9 +259,10 @@ export async function startGraduationWatcher(_grpcClient) {
           const isGraduated = fields.graduated === true;
           const poolCreated = hasPool(fields);
 
-          // Trigger: the curve has GRADUATED (inline inside buy() at the dynamic
-          // ~12305 SUI threshold, or via permissionless graduate()) but has NO DEX
-          // pool yet. Driven off (graduated && !pool_id) - NOT off a static SUI
+          // Trigger: the curve has GRADUATED (inline inside buy() at the dynamic,
+          // oracle-dampened threshold - ~9,000 SUI at $1, computed per buy by
+          // resolve_grad_threshold - or via permissionless graduate()) but has NO
+          // DEX pool yet. Driven off (graduated && !pool_id) - NOT off a static SUI
           // reserve threshold, which is dead for V9+ inline graduation.
           if (isGraduated && !poolCreated) {
             graduateCurve(row.curve_id, {

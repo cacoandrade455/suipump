@@ -11,7 +11,8 @@
 ///      The PTB caller fetches a fresh Pyth price and passes it as sui_price_scaled.
 ///      grad_threshold = BASE_GRAD_MIST * sqrt(1000) / sqrt(price_scaled)
 ///        where price_scaled = price_in_usd * 1000  (e.g. $1.03 → 1030)
-///      Calibrated so that at $1.03 threshold = 12,305 SUI (~$12.7k pool).
+///      Calibrated so that at $1.00 threshold = BASE_GRAD_MIST = 9,000 SUI,
+///      scaled by sqrt(1000/price_scaled) either side of $1.
 ///      Graduation mcap in USD = 47,680 * sqrt(sui_price) — rises with
 ///      price but is dampened (not linear), preventing runaway thresholds.
 ///      Price table: $1→$49k  $2→$67k  $3→$82k  $5→$107k  $10→$151k mcap.
@@ -19,7 +20,9 @@
 ///   3. PYTH STALENESS FALLBACK (combine options 2+3)
 ///      If sui_price_scaled == 0 (caller signals stale/unavailable):
 ///        a. Use curve.current_grad_threshold if it was set at least once.
-///        b. Otherwise fall back to BASE_GRAD_MIST (static 12,305 SUI).
+///        b. Otherwise fall back to BASE_GRAD_MIST (static 9,000 SUI at $1;
+///           see the BASE = 9,000 threshold table below - 12,305 was the
+///           pre-F-4 anchor and is computed by nothing today).
 ///      Buys NEVER abort due to oracle unavailability.
 ///
 ///   4. GRADUATION TAIL-CLIP BUG FIX
@@ -685,13 +688,15 @@ module suipump::bonding_curve {
     /// Formula: BASE_GRAD_MIST * sqrt(1_000) / sqrt(price_scaled)
     ///   price_scaled = sui_price_usd * 1_000  (e.g. $1.03 → 1030)
     ///
-    /// To avoid precision loss with integer sqrt we scale up:
+    /// To avoid precision loss with integer sqrt we scale up (F-4: den is
+    /// isqrt(price_scaled * PRECISION), NOT .../1_000 - that asymmetry was the bug):
     ///   num = isqrt(1_000 * PRECISION)
-    ///   den = isqrt(price_scaled * PRECISION / 1_000)
+    ///   den = isqrt(price_scaled * PRECISION)
     ///   threshold = BASE_GRAD_MIST * num / den
     ///
-    /// At $1.09 (price_scaled=1090): num=31622, den=33015 → ≈12,303 SUI ≈ 12,305 SUI.
-    /// Within ~0.02% of the 12,305 target — acceptable integer-sqrt error.
+    /// At $1.09 (price_scaled=1090): num=31622, den=33015 → 9000*31622/33015 ≈ 8,620 SUI
+    /// (BASE_GRAD_MIST = 9,000). Within ~0.01% of the exact 8,620 - acceptable
+    /// integer-sqrt error. (12,305 was the pre-F-4 anchor and no longer appears.)
     /// threshold = BASE_GRAD_MIST * sqrt(1000) / sqrt(price_scaled)
     /// F-4 FIX (V13): den previously computed isqrt(price_scaled * precision / 1_000)
     /// while num was isqrt(1_000 * precision) - ASYMMETRIC. den divided by 1,000
