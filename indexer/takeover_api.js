@@ -45,6 +45,17 @@
 //                                         //   on); null when resolved, or when the
 //                                         //   lookup itself fails (callers handle
 //                                         //   null with a tx.object() fallback)
+//          quorum_target,                 // string (atomic u64) -- the proposal
+//                                         //   object's quorum_target field,
+//                                         //   snapshotted on-chain at propose time
+//                                         //   (25% of circulating supply THEN;
+//                                         //   frozen so trading can't move the
+//                                         //   goalposts). Not emitted in any event,
+//                                         //   so read from the same live object
+//                                         //   lookup as initial_shared_version --
+//                                         //   null when resolved or when the lookup
+//                                         //   fails (callers fall back to a client-
+//                                         //   side estimate)
 //          last_creator_activity_ms,      // latest CreatorHeartbeat.at_ms, else curve created_at
 //          last_creator_activity_source,  // 'heartbeat' | 'launch_fallback' --
 //                                         //   the contract's ONLY activity signal is
@@ -76,15 +87,25 @@ const TAKEOVER_GRAPHQL_URL = process.env.SUI_GRAPHQL_URL
   ?? `https://graphql.${process.env.NETWORK ?? 'testnet'}.sui.io/graphql`;
 const takeoverGqlClient = new SuiGraphQLClient({ url: TAKEOVER_GRAPHQL_URL });
 
-async function fetchProposalSharedVersion(proposalId) {
+// One query, two facts about the live TakeoverProposal object: its shared
+// version (owner metadata) and its quorum_target field (snapshotted at propose
+// time on-chain; NOT emitted in any CTO event, so only readable here).
+async function fetchProposalLive(proposalId) {
   try {
     const result = await takeoverGqlClient.query({
-      query: `query($id: SuiAddress!) { object(address: $id) { owner { ... on Shared { initialSharedVersion } } } }`,
+      query: `query($id: SuiAddress!) { object(address: $id) { owner { ... on Shared { initialSharedVersion } } asMoveObject { contents { json } } } }`,
       variables: { id: proposalId },
     });
-    return result?.data?.object?.owner?.initialSharedVersion ?? null;
+    const obj = result?.data?.object;
+    const quorumRaw = obj?.asMoveObject?.contents?.json?.quorum_target;
+    return {
+      initialSharedVersion: obj?.owner?.initialSharedVersion ?? null,
+      quorumTarget: quorumRaw != null ? String(quorumRaw) : null,
+    };
   } catch {
-    return null; // degrade to null -- callers already handle a missing version (tx.object fallback)
+    // degrade to nulls -- callers already handle a missing version (tx.object
+    // fallback) and a missing quorum_target (client-side estimate fallback)
+    return { initialSharedVersion: null, quorumTarget: null };
   }
 }
 
@@ -187,8 +208,12 @@ export function mountTakeover(app, pool) {
       if (totalWeight < 0n) totalWeight = 0n;
 
       // One live lookup, only while the proposal is still actionable (unresolved)
-      // -- not derivable from indexed events (see the module-level note above).
-      const initialSharedVersion = resolved ? null : await fetchProposalSharedVersion(proposalId);
+      // -- neither field is derivable from indexed events (see the module-level
+      // note above). Resolved proposals need neither: no tx will be built against
+      // them and the quorum bar is only shown pre-resolve.
+      const liveObj = resolved
+        ? { initialSharedVersion: null, quorumTarget: null }
+        : await fetchProposalLive(proposalId);
 
       return res.json({
         proposal_id:            proposalId,
@@ -197,7 +222,8 @@ export function mountTakeover(app, pool) {
         total_weight:           totalWeight.toString(),
         resolved,
         succeeded,
-        initial_shared_version: initialSharedVersion,
+        initial_shared_version: liveObj.initialSharedVersion,
+        quorum_target:          liveObj.quorumTarget,
         last_creator_activity_ms:     lastActivity,
         last_creator_activity_source: activitySource,
       });

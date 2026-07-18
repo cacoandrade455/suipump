@@ -184,7 +184,15 @@ export default function CommunityTakeoverPanel({ curveId, tokenType, creator, ac
   // -- supply-derived thresholds (all BigInt u64 math) ------------------------
   const reserve   = tokenReserveAtomic != null ? BigInt(tokenReserveAtomic) : 0n;
   const circ      = CURVE_SUPPLY > reserve ? (CURVE_SUPPLY - reserve) : 0n;
-  const quorum    = (circ * 2500n) / 10000n;   // 25% of circulating supply
+  // Quorum: prefer the on-chain snapshot surfaced by the indexer route
+  // (TakeoverProposal.quorum_target, frozen at propose time so trading can't
+  // move the goalposts). Fall back to the live 25%-of-circulating estimate only
+  // when the field is absent (older indexer, resolved proposal, lookup failure).
+  let quorumSnapshot = null;
+  if (data && data.quorum_target != null) {
+    try { quorumSnapshot = BigInt(data.quorum_target); } catch { quorumSnapshot = null; }
+  }
+  const quorum    = quorumSnapshot != null ? quorumSnapshot : (circ * 2500n) / 10000n; // 25% of circulating supply
   const threshold = (circ * 100n) / 10000n;    // 1% of circulating supply to nominate
   const minVote   = CURVE_SUPPLY / 10000n;     // 0.01% of full curve supply
 
@@ -200,7 +208,19 @@ export default function CommunityTakeoverPanel({ curveId, tokenType, creator, ac
     }
   }, [proposal, creatorInactive, threshold]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (!show && !isCreator) return null;
+  // IDLE: takeover is possible on this curve (V13 live; the mount site already
+  // gates on V10-lineage + not graduated) but nothing is happening - no proposal
+  // and the creator is not inactive. Render the design's subtle footnote row
+  // instead of nothing (design HTML: font 400 9px/1.5 monospace,
+  // rgba(255,255,255,.28), margin-top 10px, no border/background of its own).
+  if (!show && !isCreator) {
+    if (!PACKAGE_ID_V13) return null;
+    return (
+      <div className="mt-2.5 text-[9px] leading-[1.5] font-normal font-mono text-white/[0.28]">
+        CTO vote: none active
+      </div>
+    );
+  }
 
   const live            = proposal && !proposal.resolved && now < proposal.deadlineMs;
   const awaitingResolve = proposal && !proposal.resolved && now >= proposal.deadlineMs;

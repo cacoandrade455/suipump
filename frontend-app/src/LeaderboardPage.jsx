@@ -1,19 +1,21 @@
-// LeaderboardPage.jsx
+// LeaderboardPage.jsx v2 - Terminal design (2f). Ledger C-1 split: the boards
+// (AIRDROP POINTS / TOP TOKENS / TOP TRADERS) live here; the S1 counter, earn
+// table, and timeline live on /airdrop. Data logic unchanged from v1; style
+// ported from the 2f board card in the design HTML (exact values).
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useCurrentAccount } from '@mysten/dapp-kit-react';
-import { ArrowLeft, TrendingUp, Trophy, Zap } from 'lucide-react';
+import { ArrowLeft, Trophy } from 'lucide-react';
 import { ALL_PACKAGE_IDS } from './constants.js';
 import { useTokenList } from './useTokenList.js';
-import { paginateMultipleEvents } from './paginateEvents.js';
 import { t } from './i18n.js';
 
 const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
 const MIST_PER_SUI = 1e9;
 
 function fmt(n, d = 2) {
-  if (n == null) return '—';
-  if (!Number.isFinite(n)) return '—';
+  if (n == null) return '-';
+  if (!Number.isFinite(n)) return '-';
   if (n >= 1e6) return (n / 1e6).toFixed(d) + 'M';
   if (n >= 1e3) return (n / 1e3).toFixed(d) + 'k';
   return n.toFixed(d);
@@ -21,23 +23,34 @@ function fmt(n, d = 2) {
 
 // Signed PnL: keeps the +/- and the magnitude readable at k/M scale.
 function fmtPnl(n, d = 2) {
-  if (n == null || !Number.isFinite(n)) return '—';
-  const sign = n >= 0 ? '+' : '−';
+  if (n == null || !Number.isFinite(n)) return '-';
+  const sign = n >= 0 ? '+' : '-';
   const a = Math.abs(n);
   const mag = a >= 1e6 ? (a / 1e6).toFixed(d) + 'M' : a >= 1e3 ? (a / 1e3).toFixed(d) + 'k' : a.toFixed(d);
   return `${sign}${mag}`;
 }
 
 function shortAddr(addr) {
-  if (!addr) return '—';
+  if (!addr) return '-';
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
 }
 
-function RankBadge({ rank }) {
-  if (rank === 1) return <span className="text-yellow-400 text-sm">🥇</span>;
-  if (rank === 2) return <span className="text-white/50 text-sm">🥈</span>;
-  if (rank === 3) return <span className="text-amber-600 text-sm">🥉</span>;
-  return <span className="text-white/20 font-mono text-xs w-5 text-center">{rank}</span>;
+// Terminal rank column: colored number, 22px wide (design row spec).
+const RANK_COLORS = { 1: 'text-yellow-400', 2: 'text-white/50', 3: 'text-amber-600' };
+function Rank({ rank }) {
+  return (
+    <span className={`w-[22px] shrink-0 text-center text-xs font-mono font-semibold ${RANK_COLORS[rank] || 'text-white/25'}`}>
+      {rank}
+    </span>
+  );
+}
+
+function YouBadge() {
+  return (
+    <span className="text-[8px] font-mono font-semibold text-violet-400 border border-violet-400/40 px-[5px] py-[2px] rounded shrink-0">
+      YOU
+    </span>
+  );
 }
 
 export default function LeaderboardPage({ onBack, lang = 'en' }) {
@@ -65,14 +78,14 @@ export default function LeaderboardPage({ onBack, lang = 'en' }) {
       if (!tokRes.ok || !trdRes.ok) throw new Error('indexer not ok');
       const tokRows = await tokRes.json();
       const trdRows = await trdRes.json();
-      // Points endpoint is newer — tolerate it being absent (older indexer) so
+      // Points endpoint is newer - tolerate it being absent (older indexer) so
       // the rest of the leaderboard still loads. Shape: { pointsPerSui, leaders:[...] }.
       let ptsData = { pointsPerSui: 100, leaders: [] };
       if (ptsRes.ok) { try { ptsData = await ptsRes.json(); } catch {} }
       return {
         sortedTokens:  tokRows.map(r => ({ curveId: r.curve_id, volume: Number(r.volume_sui ?? 0), trades: Number(r.trades ?? 0) })),
         // /leaderboard/traders returns { address, sui_spent, sui_received, buys, sells }
-        // — NOT wallet/volume_sui/trades. Mapping the wrong keys is why every row
+        // - NOT wallet/volume_sui/trades. Mapping the wrong keys is why every row
         // read 0.00 SUI / 0 trades. Volume = spent + received; trades = buys + sells.
         sortedTraders: trdRows.map(r => ({
           addr:   r.address,
@@ -143,123 +156,188 @@ export default function LeaderboardPage({ onBack, lang = 'en' }) {
     return { ...tv, name: meta?.name || 'Unknown', symbol: meta?.symbol || '???', iconUrl: meta?.iconUrl || null };
   });
 
+  const rowClass = 'w-full flex items-center gap-3 px-4 py-3 border-b border-white/[0.04] last:border-0 hover:bg-white/[0.02] transition-colors text-left';
+
   return (
-    <div className="min-h-screen" style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}>
-      <button onClick={onBack || (() => navigate('/'))} className="flex items-center gap-2 text-white/50 hover:text-lime-400 transition-colors text-xs font-mono mb-6 group">
-        <ArrowLeft size={14} className="group-hover:-translate-x-0.5 transition-transform" />
+    <div>
+      <button
+        onClick={onBack || (() => navigate('/'))}
+        className="flex items-center gap-2 text-xs font-mono text-white/40 hover:text-lime-400 mb-6 transition-colors group"
+      >
+        <ArrowLeft size={12} className="group-hover:-translate-x-0.5 transition-transform" />
         {t(lang, 'backToHome')}
       </button>
-      <div className="flex items-center gap-3 mb-6">
-        <Trophy size={20} className="text-lime-400" />
-        <h1 className="text-xl font-bold text-white font-mono">{t(lang, 'leaderboard')}</h1>
-      </div>
-      <div className="flex gap-2 mb-6">
-        {['points', 'tokens', 'traders'].map(tabId => (
-          <button key={tabId} onClick={() => setTab(tabId)}
-            className={`px-4 py-2 rounded-xl text-xs font-mono font-bold transition-colors ${tab === tabId ? 'bg-lime-400 text-black' : 'bg-white/5 text-white/40 hover:text-white/70'}`}>
-            {tabId === 'points' ? 'AIRDROP POINTS' : tabId === 'tokens' ? 'TOP TOKENS' : 'TOP TRADERS'}
-          </button>
-        ))}
-      </div>
-      {loading ? (
-        <div className="text-center text-white/20 text-xs font-mono py-12">Loading…</div>
-      ) : tab === 'points' ? (
-        <div className="space-y-2">
-          <div className="text-[10px] font-mono text-white/30 pb-1">
-            Earn {pointsPerSui} points per SUI bought. Points are tracked from testnet and carry to the mainnet airdrop at the end of Season 1.
+
+      <div className="max-w-3xl mx-auto space-y-4">
+
+        {/* Header (Terminal card) */}
+        <div className="rounded-2xl border border-white/[0.08] bg-white/[0.015] p-6 relative overflow-hidden">
+          <div className="absolute top-0 left-1/2 -translate-x-1/2 w-80 h-24 bg-lime-400/[0.08] blur-3xl rounded-full pointer-events-none" />
+          <div className="relative flex items-start justify-between gap-4">
+            <div>
+              <div className="flex items-center gap-3 mb-2">
+                <Trophy className="text-lime-400" size={20} />
+                <h1 className="text-lg font-extrabold font-mono tracking-tight text-white">{t(lang, 'leaderboard')}</h1>
+              </div>
+              <p className="text-[11px] font-mono text-white/35 max-w-md leading-relaxed">
+                Airdrop points, top tokens, and top traders. Points feed the Season 1 distribution.
+              </p>
+            </div>
+            <button
+              onClick={() => navigate('/airdrop')}
+              className="shrink-0 text-[10px] font-mono font-semibold px-[13px] py-2 rounded-[9px] border border-lime-400/30 bg-lime-400/[0.08] text-lime-400 hover:bg-lime-400/[0.14] transition-colors"
+            >
+              S1 POOL + HOW TO EARN {'->'}
+            </button>
           </div>
-          {pointsLeaders.length === 0 ? (
-            <div className="text-center text-white/20 text-xs font-mono py-12">No points yet — start trading to climb the board.</div>
-          ) : pointsLeaders.map((pl, i) => (
-            <button key={pl.addr} onClick={() => navigate(`/portfolio/${pl.addr}`)}
-              className="w-full flex items-center gap-3 bg-white/[0.03] border border-white/10 rounded-xl px-4 py-3 hover:border-lime-400/30 transition-colors text-left">
-              <RankBadge rank={i + 1} />
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-1.5">
-                  <div className="text-xs font-mono text-white/70">{shortAddr(pl.addr)}</div>
-                  {myAddr && pl.addr === myAddr && <span className="text-[8px] font-mono text-violet-400 border border-violet-400/40 px-1 rounded">YOU</span>}
+        </div>
+
+        {/* Board card (design 2f: tabs row + rows) */}
+        <div className="rounded-2xl border border-white/[0.08] bg-white/[0.015] overflow-hidden">
+          <div className="flex flex-wrap gap-1.5 px-4 py-3 border-b border-white/[0.06]">
+            {[
+              { id: 'points',  label: 'AIRDROP POINTS' },
+              { id: 'tokens',  label: 'TOP TOKENS' },
+              { id: 'traders', label: 'TOP TRADERS' },
+            ].map(tb => (
+              <button
+                key={tb.id}
+                onClick={() => setTab(tb.id)}
+                className={`text-[10px] font-mono px-[13px] py-2 rounded-[9px] transition-colors ${
+                  tab === tb.id
+                    ? 'font-bold bg-sp-pump text-sp-void'
+                    : 'font-semibold border border-white/10 text-white/45 hover:text-white/70'
+                }`}
+              >
+                {tb.label}
+              </button>
+            ))}
+          </div>
+
+          {loading ? (
+            <div className="py-12 text-center text-xs font-mono text-white/25">Loading…</div>
+          ) : tab === 'points' ? (
+            <div>
+              <div className="px-4 pt-3 text-[9.5px] font-mono text-white/[0.32] leading-relaxed">
+                Earn {pointsPerSui} points per SUI bought. Testnet points do not carry to mainnet - Season 1 points start fresh at mainnet launch. Testnet users are covered by a fixed 10% allocation of the S1 distribution instead.
+              </div>
+              {pointsLeaders.length === 0 ? (
+                <div className="py-12 text-center text-xs font-mono text-white/25">No points yet - start trading to climb the board.</div>
+              ) : (
+                <div className="mt-2">
+                  {pointsLeaders.map((pl, i) => (
+                    <button key={pl.addr} onClick={() => navigate(`/portfolio/${pl.addr}`)} className={rowClass}>
+                      <Rank rank={i + 1} />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-[7px]">
+                          <span className="text-xs font-mono font-semibold text-white/80">{shortAddr(pl.addr)}</span>
+                          {myAddr && pl.addr === myAddr && <YouBadge />}
+                        </div>
+                        <div className="text-[9.5px] font-mono text-white/[0.32] mt-[5px]">
+                          {pl.distinctTokens} token{pl.distinctTokens === 1 ? '' : 's'} · {pl.buys} buy{pl.buys === 1 ? '' : 's'}
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <div className="text-[12.5px] font-mono font-bold text-lime-400">{fmt(pl.points, 0)} pts</div>
+                        <div className="text-[9.5px] font-mono text-white/[0.32] mt-[5px]">{fmt(pl.buyVolumeSui)} SUI bought</div>
+                      </div>
+                    </button>
+                  ))}
                 </div>
-                <div className="text-[10px] font-mono text-white/30">{pl.distinctTokens} token{pl.distinctTokens === 1 ? '' : 's'} · {pl.buys} buy{pl.buys === 1 ? '' : 's'}</div>
-              </div>
-              <div className="text-right">
-                <div className="text-xs font-mono font-bold text-lime-400">{fmt(pl.points, 0)} pts</div>
-                <div className="text-[10px] font-mono text-white/30">{fmt(pl.buyVolumeSui)} SUI bought</div>
-              </div>
-            </button>
-          ))}
-        </div>
-      ) : tab === 'tokens' ? (
-        <div className="space-y-2">
-          {enrichedTokens.slice(0, 50).map((tk, i) => (
-            <button key={tk.curveId} onClick={() => navigate(`/token/${tk.curveId}`)}
-              className="w-full flex items-center gap-3 bg-white/[0.03] border border-white/10 rounded-xl px-4 py-3 hover:border-lime-400/30 transition-colors text-left">
-              <RankBadge rank={i + 1} />
-              <div className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center shrink-0 overflow-hidden">
-                {tk.iconUrl ? <img src={tk.iconUrl} alt={tk.symbol} className="w-full h-full object-cover" /> : <span className="text-base">🔥</span>}
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="text-xs font-mono font-bold text-white truncate">{tk.name}</div>
-                <div className="text-[10px] font-mono text-lime-400/70">${tk.symbol}</div>
-              </div>
-              <div className="text-right">
-                <div className="text-xs font-mono font-bold text-white">{fmt(tk.volume)} SUI</div>
-                <div className="text-[10px] font-mono text-white/30">{tk.trades} trades</div>
-              </div>
-            </button>
-          ))}
-        </div>
-      ) : (
-        <div className="space-y-2">
-          <div className="flex items-center justify-between mb-1">
-            <div className="text-[10px] font-mono text-white/30 tracking-widest">SORT BY</div>
-            <div className="flex gap-1.5">
-              {[
-                { id: 'volume', label: 'VOLUME' },
-                { id: 'pnl',    label: 'REALIZED PNL' },
-              ].map(s => (
-                <button key={s.id} onClick={() => setTraderSort(s.id)}
-                  className={`px-2.5 py-1 rounded-lg text-[9px] font-mono font-bold transition-colors ${traderSort === s.id ? 'bg-lime-400/10 text-lime-400 border border-lime-400/30' : 'text-white/30 hover:text-white/60 border border-transparent'}`}>
-                  {s.label}
+              )}
+            </div>
+          ) : tab === 'tokens' ? (
+            <div>
+              {enrichedTokens.length === 0 ? (
+                <div className="py-12 text-center text-xs font-mono text-white/25">No trades yet.</div>
+              ) : enrichedTokens.slice(0, 50).map((tk, i) => (
+                <button key={tk.curveId} onClick={() => navigate(`/token/${tk.curveId}`)} className={rowClass}>
+                  <Rank rank={i + 1} />
+                  <div className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center shrink-0 overflow-hidden">
+                    {tk.iconUrl
+                      ? <img src={tk.iconUrl} alt={tk.symbol} className="w-full h-full object-cover" />
+                      : <span className="text-[10px] font-mono text-white/30">{tk.symbol.slice(0, 1)}</span>}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs font-mono font-semibold text-white/80 truncate">{tk.name}</div>
+                    <div className="text-[9.5px] font-mono text-lime-400/70 mt-[5px]">${tk.symbol}</div>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <div className="text-[12.5px] font-mono font-bold text-white">{fmt(tk.volume)} SUI</div>
+                    <div className="text-[9.5px] font-mono text-white/[0.32] mt-[5px]">{tk.trades} trades</div>
+                  </div>
                 </button>
               ))}
             </div>
-          </div>
-          {traderSort === 'pnl' && (
-            <div className="text-[9px] font-mono text-white/20 pb-1">Realized PnL only — proceeds minus average cost of tokens sold. Unsold holdings excluded.</div>
-          )}
-          {[...topTraders]
-            .sort((a, b) => traderSort === 'pnl'
-              ? (Number(b.pnl ?? -Infinity) - Number(a.pnl ?? -Infinity))
-              : (b.volume - a.volume))
-            .map((tr, i) => (
-            <button key={tr.addr} onClick={() => navigate(`/portfolio/${tr.addr}`)}
-              className="w-full flex items-center gap-3 bg-white/[0.03] border border-white/10 rounded-xl px-4 py-3 hover:border-lime-400/30 transition-colors text-left">
-              <RankBadge rank={i + 1} />
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-1.5">
-                  <div className="text-xs font-mono text-white/70">{shortAddr(tr.addr)}</div>
-                  {myAddr && tr.addr === myAddr && <span className="text-[8px] font-mono text-violet-400 border border-violet-400/40 px-1 rounded">YOU</span>}
+          ) : (
+            <div>
+              <div className="flex items-center justify-between px-4 pt-3">
+                <div className="text-[9px] font-mono font-semibold text-white/35 tracking-[0.14em]">TOP TRADERS</div>
+                <div className="flex gap-1.5">
+                  {[
+                    { id: 'volume', label: 'VOLUME' },
+                    { id: 'pnl',    label: 'REALIZED PNL' },
+                  ].map(s => (
+                    <button
+                      key={s.id}
+                      onClick={() => setTraderSort(s.id)}
+                      className={`text-[9px] font-mono font-bold px-2.5 py-1 rounded-[9px] transition-colors ${
+                        traderSort === s.id
+                          ? 'bg-lime-400/10 text-lime-400 border border-lime-400/30'
+                          : 'text-white/30 hover:text-white/60 border border-transparent'
+                      }`}
+                    >
+                      {s.label}
+                    </button>
+                  ))}
                 </div>
               </div>
-              <div className="text-right">
-                {traderSort === 'pnl' ? (
-                  <>
-                    <div className={`text-xs font-mono font-bold ${tr.pnl == null ? 'text-white/40' : tr.pnl >= 0 ? 'text-lime-400' : 'text-red-400'}`}>
-                      {tr.pnl == null ? '—' : `${fmtPnl(tr.pnl)} SUI`}
-                    </div>
-                    <div className="text-[10px] font-mono text-white/30">{fmt(tr.volume)} SUI vol</div>
-                  </>
-                ) : (
-                  <>
-                    <div className="text-xs font-mono font-bold text-white">{fmt(tr.volume)} SUI</div>
-                    <div className="text-[10px] font-mono text-white/30">{tr.trades} trades</div>
-                  </>
-                )}
-              </div>
-            </button>
-          ))}
+              {traderSort === 'pnl' && (
+                <div className="px-4 pt-2 text-[9px] font-mono text-white/25 leading-relaxed">
+                  Realized PnL only - proceeds minus average cost of tokens sold. Unsold holdings excluded.
+                </div>
+              )}
+              {topTraders.length === 0 ? (
+                <div className="py-12 text-center text-xs font-mono text-white/25">No traders yet.</div>
+              ) : (
+                <div className="mt-2">
+                  {[...topTraders]
+                    .sort((a, b) => traderSort === 'pnl'
+                      ? (Number(b.pnl ?? -Infinity) - Number(a.pnl ?? -Infinity))
+                      : (b.volume - a.volume))
+                    .map((tr, i) => (
+                    <button key={tr.addr} onClick={() => navigate(`/portfolio/${tr.addr}`)} className={rowClass}>
+                      <Rank rank={i + 1} />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-[7px]">
+                          <span className="text-xs font-mono font-semibold text-white/80">{shortAddr(tr.addr)}</span>
+                          {myAddr && tr.addr === myAddr && <YouBadge />}
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        {traderSort === 'pnl' ? (
+                          <>
+                            <div className={`text-[12.5px] font-mono font-bold ${tr.pnl == null ? 'text-white/40' : tr.pnl >= 0 ? 'text-lime-400' : 'text-red-400'}`}>
+                              {tr.pnl == null ? '-' : `${fmtPnl(tr.pnl)} SUI`}
+                            </div>
+                            <div className="text-[9.5px] font-mono text-white/[0.32] mt-[5px]">{fmt(tr.volume)} SUI vol</div>
+                          </>
+                        ) : (
+                          <>
+                            <div className="text-[12.5px] font-mono font-bold text-white">{fmt(tr.volume)} SUI</div>
+                            <div className="text-[9.5px] font-mono text-white/[0.32] mt-[5px]">{tr.trades} trades</div>
+                          </>
+                        )}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
-      )}
+
+      </div>
     </div>
   );
 }
