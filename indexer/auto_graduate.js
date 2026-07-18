@@ -35,7 +35,7 @@
 
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { pool } from './db.js';
-import { LATEST_WRITE_PACKAGE, V13_PACKAGE, assertWriteTarget } from './write_target.js';
+import { LATEST_WRITE_PACKAGE, V13_PACKAGE, assertWriteTarget, graduationAuthority } from './write_target.js';
 
 const NETWORK     = process.env.NETWORK         ?? 'testnet';
 const GRAPHQL_URL = process.env.SUI_GRAPHQL_URL ?? 'https://graphql.' + NETWORK + '.sui.io/graphql';
@@ -219,6 +219,13 @@ async function graduateCurve(curveId, curveData) {
 
 export async function startGraduationWatcher(_grpcClient) {
   console.log('  [auto-grad] Graduation watcher started - polling every 30s');
+  // V14 (GRAD-1): state which graduation authority the dispatched scripts will use.
+  // 'cap' = the narrow GraduationCap path (AdminCap can stay cold); 'admin' = the
+  // pre-V14 AdminCap path (the GRAD-1 concentration). Full ids, never truncated.
+  const gradAuth = graduationAuthority();
+  console.log(gradAuth.mode === 'cap'
+    ? `  [auto-grad] authority: GraduationCap ${gradAuth.cap} (registry ${gradAuth.registry}, V14 pkg ${gradAuth.pkg})`
+    : `  [auto-grad] authority: AdminCap path (pre-V14; set SUIPUMP_V14_PACKAGE + SUIPUMP_GRADUATION_CAP + SUIPUMP_GRADUATION_REGISTRY to move the AdminCap key cold)`);
 
   // Startup assert: the write target must expose the functions THIS watcher's
   // flow invokes. claim_graduation_funds (and its grad_funds_claimed getter)

@@ -34,6 +34,10 @@ const MIST_PER_SUI   = 1_000_000_000n;
 // Env-driven (Vercel edge env exposes process.env), so the id is never hardcoded.
 // Full V13 id: 0xdf66376f006557b9f81b3455ee786ffd7f2a633488cc3bd31a37ddbdc69bd56b
 const V13_PACKAGE = (process.env.SUIPUMP_V13_PACKAGE ?? '').trim().toLowerCase() || null;
+// V14 (GRAD-1): ADDITIVE upgrade of V13; V14 curves keep the V13 type, so this id
+// appears only via the new GraduationCapIssued/Rotated events. Env-gated; null when
+// SUIPUMP_V14_PACKAGE is unset (then this module behaves exactly as pre-V14).
+const V14_PACKAGE = (process.env.SUIPUMP_V14_PACKAGE ?? '').trim().toLowerCase() || null;
 
 const ALL_PACKAGE_IDS = [
   '0x2154486dcf503bd3e8feae4fb913e862f7e2bbf4489769aff63978f55d55b4a8', // V4
@@ -47,6 +51,8 @@ const ALL_PACKAGE_IDS = [
   // V13 -- separate lineage; its bonding_curve events (TokensPurchased etc.) type
   // under the V13 id. Env-gated; conditional spread so a null id never enters.
   ...(V13_PACKAGE ? [V13_PACKAGE] : []),
+  // V14 -- ADDITIVE upgrade of V13; only the new GraduationCap events type under it.
+  ...(V14_PACKAGE ? [V14_PACKAGE] : []),
 ];
 
 // -- GraphQL helpers ----------------------------------------------------------

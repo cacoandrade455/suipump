@@ -36,7 +36,7 @@ import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { DeepBookClient } from '@mysten/deepbook-v3';
 import { fromBase64 } from '@mysten/sui/utils';
-import { LATEST_WRITE_PACKAGE, V13_PACKAGE, assertWriteTarget } from '../indexer/write_target.js';
+import { LATEST_WRITE_PACKAGE, V13_PACKAGE, assertWriteTarget, graduationAuthority } from '../indexer/write_target.js';
 
 // -- Constants -----------------------------------------------------------------
 const SUI_CLOCK_ID = '0x6';
@@ -221,6 +221,11 @@ export async function graduateToDeepBook({ curveId, tokenType, pkgId }) {
   console.log(`  [deepbook] Graduating ${curveId} -> DeepBook`);
   console.log(`  [deepbook] token: ${tokenType}`);
   console.log(`  [deepbook] pkg:   ${pkgId} (write ${writePkg})`);
+  // V14 (GRAD-1): state which graduation authority is active, with full ids.
+  const gradAuth = graduationAuthority();
+  console.log(gradAuth.mode === 'cap'
+    ? `  [deepbook] auth:  GraduationCap ${gradAuth.cap} (registry ${gradAuth.registry}, pkg ${gradAuth.pkg})`
+    : `  [deepbook] auth:  AdminCap ${adminCapId} (pre-V14 path; set SUIPUMP_V14_PACKAGE+SUIPUMP_GRADUATION_CAP+SUIPUMP_GRADUATION_REGISTRY to use the GraduationCap)`);
 
   // -- Step 1: graduate() if needed -------------------------------------------
   const curveObj = await client.getObject({ id: curveId, options: { showContent: true } });
@@ -310,10 +315,17 @@ export async function graduateToDeepBook({ curveId, tokenType, pkgId }) {
     // claim_graduation_funds returns (Coin<SUI>, Coin<T>). BOTH returns must be
     // captured and transferred - the LP Coin<T> has no drop, so leaving it unused
     // fails the PTB.
+    // V14 (GRAD-1): prefer the narrow GraduationCap path when the V14 env is set,
+    // so the AdminCap key can stay cold. Falls back to the AdminCap path unchanged.
+    const grad2 = graduationAuthority();
     const [poolSuiCoin, lpCoin] = tx2.moveCall({
-      target: `${writePkg}::bonding_curve::claim_graduation_funds`,
+      target: grad2.mode === 'cap'
+        ? `${grad2.pkg}::bonding_curve::claim_graduation_funds_with_cap`
+        : `${writePkg}::bonding_curve::claim_graduation_funds`,
       typeArguments: [tokenType],
-      arguments: [tx2.object(adminCapId), ref2],
+      arguments: grad2.mode === 'cap'
+        ? [tx2.object(grad2.cap), tx2.object(grad2.registry), ref2]
+        : [tx2.object(adminCapId), ref2],
     });
     tx2.transferObjects([poolSuiCoin, lpCoin], address);
 
@@ -421,10 +433,15 @@ export async function graduateToDeepBook({ curveId, tokenType, pkgId }) {
   const sv4  = await getSharedVersion(client, curveId);
   const tx4  = new Transaction();
   const ref4 = tx4.sharedObjectRef({ objectId: curveId, initialSharedVersion: sv4, mutable: true });
+  const grad4 = graduationAuthority();
   tx4.moveCall({
-    target: `${writePkg}::bonding_curve::record_graduation_pool`,
+    target: grad4.mode === 'cap'
+      ? `${grad4.pkg}::bonding_curve::record_graduation_pool_with_cap`
+      : `${writePkg}::bonding_curve::record_graduation_pool`,
     typeArguments: [tokenType],
-    arguments: [tx4.object(adminCapId), ref4, tx4.pure.id(poolId), tx4.pure.id(poolId)],
+    arguments: grad4.mode === 'cap'
+      ? [tx4.object(grad4.cap), tx4.object(grad4.registry), ref4, tx4.pure.id(poolId), tx4.pure.id(poolId)]
+      : [tx4.object(adminCapId), ref4, tx4.pure.id(poolId), tx4.pure.id(poolId)],
   });
   const r4 = await client.signAndExecuteTransaction({
     signer: keypair, transaction: tx4, options: { showEffects: true },

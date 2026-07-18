@@ -37,7 +37,7 @@ import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { TurbosSdk, Network } from 'turbos-clmm-sdk';
 import Decimal from 'decimal.js';
 import { fromBase64 } from '@mysten/sui/utils';
-import { LATEST_WRITE_PACKAGE, V13_PACKAGE, assertWriteTarget } from '../indexer/write_target.js';
+import { LATEST_WRITE_PACKAGE, V13_PACKAGE, assertWriteTarget, graduationAuthority } from '../indexer/write_target.js';
 
 // -- Constants -----------------------------------------------------------------
 const SUI_TYPE     = '0x2::sui::SUI';
@@ -226,6 +226,11 @@ export async function graduateToTurbos({ curveId, tokenType, pkgId }) {
   console.log(`  [turbos] Graduating ${curveId} -> Turbos CLMM`);
   console.log(`  [turbos] token: ${tokenType}`);
   console.log(`  [turbos] pkg:   ${pkgId} (write ${writePkg})`);
+  // V14 (GRAD-1): state which graduation authority is active, with full ids.
+  const gradAuth = graduationAuthority();
+  console.log(gradAuth.mode === 'cap'
+    ? `  [turbos] auth:  GraduationCap ${gradAuth.cap} (registry ${gradAuth.registry}, pkg ${gradAuth.pkg})`
+    : `  [turbos] auth:  AdminCap ${adminCapId} (pre-V14 path; set SUIPUMP_V14_PACKAGE+SUIPUMP_GRADUATION_CAP+SUIPUMP_GRADUATION_REGISTRY to use the GraduationCap)`);
 
   // -- Step 1: graduate() if needed -------------------------------------------
   const curveObj = await client.getObject({ id: curveId, options: { showContent: true } });
@@ -307,10 +312,17 @@ export async function graduateToTurbos({ curveId, tokenType, pkgId }) {
     // claim_graduation_funds returns (Coin<SUI>, Coin<T>). BOTH returns must be
     // captured and transferred - the LP Coin<T> has no drop, so leaving it unused
     // fails the PTB.
+    // V14 (GRAD-1): prefer the narrow GraduationCap path when the V14 env is set,
+    // so the AdminCap key can stay cold. Falls back to the AdminCap path unchanged.
+    const grad2 = graduationAuthority();
     const [poolSuiCoin, lpCoin] = tx2.moveCall({
-      target: `${writePkg}::bonding_curve::claim_graduation_funds`,
+      target: grad2.mode === 'cap'
+        ? `${grad2.pkg}::bonding_curve::claim_graduation_funds_with_cap`
+        : `${writePkg}::bonding_curve::claim_graduation_funds`,
       typeArguments: [tokenType],
-      arguments: [tx2.object(adminCapId), ref2],
+      arguments: grad2.mode === 'cap'
+        ? [tx2.object(grad2.cap), tx2.object(grad2.registry), ref2]
+        : [tx2.object(adminCapId), ref2],
     });
     tx2.transferObjects([poolSuiCoin, lpCoin], address);
     let r2;
@@ -481,15 +493,26 @@ export async function graduateToTurbos({ curveId, tokenType, pkgId }) {
   const sv5  = await getSharedVersion(client, curveId);
   const tx5  = new Transaction();
   const ref5 = tx5.sharedObjectRef({ objectId: curveId, initialSharedVersion: sv5, mutable: true });
+  const grad5 = graduationAuthority();
   tx5.moveCall({
-    target: `${writePkg}::bonding_curve::record_graduation_pool`,
+    target: grad5.mode === 'cap'
+      ? `${grad5.pkg}::bonding_curve::record_graduation_pool_with_cap`
+      : `${writePkg}::bonding_curve::record_graduation_pool`,
     typeArguments: [tokenType],
-    arguments: [
-      tx5.object(adminCapId),
-      ref5,
-      tx5.pure.id(poolId),
-      tx5.pure.id(creatorNftId ?? poolId),
-    ],
+    arguments: grad5.mode === 'cap'
+      ? [
+          tx5.object(grad5.cap),
+          tx5.object(grad5.registry),
+          ref5,
+          tx5.pure.id(poolId),
+          tx5.pure.id(creatorNftId ?? poolId),
+        ]
+      : [
+          tx5.object(adminCapId),
+          ref5,
+          tx5.pure.id(poolId),
+          tx5.pure.id(creatorNftId ?? poolId),
+        ],
   });
   const r5 = await client.signAndExecuteTransaction({
     signer: keypair, transaction: tx5, options: { showEffects: true },

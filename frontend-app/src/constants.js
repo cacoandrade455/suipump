@@ -64,6 +64,14 @@ export const PACKAGE_ID_V13 = (import.meta.env.VITE_SUIPUMP_V13_PACKAGE ?? '').t
 export const PRICE_CONFIG_ID = import.meta.env.VITE_SUIPUMP_PRICE_CONFIG || null;
 export const V13_BUY_ENABLED = Boolean(PACKAGE_ID_V13 && PRICE_CONFIG_ID);
 
+// V14 (GRAD-1): the GraduationCap upgrade. V14 is an ADDITIVE upgrade of V13, so V14
+// curves keep the V13 TYPE identity - there is deliberately NO curveShapeFor / buy
+// dispatch branch for V14 (a V14 curve IS a V13 curve). Its NEW events
+// (GraduationCapIssued/Rotated) type under the V14 package id, so V14 joins
+// ALL_PACKAGE_IDS for read coverage. Env-only; null when VITE_SUIPUMP_V14_PACKAGE is
+// unset, and then the app behaves exactly as pre-V14.
+export const PACKAGE_ID_V14 = (import.meta.env.VITE_SUIPUMP_V14_PACKAGE ?? '').toLowerCase() || null;
+
 // -- Capabilities -------------------------------------------------------------
 export const ADMIN_CAP_V7 =
   '0x1dc44030adaa6e366666a8e095fc29a5a55c8ae614f04c5e93c062a85b475527';
@@ -102,6 +110,10 @@ export const ALL_PACKAGE_IDS = [
   // include it once its env id is set. Conditional spread so a null id (env unset)
   // never enters the array.
   ...(PACKAGE_ID_V13 ? [PACKAGE_ID_V13] : []),
+  // V14 (GRAD-1) is an ADDITIVE upgrade of V13; its new event types define under the
+  // V14 package id, so READ coverage must include it. Conditional spread - null when
+  // the env id is unset.
+  ...(PACKAGE_ID_V14 ? [PACKAGE_ID_V14] : []),
 ];
 
 export const CURVE_ID    = '0xf7c137e90c5a5c9e716c91fdd3561d55e6ba3c11c37a9741b0bfde03dc9d812f';

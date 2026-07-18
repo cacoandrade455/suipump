@@ -58,6 +58,37 @@ export const PRICE_CONFIG_ID = process.env.SUIPUMP_PRICE_CONFIG ?? null;
 // consumer's case-insensitive comparisons and Set membership are consistent.
 export const V13_PACKAGE = (process.env.SUIPUMP_V13_PACKAGE ?? '').trim().toLowerCase() || null;
 
+// ---------- V14 (GRAD-1): GraduationCap upgrade -----------------------------
+// V14 is an ADDITIVE upgrade of V13 (compatible policy), so V14 curves keep the
+// V13 TYPE identity - no new curve-shape branch is needed. What IS new: the
+// GraduationCap path (claim/record _with_cap), the shared GraduationRegistry, and
+// the GraduationCapIssued/Rotated events (typed under the V14 package id). All
+// arrive by ENV only; every consumer stays null-safe when unset, behaving EXACTLY
+// as pre-V14.
+//   SUIPUMP_V14_PACKAGE        - the V14 package id (the upgrade). Target of the
+//       new _with_cap graduation functions and the home of the new event types.
+//   SUIPUMP_GRADUATION_CAP     - the GraduationCap object the graduation signer holds.
+//   SUIPUMP_GRADUATION_REGISTRY- the shared GraduationRegistry (active_cap_id).
+export const V14_PACKAGE = (process.env.SUIPUMP_V14_PACKAGE ?? '').trim().toLowerCase() || null;
+export const GRADUATION_CAP_ID = (process.env.SUIPUMP_GRADUATION_CAP ?? '').trim() || null;
+export const GRADUATION_REGISTRY_ID = (process.env.SUIPUMP_GRADUATION_REGISTRY ?? '').trim() || null;
+
+// V14 graduation authority resolver - the SINGLE decision point for which cap the
+// graduation signer uses. When ALL THREE V14 env vars are set it returns the narrow
+// GraduationCap path ({ mode:'cap', pkg, cap, registry }); the graduation scripts
+// then call claim_graduation_funds_with_cap / record_graduation_pool_with_cap on the
+// V14 package, keeping the AdminCap key off the server (GRAD-1). Any missing -> it
+// returns { mode:'admin' } and the scripts use the pre-V14 AdminCap path unchanged.
+// SIGNER: both modes are signed by GRADUATION_SIGNER_KEY. In 'admin' mode that key
+// must hold the AdminCap (the GRAD-1 concentration); in 'cap' mode it need hold ONLY
+// the GraduationCap, so the AdminCap can move cold.
+export function graduationAuthority() {
+  if (V14_PACKAGE && GRADUATION_CAP_ID && GRADUATION_REGISTRY_ID) {
+    return { mode: 'cap', pkg: V14_PACKAGE, cap: GRADUATION_CAP_ID, registry: GRADUATION_REGISTRY_ID };
+  }
+  return { mode: 'admin' };
+}
+
 // assertWriteTarget(client, requiredFunctions)
 //   requiredFunctions: array of [moduleName, functionName] pairs. Each pair is
 //   introspected against LATEST_WRITE_PACKAGE.

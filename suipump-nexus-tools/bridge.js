@@ -39,7 +39,7 @@ import {
   enclavePublicKeyHex,
   enclaveAttestationHex,
 } from './turnkey_signer.js';
-import { LATEST_WRITE_PACKAGE, V13_PACKAGE, PRICE_CONFIG_ID, assertWriteTarget } from '../indexer/write_target.js';
+import { LATEST_WRITE_PACKAGE, V13_PACKAGE, V14_PACKAGE, PRICE_CONFIG_ID, assertWriteTarget } from '../indexer/write_target.js';
 
 const PORT          = parseInt(process.env.PORT ?? '3030', 10);
 const INDEXER_URL   = process.env.SUIPUMP_INDEXER_URL ?? 'https://suipump-62s2.onrender.com';
@@ -124,6 +124,10 @@ const ALL_PACKAGE_IDS = [
   // conditional spread so a null id never enters the list. Read-path membership is
   // what lets a V13 curve pass the universal-trading known-package guard below.
   ...(V13_PACKAGE ? [String(V13_PACKAGE).toLowerCase()] : []),
+  // V14 -- ADDITIVE upgrade of V13 (GraduationCap). V14 curves keep the V13 type, so
+  // this id appears only via the new GraduationCapIssued/Rotated event types; listed
+  // per the read-path rule. Env-gated (SUIPUMP_V14_PACKAGE); conditional spread.
+  ...(V14_PACKAGE ? [String(V14_PACKAGE).toLowerCase()] : []),
 ];
 
 // -- Package upgrade targets ------------------------------------------------------
