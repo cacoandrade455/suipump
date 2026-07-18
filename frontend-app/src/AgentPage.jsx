@@ -9,7 +9,7 @@
 //   3. The runner maps workflow -> published Nexus DAG id, executes via the
 //      `nexus` CLI, returns the on-chain DAGExecution id + tx digest.
 //
-// The LLM plans OFF-CHAIN; the DAG does the on-chain work. Violet identity.
+// The LLM plans OFF-CHAIN; the DAG does the on-chain work. Terminal identity.
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { normalizeGoalText, extractPerEntrySui, extractSpendCapSui, isAutopilotIntent, isTrendingDiscovery } from './agentVocab.js';
 import { ArrowLeft, Sparkles, Play, Check, X, Loader, ExternalLink, Bot, ChevronDown } from 'lucide-react';
@@ -763,6 +763,15 @@ function parseAutopilotGoal(text) {
 
 // -- Active-strategies helpers -------------------------------------------------
 const ORDER_LABEL = { tpsl: 'TP / SL', sniper: 'Sniper', dca: 'DCA', copytrade: 'Copy-trade', autopilot: 'Autopilot' };
+// Color-coded outline badges for the ACTIVE STRATEGIES card (design 2d):
+// SNIPER lime / DCA blue / COPY violet / TP-SL amber / AUTOPILOT red.
+const ORDER_BADGE = {
+  sniper:    'text-lime-400 border-lime-400/80',
+  dca:       'text-blue-400 border-blue-400/80',
+  copytrade: 'text-violet-400 border-violet-400/80',
+  tpsl:      'text-amber-500 border-amber-500/80',
+  autopilot: 'text-red-400 border-red-400/80',
+};
 const shortId  = (s) => (typeof s === 'string' && s.startsWith('0x') && s.length > 14) ? `${s.slice(0, 8)}...${s.slice(-4)}` : s;
 const shortType = (t) => {
   if (typeof t !== 'string') return '';
@@ -1454,14 +1463,18 @@ function AgentSessionPanel({ account, onSessionChange }) {
     const hrs = Math.floor((rem % 86_400_000) / 3_600_000);
     return dys > 0 ? `${dys}d ${hrs}h` : `${hrs}h`;
   };
+  // Spend-cap bar fill (design 2d escrow card). Null when the cap is unbounded.
+  const capPct = session && BigInt(session.spendCap || '0') > 0n
+    ? Math.min(100, (Number(session.spent || 0) / Number(session.spendCap)) * 100)
+    : null;
 
   return (
-    <div className="border border-violet-400/20 rounded-xl bg-violet-500/[0.04] p-4 mb-4 space-y-3">
+    <div className="border border-lime-400/[0.28] rounded-2xl bg-[linear-gradient(160deg,rgba(132,204,22,.08),rgba(255,255,255,.015))] p-4 space-y-3">
       <div className="flex items-center gap-2">
-        <Bot size={13} className="text-violet-400" />
-        <span className="text-[10px] font-mono text-violet-300/80 tracking-widest">AGENT SESSION</span>
+        <Bot size={13} className="text-lime-400" />
+        <span className="text-[10px] font-mono font-bold text-lime-400 tracking-[0.16em]">AGENT SESSION</span>
         {session && !session.revoked && !expired && (
-          <span className="ml-auto text-[8px] font-mono text-lime-400 tracking-widest border border-lime-400/30 rounded-full px-2 py-0.5">ACTIVE</span>
+          <span className="ml-auto inline-flex items-center gap-1.5 text-[8px] font-mono font-semibold text-lime-400 tracking-widest border border-lime-400/30 bg-lime-400/[0.07] rounded-full px-2 py-0.5"><span className="w-1.5 h-1.5 rounded-full bg-lime-400 animate-sp-pulse" />ACTIVE</span>
         )}
         {session && (session.revoked || expired) && (
           <span className="ml-auto text-[8px] font-mono text-white/40 tracking-widest border border-white/15 rounded-full px-2 py-0.5">{expired ? 'EXPIRED' : 'REVOKED'}</span>
@@ -1480,17 +1493,17 @@ function AgentSessionPanel({ account, onSessionChange }) {
             <label className="block">
               <span className="text-[8px] font-mono text-white/30 tracking-widest">DEPOSIT (SUI)</span>
               <input value={depositSui} onChange={e => setDepositSui(e.target.value)} inputMode="decimal"
-                className="mt-1 w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-violet-400/40" />
+                className="mt-1 w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-lime-400/40" />
             </label>
             <label className="block">
               <span className="text-[8px] font-mono text-white/30 tracking-widest">SPEND CAP</span>
               <input value={capSui} onChange={e => setCapSui(e.target.value)} inputMode="decimal" placeholder="0 = ∞"
-                className="mt-1 w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-violet-400/40" />
+                className="mt-1 w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-lime-400/40" />
             </label>
             <label className="block">
               <span className="text-[8px] font-mono text-white/30 tracking-widest">EXPIRY (DAYS)</span>
               <input value={days} onChange={e => setDays(e.target.value)} inputMode="decimal"
-                className="mt-1 w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-violet-400/40" />
+                className="mt-1 w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-lime-400/40" />
             </label>
           </div>
           <div>
@@ -1498,7 +1511,7 @@ function AgentSessionPanel({ account, onSessionChange }) {
             <div className="mt-1 grid grid-cols-2 gap-2">
               <button type="button" onClick={() => setSignerMode('turnkey')}
                 title="Per-session key held in Turnkey's TEE; isolated from every other session"
-                className={`py-1.5 rounded-lg text-[9px] font-mono tracking-widest border transition-colors ${signerMode === 'turnkey' ? 'bg-violet-500/20 text-violet-200 border-violet-400/40' : 'bg-white/5 text-white/40 border-white/10 hover:bg-white/10'}`}>
+                className={`py-1.5 rounded-lg text-[9px] font-mono tracking-widest border transition-colors ${signerMode === 'turnkey' ? 'bg-lime-400/15 text-lime-300 border-lime-400/40' : 'bg-white/5 text-white/40 border-white/10 hover:bg-white/10'}`}>
                 TURNKEY
                 <span className="block text-[7px] tracking-normal opacity-60 mt-0.5">per-session TEE key</span>
               </button>
@@ -1514,32 +1527,42 @@ function AgentSessionPanel({ account, onSessionChange }) {
             </div>
           </div>
           <button onClick={doOpen} disabled={busy}
-            className={`w-full py-2 rounded-lg text-[11px] font-mono tracking-widest transition-colors ${busy ? 'bg-white/5 text-white/25' : 'bg-violet-500/80 hover:bg-violet-500 text-white'}`}>
+            className={`w-full py-2 rounded-[10px] text-[11px] font-mono font-bold tracking-widest transition-colors ${busy ? 'bg-white/5 text-white/25' : 'bg-lime-400 hover:bg-lime-300 text-[#050505]'}`}>
             {busy ? 'OPENING...' : 'OPEN SESSION'}
           </button>
         </>
       ) : (
         <>
           {!session.revoked && !expired && (
-            <p className="text-[9px] font-mono text-violet-300/60 leading-relaxed">
+            <p className="text-[9px] font-mono text-white/35 leading-relaxed">
               Strategies armed from here now spend this escrow, not the agent wallet.
             </p>
           )}
-          <div className="grid grid-cols-3 gap-2 text-center">
-            <div className="rounded-lg bg-white/[0.03] border border-white/5 py-2">
-              <div className="text-[8px] font-mono text-white/30 tracking-widest">ESCROW</div>
-              <div className="text-sm font-mono text-lime-400 mt-0.5">{fmtSui(session.escrow)}</div>
+          <div>
+            <div className="flex items-baseline gap-2">
+              <span className="text-[28px] leading-none font-extrabold font-mono text-white">{fmtSui(session.escrow)}</span>
+              <span className="text-[11px] font-mono font-semibold text-white/45">SUI escrowed</span>
             </div>
-            <div className="rounded-lg bg-white/[0.03] border border-white/5 py-2">
-              <div className="text-[8px] font-mono text-white/30 tracking-widest">SPENT</div>
-              <div className="text-sm font-mono text-white mt-0.5">{fmtSui(session.spent)}</div>
+            <div className="flex items-center justify-between text-[10px] font-mono text-white/40 mt-3 mb-1.5">
+              <span>spent {fmtSui(session.spent)} SUI</span>
+              <span>cap {capLabel}</span>
             </div>
-            <div className="rounded-lg bg-white/[0.03] border border-white/5 py-2">
-              <div className="text-[8px] font-mono text-white/30 tracking-widest">EXPIRES</div>
-              <div className="text-sm font-mono text-white mt-0.5">{expiryLabel(session.expiryMs)}</div>
+            {capPct != null && (
+              <div className="h-[7px] rounded bg-white/[0.07] overflow-hidden">
+                <div className="h-full rounded bg-gradient-to-r from-[#3f6212] to-[#a3e635]" style={{ width: `${capPct}%` }} />
+              </div>
+            )}
+            <div className="grid grid-cols-2 gap-[18px] mt-3.5">
+              <div>
+                <div className="text-[8.5px] font-mono font-semibold tracking-[0.12em] text-white/30">EXPIRES</div>
+                <div className="text-[13px] font-mono font-bold text-white mt-1.5">{expiryLabel(session.expiryMs)}</div>
+              </div>
+              <div>
+                <div className="text-[8.5px] font-mono font-semibold tracking-[0.12em] text-white/30">NET EXPOSURE</div>
+                <div className="text-[13px] font-mono font-bold text-white mt-1.5">{fmtSui(session.spent)} SUI</div>
+              </div>
             </div>
           </div>
-          <div className="text-[9px] font-mono text-white/30">Spend cap: <span className="text-white/60">{capLabel}</span></div>
 
           {/* A5.2 - custody visibility. Which key signs this session's trades:
               a dedicated per-user key (enclave/Turnkey, isolated) or the shared
@@ -1567,13 +1590,13 @@ function AgentSessionPanel({ account, onSessionChange }) {
           {!session.revoked && !expired && (
             <div className="flex gap-2">
               <input value={depositSui} onChange={e => setDepositSui(e.target.value)} inputMode="decimal" placeholder="SUI"
-                className="w-24 bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-violet-400/40" />
+                className="w-24 bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-lime-400/40" />
               <button onClick={doTopUp} disabled={busy}
-                className={`px-3 py-1.5 rounded-lg text-[10px] font-mono transition-colors ${busy ? 'bg-white/5 text-white/25' : 'bg-violet-500/15 text-violet-300 border border-violet-400/30 hover:bg-violet-500/25'}`}>
+                className={`flex-1 px-3 py-1.5 rounded-[10px] text-[10px] font-mono font-bold transition-colors ${busy ? 'bg-white/5 text-white/25' : 'bg-lime-400/10 text-lime-400 border border-lime-400/40 hover:bg-lime-400/20'}`}>
                 TOP UP
               </button>
               <button onClick={doRevoke} disabled={busy}
-                className={`px-3 py-1.5 rounded-lg text-[10px] font-mono transition-colors ${busy ? 'bg-white/5 text-white/25' : 'bg-white/5 text-white/60 border border-white/15 hover:bg-white/10'}`}>
+                className={`flex-1 px-3 py-1.5 rounded-[10px] text-[10px] font-mono font-bold transition-colors ${busy ? 'bg-white/5 text-white/25' : 'bg-transparent text-red-400 border border-red-400/35 hover:bg-red-400/10'}`}>
                 REVOKE
               </button>
             </div>
@@ -1628,9 +1651,9 @@ function AgentSessionPanel({ account, onSessionChange }) {
             </p>
             <input value={sweepSession} onChange={e => setSweepSession(e.target.value)}
               placeholder="session id (optional - empty sweeps ALL your sessions)"
-              className="w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-[11px] text-white placeholder-white/20 font-mono focus:outline-none focus:border-violet-400/40" />
+              className="w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-[11px] text-white placeholder-white/20 font-mono focus:outline-none focus:border-lime-400/40" />
             <button onClick={doSweepAll} disabled={busy}
-              className={`w-full py-1.5 rounded-lg text-[10px] font-mono transition-colors ${busy ? 'bg-white/5 text-white/25 cursor-not-allowed' : 'bg-violet-500/15 text-violet-300 border border-violet-400/30 hover:bg-violet-500/25'}`}>
+              className={`w-full py-1.5 rounded-[10px] text-[10px] font-mono transition-colors ${busy ? 'bg-white/5 text-white/25 cursor-not-allowed' : 'bg-lime-400/10 text-lime-400 border border-lime-400/30 hover:bg-lime-400/20'}`}>
               SWEEP ALL PARKED TOKENS
             </button>
           </div>
@@ -3002,8 +3025,8 @@ export default function AgentPage({ onBack }) {
   }, [plan, phase, clearAnim, account, activeSessionId]);
 
   const nodeColor = (s) =>
-    s === 'done'    ? 'border-violet-400/60 bg-violet-400/10' :
-    s === 'running' ? 'border-violet-400 bg-violet-400/5 animate-pulse' :
+    s === 'done'    ? 'border-lime-400/60 bg-lime-400/10' :
+    s === 'running' ? 'border-lime-400 bg-lime-400/5 animate-pulse' :
     s === 'error'   ? 'border-red-400/60 bg-red-400/10' :
                       'border-white/10 bg-white/[0.02]';
 
@@ -3149,35 +3172,44 @@ export default function AgentPage({ onBack }) {
 
   return (
     <div>
-      <button onClick={onBack} className="flex items-center gap-2 text-white/40 hover:text-white/70 text-[10px] font-mono tracking-widest mb-6">
+      <button onClick={onBack} className="flex items-center gap-2 text-white/40 hover:text-lime-400 transition-colors text-[10px] font-mono tracking-widest mb-6">
         <ArrowLeft size={13} /> BACK
       </button>
 
-      <div className="border border-violet-400/20 rounded-2xl p-6 bg-gradient-to-br from-violet-500/[0.07] to-transparent mb-6">
-        <div className="flex items-center gap-2.5 mb-2">
-          <Bot size={20} className="text-violet-400" />
-          <h1 className="text-xl font-bold tracking-tight text-white" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>AUTONOMOUS AGENT</h1>
-          <span className="ml-auto text-[9px] font-mono text-violet-300/50 tracking-widest border border-violet-400/20 rounded-full px-2.5 py-1 whitespace-nowrap">
-            POWERED BY TALUS
+      <div className="flex flex-wrap items-center gap-2.5 mb-2">
+        <Bot size={16} className="text-lime-400" />
+        <h1 className="text-[17px] leading-none font-extrabold font-mono tracking-tight text-white">AUTONOMOUS AGENT</h1>
+        {activeSessionId && (
+          <span className="inline-flex items-center gap-1.5 text-[9.5px] leading-none font-mono font-semibold text-lime-400 border border-lime-400/30 bg-lime-400/[0.07] rounded-full px-[9px] py-[5px] whitespace-nowrap">
+            <span className="w-1.5 h-1.5 rounded-full bg-lime-400 animate-sp-pulse" />
+            SESSION ACTIVE
           </span>
-        </div>
-        <p className="text-white/40 text-[11px] font-mono leading-relaxed max-w-xl">
-          State a goal in plain language and the agent produces autonomous workflows - planning with an LLM, then executing on-chain through published Nexus DAGs. Five base tools - launch, buy, sell, claim, monitor - power four standing strategies (sniper, DCA, copy-trade, take-profit / stop-loss), which can be combined into entry-plus-exit setups. See HOW TO OPERATE below.
-        </p>
+        )}
+        <span className="ml-auto hidden md:block text-[10px] font-mono text-white/30">keys never leave the enclave · revocable anytime</span>
       </div>
+      <p className="text-white/40 text-[11px] font-mono leading-relaxed max-w-2xl mb-5">
+        State a goal in plain language and the agent produces autonomous workflows - planning with an LLM, then executing on-chain through published Nexus DAGs. Five base tools - launch, buy, sell, claim, monitor - power four standing strategies (sniper, DCA, copy-trade, take-profit / stop-loss), which can be combined into entry-plus-exit setups. See HOW TO OPERATE below.
+      </p>
+
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] lg:grid-rows-[auto_1fr] gap-4 items-start">
 
       {/* -- Agent session (escrow authorization) ------------------------- */}
-      <AgentSessionPanel account={account} onSessionChange={setActiveSessionId} />
+      <div className="lg:col-start-2 lg:row-start-1 min-w-0">
+        <AgentSessionPanel account={account} onSessionChange={setActiveSessionId} />
+      </div>
+
+      {/* -- Left column (goal / plan / execution / history) ---------------- */}
+      <div className="lg:col-start-1 lg:row-start-1 lg:row-span-2 min-w-0 space-y-4">
 
       {/* -- Strategy guide (accordion) ----------------------------------- */}
-      <div className="border border-white/10 rounded-xl bg-white/[0.02] mb-4 overflow-hidden">
+      <div className="border border-white/[0.08] rounded-2xl bg-white/[0.015] overflow-hidden">
         <button
           onClick={() => setGuideOpen(v => !v)}
           className="w-full flex items-center justify-between px-4 py-3 text-left"
         >
           <span className="flex items-center gap-2">
-            <Bot size={12} className="text-violet-400" />
-            <span className="text-[10px] font-mono text-white/40 tracking-widest">HOW TO OPERATE</span>
+            <Bot size={12} className="text-lime-400" />
+            <span className="text-[9px] font-mono font-semibold text-white/40 tracking-[0.16em]">HOW TO OPERATE</span>
           </span>
           <ChevronDown size={14} className={`text-white/30 transition-transform ${guideOpen ? 'rotate-180' : ''}`} />
         </button>
@@ -3186,7 +3218,7 @@ export default function AgentPage({ onBack }) {
             {OPERATE_GUIDE.map((sec) => (
               <div key={sec.section}>
                 <div className="px-1 pt-1 pb-2">
-                  <div className="text-[9px] font-mono text-violet-400/70 tracking-widest">{sec.section}</div>
+                  <div className="text-[9px] font-mono font-semibold text-lime-400/80 tracking-[0.16em]">{sec.section}</div>
                   <div className="text-[10px] font-mono text-white/30 mt-0.5">{sec.blurb}</div>
                 </div>
                 <div className="space-y-1.5">
@@ -3200,10 +3232,10 @@ export default function AgentPage({ onBack }) {
                         >
                           <span className="min-w-0">
                             <span className="text-[12px] font-mono text-white/80">{s.title}</span>
-                            {s.fqn && <span className="text-[9px] font-mono text-violet-300/40 ml-2">{s.fqn}</span>}
+                            {s.fqn && <span className="text-[9px] font-mono text-white/25 ml-2">{s.fqn}</span>}
                             <span className="block text-[10px] font-mono text-white/35 mt-0.5">{s.tagline}</span>
                           </span>
-                          <ChevronDown size={13} className={`shrink-0 text-violet-400/60 transition-transform ${open ? 'rotate-180' : ''}`} />
+                          <ChevronDown size={13} className={`shrink-0 text-lime-400/60 transition-transform ${open ? 'rotate-180' : ''}`} />
                         </button>
                         {open && (
                           <div className="px-3 pb-3 pt-1 space-y-3 border-t border-white/5">
@@ -3214,7 +3246,7 @@ export default function AgentPage({ onBack }) {
                                 <ul className="space-y-1">
                                   {s.inputs.map((inp, i) => (
                                     <li key={i} className="text-[11px] font-mono text-white/55 flex gap-2">
-                                      <span className="text-violet-400/50">.</span>{inp}
+                                      <span className="text-lime-400/50">.</span>{inp}
                                     </li>
                                   ))}
                                 </ul>
@@ -3227,7 +3259,7 @@ export default function AgentPage({ onBack }) {
                                   <button
                                     key={i}
                                     onClick={() => { setGoal(ex); setGuideOpen(false); }}
-                                    className="w-full text-left text-[11px] font-mono text-emerald-300/70 hover:text-emerald-300 bg-emerald-400/[0.04] hover:bg-emerald-400/[0.08] border border-emerald-400/15 rounded px-2.5 py-2 leading-relaxed"
+                                    className="w-full text-left text-[11px] font-mono text-lime-300/70 hover:text-lime-300 bg-lime-400/[0.04] hover:bg-lime-400/[0.08] border border-lime-400/15 rounded px-2.5 py-2 leading-relaxed"
                                   >
                                     {ex}
                                   </button>
@@ -3246,23 +3278,23 @@ export default function AgentPage({ onBack }) {
         )}
       </div>
 
-      <div className="border border-white/10 rounded-xl p-4 bg-white/[0.02] mb-4">
+      <div className="border border-lime-400/30 rounded-2xl p-[18px] bg-white/[0.02]">
         <div className="flex items-center gap-2 mb-3">
-          <Sparkles size={11} className="text-violet-400" />
-          <span className="text-[10px] font-mono text-white/35 tracking-widest">GOAL</span>
+          <Sparkles size={11} className="text-lime-400" />
+          <span className="text-[9px] font-mono font-semibold text-lime-400 tracking-[0.16em]">GOAL</span>
         </div>
         <textarea
           value={goal}
           onChange={(e) => setGoal(e.target.value)}
           placeholder="e.g. Launch a dog token called MoonCat, dev-buy 1 SUI  .  or  .  Sell all tokens of 0xCURVE..."
           rows={2}
-          className="w-full bg-black/40 border border-white/10 rounded-lg p-3 text-[12px] font-mono text-white/80 placeholder:text-white/20 focus:border-violet-400/40 outline-none resize-none"
+          className="w-full bg-black/40 border border-white/10 rounded-lg p-3 text-[12px] font-mono text-white/90 caret-lime-400 placeholder:text-white/20 focus:border-lime-400/40 outline-none resize-none"
         />
         <div className="flex items-center justify-end mt-3">
           <button
             onClick={makePlan}
             disabled={planning || !goal.trim()}
-            className="shrink-0 text-[10px] font-mono font-bold tracking-widest px-4 py-2 rounded-lg border border-violet-400/60 text-violet-400 hover:bg-violet-400/10 disabled:opacity-30 transition-colors flex items-center gap-2"
+            className="shrink-0 text-[10px] font-mono font-extrabold tracking-widest px-4 py-2 rounded-[10px] bg-lime-400 text-[#050505] hover:bg-lime-300 disabled:opacity-30 transition-colors flex items-center gap-2"
           >
             {planning ? <Loader size={12} className="animate-spin" /> : <Sparkles size={12} />}
             {planning ? 'PLANNING...' : 'PLAN'}
@@ -3271,13 +3303,13 @@ export default function AgentPage({ onBack }) {
       </div>
 
       {plan && (
-        <div className="border border-violet-400/20 rounded-xl p-4 bg-violet-400/[0.03] mb-4">
-          <div className="text-[10px] font-mono text-violet-400/70 tracking-widest mb-2">AGENT PLAN</div>
+        <div className="border border-white/[0.08] rounded-2xl p-[18px] bg-white/[0.015]">
+          <div className="text-[9px] font-mono font-semibold text-white/40 tracking-[0.16em] mb-2.5">AGENT PLAN</div>
           <p className="text-[12px] font-mono text-white/80 mb-3 leading-relaxed">{isBareLaunch(plan) ? `Launch ${plan.launch?.name ?? 'token'} ($${plan.launch?.symbol ?? ''}) on the bonding curve.` : plan.summary}</p>
 
           {resolving && (
             <div className="text-[10px] font-mono text-white/40 mb-3 flex items-center gap-2">
-              <Loader size={11} className="animate-spin text-violet-400" /> Finding matching tokens...
+              <Loader size={11} className="animate-spin text-lime-400" /> Finding matching tokens...
             </div>
           )}
 
@@ -3292,13 +3324,13 @@ export default function AgentPage({ onBack }) {
                   <button
                     key={c.curveId}
                     onClick={() => choosePick(c)}
-                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border border-white/10 bg-white/[0.02] hover:bg-violet-400/[0.08] hover:border-violet-400/40 transition-all text-left"
+                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border border-white/10 bg-white/[0.02] hover:bg-lime-400/[0.06] hover:border-lime-400/40 transition-all text-left"
                   >
                     <TokenIcon url={c.iconUrl} symbol={c.symbol} />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-1.5">
                         <span className="text-[12px] font-mono font-bold text-white/90">${c.symbol}</span>
-                        <span className="text-[8px] font-mono text-violet-400/60 tracking-wider">{GRAD[c.graduationTarget] ?? ''}</span>
+                        <span className="text-[8px] font-mono text-lime-400/50 tracking-wider">{GRAD[c.graduationTarget] ?? ''}</span>
                       </div>
                       <div className="text-[9px] font-mono text-white/40 truncate">{c.name}</div>
                     </div>
@@ -3315,13 +3347,13 @@ export default function AgentPage({ onBack }) {
 
           {/* Single match auto-resolved - shown for confirmation (b-soft). */}
           {resolvedNote && (
-            <div className="mb-4 flex items-center gap-3 px-3 py-2.5 rounded-lg border border-violet-400/25 bg-violet-400/[0.05]">
+            <div className="mb-4 flex items-center gap-3 px-3 py-2.5 rounded-lg border border-lime-400/25 bg-lime-400/[0.05]">
               <TokenIcon url={resolvedNote.iconUrl} symbol={resolvedNote.symbol} />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-1.5">
-                  <span className="text-[8px] font-mono text-violet-400/70 tracking-widest">RESOLVED</span>
+                  <span className="text-[8px] font-mono text-lime-400/80 tracking-widest">RESOLVED</span>
                   <span className="text-[12px] font-mono font-bold text-white/90">${resolvedNote.symbol}</span>
-                  <span className="text-[8px] font-mono text-violet-400/60 tracking-wider">{GRAD[resolvedNote.graduationTarget] ?? ''}</span>
+                  <span className="text-[8px] font-mono text-lime-400/50 tracking-wider">{GRAD[resolvedNote.graduationTarget] ?? ''}</span>
                 </div>
                 <div className="text-[8.5px] font-mono text-white/40">{resolvedNote.marketCapSui >= 1000 ? `${(resolvedNote.marketCapSui/1000).toFixed(1)}K` : resolvedNote.marketCapSui.toFixed(1)} SUI mcap . {resolvedNote.volumeSui.toFixed(1)} vol . {resolvedNote.holders} holder{resolvedNote.holders === 1 ? '' : 's'}</div>
               </div>
@@ -3344,7 +3376,7 @@ export default function AgentPage({ onBack }) {
                 <button
                   onClick={approve}
                   disabled={sessionMissing}
-                  className={`w-full text-[11px] font-mono font-bold tracking-widest px-4 py-3 rounded-lg transition-colors flex items-center justify-center gap-2 ${sessionMissing ? 'bg-violet-500/30 text-white/40 cursor-not-allowed' : 'bg-violet-500 text-white hover:bg-violet-400'}`}
+                  className={`w-full text-[11px] font-mono font-extrabold tracking-widest px-4 py-3 rounded-[11px] transition-colors flex items-center justify-center gap-2 ${sessionMissing ? 'bg-white/10 text-white/30 cursor-not-allowed' : 'bg-lime-400 text-[#050505] hover:bg-lime-300'}`}
                 >
                   <Play size={12} /> {phase === 'failed' ? 'RETRY - EXECUTE ON-CHAIN' : 'APPROVE & EXECUTE ON-CHAIN'}
                 </button>
@@ -3360,32 +3392,32 @@ export default function AgentPage({ onBack }) {
       )}
 
       {phase === 'running' && (
-        <div className="border border-violet-400/20 rounded-xl p-5 bg-violet-400/[0.03] mb-4">
+        <div className="border border-lime-400/20 rounded-2xl p-5 bg-lime-400/[0.03]">
           <div className="flex items-center gap-3">
             <div className="relative">
-              <Bot size={18} className="text-violet-400" />
-              <span className="absolute -right-1 -top-1 w-2 h-2 rounded-full bg-violet-400 animate-ping" />
+              <Bot size={18} className="text-lime-400" />
+              <span className="absolute -right-1 -top-1 w-2 h-2 rounded-full bg-lime-400 animate-ping" />
             </div>
             <div className="flex-1">
               <div className="text-[12px] font-mono text-white/90 font-bold">Agent executing autonomously on Nexus</div>
               <div className="text-[10px] font-mono text-white/40">Running the {isBareLaunch(plan) ? 'launch' : plan?.workflow} DAG on-chain.</div>
             </div>
-            <Loader size={14} className="text-violet-400 animate-spin" />
+            <Loader size={14} className="text-lime-400 animate-spin" />
           </div>
         </div>
       )}
 
       {showExecutionPanel && (
-        <div className="border border-white/10 rounded-xl p-4 bg-white/[0.02] mb-4">
-          <div className="text-[10px] font-mono text-white/35 tracking-widest mb-4">NEXUS DAG EXECUTION</div>
+        <div className="border border-white/[0.08] rounded-2xl p-[18px] bg-white/[0.015]">
+          <div className="text-[9px] font-mono font-semibold text-white/40 tracking-[0.16em] mb-4">NEXUS DAG EXECUTION</div>
           <div className="space-y-2">
             {nodes.map((n) => {
               const s = nodeState[n.id] ?? 'idle';
               return (
                 <div key={n.id} className={`flex items-center gap-3 border rounded-lg p-3 transition-colors ${nodeColor(s)}`}>
                   <div className="w-6 flex justify-center">
-                    {s === 'done'    && <Check  size={14} className="text-violet-400" />}
-                    {s === 'running' && <Loader size={14} className="text-violet-400 animate-spin" />}
+                    {s === 'done'    && <Check  size={14} className="text-lime-400" />}
+                    {s === 'running' && <Loader size={14} className="text-lime-400 animate-spin" />}
                     {s === 'error'   && <X      size={14} className="text-red-400" />}
                     {s === 'idle'    && <div className="w-2 h-2 rounded-full bg-white/20" />}
                   </div>
@@ -3401,8 +3433,8 @@ export default function AgentPage({ onBack }) {
       )}
 
       {result && (result.workflow === 'tpsl' || result.workflow === 'buy_then_tpsl' || result.workflow === 'sniper' || result.workflow === 'dca' || result.workflow === 'copytrade') && (
-        <div className="border border-emerald-400/30 rounded-xl p-4 bg-emerald-400/[0.05]">
-          <div className="text-[10px] font-mono text-emerald-400/80 tracking-widest mb-3">
+        <div className="border border-lime-400/30 rounded-2xl p-[18px] bg-lime-400/[0.05]">
+          <div className="text-[10px] font-mono font-semibold text-lime-400/80 tracking-widest mb-3">
             {result.workflow === 'buy_then_tpsl'
               ? '✓ BOUGHT & STRATEGY ARMED - AGENT IS WATCHING'
               : result.workflow === 'sniper'
@@ -3415,7 +3447,7 @@ export default function AgentPage({ onBack }) {
           </div>
           <div className="space-y-2 text-[10px] font-mono">
             {result.buyDigest && (
-              <div className="text-white/40">buy settled: <span className="text-emerald-300/80 break-all">{result.buyDigest}</span></div>
+              <div className="text-white/40">buy settled: <span className="text-lime-300/80 break-all">{result.buyDigest}</span></div>
             )}
             {result.entryPriceSui && (
               <div className="text-white/40">entry price: <span className="text-white/70">{result.entryPriceSui} SUI</span></div>
@@ -3429,7 +3461,7 @@ export default function AgentPage({ onBack }) {
                 <div className="mt-1 space-y-0.5">
                   {WORKFLOW_DAGS[result.workflow].map((k) => (
                     <a key={k} href={suiscanObject(NEXUS_DAG[k])} target="_blank" rel="noreferrer"
-                       className="flex items-center gap-1 text-violet-300/70 hover:text-violet-300 break-all">
+                       className="flex items-center gap-1 text-lime-300/70 hover:text-lime-300 break-all">
                       <span className="text-white/30 uppercase w-7 shrink-0">{k}</span>
                       {NEXUS_DAG[k].slice(0, 18)}... <ExternalLink size={9} />
                     </a>
@@ -3451,8 +3483,8 @@ export default function AgentPage({ onBack }) {
       )}
 
       {result && result.workflow === 'claim_all' && (
-        <div className="border border-violet-400/30 rounded-xl p-4 bg-violet-400/[0.05]">
-          <div className="text-[10px] font-mono text-violet-400/80 tracking-widest mb-3">✓ CLAIM ALL - VIA NEXUS</div>
+        <div className="border border-lime-400/30 rounded-2xl p-[18px] bg-lime-400/[0.05]">
+          <div className="text-[10px] font-mono font-semibold text-lime-400/80 tracking-widest mb-3">✓ CLAIM ALL - VIA NEXUS</div>
           <div className="text-[11px] font-mono text-white/80 mb-3">
             Claimed {result.claimedCount ?? 0} of {result.attempted ?? 0} curve(s) with fees pending
             {Number(result.totalFeesSui) > 0 ? ` . ~${Number(result.totalFeesSui).toFixed(4)} SUI` : ''}.
@@ -3465,7 +3497,7 @@ export default function AgentPage({ onBack }) {
               {result.results.map((row, i) => (
                 <div key={row.curveId ?? i} className="flex items-center justify-between gap-2 py-1 border-b border-white/[0.04]">
                   <div className="min-w-0 flex items-center gap-1.5">
-                    <span className={`text-[10px] font-mono ${row.ok ? 'text-emerald-400' : 'text-red-400'}`}>{row.ok ? '✓' : '✗'}</span>
+                    <span className={`text-[10px] font-mono ${row.ok ? 'text-lime-400' : 'text-red-400'}`}>{row.ok ? '✓' : '✗'}</span>
                     <span className="text-[10px] font-mono text-white/70 truncate">
                       {row.symbol ? `$${row.symbol}` : `${String(row.curveId).slice(0, 10)}...`}
                     </span>
@@ -3474,7 +3506,7 @@ export default function AgentPage({ onBack }) {
                   {row.ok ? (
                     row.digest && (
                       <a href={suiscanTx(row.digest)} target="_blank" rel="noreferrer"
-                         className="text-violet-400 hover:text-violet-300 shrink-0"><ExternalLink size={11} /></a>
+                         className="text-lime-400 hover:text-lime-300 shrink-0"><ExternalLink size={11} /></a>
                     )
                   ) : (
                     <span className="text-[9px] font-mono text-red-400/60 truncate max-w-[40%]">{row.error}</span>
@@ -3487,15 +3519,15 @@ export default function AgentPage({ onBack }) {
       )}
 
       {result && (result.executionId || result.digest) && (
-        <div className="border border-violet-400/30 rounded-xl p-4 bg-violet-400/[0.05]">
-          <div className="text-[10px] font-mono text-violet-400/80 tracking-widest mb-3">✓ EXECUTED ON-CHAIN VIA NEXUS</div>
+        <div className="border border-lime-400/30 rounded-2xl p-[18px] bg-lime-400/[0.05]">
+          <div className="text-[10px] font-mono font-semibold text-lime-400/80 tracking-widest mb-3">✓ EXECUTED ON-CHAIN VIA NEXUS</div>
           <div className="space-y-2 text-[10px] font-mono">
             {result.dagId && (
               <div className="text-white/40">DAG: <span className="text-white/70 break-all">{result.dagId}</span></div>
             )}
             {result.executionId && (
               <a href={suiscanObject(result.executionId)} target="_blank" rel="noreferrer"
-                 className="inline-flex items-center gap-1.5 text-violet-400 hover:text-violet-300 break-all">
+                 className="inline-flex items-center gap-1.5 text-lime-400 hover:text-lime-300 break-all">
                 execution: {result.executionId} <ExternalLink size={11} />
               </a>
             )}
@@ -3504,13 +3536,13 @@ export default function AgentPage({ onBack }) {
             )}
             {result.digest && (
               <a href={suiscanTx(result.digest)} target="_blank" rel="noreferrer"
-                 className="inline-flex items-center gap-1.5 text-violet-400 hover:text-violet-300 break-all">
+                 className="inline-flex items-center gap-1.5 text-lime-400 hover:text-lime-300 break-all">
                 nexus request: {result.digest} <ExternalLink size={11} />
               </a>
             )}
             {result.settleDigest && (
               <a href={suiscanTx(result.settleDigest)} target="_blank" rel="noreferrer"
-                 className="inline-flex items-center gap-1.5 text-emerald-400 hover:text-emerald-300 break-all">
+                 className="inline-flex items-center gap-1.5 text-lime-400 hover:text-lime-300 break-all">
                 settled: {result.settleDigest} <ExternalLink size={11} />
               </a>
             )}
@@ -3519,164 +3551,18 @@ export default function AgentPage({ onBack }) {
       )}
 
       {error && (
-        <div className="border border-red-400/30 rounded-xl p-3 bg-red-400/[0.04] text-[11px] font-mono text-red-400/80 mt-4">
+        <div className="border border-red-400/30 rounded-2xl p-3 bg-red-400/[0.04] text-[11px] font-mono text-red-400/80">
           {error}
         </div>
       )}
 
-      {/* -- Active strategies ----------------------------------------------- */}
-      <div className="mt-10 pt-6 border-t border-white/10">
-        <div className="flex items-center justify-between mb-4">
-          <div className="text-[10px] font-mono text-violet-400/70 tracking-widest">
-            ACTIVE STRATEGIES{orders.length ? ` . ${orders.length}` : ''}
-          </div>
-          <button
-            onClick={loadOrders}
-            className="text-[9px] font-mono text-white/30 hover:text-white/60 tracking-widest"
-          >
-            REFRESH
-          </button>
-        </div>
-
-        {ordersLoading ? (
-          <div className="flex items-center gap-2 text-[11px] font-mono text-white/30">
-            <Loader size={13} className="animate-spin" /> loading...
-          </div>
-        ) : ordersError ? (
-          <div className="text-[11px] font-mono text-red-400/70">{ordersError}</div>
-        ) : orders.length === 0 ? (
-          <div className="border border-white/10 rounded-xl p-4 text-[11px] font-mono text-white/30">
-            No active strategies. Arm one above and it will appear here.
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {orders.map((o) => {
-              const isConfirm = confirmId === o.id;
-              const isCanceling = cancelingId === o.id;
-              return (
-                <div
-                  key={o.id}
-                  className="border border-white/10 rounded-xl p-3 bg-white/[0.02] flex items-start justify-between gap-3"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-[9px] font-mono text-violet-300/90 bg-violet-400/10 border border-violet-400/20 rounded px-1.5 py-0.5 tracking-wider">
-                        {ORDER_LABEL[o.type] || o.type}
-                      </span>
-                      {o.tokenType && (
-                        <span className="text-[9px] font-mono text-white/35">${shortType(o.tokenType)}</span>
-                      )}
-                    </div>
-                    <div className="text-[11px] font-mono text-white/70 leading-relaxed break-words">
-                      {describeOrder(o)}
-                    </div>
-                    {o.type === 'autopilot' && Array.isArray(o.params?.entered) && o.params.entered.length > 0 && (
-                      <div className="mt-1.5 flex flex-wrap items-center gap-1">
-                        <span className="text-[9px] font-mono text-white/30 tracking-wider mr-0.5">POSITIONS</span>
-                        {o.params.entered.map((cid) => (
-                          <button
-                            key={cid}
-                            type="button"
-                            onClick={() => navigate(`/token/${cid}`)}
-                            className="inline-flex items-center gap-1 text-[9px] font-mono text-emerald-300/70 hover:text-emerald-300 bg-emerald-400/5 border border-emerald-400/15 rounded px-1.5 py-0.5"
-                            title={cid}
-                          >
-                            {tickerByCurve[cid] ? `$${tickerByCurve[cid]}` : shortId(cid)} <ExternalLink size={8} />
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                    {o.curveId && (
-                      <button
-                        type="button"
-                        onClick={() => navigate(`/token/${o.curveId}`)}
-                        className="inline-flex items-center gap-1 text-[9px] font-mono text-white/25 hover:text-violet-400/80 mt-1"
-                        title="Open token page"
-                      >
-                        {shortId(o.curveId)} <ExternalLink size={9} />
-                      </button>
-                    )}
-                    {o.params?._lastFire && (o.params._lastFire.settle || o.params._lastFire.nexusDigest) && (
-                      <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[9px] font-mono">
-                        <span className="text-emerald-400/60 tracking-wider">
-                          LAST {String(o.params._lastFire.kind || 'fire').toUpperCase()}
-                        </span>
-                        {(o.params._lastFire.nexusDigest || o.params._lastFire.nexusTask) && (
-                          <a
-                            href={suiscanTx(o.params._lastFire.nexusDigest || o.params._lastFire.nexusTask)}
-                            target="_blank" rel="noreferrer"
-                            className="inline-flex items-center gap-1 text-violet-300/60 hover:text-violet-300"
-                            title="Nexus DAG execution"
-                          >
-                            nexus {String(o.params._lastFire.nexusDigest || o.params._lastFire.nexusTask).slice(0, 10)}... <ExternalLink size={8} />
-                          </a>
-                        )}
-                        {o.params._lastFire.settle && (
-                          <a
-                            href={suiscanTx(o.params._lastFire.settle)}
-                            target="_blank" rel="noreferrer"
-                            className="inline-flex items-center gap-1 text-emerald-300/60 hover:text-emerald-300"
-                            title="bridge settlement"
-                          >
-                            settle {String(o.params._lastFire.settle).slice(0, 10)}... <ExternalLink size={8} />
-                          </a>
-                        )}
-                      </div>
-                    )}
-                    {o.params?._lastError && o.params._lastError.reason && (
-                      <div className="mt-1.5 flex items-center gap-1.5 text-[9px] font-mono">
-                        <span className="text-red-400/80 tracking-wider">
-                          LAST {String(o.params._lastError.kind || 'fire').toUpperCase()} FAILED
-                        </span>
-                        <span className="text-red-300/70">
-                          {o.params._lastError.reason}
-                          {o.params._lastError.code != null ? ` (code ${o.params._lastError.code})` : ''}
-                        </span>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="shrink-0">
-                    {isConfirm ? (
-                      <div className="flex items-center gap-1.5">
-                        <button
-                          onClick={() => cancelOrder(o.id)}
-                          disabled={isCanceling}
-                          className="text-[9px] font-mono text-red-400 hover:text-red-300 border border-red-400/30 rounded px-2 py-1 tracking-widest disabled:opacity-50"
-                        >
-                          {isCanceling ? '...' : 'CONFIRM'}
-                        </button>
-                        <button
-                          onClick={() => setConfirmId(null)}
-                          disabled={isCanceling}
-                          className="text-[9px] font-mono text-white/40 hover:text-white/70 px-1 tracking-widest disabled:opacity-50"
-                        >
-                          KEEP
-                        </button>
-                      </div>
-                    ) : (
-                      <button
-                        onClick={() => { setConfirmId(o.id); setOrdersError(null); }}
-                        className="text-[9px] font-mono text-white/30 hover:text-red-400/90 border border-white/10 hover:border-red-400/30 rounded px-2 py-1 tracking-widest transition-colors"
-                      >
-                        CANCEL
-                      </button>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
       {/* -- Agent action history (persistent) ------------------------------- */}
-      <div className="mt-10 pt-6 border-t border-white/10">
+      <div className="border border-white/[0.08] rounded-2xl bg-white/[0.015] overflow-hidden">
         <button
           onClick={() => setHistoryOpen(o => !o)}
-          className="w-full flex items-center justify-between mb-4"
+          className="w-full flex items-center justify-between px-[18px] py-[13px] text-left"
         >
-          <div className="text-[10px] font-mono text-violet-400/70 tracking-widest">
+          <div className="text-[9px] font-mono font-semibold tracking-[0.16em] text-white/40">
             AGENT HISTORY{history.length ? ` . ${history.length}` : ''}
           </div>
           <ChevronDown size={14} className={`text-white/30 transition-transform ${historyOpen ? 'rotate-180' : ''}`} />
@@ -3684,25 +3570,25 @@ export default function AgentPage({ onBack }) {
 
         {historyOpen && (
           history.length === 0 ? (
-            <div className="border border-white/10 rounded-xl p-4 text-[11px] font-mono text-white/30">
+            <div className="px-[18px] py-4 border-t border-white/[0.06] text-[11px] font-mono text-white/30">
               No actions yet. Fired trades (manual and autonomous) appear here.
             </div>
           ) : (
-            <div className="space-y-2">
+            <div className="border-t border-white/[0.06]">
               {history.map((a) => {
                 const proof = a.leaderSettlementDigest || a.settleDigest || a.nexusRequestDigest;
                 const via   = a.settledVia === 'leader' ? 'leader' : a.settledVia === 'bridge' ? 'bridge' : null;
                 const when  = a.createdAt ? new Date(a.createdAt).toLocaleString() : '';
                 return (
-                  <div key={a.id} className="border border-white/10 rounded-xl p-3 text-[10px] font-mono">
+                  <div key={a.id} className="px-[18px] py-3 border-b border-white/[0.04] last:border-0 text-[10px] font-mono">
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-2 min-w-0">
-                        <span className={`shrink-0 px-1.5 py-0.5 rounded text-[8px] tracking-widest ${a.source === 'autonomous' ? 'bg-violet-400/15 text-violet-300/90' : 'bg-emerald-400/15 text-emerald-300/90'}`}>
+                        <span className={`shrink-0 px-1.5 py-0.5 rounded text-[8px] tracking-widest ${a.source === 'autonomous' ? 'bg-violet-400/15 text-violet-300/90' : 'bg-lime-400/15 text-lime-300/90'}`}>
                           {a.source === 'autonomous' ? 'AUTO' : 'MANUAL'}
                         </span>
                         <span className="text-white/70 truncate">{a.summary || a.kind}</span>
                       </div>
-                      <span className={`shrink-0 text-[9px] tracking-widest ${a.status === 'settled' ? 'text-emerald-400/80' : a.status === 'pending' ? 'text-violet-300/70' : a.status === 'fallback' ? 'text-amber-300/70' : 'text-red-400/70'}`}>
+                      <span className={`shrink-0 text-[9px] tracking-widest ${a.status === 'settled' ? 'text-lime-400/80' : a.status === 'pending' ? 'text-white/40' : a.status === 'fallback' ? 'text-amber-300/70' : 'text-red-400/70'}`}>
                         {a.status}{via ? ` . ${via}` : ''}
                       </span>
                     </div>
@@ -3711,7 +3597,7 @@ export default function AgentPage({ onBack }) {
                       <button
                         type="button"
                         onClick={() => navigate(`/token/${a.curveId}`)}
-                        className="inline-flex items-center gap-1.5 mt-1 text-violet-400 hover:text-violet-300 break-all"
+                        className="inline-flex items-center gap-1.5 mt-1 text-lime-400 hover:text-lime-300 break-all"
                         title="Open token page"
                       >
                         token: {a.tokenType ? `$${shortType(a.tokenType)}` : tickerByCurve[a.curveId] ? `$${tickerByCurve[a.curveId]}` : shortId(a.curveId)} <ExternalLink size={10} />
@@ -3722,7 +3608,7 @@ export default function AgentPage({ onBack }) {
                     )}
                     {proof && (
                       <a href={suiscanTx(proof)} target="_blank" rel="noreferrer"
-                         className="inline-flex items-center gap-1.5 mt-1 text-violet-400 hover:text-violet-300 break-all">
+                         className="inline-flex items-center gap-1.5 mt-1 text-lime-400 hover:text-lime-300 break-all">
                         {a.leaderSettlementDigest ? 'leader settled' : a.settleDigest ? 'settled' : 'nexus request'}: {proof} <ExternalLink size={10} />
                       </a>
                     )}
@@ -3732,6 +3618,158 @@ export default function AgentPage({ onBack }) {
             </div>
           )
         )}
+      </div>
+
+      </div>
+
+      {/* -- Active strategies ----------------------------------------------- */}
+      <div className="lg:col-start-2 lg:row-start-2 min-w-0">
+        <div className="border border-white/[0.08] rounded-2xl bg-white/[0.015] overflow-hidden">
+          <div className="flex items-center justify-between px-4 py-[13px] border-b border-white/[0.06]">
+            <div className="text-[9px] font-mono font-semibold tracking-[0.16em] text-white/40">
+              ACTIVE STRATEGIES{orders.length ? ` . ${orders.length}` : ''}
+            </div>
+            <button
+              onClick={loadOrders}
+              className="text-[9px] font-mono text-white/30 hover:text-white/60 tracking-widest"
+            >
+              REFRESH
+            </button>
+          </div>
+
+          {ordersLoading ? (
+            <div className="flex items-center gap-2 px-4 py-4 text-[11px] font-mono text-white/30">
+              <Loader size={13} className="animate-spin" /> loading...
+            </div>
+          ) : ordersError ? (
+            <div className="px-4 py-4 text-[11px] font-mono text-red-400/70">{ordersError}</div>
+          ) : orders.length === 0 ? (
+            <div className="px-4 py-4 text-[11px] font-mono text-white/30">
+              No active strategies. Arm one above and it will appear here.
+            </div>
+          ) : (
+            <div>
+              {orders.map((o) => {
+                const isConfirm = confirmId === o.id;
+                const isCanceling = cancelingId === o.id;
+                return (
+                  <div
+                    key={o.id}
+                    className="px-4 py-3 border-b border-white/[0.04] last:border-0 hover:bg-white/[0.02] transition-colors flex items-start justify-between gap-3"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className={`text-[8.5px] font-mono font-bold border rounded-[5px] px-[7px] py-1 tracking-wider ${ORDER_BADGE[o.type] || 'text-white/50 border-white/30'}`}>
+                          {ORDER_LABEL[o.type] || o.type}
+                        </span>
+                        {o.tokenType && (
+                          <span className="text-[9px] font-mono text-white/35">${shortType(o.tokenType)}</span>
+                        )}
+                      </div>
+                      <div className="text-[10.5px] font-mono text-white/65 leading-relaxed break-words">
+                        {describeOrder(o)}
+                      </div>
+                      {o.type === 'autopilot' && Array.isArray(o.params?.entered) && o.params.entered.length > 0 && (
+                        <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                          <span className="text-[9px] font-mono text-white/30 tracking-wider mr-0.5">POSITIONS</span>
+                          {o.params.entered.map((cid) => (
+                            <button
+                              key={cid}
+                              type="button"
+                              onClick={() => navigate(`/token/${cid}`)}
+                              className="inline-flex items-center gap-1 text-[9px] font-mono text-lime-300/70 hover:text-lime-300 bg-lime-400/5 border border-lime-400/15 rounded px-1.5 py-0.5"
+                              title={cid}
+                            >
+                              {tickerByCurve[cid] ? `$${tickerByCurve[cid]}` : shortId(cid)} <ExternalLink size={8} />
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      {o.curveId && (
+                        <button
+                          type="button"
+                          onClick={() => navigate(`/token/${o.curveId}`)}
+                          className="inline-flex items-center gap-1 text-[9px] font-mono text-white/25 hover:text-lime-400/80 mt-1"
+                          title="Open token page"
+                        >
+                          {shortId(o.curveId)} <ExternalLink size={9} />
+                        </button>
+                      )}
+                      {o.params?._lastFire && (o.params._lastFire.settle || o.params._lastFire.nexusDigest) && (
+                        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[9px] font-mono">
+                          <span className="text-lime-400/60 tracking-wider">
+                            LAST {String(o.params._lastFire.kind || 'fire').toUpperCase()}
+                          </span>
+                          {(o.params._lastFire.nexusDigest || o.params._lastFire.nexusTask) && (
+                            <a
+                              href={suiscanTx(o.params._lastFire.nexusDigest || o.params._lastFire.nexusTask)}
+                              target="_blank" rel="noreferrer"
+                              className="inline-flex items-center gap-1 text-lime-300/60 hover:text-lime-300"
+                              title="Nexus DAG execution"
+                            >
+                              nexus {String(o.params._lastFire.nexusDigest || o.params._lastFire.nexusTask).slice(0, 10)}... <ExternalLink size={8} />
+                            </a>
+                          )}
+                          {o.params._lastFire.settle && (
+                            <a
+                              href={suiscanTx(o.params._lastFire.settle)}
+                              target="_blank" rel="noreferrer"
+                              className="inline-flex items-center gap-1 text-lime-300/60 hover:text-lime-300"
+                              title="bridge settlement"
+                            >
+                              settle {String(o.params._lastFire.settle).slice(0, 10)}... <ExternalLink size={8} />
+                            </a>
+                          )}
+                        </div>
+                      )}
+                      {o.params?._lastError && o.params._lastError.reason && (
+                        <div className="mt-1.5 flex items-center gap-1.5 text-[9px] font-mono">
+                          <span className="text-red-400/80 tracking-wider">
+                            LAST {String(o.params._lastError.kind || 'fire').toUpperCase()} FAILED
+                          </span>
+                          <span className="text-red-300/70">
+                            {o.params._lastError.reason}
+                            {o.params._lastError.code != null ? ` (code ${o.params._lastError.code})` : ''}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="shrink-0">
+                      {isConfirm ? (
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            onClick={() => cancelOrder(o.id)}
+                            disabled={isCanceling}
+                            className="text-[9px] font-mono text-red-400 hover:text-red-300 border border-red-400/30 rounded px-2 py-1 tracking-widest disabled:opacity-50"
+                          >
+                            {isCanceling ? '...' : 'CONFIRM'}
+                          </button>
+                          <button
+                            onClick={() => setConfirmId(null)}
+                            disabled={isCanceling}
+                            className="text-[9px] font-mono text-white/40 hover:text-white/70 px-1 tracking-widest disabled:opacity-50"
+                          >
+                            KEEP
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => { setConfirmId(o.id); setOrdersError(null); }}
+                          className="text-[9px] font-mono text-white/30 hover:text-red-400/90 border border-white/10 hover:border-red-400/30 rounded px-2 py-1 tracking-widest transition-colors"
+                        >
+                          CANCEL
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+
       </div>
     </div>
   );
