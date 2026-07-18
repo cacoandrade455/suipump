@@ -4,12 +4,12 @@
 //   1. Natural-language goal -> Groq plans off-chain (/api/agent-plan) into a
 //      per-workflow plan: launch_and_buy | buy | sell | claim | alerts.
 //   2. Operator approves. The browser resolves any runtime values it must supply
-//      (sell "ALL" -> real token balance; claim tokenType from the curve), then
-//      posts { workflow, ... } to the agent-runner (/run-dag).
-//   3. The runner maps workflow -> published Nexus DAG id, executes via the
-//      `nexus` CLI, returns the on-chain DAGExecution id + tx digest.
+//      (sell "ALL" -> real token balance; claim tokenType from the curve).
+//   3. Execution is bridge-direct: manual buy/sell are signed by the USER's own
+//      wallet; strategies arm standing orders the 24/7 agent runner fires
+//      through the bridge against the session escrow.
 //
-// The LLM plans OFF-CHAIN; the DAG does the on-chain work. Terminal identity.
+// The LLM plans OFF-CHAIN; execution settles on-chain. Terminal identity.
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { normalizeGoalText, extractPerEntrySui, extractSpendCapSui, isAutopilotIntent, isTrendingDiscovery } from './agentVocab.js';
 import { ArrowLeft, Sparkles, Play, Check, X, Loader, ExternalLink, Bot, ChevronDown } from 'lucide-react';
@@ -70,22 +70,8 @@ function rememberClosedSession(id) {
 
 const suiscanObject = (id) => `https://suiscan.xyz/testnet/object/${id}`;
 
-// Published Nexus DAG IDs each strategy executes through (testnet). Shown on the
-// plan/result so the on-chain orchestration path is visible at arm time.
-const NEXUS_DAG = {
-  buy:  '0x922f29c5a198503c83cf1cbd26193ed8255fdf5e5a6bb1f1843b8bc3994eb403',
-  sell: '0xb48c4b8e5a68941af3a91169ebec81f6046b0e4fc58f6443c4013f6b6f13995d',
-};
-const WORKFLOW_DAGS = {
-  sniper:    ['buy'],
-  dca:       ['buy', 'sell'],
-  copytrade: ['buy', 'sell'],
-  tpsl:      ['sell'],
-  buy_then_tpsl: ['buy', 'sell'],
-};
-
 // "How to operate" content for the agent-page accordion, in three tiers:
-//   TOOLS      - the 5 atomic Nexus tools (xyz.suipump.*@1), from the Rust source.
+//   TOOLS      - the 5 atomic tools (xyz.suipump.*@1) the agent calls.
 //   STRATEGIES - the 4 standing behaviours built on those tools.
 //   COMBINING  - the one real composition (a buy-strategy auto-arming an exit).
 // Example goals match the deterministic parsers / planner verbatim; clicking one
@@ -93,7 +79,7 @@ const WORKFLOW_DAGS = {
 const OPERATE_GUIDE = [
   {
     section: 'TOOLS',
-    blurb: 'The five atomic Nexus tools the agent calls. Every strategy is built from these.',
+    blurb: 'The five atomic tools the agent calls. Every strategy is built from these.',
     items: [
       {
         key: 'launch', title: 'Launch', fqn: 'xyz.suipump.launch@1',
@@ -119,7 +105,7 @@ const OPERATE_GUIDE = [
       {
         key: 'claim', title: 'Claim', fqn: 'xyz.suipump.claim@2',
         tagline: 'Collect pending creator fees',
-        body: 'Claims the creator fees that have accrued on a curve you launched. Does nothing if there are no fees pending. You can claim one curve by pasting its CA, or claim every curve you created at once - say "claim all" with no CA and the agent enumerates your curves and claims each one through Nexus.',
+        body: 'Claims the creator fees that have accrued on a curve you launched. Does nothing if there are no fees pending. You can claim one curve by pasting its CA, or claim every curve you created at once - say "claim all" with no CA and the agent enumerates your curves and claims each one automatically.',
         inputs: ['A token CA you created - or "claim all" for every curve at once'],
         examples: ['Claim creator fees on 0xCURVE', 'Claim all my creator fees'],
       },
@@ -139,7 +125,7 @@ const OPERATE_GUIDE = [
       {
         key: 'sniper', title: 'Sniper', fqn: 'strategy.sniper@1',
         tagline: 'Auto-buy new launches the moment they appear',
-        body: 'A standing order that watches for new token launches and fires a buy through Nexus the instant one is created - every launch, or only launches from a specific creator. Runs until cancelled or an optional cap is hit.',
+        body: 'A standing order that watches for new token launches and fires a buy the instant one is created - every launch, or only launches from a specific creator. Runs until cancelled or an optional cap is hit.',
         inputs: ['A SUI amount per snipe', 'Optional: a creator wallet to restrict to', 'Optional: a max number of snipes', 'Optional: an exit armed on each buy'],
         examples: ['Snipe 1 SUI of every new token launch', 'Snipe 2 SUI of every token launched by 0xCREATOR, take profit at 50%'],
       },
@@ -160,7 +146,7 @@ const OPERATE_GUIDE = [
       {
         key: 'tpsl', title: 'Take-profit / Stop-loss', fqn: 'strategy.tpsl@1',
         tagline: 'Auto-sell a position at a price target',
-        body: 'Watches a curve you hold and sells automatically through Nexus when price hits a take-profit multiple or falls to a stop-loss. Take-profit can be tiered - sell part at one level, the rest higher.',
+        body: 'Watches a curve you hold and sells automatically when price hits a take-profit multiple or falls to a stop-loss. Take-profit can be tiered - sell part at one level, the rest higher.',
         inputs: ['A token CA you hold', 'A take-profit target and/or a stop-loss'],
         examples: ['Take profit on 0xCURVE at 50% and stop loss at 20%', 'Sell 50% of 0xCURVE at +30%, sell the rest at +100%'],
       },
@@ -365,7 +351,7 @@ export function parseStrategyGoal(text) {
     if (amountSui > 0) {
       const tpDescC = tp.length ? `take-profit ${tp.map(r => `+${Math.round((r.multiple - 1) * 100)}% (sell ${r.sellPct}%)`).join(', ')}` : '';
       const slDescC = stopLoss ? `stop-loss -${Math.round((1 - stopLoss.multiple) * 100)}%` : '';
-      const summaryC = `Buy ${amountSui} SUI of ${curveId.slice(0, 10)}..., then arm ${[tpDescC, slDescC].filter(Boolean).join(' . ')}. The agent buys now and sells automatically when a trigger is hit.`;
+      const summaryC = `Buy ${amountSui} SUI of this curve, then arm ${[tpDescC, slDescC].filter(Boolean).join(' . ')}. The agent buys now and sells automatically when a trigger is hit.`;
       return {
         workflow: 'buy_then_tpsl',
         summary: summaryC,
@@ -377,7 +363,7 @@ export function parseStrategyGoal(text) {
 
   const tpDesc = tp.length ? `take-profit ${tp.map(r => `+${Math.round((r.multiple - 1) * 100)}% (sell ${r.sellPct}%)`).join(', ')}` : '';
   const slDesc = stopLoss ? `stop-loss -${Math.round((1 - stopLoss.multiple) * 100)}%` : '';
-  const summary = `Arm a standing strategy on ${curveId.slice(0, 10)}...: ${[tpDesc, slDesc].filter(Boolean).join(' . ')}. The agent watches the price and sells automatically when a trigger is hit.`;
+  const summary = `Arm a standing strategy on this curve: ${[tpDesc, slDesc].filter(Boolean).join(' . ')}. The agent watches the price and sells automatically when a trigger is hit.`;
 
   return { workflow: 'tpsl', summary, tpsl: { curveId, takeProfit: tp, stopLoss } };
 }
@@ -623,7 +609,7 @@ function parseDcaGoal(text) {
       ].filter(Boolean).join(' . ')} on the average cost`
     : '';
 
-  const summary = `Arm DCA on ${curveId.slice(0, 10)}...: buy ${suiPerBuy} SUI ${modeDesc}, ${buys} buy${buys > 1 ? 's' : ''} total${thenDesc}. The agent accumulates automatically and tracks the average cost${then ? ', then auto-exits against that average' : ''}.`;
+  const summary = `Arm DCA on this curve: buy ${suiPerBuy} SUI ${modeDesc}, ${buys} buy${buys > 1 ? 's' : ''} total${thenDesc}. The agent accumulates automatically and tracks the average cost${then ? ', then auto-exits against that average' : ''}.`;
 
   return { workflow: 'dca', summary, dca, then };
 }
@@ -662,7 +648,7 @@ function parseCopytradeGoal(text) {
 
   const copytrade = { targetWallet, suiPerTrade };
 
-  const summary = `Arm copy-trade on ${targetWallet.slice(0, 10)}...: when they buy, the agent buys ${suiPerTrade} SUI; when they sell, the agent sells the same proportion of its position. Mirrors across every curve the target trades, automatically through Nexus.`;
+  const summary = `Arm copy-trade on the target wallet: when they buy, the agent buys ${suiPerTrade} SUI; when they sell, the agent sells the same proportion of its position. Mirrors across every curve the target trades, automatically.`;
 
   return { workflow: 'copytrade', summary, copytrade };
 }
@@ -772,11 +758,12 @@ const ORDER_BADGE = {
   tpsl:      'text-amber-500 border-amber-500/80',
   autopilot: 'text-red-400 border-red-400/80',
 };
-const shortId  = (s) => (typeof s === 'string' && s.startsWith('0x') && s.length > 14) ? `${s.slice(0, 8)}...${s.slice(-4)}` : s;
+// shortType extracts the coin SYMBOL from a full coin type. When the type does
+// not parse, return it whole - never a truncated on-chain identifier.
 const shortType = (t) => {
   if (typeof t !== 'string') return '';
   const m = t.match(/::([^:]+)::([^>]+)$/);
-  return m ? m[2] : t.slice(0, 14);
+  return m ? m[2] : t;
 };
 
 // One-line human summary of any standing order, for the panel.
@@ -784,7 +771,7 @@ function describeOrder(o) {
   const p = o.params || {};
   if (o.type === 'sniper') {
     const bits = [];
-    if (Array.isArray(p.creators) && p.creators.length) bits.push(`creator ${shortId(p.creators[0])}${p.creators.length > 1 ? ` +${p.creators.length - 1}` : ''}`);
+    if (Array.isArray(p.creators) && p.creators.length) bits.push(`creator ${p.creators[0]}${p.creators.length > 1 ? ` +${p.creators.length - 1}` : ''}`);
     if (Array.isArray(p.symbols) && p.symbols.length)   bits.push(`$${p.symbols.join('/$')}`);
     if (p.nameIncludes) bits.push(`name~"${p.nameIncludes}"`);
     if (!bits.length && p.all) bits.push('every launch');
@@ -800,7 +787,7 @@ function describeOrder(o) {
   if (o.type === 'copytrade') {
     const size = p.suiPerTrade ? `${p.suiPerTrade} SUI/trade` : `${p.ratio}x their size`;
     const then = p.then?.tpsl ? ' -> then TP/SL' : '';
-    return `Mirror ${shortId(p.targetWallet)} at ${size}${then}`;
+    return `Mirror ${p.targetWallet} at ${size}${then}`;
   }
   if (o.type === 'autopilot') {
     const p = o.params || {};
@@ -2447,15 +2434,14 @@ export default function AgentPage({ onBack }) {
   }
 
   // Settle the swap through the bridge - the path that actually moves tokens
-  // (the Nexus DAG request emits the on-chain execution digest but does not
-  // settle, so we settle here, the same bridge every working SuiPump trade uses).
+  // (the same bridge every working SuiPump trade uses).
   // Maps the runner payload's fields to the bridge's body. Calls go through the
   // same-origin Vercel proxy (/api/agent-bridge), which injects AGENT_API_KEY
   // server-side and forwards to the bridge's gated write endpoints. The key never
   // ships to the browser, so only our deployed UI (via this proxy) can spend the
   // agent wallet - a direct browser/curl to the bridge gets 401. We pass the
   // target bridge path in `path`. Returns the settlement txDigest, or null for
-  // workflows the bridge doesn't settle (claim/alerts go DAG-only).
+  // workflows the bridge doesn't settle (claim/alerts settle server-side).
   async function settleViaBridge(payload) {
     const wf = payload.workflow;
 
@@ -2768,7 +2754,7 @@ export default function AgentPage({ onBack }) {
 
       // STRATEGY (sniper): standing buy keyed on a launch filter. Like tpsl, it
       // creates an order in the strategy store and nothing settles now - the brain
-      // fires a buy (real Nexus scheduler task) on every NEW launch that matches.
+      // fires a buy (runner scheduler task) on every NEW launch that matches.
       if (payload.workflow === 'sniper') {
         try {
           const orderBody = { type: 'sniper', params: payload.sniper, sessionId: activeSessionId, wallet: account?.address ?? null };
@@ -2796,7 +2782,7 @@ export default function AgentPage({ onBack }) {
 
       // STRATEGY (dca): standing accumulation on a specific curve. Like sniper it
       // creates a store order and nothing settles now - the brain fires each buy
-      // (Nexus task + bridge settle) on its schedule / dip trigger, tracks the
+      // (runner fire + bridge settle) on its schedule / dip trigger, tracks the
       // average cost, and arms the `then` exit on that average after the final buy.
       if (payload.workflow === 'dca') {
         if (!(await ensureUniversalIfNeeded(payload.dca?.curveId))) { clearAnim(); setPhase('idle'); return; }
@@ -2893,7 +2879,7 @@ export default function AgentPage({ onBack }) {
 
       // STRATEGY (autopilot): standing autonomous trader. Creates a store order;
       // the brain scans /trending each tick, enters the best candidate within the
-      // spend cap (Nexus emit + bridge settle), and arms a TP/SL exit per entry.
+      // spend cap (runner fire + bridge settle), and arms a TP/SL exit per entry.
       // Nothing settles now. Revocable by cancelling the order.
       if (payload.workflow === 'autopilot') {
         try {
@@ -2922,8 +2908,8 @@ export default function AgentPage({ onBack }) {
 
       // FAN-OUT (claim_all): claim creator fees across every curve the connected
       // (agent) wallet created with fees pending. The server-side proxy
-      // enumerates, filters, and fires the claim DAG per curve - each a real
-      // Nexus walk. Nothing routes through the bridge (claim is DAG-only).
+      // enumerates, filters, and fires the claim per curve. Nothing routes
+      // through the bridge (claim settles server-side).
       if (payload.workflow === 'claim_all') {
         if (!account?.address) {
           clearAnim();
@@ -3032,7 +3018,7 @@ export default function AgentPage({ onBack }) {
 
   const showExecutionPanel = phase !== 'idle';
   // A launch_and_buy with no dev-buy is, to the user, just a launch. We keep the
-  // proven launch_and_buy DAG (0xfd88, buy=0 settles fine) under the hood but
+  // proven launch_and_buy workflow (buy=0 settles fine) under the hood but
   // relabel the display: single "Launch" node, "launch" workflow, no dev-buy row.
   function isBareLaunch(p) {
     return !!(p && p.workflow === 'launch_and_buy' && !(Number(p.buy?.amountSui ?? p.launch?.devBuySui ?? 0) > 0));
@@ -3064,19 +3050,19 @@ export default function AgentPage({ onBack }) {
       case 'buy':
         return [
           ['workflow', p.workflow],
-          ['curve', p.buy?.curveId ? `${p.buy.curveId.slice(0, 10)}...` : '(missing - paste CA)'],
+          ['curve', p.buy?.curveId ? p.buy.curveId : '(missing - paste CA)'],
           ['amount', `${p.buy?.amountSui ?? 0} SUI`],
         ];
       case 'sell':
         return [
           ['workflow', p.workflow],
-          ['curve', p.sell?.curveId ? `${p.sell.curveId.slice(0, 10)}...` : '(missing - paste CA)'],
+          ['curve', p.sell?.curveId ? p.sell.curveId : '(missing - paste CA)'],
           ['amount', p.sell?.tokenAmount === 'ALL' ? 'ALL tokens' : `${p.sell?.tokenAmount} tokens`],
         ];
       case 'claim':
         return [
           ['workflow', p.workflow],
-          ['curve', p.claim?.curveId ? `${p.claim.curveId.slice(0, 10)}...` : '(missing - paste CA)'],
+          ['curve', p.claim?.curveId ? p.claim.curveId : '(missing - paste CA)'],
         ];
       case 'claim_all':
         return [
@@ -3091,7 +3077,7 @@ export default function AgentPage({ onBack }) {
       case 'tpsl': {
         const rows = [
           ['workflow', 'tp/sl strategy'],
-          ['curve', p.tpsl?.curveId ? `${p.tpsl.curveId.slice(0, 10)}...` : '(missing - paste CA)'],
+          ['curve', p.tpsl?.curveId ? p.tpsl.curveId : '(missing - paste CA)'],
         ];
         (p.tpsl?.takeProfit ?? []).forEach((r, i) =>
           rows.push([`take-profit ${i + 1}`, `+${Math.round((r.multiple - 1) * 100)}% . sell ${r.sellPct}%`]));
@@ -3103,7 +3089,7 @@ export default function AgentPage({ onBack }) {
         const rows = [
           ['workflow', 'buy + tp/sl'],
           ['buy', `${p.buy?.amountSui ?? 0} SUI`],
-          ['curve', p.buy?.curveId ? `${p.buy.curveId.slice(0, 10)}...` : '(missing - paste CA)'],
+          ['curve', p.buy?.curveId ? p.buy.curveId : '(missing - paste CA)'],
         ];
         (p.tpsl?.takeProfit ?? []).forEach((r, i) =>
           rows.push([`take-profit ${i + 1}`, `+${Math.round((r.multiple - 1) * 100)}% . sell ${r.sellPct}%`]));
@@ -3118,7 +3104,7 @@ export default function AgentPage({ onBack }) {
           ['buy size', `${s.amountSui ?? 0} SUI per launch`],
         ];
         if (Array.isArray(s.creators) && s.creators.length)
-          rows.push(['creators', s.creators.map(c => `${c.slice(0, 10)}...`).join(', ')]);
+          rows.push(['creators', s.creators.join(', ')]);
         if (Array.isArray(s.symbols) && s.symbols.length)
           rows.push(['symbols', s.symbols.join(', ')]);
         if (s.nameIncludes)
@@ -3142,7 +3128,7 @@ export default function AgentPage({ onBack }) {
         const d = p.dca ?? {};
         const rows = [
           ['workflow', 'dca (standing accumulation)'],
-          ['curve', d.curveId ? `${d.curveId.slice(0, 10)}...` : '(missing - paste CA)'],
+          ['curve', d.curveId ? d.curveId : '(missing - paste CA)'],
           ['buy size', `${d.suiPerBuy ?? 0} SUI per buy`],
           ['trigger', d.mode === 'dip' ? `each -${d.dropPct}% drop from entry` : `every ${Math.round((d.intervalMs ?? 86400000) / 1000)}s`],
           ['total buys', `${d.buys ?? 1}`],
@@ -3159,7 +3145,7 @@ export default function AgentPage({ onBack }) {
         const c = p.copytrade ?? {};
         return [
           ['workflow', 'copy-trade (wallet follow)'],
-          ['target wallet', c.targetWallet ? `${c.targetWallet.slice(0, 10)}...${c.targetWallet.slice(-4)}` : '(missing - paste 0x)'],
+          ['target wallet', c.targetWallet ? c.targetWallet : '(missing - paste 0x)'],
           ['buy size', `${c.suiPerTrade ?? 0} SUI per trade`],
           ['sells', 'proportional to target'],
           ['scope', 'every curve the target trades'],
@@ -3185,10 +3171,11 @@ export default function AgentPage({ onBack }) {
             SESSION ACTIVE
           </span>
         )}
+        <span className="text-[9.5px] leading-none font-mono font-semibold text-white/45 border border-white/[0.12] rounded-full px-[9px] py-[5px] whitespace-nowrap">AGENT RUNNER · 24/7</span>
         <span className="ml-auto hidden md:block text-[10px] font-mono text-white/30">keys never leave the enclave · revocable anytime</span>
       </div>
       <p className="text-white/40 text-[11px] font-mono leading-relaxed max-w-2xl mb-5">
-        State a goal in plain language and the agent produces autonomous workflows - planning with an LLM, then executing on-chain through published Nexus DAGs. Five base tools - launch, buy, sell, claim, monitor - power four standing strategies (sniper, DCA, copy-trade, take-profit / stop-loss), which can be combined into entry-plus-exit setups. See HOW TO OPERATE below.
+        State a goal in plain language and the agent produces autonomous workflows - planning with an LLM, then executing on-chain through the agent's 24/7 runner. Five base tools - launch, buy, sell, claim, monitor - power four standing strategies (sniper, DCA, copy-trade, take-profit / stop-loss), which can be combined into entry-plus-exit setups. See HOW TO OPERATE below.
       </p>
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] lg:grid-rows-[auto_1fr] gap-4 items-start">
@@ -3362,7 +3349,7 @@ export default function AgentPage({ onBack }) {
 
           <div className="grid grid-cols-2 gap-2 text-[10px] font-mono text-white/45 mb-4">
             {planRows(plan).map(([k, v]) => (
-              <div key={k}>{k}: <span className="text-white/80">{v}</span></div>
+              <div key={k} className="break-all">{k}: <span className="text-white/80">{v}</span></div>
             ))}
           </div>
           {(phase === 'idle' || phase === 'failed') && !(candidates && candidates.length > 1) && (() => {
@@ -3399,8 +3386,8 @@ export default function AgentPage({ onBack }) {
               <span className="absolute -right-1 -top-1 w-2 h-2 rounded-full bg-lime-400 animate-ping" />
             </div>
             <div className="flex-1">
-              <div className="text-[12px] font-mono text-white/90 font-bold">Agent executing autonomously on Nexus</div>
-              <div className="text-[10px] font-mono text-white/40">Running the {isBareLaunch(plan) ? 'launch' : plan?.workflow} DAG on-chain.</div>
+              <div className="text-[12px] font-mono text-white/90 font-bold">Agent executing autonomously</div>
+              <div className="text-[10px] font-mono text-white/40">Executing the {isBareLaunch(plan) ? 'launch' : plan?.workflow} workflow on-chain.</div>
             </div>
             <Loader size={14} className="text-lime-400 animate-spin" />
           </div>
@@ -3409,7 +3396,7 @@ export default function AgentPage({ onBack }) {
 
       {showExecutionPanel && (
         <div className="border border-white/[0.08] rounded-2xl p-[18px] bg-white/[0.015]">
-          <div className="text-[9px] font-mono font-semibold text-white/40 tracking-[0.16em] mb-4">NEXUS DAG EXECUTION</div>
+          <div className="text-[9px] font-mono font-semibold text-white/40 tracking-[0.16em] mb-4">EXECUTION</div>
           <div className="space-y-2">
             {nodes.map((n) => {
               const s = nodeState[n.id] ?? 'idle';
@@ -3455,28 +3442,14 @@ export default function AgentPage({ onBack }) {
             {result.orderId && (
               <div className="text-white/40">order id: <span className="text-white/70 break-all">{result.orderId}</span></div>
             )}
-            {WORKFLOW_DAGS[result.workflow] && (
-              <div className="text-white/40 pt-1">
-                executes through Nexus {WORKFLOW_DAGS[result.workflow].length > 1 ? 'DAGs' : 'DAG'}:
-                <div className="mt-1 space-y-0.5">
-                  {WORKFLOW_DAGS[result.workflow].map((k) => (
-                    <a key={k} href={suiscanObject(NEXUS_DAG[k])} target="_blank" rel="noreferrer"
-                       className="flex items-center gap-1 text-lime-300/70 hover:text-lime-300 break-all">
-                      <span className="text-white/30 uppercase w-7 shrink-0">{k}</span>
-                      {NEXUS_DAG[k].slice(0, 18)}... <ExternalLink size={9} />
-                    </a>
-                  ))}
-                </div>
-              </div>
-            )}
             <div className="text-white/50 leading-relaxed">
               {result.workflow === 'sniper'
-                ? "The agent now watches new launches and fires a buy through Nexus the moment one matches your filter. No further action needed."
+                ? "The agent now watches new launches and fires a buy the moment one matches your filter. No further action needed."
                 : result.workflow === 'dca'
-                ? "The agent now accumulates on this curve automatically through Nexus - on schedule or on each dip - tracking your average cost. Watch it in Active Strategies below."
+                ? "The agent now accumulates on this curve automatically - on schedule or on each dip - tracking your average cost. Watch it in Active Strategies below."
                 : result.workflow === 'copytrade'
-                ? "The agent now follows the target wallet through Nexus: buying when it buys, selling proportionally when it sells, across every curve it trades. Watch it in Active Strategies below."
-                : "The agent now watches this curve's price and sells automatically through Nexus when a trigger is hit. No further action needed."}
+                ? "The agent now follows the target wallet: buying when it buys, selling proportionally when it sells, across every curve it trades. Watch it in Active Strategies below."
+                : "The agent now watches this curve's price and sells automatically when a trigger is hit. No further action needed."}
             </div>
           </div>
         </div>
@@ -3484,7 +3457,7 @@ export default function AgentPage({ onBack }) {
 
       {result && result.workflow === 'claim_all' && (
         <div className="border border-lime-400/30 rounded-2xl p-[18px] bg-lime-400/[0.05]">
-          <div className="text-[10px] font-mono font-semibold text-lime-400/80 tracking-widest mb-3">✓ CLAIM ALL - VIA NEXUS</div>
+          <div className="text-[10px] font-mono font-semibold text-lime-400/80 tracking-widest mb-3">✓ CLAIM ALL - COMPLETE</div>
           <div className="text-[11px] font-mono text-white/80 mb-3">
             Claimed {result.claimedCount ?? 0} of {result.attempted ?? 0} curve(s) with fees pending
             {Number(result.totalFeesSui) > 0 ? ` . ~${Number(result.totalFeesSui).toFixed(4)} SUI` : ''}.
@@ -3498,8 +3471,8 @@ export default function AgentPage({ onBack }) {
                 <div key={row.curveId ?? i} className="flex items-center justify-between gap-2 py-1 border-b border-white/[0.04]">
                   <div className="min-w-0 flex items-center gap-1.5">
                     <span className={`text-[10px] font-mono ${row.ok ? 'text-lime-400' : 'text-red-400'}`}>{row.ok ? '✓' : '✗'}</span>
-                    <span className="text-[10px] font-mono text-white/70 truncate">
-                      {row.symbol ? `$${row.symbol}` : `${String(row.curveId).slice(0, 10)}...`}
+                    <span className="text-[10px] font-mono text-white/70 break-all">
+                      {row.symbol ? `$${row.symbol}` : String(row.curveId)}
                     </span>
                     <span className="text-[9px] font-mono text-white/30">{Number(row.feesSui).toFixed(4)} SUI</span>
                   </div>
@@ -3520,11 +3493,8 @@ export default function AgentPage({ onBack }) {
 
       {result && (result.executionId || result.digest) && (
         <div className="border border-lime-400/30 rounded-2xl p-[18px] bg-lime-400/[0.05]">
-          <div className="text-[10px] font-mono font-semibold text-lime-400/80 tracking-widest mb-3">✓ EXECUTED ON-CHAIN VIA NEXUS</div>
+          <div className="text-[10px] font-mono font-semibold text-lime-400/80 tracking-widest mb-3">✓ EXECUTED ON-CHAIN</div>
           <div className="space-y-2 text-[10px] font-mono">
-            {result.dagId && (
-              <div className="text-white/40">DAG: <span className="text-white/70 break-all">{result.dagId}</span></div>
-            )}
             {result.executionId && (
               <a href={suiscanObject(result.executionId)} target="_blank" rel="noreferrer"
                  className="inline-flex items-center gap-1.5 text-lime-400 hover:text-lime-300 break-all">
@@ -3537,7 +3507,7 @@ export default function AgentPage({ onBack }) {
             {result.digest && (
               <a href={suiscanTx(result.digest)} target="_blank" rel="noreferrer"
                  className="inline-flex items-center gap-1.5 text-lime-400 hover:text-lime-300 break-all">
-                nexus request: {result.digest} <ExternalLink size={11} />
+                request: {result.digest} <ExternalLink size={11} />
               </a>
             )}
             {result.settleDigest && (
@@ -3600,16 +3570,16 @@ export default function AgentPage({ onBack }) {
                         className="inline-flex items-center gap-1.5 mt-1 text-lime-400 hover:text-lime-300 break-all"
                         title="Open token page"
                       >
-                        token: {a.tokenType ? `$${shortType(a.tokenType)}` : tickerByCurve[a.curveId] ? `$${tickerByCurve[a.curveId]}` : shortId(a.curveId)} <ExternalLink size={10} />
+                        token: {a.tokenType ? `$${shortType(a.tokenType)}` : tickerByCurve[a.curveId] ? `$${tickerByCurve[a.curveId]}` : a.curveId} <ExternalLink size={10} />
                       </button>
                     )}
                     {a.wallet && (
-                      <div className="text-white/30 mt-1 break-all">wallet: {shortId(a.wallet)}</div>
+                      <div className="text-white/30 mt-1 break-all">wallet: {a.wallet}</div>
                     )}
                     {proof && (
                       <a href={suiscanTx(proof)} target="_blank" rel="noreferrer"
                          className="inline-flex items-center gap-1.5 mt-1 text-lime-400 hover:text-lime-300 break-all">
-                        {a.leaderSettlementDigest ? 'leader settled' : a.settleDigest ? 'settled' : 'nexus request'}: {proof} <ExternalLink size={10} />
+                        {a.leaderSettlementDigest ? 'leader settled' : a.settleDigest ? 'settled' : 'request'}: {proof} <ExternalLink size={10} />
                       </a>
                     )}
                   </div>
@@ -3663,7 +3633,7 @@ export default function AgentPage({ onBack }) {
                           {ORDER_LABEL[o.type] || o.type}
                         </span>
                         {o.tokenType && (
-                          <span className="text-[9px] font-mono text-white/35">${shortType(o.tokenType)}</span>
+                          <span className="text-[9px] font-mono text-white/35 break-all">${shortType(o.tokenType)}</span>
                         )}
                       </div>
                       <div className="text-[10.5px] font-mono text-white/65 leading-relaxed break-words">
@@ -3677,10 +3647,10 @@ export default function AgentPage({ onBack }) {
                               key={cid}
                               type="button"
                               onClick={() => navigate(`/token/${cid}`)}
-                              className="inline-flex items-center gap-1 text-[9px] font-mono text-lime-300/70 hover:text-lime-300 bg-lime-400/5 border border-lime-400/15 rounded px-1.5 py-0.5"
+                              className="inline-flex items-center gap-1 text-[9px] font-mono text-lime-300/70 hover:text-lime-300 bg-lime-400/5 border border-lime-400/15 rounded px-1.5 py-0.5 break-all text-left"
                               title={cid}
                             >
-                              {tickerByCurve[cid] ? `$${tickerByCurve[cid]}` : shortId(cid)} <ExternalLink size={8} />
+                              {tickerByCurve[cid] ? `$${tickerByCurve[cid]}` : cid} <ExternalLink size={8} />
                             </button>
                           ))}
                         </div>
@@ -3689,10 +3659,10 @@ export default function AgentPage({ onBack }) {
                         <button
                           type="button"
                           onClick={() => navigate(`/token/${o.curveId}`)}
-                          className="inline-flex items-center gap-1 text-[9px] font-mono text-white/25 hover:text-lime-400/80 mt-1"
+                          className="inline-flex items-center gap-1 text-[9px] font-mono text-white/25 hover:text-lime-400/80 mt-1 break-all text-left"
                           title="Open token page"
                         >
-                          {shortId(o.curveId)} <ExternalLink size={9} />
+                          {o.curveId} <ExternalLink size={9} />
                         </button>
                       )}
                       {o.params?._lastFire && (o.params._lastFire.settle || o.params._lastFire.nexusDigest) && (
@@ -3704,20 +3674,20 @@ export default function AgentPage({ onBack }) {
                             <a
                               href={suiscanTx(o.params._lastFire.nexusDigest || o.params._lastFire.nexusTask)}
                               target="_blank" rel="noreferrer"
-                              className="inline-flex items-center gap-1 text-lime-300/60 hover:text-lime-300"
-                              title="Nexus DAG execution"
+                              className="inline-flex items-center gap-1 text-lime-300/60 hover:text-lime-300 break-all text-left"
+                              title="execution transaction"
                             >
-                              nexus {String(o.params._lastFire.nexusDigest || o.params._lastFire.nexusTask).slice(0, 10)}... <ExternalLink size={8} />
+                              fired {String(o.params._lastFire.nexusDigest || o.params._lastFire.nexusTask)} <ExternalLink size={8} />
                             </a>
                           )}
                           {o.params._lastFire.settle && (
                             <a
                               href={suiscanTx(o.params._lastFire.settle)}
                               target="_blank" rel="noreferrer"
-                              className="inline-flex items-center gap-1 text-lime-300/60 hover:text-lime-300"
+                              className="inline-flex items-center gap-1 text-lime-300/60 hover:text-lime-300 break-all text-left"
                               title="bridge settlement"
                             >
-                              settle {String(o.params._lastFire.settle).slice(0, 10)}... <ExternalLink size={8} />
+                              settle {String(o.params._lastFire.settle)} <ExternalLink size={8} />
                             </a>
                           )}
                         </div>
