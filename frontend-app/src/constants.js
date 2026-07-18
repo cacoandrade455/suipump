@@ -65,11 +65,14 @@ export const PRICE_CONFIG_ID = import.meta.env.VITE_SUIPUMP_PRICE_CONFIG || null
 export const V13_BUY_ENABLED = Boolean(PACKAGE_ID_V13 && PRICE_CONFIG_ID);
 
 // V14 (GRAD-1): the GraduationCap upgrade. V14 is an ADDITIVE upgrade of V13, so V14
-// curves keep the V13 TYPE identity - there is deliberately NO curveShapeFor / buy
-// dispatch branch for V14 (a V14 curve IS a V13 curve). Its NEW events
+// curves keep the V13 TYPE identity (a V14 curve IS a V13 curve) - there is no buy
+// dispatch branch for V14, and curveShapeFor carries only a DEFENSIVE branch that
+// resolves the V14 id to the V13 shape (it should never appear as a curve-type
+// package, but must never fall through to stale defaults if it does). Its NEW events
 // (GraduationCapIssued/Rotated) type under the V14 package id, so V14 joins
 // ALL_PACKAGE_IDS for read coverage. Env-only; null when VITE_SUIPUMP_V14_PACKAGE is
 // unset, and then the app behaves exactly as pre-V14.
+// Full V14 id: 0xb6e7cef4d36b3cf0fd84888dd9930ce9abfcc0ed56f01384f1e02b55eeac1b03
 export const PACKAGE_ID_V14 = (import.meta.env.VITE_SUIPUMP_V14_PACKAGE ?? '').toLowerCase() || null;
 
 // -- Capabilities -------------------------------------------------------------
@@ -184,6 +187,16 @@ export function curveShapeFor(pkgId) {
     // only on pkgId so it cannot know the dynamic value - consumers MUST prefer the
     // per-curve grad_threshold_sui (indexer) and fall back to this floor. Using the
     // legacy 12,305 here would render a wrong static target (the bug this fixes).
+    return { virtualSui: VIRTUAL_SUI_V9, virtualTokens: VIRTUAL_TOKENS_V9, drainSui: BASE_GRAD_SUI };
+  }
+  // V14 (GRAD-1): ADDITIVE upgrade of V13 - a V14 curve IS a V13 curve, so this id
+  // should never appear as a curve-type package. Defensive: if it ever does, resolve
+  // to the SAME V13 shape (drainSui = 9,000 price-unset FLOOR, dynamic per-curve
+  // grad_threshold_sui preferred - see the V13 branch above), never fall through.
+  // Env id first (authoritative), '0xb6e7cef4' prefix fallback when env is unset.
+  // Full V14 id: 0xb6e7cef4d36b3cf0fd84888dd9930ce9abfcc0ed56f01384f1e02b55eeac1b03
+  if ((PACKAGE_ID_V14 && pkgId === PACKAGE_ID_V14) ||
+      (pkgId && String(pkgId).toLowerCase().startsWith('0xb6e7cef4'))) {
     return { virtualSui: VIRTUAL_SUI_V9, virtualTokens: VIRTUAL_TOKENS_V9, drainSui: BASE_GRAD_SUI };
   }
   if (pkgId === PACKAGE_ID_V12) { // defensive: lineage curves type as V10

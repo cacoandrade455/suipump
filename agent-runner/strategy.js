@@ -66,6 +66,14 @@ process.on('uncaughtException',  (e) => err('uncaughtException:',  e?.message ??
 // Full V13 id: 0xdf66376f006557b9f81b3455ee786ffd7f2a633488cc3bd31a37ddbdc69bd56b
 const V13_PACKAGE = (process.env.SUIPUMP_V13_PACKAGE ?? '').trim().toLowerCase() || null;
 
+// V14 (GRAD-1) -- COMPATIBLE ADDITIVE upgrade of V13 (published via UpgradeCap V13);
+// curves stay TYPED at V13, so the V14 id should normally never appear as a curve's
+// package id. Defensive: if it ever does, it MUST resolve to the same V13/V9+ shape,
+// never fall through. Env-driven; the '0xb6e7cef4' prefix is only a fallback for
+// when SUIPUMP_V14_PACKAGE is unset.
+// Full V14 id: 0xb6e7cef4d36b3cf0fd84888dd9930ce9abfcc0ed56f01384f1e02b55eeac1b03
+const V14_PACKAGE = (process.env.SUIPUMP_V14_PACKAGE ?? '').trim().toLowerCase() || null;
+
 // -- Per-package virtual SUI - ported from indexer/api.js getVirtuals ----------
 // V13 curve math is UNCHANGED from V9+: VIRTUAL_SUI_RESERVE = 4_369 (confirmed vs
 // contracts-v10/sources/bonding_curve.move:177). EVERY known package now has an
@@ -76,6 +84,8 @@ function getVSui(packageId) {
   const pid = String(packageId).toLowerCase();
   // V13 (separate lineage): match the full env id first (authoritative), prefix fallback.
   if ((V13_PACKAGE && pid === V13_PACKAGE) || pid.startsWith('0xdf66')) return 4369; // V13
+  // V14 (upgrade of V13 -- defensive: curves type as V13; same V9+ shape).
+  if ((V14_PACKAGE && pid === V14_PACKAGE) || pid.startsWith('0xb6e7cef4')) return 4369; // V14
   if (pid.startsWith('0x2154')) return 30000; // V4
   if (pid.startsWith('0x785c')) return 9000;  // V5: contract VIRTUAL_SUI_RESERVE = 9_000
   if (pid.startsWith('0x21d5')) return 9000;  // V6: contract VIRTUAL_SUI_RESERVE = 9_000
