@@ -4,12 +4,12 @@
 //   1. Natural-language goal -> Groq plans off-chain (/api/agent-plan) into a
 //      per-workflow plan: launch_and_buy | buy | sell | claim | alerts.
 //   2. Operator approves. The browser resolves any runtime values it must supply
-//      (sell "ALL" -> real token balance; claim tokenType from the curve), then
-//      posts { workflow, ... } to the agent-runner (/run-dag).
-//   3. The runner maps workflow -> published Nexus DAG id, executes via the
-//      `nexus` CLI, returns the on-chain DAGExecution id + tx digest.
+//      (sell "ALL" -> real token balance; claim tokenType from the curve).
+//   3. Execution is bridge-direct: manual buy/sell are signed by the USER's own
+//      wallet; strategies arm standing orders the 24/7 agent runner fires
+//      through the bridge against the session escrow.
 //
-// The LLM plans OFF-CHAIN; the DAG does the on-chain work. Violet identity.
+// The LLM plans OFF-CHAIN; execution settles on-chain. Terminal identity.
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { normalizeGoalText, extractPerEntrySui, extractSpendCapSui, isAutopilotIntent, isTrendingDiscovery } from './agentVocab.js';
 import { ArrowLeft, Sparkles, Play, Check, X, Loader, ExternalLink, Bot, ChevronDown } from 'lucide-react';
@@ -70,22 +70,8 @@ function rememberClosedSession(id) {
 
 const suiscanObject = (id) => `https://suiscan.xyz/testnet/object/${id}`;
 
-// Published Nexus DAG IDs each strategy executes through (testnet). Shown on the
-// plan/result so the on-chain orchestration path is visible at arm time.
-const NEXUS_DAG = {
-  buy:  '0x922f29c5a198503c83cf1cbd26193ed8255fdf5e5a6bb1f1843b8bc3994eb403',
-  sell: '0xb48c4b8e5a68941af3a91169ebec81f6046b0e4fc58f6443c4013f6b6f13995d',
-};
-const WORKFLOW_DAGS = {
-  sniper:    ['buy'],
-  dca:       ['buy', 'sell'],
-  copytrade: ['buy', 'sell'],
-  tpsl:      ['sell'],
-  buy_then_tpsl: ['buy', 'sell'],
-};
-
 // "How to operate" content for the agent-page accordion, in three tiers:
-//   TOOLS      - the 5 atomic Nexus tools (xyz.suipump.*@1), from the Rust source.
+//   TOOLS      - the 5 atomic tools (xyz.suipump.*@1) the agent calls.
 //   STRATEGIES - the 4 standing behaviours built on those tools.
 //   COMBINING  - the one real composition (a buy-strategy auto-arming an exit).
 // Example goals match the deterministic parsers / planner verbatim; clicking one
@@ -93,7 +79,7 @@ const WORKFLOW_DAGS = {
 const OPERATE_GUIDE = [
   {
     section: 'TOOLS',
-    blurb: 'The five atomic Nexus tools the agent calls. Every strategy is built from these.',
+    blurb: 'The five atomic tools the agent calls. Every strategy is built from these.',
     items: [
       {
         key: 'launch', title: 'Launch', fqn: 'xyz.suipump.launch@1',
@@ -119,7 +105,7 @@ const OPERATE_GUIDE = [
       {
         key: 'claim', title: 'Claim', fqn: 'xyz.suipump.claim@2',
         tagline: 'Collect pending creator fees',
-        body: 'Claims the creator fees that have accrued on a curve you launched. Does nothing if there are no fees pending. You can claim one curve by pasting its CA, or claim every curve you created at once - say "claim all" with no CA and the agent enumerates your curves and claims each one through Nexus.',
+        body: 'Claims the creator fees that have accrued on a curve you launched. Does nothing if there are no fees pending. You can claim one curve by pasting its CA, or claim every curve you created at once - say "claim all" with no CA and the agent enumerates your curves and claims each one automatically.',
         inputs: ['A token CA you created - or "claim all" for every curve at once'],
         examples: ['Claim creator fees on 0xCURVE', 'Claim all my creator fees'],
       },
@@ -139,7 +125,7 @@ const OPERATE_GUIDE = [
       {
         key: 'sniper', title: 'Sniper', fqn: 'strategy.sniper@1',
         tagline: 'Auto-buy new launches the moment they appear',
-        body: 'A standing order that watches for new token launches and fires a buy through Nexus the instant one is created - every launch, or only launches from a specific creator. Runs until cancelled or an optional cap is hit.',
+        body: 'A standing order that watches for new token launches and fires a buy the instant one is created - every launch, or only launches from a specific creator. Runs until cancelled or an optional cap is hit.',
         inputs: ['A SUI amount per snipe', 'Optional: a creator wallet to restrict to', 'Optional: a max number of snipes', 'Optional: an exit armed on each buy'],
         examples: ['Snipe 1 SUI of every new token launch', 'Snipe 2 SUI of every token launched by 0xCREATOR, take profit at 50%'],
       },
@@ -160,7 +146,7 @@ const OPERATE_GUIDE = [
       {
         key: 'tpsl', title: 'Take-profit / Stop-loss', fqn: 'strategy.tpsl@1',
         tagline: 'Auto-sell a position at a price target',
-        body: 'Watches a curve you hold and sells automatically through Nexus when price hits a take-profit multiple or falls to a stop-loss. Take-profit can be tiered - sell part at one level, the rest higher.',
+        body: 'Watches a curve you hold and sells automatically when price hits a take-profit multiple or falls to a stop-loss. Take-profit can be tiered - sell part at one level, the rest higher.',
         inputs: ['A token CA you hold', 'A take-profit target and/or a stop-loss'],
         examples: ['Take profit on 0xCURVE at 50% and stop loss at 20%', 'Sell 50% of 0xCURVE at +30%, sell the rest at +100%'],
       },
@@ -365,7 +351,7 @@ export function parseStrategyGoal(text) {
     if (amountSui > 0) {
       const tpDescC = tp.length ? `take-profit ${tp.map(r => `+${Math.round((r.multiple - 1) * 100)}% (sell ${r.sellPct}%)`).join(', ')}` : '';
       const slDescC = stopLoss ? `stop-loss -${Math.round((1 - stopLoss.multiple) * 100)}%` : '';
-      const summaryC = `Buy ${amountSui} SUI of ${curveId.slice(0, 10)}..., then arm ${[tpDescC, slDescC].filter(Boolean).join(' . ')}. The agent buys now and sells automatically when a trigger is hit.`;
+      const summaryC = `Buy ${amountSui} SUI of this curve, then arm ${[tpDescC, slDescC].filter(Boolean).join(' . ')}. The agent buys now and sells automatically when a trigger is hit.`;
       return {
         workflow: 'buy_then_tpsl',
         summary: summaryC,
@@ -377,7 +363,7 @@ export function parseStrategyGoal(text) {
 
   const tpDesc = tp.length ? `take-profit ${tp.map(r => `+${Math.round((r.multiple - 1) * 100)}% (sell ${r.sellPct}%)`).join(', ')}` : '';
   const slDesc = stopLoss ? `stop-loss -${Math.round((1 - stopLoss.multiple) * 100)}%` : '';
-  const summary = `Arm a standing strategy on ${curveId.slice(0, 10)}...: ${[tpDesc, slDesc].filter(Boolean).join(' . ')}. The agent watches the price and sells automatically when a trigger is hit.`;
+  const summary = `Arm a standing strategy on this curve: ${[tpDesc, slDesc].filter(Boolean).join(' . ')}. The agent watches the price and sells automatically when a trigger is hit.`;
 
   return { workflow: 'tpsl', summary, tpsl: { curveId, takeProfit: tp, stopLoss } };
 }
@@ -623,7 +609,7 @@ function parseDcaGoal(text) {
       ].filter(Boolean).join(' . ')} on the average cost`
     : '';
 
-  const summary = `Arm DCA on ${curveId.slice(0, 10)}...: buy ${suiPerBuy} SUI ${modeDesc}, ${buys} buy${buys > 1 ? 's' : ''} total${thenDesc}. The agent accumulates automatically and tracks the average cost${then ? ', then auto-exits against that average' : ''}.`;
+  const summary = `Arm DCA on this curve: buy ${suiPerBuy} SUI ${modeDesc}, ${buys} buy${buys > 1 ? 's' : ''} total${thenDesc}. The agent accumulates automatically and tracks the average cost${then ? ', then auto-exits against that average' : ''}.`;
 
   return { workflow: 'dca', summary, dca, then };
 }
@@ -662,7 +648,7 @@ function parseCopytradeGoal(text) {
 
   const copytrade = { targetWallet, suiPerTrade };
 
-  const summary = `Arm copy-trade on ${targetWallet.slice(0, 10)}...: when they buy, the agent buys ${suiPerTrade} SUI; when they sell, the agent sells the same proportion of its position. Mirrors across every curve the target trades, automatically through Nexus.`;
+  const summary = `Arm copy-trade on the target wallet: when they buy, the agent buys ${suiPerTrade} SUI; when they sell, the agent sells the same proportion of its position. Mirrors across every curve the target trades, automatically.`;
 
   return { workflow: 'copytrade', summary, copytrade };
 }
@@ -763,11 +749,21 @@ function parseAutopilotGoal(text) {
 
 // -- Active-strategies helpers -------------------------------------------------
 const ORDER_LABEL = { tpsl: 'TP / SL', sniper: 'Sniper', dca: 'DCA', copytrade: 'Copy-trade', autopilot: 'Autopilot' };
-const shortId  = (s) => (typeof s === 'string' && s.startsWith('0x') && s.length > 14) ? `${s.slice(0, 8)}...${s.slice(-4)}` : s;
+// Color-coded outline badges for the ACTIVE STRATEGIES card (design 2d):
+// SNIPER lime / DCA blue / COPY violet / TP-SL amber / AUTOPILOT red.
+const ORDER_BADGE = {
+  sniper:    'text-lime-400 border-lime-400/80',
+  dca:       'text-blue-400 border-blue-400/80',
+  copytrade: 'text-violet-400 border-violet-400/80',
+  tpsl:      'text-amber-500 border-amber-500/80',
+  autopilot: 'text-red-400 border-red-400/80',
+};
+// shortType extracts the coin SYMBOL from a full coin type. When the type does
+// not parse, return it whole - never a truncated on-chain identifier.
 const shortType = (t) => {
   if (typeof t !== 'string') return '';
   const m = t.match(/::([^:]+)::([^>]+)$/);
-  return m ? m[2] : t.slice(0, 14);
+  return m ? m[2] : t;
 };
 
 // One-line human summary of any standing order, for the panel.
@@ -775,7 +771,7 @@ function describeOrder(o) {
   const p = o.params || {};
   if (o.type === 'sniper') {
     const bits = [];
-    if (Array.isArray(p.creators) && p.creators.length) bits.push(`creator ${shortId(p.creators[0])}${p.creators.length > 1 ? ` +${p.creators.length - 1}` : ''}`);
+    if (Array.isArray(p.creators) && p.creators.length) bits.push(`creator ${p.creators[0]}${p.creators.length > 1 ? ` +${p.creators.length - 1}` : ''}`);
     if (Array.isArray(p.symbols) && p.symbols.length)   bits.push(`$${p.symbols.join('/$')}`);
     if (p.nameIncludes) bits.push(`name~"${p.nameIncludes}"`);
     if (!bits.length && p.all) bits.push('every launch');
@@ -791,7 +787,7 @@ function describeOrder(o) {
   if (o.type === 'copytrade') {
     const size = p.suiPerTrade ? `${p.suiPerTrade} SUI/trade` : `${p.ratio}x their size`;
     const then = p.then?.tpsl ? ' -> then TP/SL' : '';
-    return `Mirror ${shortId(p.targetWallet)} at ${size}${then}`;
+    return `Mirror ${p.targetWallet} at ${size}${then}`;
   }
   if (o.type === 'autopilot') {
     const p = o.params || {};
@@ -840,11 +836,19 @@ function fmtSui(mist) {
   return n.toLocaleString(undefined, { maximumFractionDigits: 4 });
 }
 
-function AgentSessionPanel({ account, onSessionChange }) {
+function AgentSessionPanel({ account, onSessionChange, onAttestedChange }) {
   const dAppKit = useDAppKit();
   const client  = useCurrentClient();
 
-  const [session, setSession] = useState(null); // { id, sharedVersion, escrow, spent, spendCap, expiryMs, revoked }
+  const [session, setSession] = useState(null); // { id, sharedVersion, escrow, spent, spendCap, expiryMs, revoked, attested }
+  // Optimistic in-session attestation: set the moment an attested open
+  // confirms on-chain, so the NAUTILUS chip can show before the indexer has
+  // ingested the SessionAttested event. The PERSISTENT source read in
+  // loadSession (indexer /agent/session `attested`, GraphQL event scan as
+  // fallback) is authoritative on any load/refresh - this flag only bridges
+  // the ingest gap within the session that performed the open.
+  const [justOpenedAttested, setJustOpenedAttested] = useState(false);
+  useEffect(() => { setJustOpenedAttested(false); }, [account]);
   // Survives session=null (after close/no-session-found) so sweep_token can
   // still target the last session this wallet had, since a stuck token can
   // legitimately be discovered AFTER the SUI side has already been closed.
@@ -1037,6 +1041,34 @@ function AgentSessionPanel({ account, onSessionChange }) {
       const sessAddr = typeof fields.session_address === 'string' ? fields.session_address.toLowerCase() : null;
       const isSharedWallet = sessAddr != null && sessAddr === AGENT_SESSION_WALLET.toLowerCase();
 
+      // Nautilus attestation - PERSISTENT source, so the chip survives a
+      // refresh. The live AgentSession object cannot carry this (the V10-
+      // defined type has no attested field and upgrades cannot add one), so
+      // the SessionAttested event is the ground truth: emitted exactly once
+      // by open_and_share_attested in the SAME tx as SessionOpened, with no
+      // un-attest path - event existence IS the state. Fast path: the indexer
+      // surfaces it as a boolean on /agent/session. Fallback (indexer
+      // unreachable, or a deploy that predates the field): a bounded live
+      // GraphQL scan of the event. Event TYPES keep their DEFINING package
+      // id - SessionAttested is V12-defined, unlike the lineage's V10-defined
+      // SessionOpened, so this filter uses PACKAGE_ID_V12.
+      let attested = idxData?.attested === true;
+      if (!attested && typeof idxData?.attested !== 'boolean') {
+        try {
+          const aType = `${PACKAGE_ID_V12}::agent_session::SessionAttested`;
+          const aq = `{ events(filter: { type: "${aType}" }, last: 50) { nodes { contents { json } } } }`;
+          const ar = await fetch(GQL_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query: aq }),
+            signal: AbortSignal.timeout(8000),
+          });
+          const ad = await ar.json();
+          attested = (ad?.data?.events?.nodes ?? [])
+            .some(n => (n.contents?.json?.session_id ?? '').toLowerCase() === sessionId.toLowerCase());
+        } catch { /* stay false - the chip simply does not render */ }
+      }
+
       setSession({
         id:            sessionId,
         sharedVersion,
@@ -1047,6 +1079,7 @@ function AgentSessionPanel({ account, onSessionChange }) {
         revoked,
         sessionAddress: sessAddr,
         isSharedWallet,
+        attested,
       });
     } catch (e) {
       // Degrade to "no session" rather than blocking the open flow.
@@ -1070,6 +1103,15 @@ function AgentSessionPanel({ account, onSessionChange }) {
     onSessionChange(usable);
   }, [session, onSessionChange]);
 
+  // Report attestation up to AgentPage for the NAUTILUS TEE chip (ledger B-3:
+  // the chip is driven by the session's ACTUAL state, never static). The
+  // persisted flag from loadSession wins; justOpenedAttested only covers the
+  // indexer-ingest gap right after an attested open in this same session.
+  useEffect(() => {
+    if (!onAttestedChange) return;
+    onAttestedChange(!!session && (session.attested === true || justOpenedAttested));
+  }, [session, justOpenedAttested, onAttestedChange]);
+
   async function doOpen() {
     if (busy || !account) return;
     const dep = parseFloat(depositSui), cap = parseFloat(capSui), dd = parseFloat(days);
@@ -1080,12 +1122,13 @@ function AgentSessionPanel({ account, onSessionChange }) {
       // Per-user enclave key (Phase 1 trust minimization). Ask the bridge to
       // provision a fresh Turnkey-held key for THIS session; its address goes
       // on-chain as session_address, so only that enclave key can ever sign
-      // this session's trades - isolated from the shared agent wallet and from
-      // every other user's session. If provisioning is unavailable (Turnkey
-      // not configured yet, bridge down, timeout), fall back to the shared
-      // agent wallet so opening a session NEVER breaks; the on-chain caps
-      // (spend cap / expiry / revoke) protect the user on both paths.
-      let sessionAddress = AGENT_SESSION_WALLET;
+      // this session's trades - isolated from every other user's session. If
+      // provisioning fails (Turnkey not configured, bridge down, timeout) the
+      // open HARD-FAILS in BOTH modes: the shared agent wallet is retired as
+      // a signer on the bridge, so a session opened against it could never
+      // execute a trade. No provisioned key means no transaction is built and
+      // no session object is created.
+      let sessionAddress = null;
       let enclaveKey = false;   // per-session Turnkey-held key provisioned
       let attested = false;     // Nautilus: chain-attested enclave key
       try {
@@ -1106,28 +1149,31 @@ function AgentSessionPanel({ account, onSessionChange }) {
           enclaveKey = true;
           attested = signerMode === 'enclave';
         } else {
-          // A5.1 loud fallback: provisioning responded but did NOT yield a
-          // per-user key (Turnkey/DB not configured, or an unexpected shape).
-          // In turnkey mode this silently downgrades to the shared wallet -
-          // exactly the "looks like success" class that bit us. Make it visible.
-          console.warn('[agent] session key provisioning did not return a dedicated key; ' +
-            (signerMode === 'enclave' ? 'enclave mode will hard-fail below' : 'TURNKEY mode falling back to the SHARED agent wallet'),
+          // Provisioning responded but did NOT yield a per-user key
+          // (Turnkey/DB not configured, or an unexpected shape). Both modes
+          // hard-fail below - no session may open without a live signer.
+          console.warn('[agent] session key provisioning did not return a dedicated key; open will hard-fail',
             { status: pr.status, reason: pd?.reason ?? pd?.error ?? null, configured: pd?.configured });
         }
       } catch (e) {
-        // A5.1 loud fallback: provisioning unreachable (bridge down / timeout).
-        // Same silent-downgrade risk in turnkey mode - warn loudly.
-        console.warn('[agent] session key provisioning unreachable; ' +
-          (signerMode === 'enclave' ? 'enclave mode will hard-fail below' : 'TURNKEY mode falling back to the SHARED agent wallet'),
+        // Provisioning unreachable (bridge down / timeout). Both modes
+        // hard-fail below - no session may open without a live signer.
+        console.warn('[agent] session key provisioning unreachable; open will hard-fail',
           e?.message ?? e);
       }
 
       // ENCLAVE mode is an explicit trust upgrade the user selected: NEVER
       // silently downgrade it to the shared wallet (that would hand back the
-      // exact trust claim they asked to remove). TURNKEY mode keeps the
-      // always-works shared-wallet fallback; on-chain caps protect both.
+      // exact trust claim they asked to remove).
       if (signerMode === 'enclave' && !attested) {
         throw new Error('Enclave key unavailable - the enclave signer may be offline. Retry, or open in TURNKEY mode.');
+      }
+      // TURNKEY mode hard-fails too: the shared agent wallet is a retired
+      // signer (the bridge refuses to execute for unprovisioned sessions), so
+      // opening a session against it would create an escrow no signer can
+      // ever trade. Better no session than a dead one.
+      if (!enclaveKey || !sessionAddress) {
+        throw new Error('Session key provisioning failed - no session was opened and no funds were moved. Try again in a moment.');
       }
 
       const depMist = BigInt(Math.round(dep * 1e9));
@@ -1135,10 +1181,9 @@ function AgentSessionPanel({ account, onSessionChange }) {
       const expiryMs = BigInt(Date.now() + Math.round(dd * 24 * 60 * 60 * 1000));
       const tx = new Transaction();
       const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(depMist)]);
-      // Self-funded gas grant: only when a DEDICATED session key was
-      // provisioned (a fresh address holds zero SUI and pays its own gas per
-      // trade). The shared-wallet fallback carries its own gas - no grant.
-      // For the enclave's single shared address this is a harmless top-up.
+      // Self-funded gas grant: the DEDICATED session key's fresh address
+      // holds zero SUI and pays its own gas per trade. For the enclave's
+      // single shared address this is a harmless top-up.
       if (enclaveKey) {
         const [gasGrant] = tx.splitCoins(tx.gas, [tx.pure.u64(SESSION_GAS_GRANT_MIST)]);
         tx.transferObjects([gasGrant], sessionAddress);
@@ -1181,6 +1226,10 @@ function AgentSessionPanel({ account, onSessionChange }) {
         }
         throw new Error(errStr || 'Open failed');
       }
+      // Optimistic: the chain just verified the attested open (the tx above
+      // succeeded), so show the chip immediately; loadSession's persistent
+      // source takes over from the next load.
+      setJustOpenedAttested(attested);
       setMsg(attested
         ? 'Session opened with a CHAIN-ATTESTED enclave key - Sui itself verified the signer is enclave-held (Nautilus). Gas grant (0.5 SUI) funded from your wallet.'
         : enclaveKey
@@ -1320,6 +1369,7 @@ function AgentSessionPanel({ account, onSessionChange }) {
       } catch { /* non-fatal */ }
       setMsg(`Session closed - unspent escrow${parked.length > 0 ? ` and ${parked.length} parked token type${parked.length > 1 ? 's' : ''}` : ''} returned to your wallet.` + sweepNote);
       setSession(null);
+      setJustOpenedAttested(false);
       setTimeout(loadSession, 1500);
     } catch (e) { setMsg(e.message || 'Close failed'); }
     finally { setBusy(false); }
@@ -1454,14 +1504,18 @@ function AgentSessionPanel({ account, onSessionChange }) {
     const hrs = Math.floor((rem % 86_400_000) / 3_600_000);
     return dys > 0 ? `${dys}d ${hrs}h` : `${hrs}h`;
   };
+  // Spend-cap bar fill (design 2d escrow card). Null when the cap is unbounded.
+  const capPct = session && BigInt(session.spendCap || '0') > 0n
+    ? Math.min(100, (Number(session.spent || 0) / Number(session.spendCap)) * 100)
+    : null;
 
   return (
-    <div className="border border-violet-400/20 rounded-xl bg-violet-500/[0.04] p-4 mb-4 space-y-3">
+    <div className="border border-lime-400/[0.28] rounded-2xl bg-[linear-gradient(160deg,rgba(132,204,22,.08),rgba(255,255,255,.015))] p-4 space-y-3">
       <div className="flex items-center gap-2">
-        <Bot size={13} className="text-violet-400" />
-        <span className="text-[10px] font-mono text-violet-300/80 tracking-widest">AGENT SESSION</span>
+        <Bot size={13} className="text-lime-400" />
+        <span className="text-[10px] font-mono font-bold text-lime-400 tracking-[0.16em]">AGENT SESSION</span>
         {session && !session.revoked && !expired && (
-          <span className="ml-auto text-[8px] font-mono text-lime-400 tracking-widest border border-lime-400/30 rounded-full px-2 py-0.5">ACTIVE</span>
+          <span className="ml-auto inline-flex items-center gap-1.5 text-[8px] font-mono font-semibold text-lime-400 tracking-widest border border-lime-400/30 bg-lime-400/[0.07] rounded-full px-2 py-0.5"><span className="w-1.5 h-1.5 rounded-full bg-lime-400 animate-sp-pulse" />ACTIVE</span>
         )}
         {session && (session.revoked || expired) && (
           <span className="ml-auto text-[8px] font-mono text-white/40 tracking-widest border border-white/15 rounded-full px-2 py-0.5">{expired ? 'EXPIRED' : 'REVOKED'}</span>
@@ -1480,17 +1534,17 @@ function AgentSessionPanel({ account, onSessionChange }) {
             <label className="block">
               <span className="text-[8px] font-mono text-white/30 tracking-widest">DEPOSIT (SUI)</span>
               <input value={depositSui} onChange={e => setDepositSui(e.target.value)} inputMode="decimal"
-                className="mt-1 w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-violet-400/40" />
+                className="mt-1 w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-lime-400/40" />
             </label>
             <label className="block">
               <span className="text-[8px] font-mono text-white/30 tracking-widest">SPEND CAP</span>
               <input value={capSui} onChange={e => setCapSui(e.target.value)} inputMode="decimal" placeholder="0 = ∞"
-                className="mt-1 w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-violet-400/40" />
+                className="mt-1 w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-lime-400/40" />
             </label>
             <label className="block">
               <span className="text-[8px] font-mono text-white/30 tracking-widest">EXPIRY (DAYS)</span>
               <input value={days} onChange={e => setDays(e.target.value)} inputMode="decimal"
-                className="mt-1 w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-violet-400/40" />
+                className="mt-1 w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-lime-400/40" />
             </label>
           </div>
           <div>
@@ -1498,7 +1552,7 @@ function AgentSessionPanel({ account, onSessionChange }) {
             <div className="mt-1 grid grid-cols-2 gap-2">
               <button type="button" onClick={() => setSignerMode('turnkey')}
                 title="Per-session key held in Turnkey's TEE; isolated from every other session"
-                className={`py-1.5 rounded-lg text-[9px] font-mono tracking-widest border transition-colors ${signerMode === 'turnkey' ? 'bg-violet-500/20 text-violet-200 border-violet-400/40' : 'bg-white/5 text-white/40 border-white/10 hover:bg-white/10'}`}>
+                className={`py-1.5 rounded-lg text-[9px] font-mono tracking-widest border transition-colors ${signerMode === 'turnkey' ? 'bg-lime-400/15 text-lime-300 border-lime-400/40' : 'bg-white/5 text-white/40 border-white/10 hover:bg-white/10'}`}>
                 TURNKEY
                 <span className="block text-[7px] tracking-normal opacity-60 mt-0.5">per-session TEE key</span>
               </button>
@@ -1514,32 +1568,42 @@ function AgentSessionPanel({ account, onSessionChange }) {
             </div>
           </div>
           <button onClick={doOpen} disabled={busy}
-            className={`w-full py-2 rounded-lg text-[11px] font-mono tracking-widest transition-colors ${busy ? 'bg-white/5 text-white/25' : 'bg-violet-500/80 hover:bg-violet-500 text-white'}`}>
+            className={`w-full py-2 rounded-[10px] text-[11px] font-mono font-bold tracking-widest transition-colors ${busy ? 'bg-white/5 text-white/25' : 'bg-lime-400 hover:bg-lime-300 text-[#050505]'}`}>
             {busy ? 'OPENING...' : 'OPEN SESSION'}
           </button>
         </>
       ) : (
         <>
           {!session.revoked && !expired && (
-            <p className="text-[9px] font-mono text-violet-300/60 leading-relaxed">
+            <p className="text-[9px] font-mono text-white/35 leading-relaxed">
               Strategies armed from here now spend this escrow, not the agent wallet.
             </p>
           )}
-          <div className="grid grid-cols-3 gap-2 text-center">
-            <div className="rounded-lg bg-white/[0.03] border border-white/5 py-2">
-              <div className="text-[8px] font-mono text-white/30 tracking-widest">ESCROW</div>
-              <div className="text-sm font-mono text-lime-400 mt-0.5">{fmtSui(session.escrow)}</div>
+          <div>
+            <div className="flex items-baseline gap-2">
+              <span className="text-[28px] leading-none font-extrabold font-mono text-white">{fmtSui(session.escrow)}</span>
+              <span className="text-[11px] font-mono font-semibold text-white/45">SUI escrowed</span>
             </div>
-            <div className="rounded-lg bg-white/[0.03] border border-white/5 py-2">
-              <div className="text-[8px] font-mono text-white/30 tracking-widest">SPENT</div>
-              <div className="text-sm font-mono text-white mt-0.5">{fmtSui(session.spent)}</div>
+            <div className="flex items-center justify-between text-[10px] font-mono text-white/40 mt-3 mb-1.5">
+              <span>spent {fmtSui(session.spent)} SUI</span>
+              <span>cap {capLabel}</span>
             </div>
-            <div className="rounded-lg bg-white/[0.03] border border-white/5 py-2">
-              <div className="text-[8px] font-mono text-white/30 tracking-widest">EXPIRES</div>
-              <div className="text-sm font-mono text-white mt-0.5">{expiryLabel(session.expiryMs)}</div>
+            {capPct != null && (
+              <div className="h-[7px] rounded bg-white/[0.07] overflow-hidden">
+                <div className="h-full rounded bg-gradient-to-r from-[#3f6212] to-[#a3e635]" style={{ width: `${capPct}%` }} />
+              </div>
+            )}
+            <div className="grid grid-cols-2 gap-[18px] mt-3.5">
+              <div>
+                <div className="text-[8.5px] font-mono font-semibold tracking-[0.12em] text-white/30">EXPIRES</div>
+                <div className="text-[13px] font-mono font-bold text-white mt-1.5">{expiryLabel(session.expiryMs)}</div>
+              </div>
+              <div>
+                <div className="text-[8.5px] font-mono font-semibold tracking-[0.12em] text-white/30">NET EXPOSURE</div>
+                <div className="text-[13px] font-mono font-bold text-white mt-1.5">{fmtSui(session.spent)} SUI</div>
+              </div>
             </div>
           </div>
-          <div className="text-[9px] font-mono text-white/30">Spend cap: <span className="text-white/60">{capLabel}</span></div>
 
           {/* A5.2 - custody visibility. Which key signs this session's trades:
               a dedicated per-user key (enclave/Turnkey, isolated) or the shared
@@ -1551,9 +1615,9 @@ function AgentSessionPanel({ account, onSessionChange }) {
               <div className="rounded-lg bg-amber-400/[0.06] border border-amber-400/20 px-2.5 py-1.5">
                 <div className="text-[8px] font-mono text-amber-300/90 tracking-widest">SIGNER: SHARED AGENT WALLET</div>
                 <div className="text-[8px] font-mono text-amber-200/50 leading-relaxed mt-0.5">
-                  This session signs via the shared agent key, not a dedicated per-user key.
-                  Your funds stay protected by the on-chain spend cap, expiry, and revoke - but
-                  for isolated per-user custody, close and reopen once enclave signing is available.
+                  Legacy session bound to the retired shared agent wallet. The shared
+                  signer is disabled, so this session can no longer execute trades.
+                  Close or revoke the session and withdraw your escrow.
                 </div>
               </div>
             ) : (
@@ -1567,13 +1631,13 @@ function AgentSessionPanel({ account, onSessionChange }) {
           {!session.revoked && !expired && (
             <div className="flex gap-2">
               <input value={depositSui} onChange={e => setDepositSui(e.target.value)} inputMode="decimal" placeholder="SUI"
-                className="w-24 bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-violet-400/40" />
+                className="w-24 bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-lime-400/40" />
               <button onClick={doTopUp} disabled={busy}
-                className={`px-3 py-1.5 rounded-lg text-[10px] font-mono transition-colors ${busy ? 'bg-white/5 text-white/25' : 'bg-violet-500/15 text-violet-300 border border-violet-400/30 hover:bg-violet-500/25'}`}>
+                className={`flex-1 px-3 py-1.5 rounded-[10px] text-[10px] font-mono font-bold transition-colors ${busy ? 'bg-white/5 text-white/25' : 'bg-lime-400/10 text-lime-400 border border-lime-400/40 hover:bg-lime-400/20'}`}>
                 TOP UP
               </button>
               <button onClick={doRevoke} disabled={busy}
-                className={`px-3 py-1.5 rounded-lg text-[10px] font-mono transition-colors ${busy ? 'bg-white/5 text-white/25' : 'bg-white/5 text-white/60 border border-white/15 hover:bg-white/10'}`}>
+                className={`flex-1 px-3 py-1.5 rounded-[10px] text-[10px] font-mono font-bold transition-colors ${busy ? 'bg-white/5 text-white/25' : 'bg-transparent text-red-400 border border-red-400/35 hover:bg-red-400/10'}`}>
                 REVOKE
               </button>
             </div>
@@ -1628,9 +1692,9 @@ function AgentSessionPanel({ account, onSessionChange }) {
             </p>
             <input value={sweepSession} onChange={e => setSweepSession(e.target.value)}
               placeholder="session id (optional - empty sweeps ALL your sessions)"
-              className="w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-[11px] text-white placeholder-white/20 font-mono focus:outline-none focus:border-violet-400/40" />
+              className="w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-[11px] text-white placeholder-white/20 font-mono focus:outline-none focus:border-lime-400/40" />
             <button onClick={doSweepAll} disabled={busy}
-              className={`w-full py-1.5 rounded-lg text-[10px] font-mono transition-colors ${busy ? 'bg-white/5 text-white/25 cursor-not-allowed' : 'bg-violet-500/15 text-violet-300 border border-violet-400/30 hover:bg-violet-500/25'}`}>
+              className={`w-full py-1.5 rounded-[10px] text-[10px] font-mono transition-colors ${busy ? 'bg-white/5 text-white/25 cursor-not-allowed' : 'bg-lime-400/10 text-lime-400 border border-lime-400/30 hover:bg-lime-400/20'}`}>
               SWEEP ALL PARKED TOKENS
             </button>
           </div>
@@ -1658,6 +1722,11 @@ export default function AgentPage({ onBack }) {
   // /session-buy /session-sell (spending session escrow) instead of /buy /sell
   // (the agent wallet). See orders.js POST /orders for how it's persisted.
   const [activeSessionId, setActiveSessionId] = useState(null);
+  // Reported by AgentSessionPanel: true only when the CURRENT session was
+  // opened via open_and_share_attested (Nautilus chain attestation), from the
+  // persisted SessionAttested event so it survives refresh. Drives the
+  // NAUTILUS TEE chip (ledger B-3: conditional, never static).
+  const [sessionAttested, setSessionAttested] = useState(false);
 
   const [goal, setGoal]         = useState('');
   const [guideOpen, setGuideOpen]     = useState(false);  // tutorial collapsed by default - page loads compact
@@ -2424,15 +2493,14 @@ export default function AgentPage({ onBack }) {
   }
 
   // Settle the swap through the bridge - the path that actually moves tokens
-  // (the Nexus DAG request emits the on-chain execution digest but does not
-  // settle, so we settle here, the same bridge every working SuiPump trade uses).
+  // (the same bridge every working SuiPump trade uses).
   // Maps the runner payload's fields to the bridge's body. Calls go through the
   // same-origin Vercel proxy (/api/agent-bridge), which injects AGENT_API_KEY
   // server-side and forwards to the bridge's gated write endpoints. The key never
   // ships to the browser, so only our deployed UI (via this proxy) can spend the
   // agent wallet - a direct browser/curl to the bridge gets 401. We pass the
   // target bridge path in `path`. Returns the settlement txDigest, or null for
-  // workflows the bridge doesn't settle (claim/alerts go DAG-only).
+  // workflows the bridge doesn't settle (claim/alerts settle server-side).
   async function settleViaBridge(payload) {
     const wf = payload.workflow;
 
@@ -2745,7 +2813,7 @@ export default function AgentPage({ onBack }) {
 
       // STRATEGY (sniper): standing buy keyed on a launch filter. Like tpsl, it
       // creates an order in the strategy store and nothing settles now - the brain
-      // fires a buy (real Nexus scheduler task) on every NEW launch that matches.
+      // fires a buy (runner scheduler task) on every NEW launch that matches.
       if (payload.workflow === 'sniper') {
         try {
           const orderBody = { type: 'sniper', params: payload.sniper, sessionId: activeSessionId, wallet: account?.address ?? null };
@@ -2773,7 +2841,7 @@ export default function AgentPage({ onBack }) {
 
       // STRATEGY (dca): standing accumulation on a specific curve. Like sniper it
       // creates a store order and nothing settles now - the brain fires each buy
-      // (Nexus task + bridge settle) on its schedule / dip trigger, tracks the
+      // (runner fire + bridge settle) on its schedule / dip trigger, tracks the
       // average cost, and arms the `then` exit on that average after the final buy.
       if (payload.workflow === 'dca') {
         if (!(await ensureUniversalIfNeeded(payload.dca?.curveId))) { clearAnim(); setPhase('idle'); return; }
@@ -2870,7 +2938,7 @@ export default function AgentPage({ onBack }) {
 
       // STRATEGY (autopilot): standing autonomous trader. Creates a store order;
       // the brain scans /trending each tick, enters the best candidate within the
-      // spend cap (Nexus emit + bridge settle), and arms a TP/SL exit per entry.
+      // spend cap (runner fire + bridge settle), and arms a TP/SL exit per entry.
       // Nothing settles now. Revocable by cancelling the order.
       if (payload.workflow === 'autopilot') {
         try {
@@ -2899,8 +2967,8 @@ export default function AgentPage({ onBack }) {
 
       // FAN-OUT (claim_all): claim creator fees across every curve the connected
       // (agent) wallet created with fees pending. The server-side proxy
-      // enumerates, filters, and fires the claim DAG per curve - each a real
-      // Nexus walk. Nothing routes through the bridge (claim is DAG-only).
+      // enumerates, filters, and fires the claim per curve. Nothing routes
+      // through the bridge (claim settles server-side).
       if (payload.workflow === 'claim_all') {
         if (!account?.address) {
           clearAnim();
@@ -3002,14 +3070,14 @@ export default function AgentPage({ onBack }) {
   }, [plan, phase, clearAnim, account, activeSessionId]);
 
   const nodeColor = (s) =>
-    s === 'done'    ? 'border-violet-400/60 bg-violet-400/10' :
-    s === 'running' ? 'border-violet-400 bg-violet-400/5 animate-pulse' :
+    s === 'done'    ? 'border-lime-400/60 bg-lime-400/10' :
+    s === 'running' ? 'border-lime-400 bg-lime-400/5 animate-pulse' :
     s === 'error'   ? 'border-red-400/60 bg-red-400/10' :
                       'border-white/10 bg-white/[0.02]';
 
   const showExecutionPanel = phase !== 'idle';
   // A launch_and_buy with no dev-buy is, to the user, just a launch. We keep the
-  // proven launch_and_buy DAG (0xfd88, buy=0 settles fine) under the hood but
+  // proven launch_and_buy workflow (buy=0 settles fine) under the hood but
   // relabel the display: single "Launch" node, "launch" workflow, no dev-buy row.
   function isBareLaunch(p) {
     return !!(p && p.workflow === 'launch_and_buy' && !(Number(p.buy?.amountSui ?? p.launch?.devBuySui ?? 0) > 0));
@@ -3041,19 +3109,19 @@ export default function AgentPage({ onBack }) {
       case 'buy':
         return [
           ['workflow', p.workflow],
-          ['curve', p.buy?.curveId ? `${p.buy.curveId.slice(0, 10)}...` : '(missing - paste CA)'],
+          ['curve', p.buy?.curveId ? p.buy.curveId : '(missing - paste CA)'],
           ['amount', `${p.buy?.amountSui ?? 0} SUI`],
         ];
       case 'sell':
         return [
           ['workflow', p.workflow],
-          ['curve', p.sell?.curveId ? `${p.sell.curveId.slice(0, 10)}...` : '(missing - paste CA)'],
+          ['curve', p.sell?.curveId ? p.sell.curveId : '(missing - paste CA)'],
           ['amount', p.sell?.tokenAmount === 'ALL' ? 'ALL tokens' : `${p.sell?.tokenAmount} tokens`],
         ];
       case 'claim':
         return [
           ['workflow', p.workflow],
-          ['curve', p.claim?.curveId ? `${p.claim.curveId.slice(0, 10)}...` : '(missing - paste CA)'],
+          ['curve', p.claim?.curveId ? p.claim.curveId : '(missing - paste CA)'],
         ];
       case 'claim_all':
         return [
@@ -3068,7 +3136,7 @@ export default function AgentPage({ onBack }) {
       case 'tpsl': {
         const rows = [
           ['workflow', 'tp/sl strategy'],
-          ['curve', p.tpsl?.curveId ? `${p.tpsl.curveId.slice(0, 10)}...` : '(missing - paste CA)'],
+          ['curve', p.tpsl?.curveId ? p.tpsl.curveId : '(missing - paste CA)'],
         ];
         (p.tpsl?.takeProfit ?? []).forEach((r, i) =>
           rows.push([`take-profit ${i + 1}`, `+${Math.round((r.multiple - 1) * 100)}% . sell ${r.sellPct}%`]));
@@ -3080,7 +3148,7 @@ export default function AgentPage({ onBack }) {
         const rows = [
           ['workflow', 'buy + tp/sl'],
           ['buy', `${p.buy?.amountSui ?? 0} SUI`],
-          ['curve', p.buy?.curveId ? `${p.buy.curveId.slice(0, 10)}...` : '(missing - paste CA)'],
+          ['curve', p.buy?.curveId ? p.buy.curveId : '(missing - paste CA)'],
         ];
         (p.tpsl?.takeProfit ?? []).forEach((r, i) =>
           rows.push([`take-profit ${i + 1}`, `+${Math.round((r.multiple - 1) * 100)}% . sell ${r.sellPct}%`]));
@@ -3095,7 +3163,7 @@ export default function AgentPage({ onBack }) {
           ['buy size', `${s.amountSui ?? 0} SUI per launch`],
         ];
         if (Array.isArray(s.creators) && s.creators.length)
-          rows.push(['creators', s.creators.map(c => `${c.slice(0, 10)}...`).join(', ')]);
+          rows.push(['creators', s.creators.join(', ')]);
         if (Array.isArray(s.symbols) && s.symbols.length)
           rows.push(['symbols', s.symbols.join(', ')]);
         if (s.nameIncludes)
@@ -3119,7 +3187,7 @@ export default function AgentPage({ onBack }) {
         const d = p.dca ?? {};
         const rows = [
           ['workflow', 'dca (standing accumulation)'],
-          ['curve', d.curveId ? `${d.curveId.slice(0, 10)}...` : '(missing - paste CA)'],
+          ['curve', d.curveId ? d.curveId : '(missing - paste CA)'],
           ['buy size', `${d.suiPerBuy ?? 0} SUI per buy`],
           ['trigger', d.mode === 'dip' ? `each -${d.dropPct}% drop from entry` : `every ${Math.round((d.intervalMs ?? 86400000) / 1000)}s`],
           ['total buys', `${d.buys ?? 1}`],
@@ -3136,7 +3204,7 @@ export default function AgentPage({ onBack }) {
         const c = p.copytrade ?? {};
         return [
           ['workflow', 'copy-trade (wallet follow)'],
-          ['target wallet', c.targetWallet ? `${c.targetWallet.slice(0, 10)}...${c.targetWallet.slice(-4)}` : '(missing - paste 0x)'],
+          ['target wallet', c.targetWallet ? c.targetWallet : '(missing - paste 0x)'],
           ['buy size', `${c.suiPerTrade ?? 0} SUI per trade`],
           ['sells', 'proportional to target'],
           ['scope', 'every curve the target trades'],
@@ -3149,35 +3217,48 @@ export default function AgentPage({ onBack }) {
 
   return (
     <div>
-      <button onClick={onBack} className="flex items-center gap-2 text-white/40 hover:text-white/70 text-[10px] font-mono tracking-widest mb-6">
+      <button onClick={onBack} className="flex items-center gap-2 text-white/40 hover:text-lime-400 transition-colors text-[10px] font-mono tracking-widest mb-6">
         <ArrowLeft size={13} /> BACK
       </button>
 
-      <div className="border border-violet-400/20 rounded-2xl p-6 bg-gradient-to-br from-violet-500/[0.07] to-transparent mb-6">
-        <div className="flex items-center gap-2.5 mb-2">
-          <Bot size={20} className="text-violet-400" />
-          <h1 className="text-xl font-bold tracking-tight text-white" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>AUTONOMOUS AGENT</h1>
-          <span className="ml-auto text-[9px] font-mono text-violet-300/50 tracking-widest border border-violet-400/20 rounded-full px-2.5 py-1 whitespace-nowrap">
-            POWERED BY TALUS
+      <div className="flex flex-wrap items-center gap-2.5 mb-2">
+        <Bot size={16} className="text-lime-400" />
+        <h1 className="text-[17px] leading-none font-extrabold font-mono tracking-tight text-white">AUTONOMOUS AGENT</h1>
+        {activeSessionId && (
+          <span className="inline-flex items-center gap-1.5 text-[9.5px] leading-none font-mono font-semibold text-lime-400 border border-lime-400/30 bg-lime-400/[0.07] rounded-full px-[9px] py-[5px] whitespace-nowrap">
+            <span className="w-1.5 h-1.5 rounded-full bg-lime-400 animate-sp-pulse" />
+            SESSION ACTIVE
           </span>
-        </div>
-        <p className="text-white/40 text-[11px] font-mono leading-relaxed max-w-xl">
-          State a goal in plain language and the agent produces autonomous workflows - planning with an LLM, then executing on-chain through published Nexus DAGs. Five base tools - launch, buy, sell, claim, monitor - power four standing strategies (sniper, DCA, copy-trade, take-profit / stop-loss), which can be combined into entry-plus-exit setups. See HOW TO OPERATE below.
-        </p>
+        )}
+        {activeSessionId && sessionAttested && (
+          <span className="text-[9.5px] leading-none font-mono font-semibold text-white/45 border border-white/[0.12] rounded-full px-[9px] py-[5px] whitespace-nowrap">NAUTILUS TEE · ATTESTED ✓</span>
+        )}
+        <span className="text-[9.5px] leading-none font-mono font-semibold text-white/45 border border-white/[0.12] rounded-full px-[9px] py-[5px] whitespace-nowrap">AGENT RUNNER · 24/7</span>
+        <span className="ml-auto hidden md:block text-[10px] font-mono text-white/30">keys never leave the enclave · revocable anytime</span>
       </div>
+      <p className="text-white/40 text-[11px] font-mono leading-relaxed max-w-2xl mb-5">
+        State a goal in plain language and the agent produces autonomous workflows - planning with an LLM, then executing on-chain through the agent's 24/7 runner. Five base tools - launch, buy, sell, claim, monitor - power four standing strategies (sniper, DCA, copy-trade, take-profit / stop-loss), which can be combined into entry-plus-exit setups. See HOW TO OPERATE below.
+      </p>
+
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] lg:grid-rows-[auto_1fr] gap-4 items-start">
 
       {/* -- Agent session (escrow authorization) ------------------------- */}
-      <AgentSessionPanel account={account} onSessionChange={setActiveSessionId} />
+      <div className="lg:col-start-2 lg:row-start-1 min-w-0">
+        <AgentSessionPanel account={account} onSessionChange={setActiveSessionId} onAttestedChange={setSessionAttested} />
+      </div>
+
+      {/* -- Left column (goal / plan / execution / history) ---------------- */}
+      <div className="lg:col-start-1 lg:row-start-1 lg:row-span-2 min-w-0 space-y-4">
 
       {/* -- Strategy guide (accordion) ----------------------------------- */}
-      <div className="border border-white/10 rounded-xl bg-white/[0.02] mb-4 overflow-hidden">
+      <div className="border border-white/[0.08] rounded-2xl bg-white/[0.015] overflow-hidden">
         <button
           onClick={() => setGuideOpen(v => !v)}
           className="w-full flex items-center justify-between px-4 py-3 text-left"
         >
           <span className="flex items-center gap-2">
-            <Bot size={12} className="text-violet-400" />
-            <span className="text-[10px] font-mono text-white/40 tracking-widest">HOW TO OPERATE</span>
+            <Bot size={12} className="text-lime-400" />
+            <span className="text-[9px] font-mono font-semibold text-white/40 tracking-[0.16em]">HOW TO OPERATE</span>
           </span>
           <ChevronDown size={14} className={`text-white/30 transition-transform ${guideOpen ? 'rotate-180' : ''}`} />
         </button>
@@ -3186,7 +3267,7 @@ export default function AgentPage({ onBack }) {
             {OPERATE_GUIDE.map((sec) => (
               <div key={sec.section}>
                 <div className="px-1 pt-1 pb-2">
-                  <div className="text-[9px] font-mono text-violet-400/70 tracking-widest">{sec.section}</div>
+                  <div className="text-[9px] font-mono font-semibold text-lime-400/80 tracking-[0.16em]">{sec.section}</div>
                   <div className="text-[10px] font-mono text-white/30 mt-0.5">{sec.blurb}</div>
                 </div>
                 <div className="space-y-1.5">
@@ -3200,10 +3281,10 @@ export default function AgentPage({ onBack }) {
                         >
                           <span className="min-w-0">
                             <span className="text-[12px] font-mono text-white/80">{s.title}</span>
-                            {s.fqn && <span className="text-[9px] font-mono text-violet-300/40 ml-2">{s.fqn}</span>}
+                            {s.fqn && <span className="text-[9px] font-mono text-white/25 ml-2">{s.fqn}</span>}
                             <span className="block text-[10px] font-mono text-white/35 mt-0.5">{s.tagline}</span>
                           </span>
-                          <ChevronDown size={13} className={`shrink-0 text-violet-400/60 transition-transform ${open ? 'rotate-180' : ''}`} />
+                          <ChevronDown size={13} className={`shrink-0 text-lime-400/60 transition-transform ${open ? 'rotate-180' : ''}`} />
                         </button>
                         {open && (
                           <div className="px-3 pb-3 pt-1 space-y-3 border-t border-white/5">
@@ -3214,7 +3295,7 @@ export default function AgentPage({ onBack }) {
                                 <ul className="space-y-1">
                                   {s.inputs.map((inp, i) => (
                                     <li key={i} className="text-[11px] font-mono text-white/55 flex gap-2">
-                                      <span className="text-violet-400/50">.</span>{inp}
+                                      <span className="text-lime-400/50">.</span>{inp}
                                     </li>
                                   ))}
                                 </ul>
@@ -3227,7 +3308,7 @@ export default function AgentPage({ onBack }) {
                                   <button
                                     key={i}
                                     onClick={() => { setGoal(ex); setGuideOpen(false); }}
-                                    className="w-full text-left text-[11px] font-mono text-emerald-300/70 hover:text-emerald-300 bg-emerald-400/[0.04] hover:bg-emerald-400/[0.08] border border-emerald-400/15 rounded px-2.5 py-2 leading-relaxed"
+                                    className="w-full text-left text-[11px] font-mono text-lime-300/70 hover:text-lime-300 bg-lime-400/[0.04] hover:bg-lime-400/[0.08] border border-lime-400/15 rounded px-2.5 py-2 leading-relaxed"
                                   >
                                     {ex}
                                   </button>
@@ -3246,23 +3327,23 @@ export default function AgentPage({ onBack }) {
         )}
       </div>
 
-      <div className="border border-white/10 rounded-xl p-4 bg-white/[0.02] mb-4">
+      <div className="border border-lime-400/30 rounded-2xl p-[18px] bg-white/[0.02]">
         <div className="flex items-center gap-2 mb-3">
-          <Sparkles size={11} className="text-violet-400" />
-          <span className="text-[10px] font-mono text-white/35 tracking-widest">GOAL</span>
+          <Sparkles size={11} className="text-lime-400" />
+          <span className="text-[9px] font-mono font-semibold text-lime-400 tracking-[0.16em]">GOAL</span>
         </div>
         <textarea
           value={goal}
           onChange={(e) => setGoal(e.target.value)}
           placeholder="e.g. Launch a dog token called MoonCat, dev-buy 1 SUI  .  or  .  Sell all tokens of 0xCURVE..."
           rows={2}
-          className="w-full bg-black/40 border border-white/10 rounded-lg p-3 text-[12px] font-mono text-white/80 placeholder:text-white/20 focus:border-violet-400/40 outline-none resize-none"
+          className="w-full bg-black/40 border border-white/10 rounded-lg p-3 text-[12px] font-mono text-white/90 caret-lime-400 placeholder:text-white/20 focus:border-lime-400/40 outline-none resize-none"
         />
         <div className="flex items-center justify-end mt-3">
           <button
             onClick={makePlan}
             disabled={planning || !goal.trim()}
-            className="shrink-0 text-[10px] font-mono font-bold tracking-widest px-4 py-2 rounded-lg border border-violet-400/60 text-violet-400 hover:bg-violet-400/10 disabled:opacity-30 transition-colors flex items-center gap-2"
+            className="shrink-0 text-[10px] font-mono font-extrabold tracking-widest px-4 py-2 rounded-[10px] bg-lime-400 text-[#050505] hover:bg-lime-300 disabled:opacity-30 transition-colors flex items-center gap-2"
           >
             {planning ? <Loader size={12} className="animate-spin" /> : <Sparkles size={12} />}
             {planning ? 'PLANNING...' : 'PLAN'}
@@ -3271,13 +3352,13 @@ export default function AgentPage({ onBack }) {
       </div>
 
       {plan && (
-        <div className="border border-violet-400/20 rounded-xl p-4 bg-violet-400/[0.03] mb-4">
-          <div className="text-[10px] font-mono text-violet-400/70 tracking-widest mb-2">AGENT PLAN</div>
+        <div className="border border-white/[0.08] rounded-2xl p-[18px] bg-white/[0.015]">
+          <div className="text-[9px] font-mono font-semibold text-white/40 tracking-[0.16em] mb-2.5">AGENT PLAN</div>
           <p className="text-[12px] font-mono text-white/80 mb-3 leading-relaxed">{isBareLaunch(plan) ? `Launch ${plan.launch?.name ?? 'token'} ($${plan.launch?.symbol ?? ''}) on the bonding curve.` : plan.summary}</p>
 
           {resolving && (
             <div className="text-[10px] font-mono text-white/40 mb-3 flex items-center gap-2">
-              <Loader size={11} className="animate-spin text-violet-400" /> Finding matching tokens...
+              <Loader size={11} className="animate-spin text-lime-400" /> Finding matching tokens...
             </div>
           )}
 
@@ -3292,13 +3373,13 @@ export default function AgentPage({ onBack }) {
                   <button
                     key={c.curveId}
                     onClick={() => choosePick(c)}
-                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border border-white/10 bg-white/[0.02] hover:bg-violet-400/[0.08] hover:border-violet-400/40 transition-all text-left"
+                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border border-white/10 bg-white/[0.02] hover:bg-lime-400/[0.06] hover:border-lime-400/40 transition-all text-left"
                   >
                     <TokenIcon url={c.iconUrl} symbol={c.symbol} />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-1.5">
                         <span className="text-[12px] font-mono font-bold text-white/90">${c.symbol}</span>
-                        <span className="text-[8px] font-mono text-violet-400/60 tracking-wider">{GRAD[c.graduationTarget] ?? ''}</span>
+                        <span className="text-[8px] font-mono text-lime-400/50 tracking-wider">{GRAD[c.graduationTarget] ?? ''}</span>
                       </div>
                       <div className="text-[9px] font-mono text-white/40 truncate">{c.name}</div>
                     </div>
@@ -3315,13 +3396,13 @@ export default function AgentPage({ onBack }) {
 
           {/* Single match auto-resolved - shown for confirmation (b-soft). */}
           {resolvedNote && (
-            <div className="mb-4 flex items-center gap-3 px-3 py-2.5 rounded-lg border border-violet-400/25 bg-violet-400/[0.05]">
+            <div className="mb-4 flex items-center gap-3 px-3 py-2.5 rounded-lg border border-lime-400/25 bg-lime-400/[0.05]">
               <TokenIcon url={resolvedNote.iconUrl} symbol={resolvedNote.symbol} />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-1.5">
-                  <span className="text-[8px] font-mono text-violet-400/70 tracking-widest">RESOLVED</span>
+                  <span className="text-[8px] font-mono text-lime-400/80 tracking-widest">RESOLVED</span>
                   <span className="text-[12px] font-mono font-bold text-white/90">${resolvedNote.symbol}</span>
-                  <span className="text-[8px] font-mono text-violet-400/60 tracking-wider">{GRAD[resolvedNote.graduationTarget] ?? ''}</span>
+                  <span className="text-[8px] font-mono text-lime-400/50 tracking-wider">{GRAD[resolvedNote.graduationTarget] ?? ''}</span>
                 </div>
                 <div className="text-[8.5px] font-mono text-white/40">{resolvedNote.marketCapSui >= 1000 ? `${(resolvedNote.marketCapSui/1000).toFixed(1)}K` : resolvedNote.marketCapSui.toFixed(1)} SUI mcap . {resolvedNote.volumeSui.toFixed(1)} vol . {resolvedNote.holders} holder{resolvedNote.holders === 1 ? '' : 's'}</div>
               </div>
@@ -3330,7 +3411,7 @@ export default function AgentPage({ onBack }) {
 
           <div className="grid grid-cols-2 gap-2 text-[10px] font-mono text-white/45 mb-4">
             {planRows(plan).map(([k, v]) => (
-              <div key={k}>{k}: <span className="text-white/80">{v}</span></div>
+              <div key={k} className="break-all">{k}: <span className="text-white/80">{v}</span></div>
             ))}
           </div>
           {(phase === 'idle' || phase === 'failed') && !(candidates && candidates.length > 1) && (() => {
@@ -3344,7 +3425,7 @@ export default function AgentPage({ onBack }) {
                 <button
                   onClick={approve}
                   disabled={sessionMissing}
-                  className={`w-full text-[11px] font-mono font-bold tracking-widest px-4 py-3 rounded-lg transition-colors flex items-center justify-center gap-2 ${sessionMissing ? 'bg-violet-500/30 text-white/40 cursor-not-allowed' : 'bg-violet-500 text-white hover:bg-violet-400'}`}
+                  className={`w-full text-[11px] font-mono font-extrabold tracking-widest px-4 py-3 rounded-[11px] transition-colors flex items-center justify-center gap-2 ${sessionMissing ? 'bg-white/10 text-white/30 cursor-not-allowed' : 'bg-lime-400 text-[#050505] hover:bg-lime-300'}`}
                 >
                   <Play size={12} /> {phase === 'failed' ? 'RETRY - EXECUTE ON-CHAIN' : 'APPROVE & EXECUTE ON-CHAIN'}
                 </button>
@@ -3360,32 +3441,32 @@ export default function AgentPage({ onBack }) {
       )}
 
       {phase === 'running' && (
-        <div className="border border-violet-400/20 rounded-xl p-5 bg-violet-400/[0.03] mb-4">
+        <div className="border border-lime-400/20 rounded-2xl p-5 bg-lime-400/[0.03]">
           <div className="flex items-center gap-3">
             <div className="relative">
-              <Bot size={18} className="text-violet-400" />
-              <span className="absolute -right-1 -top-1 w-2 h-2 rounded-full bg-violet-400 animate-ping" />
+              <Bot size={18} className="text-lime-400" />
+              <span className="absolute -right-1 -top-1 w-2 h-2 rounded-full bg-lime-400 animate-ping" />
             </div>
             <div className="flex-1">
-              <div className="text-[12px] font-mono text-white/90 font-bold">Agent executing autonomously on Nexus</div>
-              <div className="text-[10px] font-mono text-white/40">Running the {isBareLaunch(plan) ? 'launch' : plan?.workflow} DAG on-chain.</div>
+              <div className="text-[12px] font-mono text-white/90 font-bold">Agent executing autonomously</div>
+              <div className="text-[10px] font-mono text-white/40">Executing the {isBareLaunch(plan) ? 'launch' : plan?.workflow} workflow on-chain.</div>
             </div>
-            <Loader size={14} className="text-violet-400 animate-spin" />
+            <Loader size={14} className="text-lime-400 animate-spin" />
           </div>
         </div>
       )}
 
       {showExecutionPanel && (
-        <div className="border border-white/10 rounded-xl p-4 bg-white/[0.02] mb-4">
-          <div className="text-[10px] font-mono text-white/35 tracking-widest mb-4">NEXUS DAG EXECUTION</div>
+        <div className="border border-white/[0.08] rounded-2xl p-[18px] bg-white/[0.015]">
+          <div className="text-[9px] font-mono font-semibold text-white/40 tracking-[0.16em] mb-4">EXECUTION</div>
           <div className="space-y-2">
             {nodes.map((n) => {
               const s = nodeState[n.id] ?? 'idle';
               return (
                 <div key={n.id} className={`flex items-center gap-3 border rounded-lg p-3 transition-colors ${nodeColor(s)}`}>
                   <div className="w-6 flex justify-center">
-                    {s === 'done'    && <Check  size={14} className="text-violet-400" />}
-                    {s === 'running' && <Loader size={14} className="text-violet-400 animate-spin" />}
+                    {s === 'done'    && <Check  size={14} className="text-lime-400" />}
+                    {s === 'running' && <Loader size={14} className="text-lime-400 animate-spin" />}
                     {s === 'error'   && <X      size={14} className="text-red-400" />}
                     {s === 'idle'    && <div className="w-2 h-2 rounded-full bg-white/20" />}
                   </div>
@@ -3401,8 +3482,8 @@ export default function AgentPage({ onBack }) {
       )}
 
       {result && (result.workflow === 'tpsl' || result.workflow === 'buy_then_tpsl' || result.workflow === 'sniper' || result.workflow === 'dca' || result.workflow === 'copytrade') && (
-        <div className="border border-emerald-400/30 rounded-xl p-4 bg-emerald-400/[0.05]">
-          <div className="text-[10px] font-mono text-emerald-400/80 tracking-widest mb-3">
+        <div className="border border-lime-400/30 rounded-2xl p-[18px] bg-lime-400/[0.05]">
+          <div className="text-[10px] font-mono font-semibold text-lime-400/80 tracking-widest mb-3">
             {result.workflow === 'buy_then_tpsl'
               ? '✓ BOUGHT & STRATEGY ARMED - AGENT IS WATCHING'
               : result.workflow === 'sniper'
@@ -3415,7 +3496,7 @@ export default function AgentPage({ onBack }) {
           </div>
           <div className="space-y-2 text-[10px] font-mono">
             {result.buyDigest && (
-              <div className="text-white/40">buy settled: <span className="text-emerald-300/80 break-all">{result.buyDigest}</span></div>
+              <div className="text-white/40">buy settled: <span className="text-lime-300/80 break-all">{result.buyDigest}</span></div>
             )}
             {result.entryPriceSui && (
               <div className="text-white/40">entry price: <span className="text-white/70">{result.entryPriceSui} SUI</span></div>
@@ -3423,36 +3504,22 @@ export default function AgentPage({ onBack }) {
             {result.orderId && (
               <div className="text-white/40">order id: <span className="text-white/70 break-all">{result.orderId}</span></div>
             )}
-            {WORKFLOW_DAGS[result.workflow] && (
-              <div className="text-white/40 pt-1">
-                executes through Nexus {WORKFLOW_DAGS[result.workflow].length > 1 ? 'DAGs' : 'DAG'}:
-                <div className="mt-1 space-y-0.5">
-                  {WORKFLOW_DAGS[result.workflow].map((k) => (
-                    <a key={k} href={suiscanObject(NEXUS_DAG[k])} target="_blank" rel="noreferrer"
-                       className="flex items-center gap-1 text-violet-300/70 hover:text-violet-300 break-all">
-                      <span className="text-white/30 uppercase w-7 shrink-0">{k}</span>
-                      {NEXUS_DAG[k].slice(0, 18)}... <ExternalLink size={9} />
-                    </a>
-                  ))}
-                </div>
-              </div>
-            )}
             <div className="text-white/50 leading-relaxed">
               {result.workflow === 'sniper'
-                ? "The agent now watches new launches and fires a buy through Nexus the moment one matches your filter. No further action needed."
+                ? "The agent now watches new launches and fires a buy the moment one matches your filter. No further action needed."
                 : result.workflow === 'dca'
-                ? "The agent now accumulates on this curve automatically through Nexus - on schedule or on each dip - tracking your average cost. Watch it in Active Strategies below."
+                ? "The agent now accumulates on this curve automatically - on schedule or on each dip - tracking your average cost. Watch it in Active Strategies below."
                 : result.workflow === 'copytrade'
-                ? "The agent now follows the target wallet through Nexus: buying when it buys, selling proportionally when it sells, across every curve it trades. Watch it in Active Strategies below."
-                : "The agent now watches this curve's price and sells automatically through Nexus when a trigger is hit. No further action needed."}
+                ? "The agent now follows the target wallet: buying when it buys, selling proportionally when it sells, across every curve it trades. Watch it in Active Strategies below."
+                : "The agent now watches this curve's price and sells automatically when a trigger is hit. No further action needed."}
             </div>
           </div>
         </div>
       )}
 
       {result && result.workflow === 'claim_all' && (
-        <div className="border border-violet-400/30 rounded-xl p-4 bg-violet-400/[0.05]">
-          <div className="text-[10px] font-mono text-violet-400/80 tracking-widest mb-3">✓ CLAIM ALL - VIA NEXUS</div>
+        <div className="border border-lime-400/30 rounded-2xl p-[18px] bg-lime-400/[0.05]">
+          <div className="text-[10px] font-mono font-semibold text-lime-400/80 tracking-widest mb-3">✓ CLAIM ALL - COMPLETE</div>
           <div className="text-[11px] font-mono text-white/80 mb-3">
             Claimed {result.claimedCount ?? 0} of {result.attempted ?? 0} curve(s) with fees pending
             {Number(result.totalFeesSui) > 0 ? ` . ~${Number(result.totalFeesSui).toFixed(4)} SUI` : ''}.
@@ -3465,16 +3532,16 @@ export default function AgentPage({ onBack }) {
               {result.results.map((row, i) => (
                 <div key={row.curveId ?? i} className="flex items-center justify-between gap-2 py-1 border-b border-white/[0.04]">
                   <div className="min-w-0 flex items-center gap-1.5">
-                    <span className={`text-[10px] font-mono ${row.ok ? 'text-emerald-400' : 'text-red-400'}`}>{row.ok ? '✓' : '✗'}</span>
-                    <span className="text-[10px] font-mono text-white/70 truncate">
-                      {row.symbol ? `$${row.symbol}` : `${String(row.curveId).slice(0, 10)}...`}
+                    <span className={`text-[10px] font-mono ${row.ok ? 'text-lime-400' : 'text-red-400'}`}>{row.ok ? '✓' : '✗'}</span>
+                    <span className="text-[10px] font-mono text-white/70 break-all">
+                      {row.symbol ? `$${row.symbol}` : String(row.curveId)}
                     </span>
                     <span className="text-[9px] font-mono text-white/30">{Number(row.feesSui).toFixed(4)} SUI</span>
                   </div>
                   {row.ok ? (
                     row.digest && (
                       <a href={suiscanTx(row.digest)} target="_blank" rel="noreferrer"
-                         className="text-violet-400 hover:text-violet-300 shrink-0"><ExternalLink size={11} /></a>
+                         className="text-lime-400 hover:text-lime-300 shrink-0"><ExternalLink size={11} /></a>
                     )
                   ) : (
                     <span className="text-[9px] font-mono text-red-400/60 truncate max-w-[40%]">{row.error}</span>
@@ -3487,15 +3554,12 @@ export default function AgentPage({ onBack }) {
       )}
 
       {result && (result.executionId || result.digest) && (
-        <div className="border border-violet-400/30 rounded-xl p-4 bg-violet-400/[0.05]">
-          <div className="text-[10px] font-mono text-violet-400/80 tracking-widest mb-3">✓ EXECUTED ON-CHAIN VIA NEXUS</div>
+        <div className="border border-lime-400/30 rounded-2xl p-[18px] bg-lime-400/[0.05]">
+          <div className="text-[10px] font-mono font-semibold text-lime-400/80 tracking-widest mb-3">✓ EXECUTED ON-CHAIN</div>
           <div className="space-y-2 text-[10px] font-mono">
-            {result.dagId && (
-              <div className="text-white/40">DAG: <span className="text-white/70 break-all">{result.dagId}</span></div>
-            )}
             {result.executionId && (
               <a href={suiscanObject(result.executionId)} target="_blank" rel="noreferrer"
-                 className="inline-flex items-center gap-1.5 text-violet-400 hover:text-violet-300 break-all">
+                 className="inline-flex items-center gap-1.5 text-lime-400 hover:text-lime-300 break-all">
                 execution: {result.executionId} <ExternalLink size={11} />
               </a>
             )}
@@ -3504,13 +3568,13 @@ export default function AgentPage({ onBack }) {
             )}
             {result.digest && (
               <a href={suiscanTx(result.digest)} target="_blank" rel="noreferrer"
-                 className="inline-flex items-center gap-1.5 text-violet-400 hover:text-violet-300 break-all">
-                nexus request: {result.digest} <ExternalLink size={11} />
+                 className="inline-flex items-center gap-1.5 text-lime-400 hover:text-lime-300 break-all">
+                request: {result.digest} <ExternalLink size={11} />
               </a>
             )}
             {result.settleDigest && (
               <a href={suiscanTx(result.settleDigest)} target="_blank" rel="noreferrer"
-                 className="inline-flex items-center gap-1.5 text-emerald-400 hover:text-emerald-300 break-all">
+                 className="inline-flex items-center gap-1.5 text-lime-400 hover:text-lime-300 break-all">
                 settled: {result.settleDigest} <ExternalLink size={11} />
               </a>
             )}
@@ -3519,164 +3583,18 @@ export default function AgentPage({ onBack }) {
       )}
 
       {error && (
-        <div className="border border-red-400/30 rounded-xl p-3 bg-red-400/[0.04] text-[11px] font-mono text-red-400/80 mt-4">
+        <div className="border border-red-400/30 rounded-2xl p-3 bg-red-400/[0.04] text-[11px] font-mono text-red-400/80">
           {error}
         </div>
       )}
 
-      {/* -- Active strategies ----------------------------------------------- */}
-      <div className="mt-10 pt-6 border-t border-white/10">
-        <div className="flex items-center justify-between mb-4">
-          <div className="text-[10px] font-mono text-violet-400/70 tracking-widest">
-            ACTIVE STRATEGIES{orders.length ? ` . ${orders.length}` : ''}
-          </div>
-          <button
-            onClick={loadOrders}
-            className="text-[9px] font-mono text-white/30 hover:text-white/60 tracking-widest"
-          >
-            REFRESH
-          </button>
-        </div>
-
-        {ordersLoading ? (
-          <div className="flex items-center gap-2 text-[11px] font-mono text-white/30">
-            <Loader size={13} className="animate-spin" /> loading...
-          </div>
-        ) : ordersError ? (
-          <div className="text-[11px] font-mono text-red-400/70">{ordersError}</div>
-        ) : orders.length === 0 ? (
-          <div className="border border-white/10 rounded-xl p-4 text-[11px] font-mono text-white/30">
-            No active strategies. Arm one above and it will appear here.
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {orders.map((o) => {
-              const isConfirm = confirmId === o.id;
-              const isCanceling = cancelingId === o.id;
-              return (
-                <div
-                  key={o.id}
-                  className="border border-white/10 rounded-xl p-3 bg-white/[0.02] flex items-start justify-between gap-3"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-[9px] font-mono text-violet-300/90 bg-violet-400/10 border border-violet-400/20 rounded px-1.5 py-0.5 tracking-wider">
-                        {ORDER_LABEL[o.type] || o.type}
-                      </span>
-                      {o.tokenType && (
-                        <span className="text-[9px] font-mono text-white/35">${shortType(o.tokenType)}</span>
-                      )}
-                    </div>
-                    <div className="text-[11px] font-mono text-white/70 leading-relaxed break-words">
-                      {describeOrder(o)}
-                    </div>
-                    {o.type === 'autopilot' && Array.isArray(o.params?.entered) && o.params.entered.length > 0 && (
-                      <div className="mt-1.5 flex flex-wrap items-center gap-1">
-                        <span className="text-[9px] font-mono text-white/30 tracking-wider mr-0.5">POSITIONS</span>
-                        {o.params.entered.map((cid) => (
-                          <button
-                            key={cid}
-                            type="button"
-                            onClick={() => navigate(`/token/${cid}`)}
-                            className="inline-flex items-center gap-1 text-[9px] font-mono text-emerald-300/70 hover:text-emerald-300 bg-emerald-400/5 border border-emerald-400/15 rounded px-1.5 py-0.5"
-                            title={cid}
-                          >
-                            {tickerByCurve[cid] ? `$${tickerByCurve[cid]}` : shortId(cid)} <ExternalLink size={8} />
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                    {o.curveId && (
-                      <button
-                        type="button"
-                        onClick={() => navigate(`/token/${o.curveId}`)}
-                        className="inline-flex items-center gap-1 text-[9px] font-mono text-white/25 hover:text-violet-400/80 mt-1"
-                        title="Open token page"
-                      >
-                        {shortId(o.curveId)} <ExternalLink size={9} />
-                      </button>
-                    )}
-                    {o.params?._lastFire && (o.params._lastFire.settle || o.params._lastFire.nexusDigest) && (
-                      <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[9px] font-mono">
-                        <span className="text-emerald-400/60 tracking-wider">
-                          LAST {String(o.params._lastFire.kind || 'fire').toUpperCase()}
-                        </span>
-                        {(o.params._lastFire.nexusDigest || o.params._lastFire.nexusTask) && (
-                          <a
-                            href={suiscanTx(o.params._lastFire.nexusDigest || o.params._lastFire.nexusTask)}
-                            target="_blank" rel="noreferrer"
-                            className="inline-flex items-center gap-1 text-violet-300/60 hover:text-violet-300"
-                            title="Nexus DAG execution"
-                          >
-                            nexus {String(o.params._lastFire.nexusDigest || o.params._lastFire.nexusTask).slice(0, 10)}... <ExternalLink size={8} />
-                          </a>
-                        )}
-                        {o.params._lastFire.settle && (
-                          <a
-                            href={suiscanTx(o.params._lastFire.settle)}
-                            target="_blank" rel="noreferrer"
-                            className="inline-flex items-center gap-1 text-emerald-300/60 hover:text-emerald-300"
-                            title="bridge settlement"
-                          >
-                            settle {String(o.params._lastFire.settle).slice(0, 10)}... <ExternalLink size={8} />
-                          </a>
-                        )}
-                      </div>
-                    )}
-                    {o.params?._lastError && o.params._lastError.reason && (
-                      <div className="mt-1.5 flex items-center gap-1.5 text-[9px] font-mono">
-                        <span className="text-red-400/80 tracking-wider">
-                          LAST {String(o.params._lastError.kind || 'fire').toUpperCase()} FAILED
-                        </span>
-                        <span className="text-red-300/70">
-                          {o.params._lastError.reason}
-                          {o.params._lastError.code != null ? ` (code ${o.params._lastError.code})` : ''}
-                        </span>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="shrink-0">
-                    {isConfirm ? (
-                      <div className="flex items-center gap-1.5">
-                        <button
-                          onClick={() => cancelOrder(o.id)}
-                          disabled={isCanceling}
-                          className="text-[9px] font-mono text-red-400 hover:text-red-300 border border-red-400/30 rounded px-2 py-1 tracking-widest disabled:opacity-50"
-                        >
-                          {isCanceling ? '...' : 'CONFIRM'}
-                        </button>
-                        <button
-                          onClick={() => setConfirmId(null)}
-                          disabled={isCanceling}
-                          className="text-[9px] font-mono text-white/40 hover:text-white/70 px-1 tracking-widest disabled:opacity-50"
-                        >
-                          KEEP
-                        </button>
-                      </div>
-                    ) : (
-                      <button
-                        onClick={() => { setConfirmId(o.id); setOrdersError(null); }}
-                        className="text-[9px] font-mono text-white/30 hover:text-red-400/90 border border-white/10 hover:border-red-400/30 rounded px-2 py-1 tracking-widest transition-colors"
-                      >
-                        CANCEL
-                      </button>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
       {/* -- Agent action history (persistent) ------------------------------- */}
-      <div className="mt-10 pt-6 border-t border-white/10">
+      <div className="border border-white/[0.08] rounded-2xl bg-white/[0.015] overflow-hidden">
         <button
           onClick={() => setHistoryOpen(o => !o)}
-          className="w-full flex items-center justify-between mb-4"
+          className="w-full flex items-center justify-between px-[18px] py-[13px] text-left"
         >
-          <div className="text-[10px] font-mono text-violet-400/70 tracking-widest">
+          <div className="text-[9px] font-mono font-semibold tracking-[0.16em] text-white/40">
             AGENT HISTORY{history.length ? ` . ${history.length}` : ''}
           </div>
           <ChevronDown size={14} className={`text-white/30 transition-transform ${historyOpen ? 'rotate-180' : ''}`} />
@@ -3684,25 +3602,25 @@ export default function AgentPage({ onBack }) {
 
         {historyOpen && (
           history.length === 0 ? (
-            <div className="border border-white/10 rounded-xl p-4 text-[11px] font-mono text-white/30">
+            <div className="px-[18px] py-4 border-t border-white/[0.06] text-[11px] font-mono text-white/30">
               No actions yet. Fired trades (manual and autonomous) appear here.
             </div>
           ) : (
-            <div className="space-y-2">
+            <div className="border-t border-white/[0.06]">
               {history.map((a) => {
                 const proof = a.leaderSettlementDigest || a.settleDigest || a.nexusRequestDigest;
                 const via   = a.settledVia === 'leader' ? 'leader' : a.settledVia === 'bridge' ? 'bridge' : null;
                 const when  = a.createdAt ? new Date(a.createdAt).toLocaleString() : '';
                 return (
-                  <div key={a.id} className="border border-white/10 rounded-xl p-3 text-[10px] font-mono">
+                  <div key={a.id} className="px-[18px] py-3 border-b border-white/[0.04] last:border-0 text-[10px] font-mono">
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-2 min-w-0">
-                        <span className={`shrink-0 px-1.5 py-0.5 rounded text-[8px] tracking-widest ${a.source === 'autonomous' ? 'bg-violet-400/15 text-violet-300/90' : 'bg-emerald-400/15 text-emerald-300/90'}`}>
+                        <span className={`shrink-0 px-1.5 py-0.5 rounded text-[8px] tracking-widest ${a.source === 'autonomous' ? 'bg-violet-400/15 text-violet-300/90' : 'bg-lime-400/15 text-lime-300/90'}`}>
                           {a.source === 'autonomous' ? 'AUTO' : 'MANUAL'}
                         </span>
                         <span className="text-white/70 truncate">{a.summary || a.kind}</span>
                       </div>
-                      <span className={`shrink-0 text-[9px] tracking-widest ${a.status === 'settled' ? 'text-emerald-400/80' : a.status === 'pending' ? 'text-violet-300/70' : a.status === 'fallback' ? 'text-amber-300/70' : 'text-red-400/70'}`}>
+                      <span className={`shrink-0 text-[9px] tracking-widest ${a.status === 'settled' ? 'text-lime-400/80' : a.status === 'pending' ? 'text-white/40' : a.status === 'fallback' ? 'text-amber-300/70' : 'text-red-400/70'}`}>
                         {a.status}{via ? ` . ${via}` : ''}
                       </span>
                     </div>
@@ -3711,19 +3629,19 @@ export default function AgentPage({ onBack }) {
                       <button
                         type="button"
                         onClick={() => navigate(`/token/${a.curveId}`)}
-                        className="inline-flex items-center gap-1.5 mt-1 text-violet-400 hover:text-violet-300 break-all"
+                        className="inline-flex items-center gap-1.5 mt-1 text-lime-400 hover:text-lime-300 break-all"
                         title="Open token page"
                       >
-                        token: {a.tokenType ? `$${shortType(a.tokenType)}` : tickerByCurve[a.curveId] ? `$${tickerByCurve[a.curveId]}` : shortId(a.curveId)} <ExternalLink size={10} />
+                        token: {a.tokenType ? `$${shortType(a.tokenType)}` : tickerByCurve[a.curveId] ? `$${tickerByCurve[a.curveId]}` : a.curveId} <ExternalLink size={10} />
                       </button>
                     )}
                     {a.wallet && (
-                      <div className="text-white/30 mt-1 break-all">wallet: {shortId(a.wallet)}</div>
+                      <div className="text-white/30 mt-1 break-all">wallet: {a.wallet}</div>
                     )}
                     {proof && (
                       <a href={suiscanTx(proof)} target="_blank" rel="noreferrer"
-                         className="inline-flex items-center gap-1.5 mt-1 text-violet-400 hover:text-violet-300 break-all">
-                        {a.leaderSettlementDigest ? 'leader settled' : a.settleDigest ? 'settled' : 'nexus request'}: {proof} <ExternalLink size={10} />
+                         className="inline-flex items-center gap-1.5 mt-1 text-lime-400 hover:text-lime-300 break-all">
+                        {a.leaderSettlementDigest ? 'leader settled' : a.settleDigest ? 'settled' : 'request'}: {proof} <ExternalLink size={10} />
                       </a>
                     )}
                   </div>
@@ -3732,6 +3650,158 @@ export default function AgentPage({ onBack }) {
             </div>
           )
         )}
+      </div>
+
+      </div>
+
+      {/* -- Active strategies ----------------------------------------------- */}
+      <div className="lg:col-start-2 lg:row-start-2 min-w-0">
+        <div className="border border-white/[0.08] rounded-2xl bg-white/[0.015] overflow-hidden">
+          <div className="flex items-center justify-between px-4 py-[13px] border-b border-white/[0.06]">
+            <div className="text-[9px] font-mono font-semibold tracking-[0.16em] text-white/40">
+              ACTIVE STRATEGIES{orders.length ? ` . ${orders.length}` : ''}
+            </div>
+            <button
+              onClick={loadOrders}
+              className="text-[9px] font-mono text-white/30 hover:text-white/60 tracking-widest"
+            >
+              REFRESH
+            </button>
+          </div>
+
+          {ordersLoading ? (
+            <div className="flex items-center gap-2 px-4 py-4 text-[11px] font-mono text-white/30">
+              <Loader size={13} className="animate-spin" /> loading...
+            </div>
+          ) : ordersError ? (
+            <div className="px-4 py-4 text-[11px] font-mono text-red-400/70">{ordersError}</div>
+          ) : orders.length === 0 ? (
+            <div className="px-4 py-4 text-[11px] font-mono text-white/30">
+              No active strategies. Arm one above and it will appear here.
+            </div>
+          ) : (
+            <div>
+              {orders.map((o) => {
+                const isConfirm = confirmId === o.id;
+                const isCanceling = cancelingId === o.id;
+                return (
+                  <div
+                    key={o.id}
+                    className="px-4 py-3 border-b border-white/[0.04] last:border-0 hover:bg-white/[0.02] transition-colors flex items-start justify-between gap-3"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className={`text-[8.5px] font-mono font-bold border rounded-[5px] px-[7px] py-1 tracking-wider ${ORDER_BADGE[o.type] || 'text-white/50 border-white/30'}`}>
+                          {ORDER_LABEL[o.type] || o.type}
+                        </span>
+                        {o.tokenType && (
+                          <span className="text-[9px] font-mono text-white/35 break-all">${shortType(o.tokenType)}</span>
+                        )}
+                      </div>
+                      <div className="text-[10.5px] font-mono text-white/65 leading-relaxed break-words">
+                        {describeOrder(o)}
+                      </div>
+                      {o.type === 'autopilot' && Array.isArray(o.params?.entered) && o.params.entered.length > 0 && (
+                        <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                          <span className="text-[9px] font-mono text-white/30 tracking-wider mr-0.5">POSITIONS</span>
+                          {o.params.entered.map((cid) => (
+                            <button
+                              key={cid}
+                              type="button"
+                              onClick={() => navigate(`/token/${cid}`)}
+                              className="inline-flex items-center gap-1 text-[9px] font-mono text-lime-300/70 hover:text-lime-300 bg-lime-400/5 border border-lime-400/15 rounded px-1.5 py-0.5 break-all text-left"
+                              title={cid}
+                            >
+                              {tickerByCurve[cid] ? `$${tickerByCurve[cid]}` : cid} <ExternalLink size={8} />
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      {o.curveId && (
+                        <button
+                          type="button"
+                          onClick={() => navigate(`/token/${o.curveId}`)}
+                          className="inline-flex items-center gap-1 text-[9px] font-mono text-white/25 hover:text-lime-400/80 mt-1 break-all text-left"
+                          title="Open token page"
+                        >
+                          {o.curveId} <ExternalLink size={9} />
+                        </button>
+                      )}
+                      {o.params?._lastFire && (o.params._lastFire.settle || o.params._lastFire.nexusDigest) && (
+                        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[9px] font-mono">
+                          <span className="text-lime-400/60 tracking-wider">
+                            LAST {String(o.params._lastFire.kind || 'fire').toUpperCase()}
+                          </span>
+                          {(o.params._lastFire.nexusDigest || o.params._lastFire.nexusTask) && (
+                            <a
+                              href={suiscanTx(o.params._lastFire.nexusDigest || o.params._lastFire.nexusTask)}
+                              target="_blank" rel="noreferrer"
+                              className="inline-flex items-center gap-1 text-lime-300/60 hover:text-lime-300 break-all text-left"
+                              title="execution transaction"
+                            >
+                              fired {String(o.params._lastFire.nexusDigest || o.params._lastFire.nexusTask)} <ExternalLink size={8} />
+                            </a>
+                          )}
+                          {o.params._lastFire.settle && (
+                            <a
+                              href={suiscanTx(o.params._lastFire.settle)}
+                              target="_blank" rel="noreferrer"
+                              className="inline-flex items-center gap-1 text-lime-300/60 hover:text-lime-300 break-all text-left"
+                              title="bridge settlement"
+                            >
+                              settle {String(o.params._lastFire.settle)} <ExternalLink size={8} />
+                            </a>
+                          )}
+                        </div>
+                      )}
+                      {o.params?._lastError && o.params._lastError.reason && (
+                        <div className="mt-1.5 flex items-center gap-1.5 text-[9px] font-mono">
+                          <span className="text-red-400/80 tracking-wider">
+                            LAST {String(o.params._lastError.kind || 'fire').toUpperCase()} FAILED
+                          </span>
+                          <span className="text-red-300/70">
+                            {o.params._lastError.reason}
+                            {o.params._lastError.code != null ? ` (code ${o.params._lastError.code})` : ''}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="shrink-0">
+                      {isConfirm ? (
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            onClick={() => cancelOrder(o.id)}
+                            disabled={isCanceling}
+                            className="text-[9px] font-mono text-red-400 hover:text-red-300 border border-red-400/30 rounded px-2 py-1 tracking-widest disabled:opacity-50"
+                          >
+                            {isCanceling ? '...' : 'CONFIRM'}
+                          </button>
+                          <button
+                            onClick={() => setConfirmId(null)}
+                            disabled={isCanceling}
+                            className="text-[9px] font-mono text-white/40 hover:text-white/70 px-1 tracking-widest disabled:opacity-50"
+                          >
+                            KEEP
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => { setConfirmId(o.id); setOrdersError(null); }}
+                          className="text-[9px] font-mono text-white/30 hover:text-red-400/90 border border-white/10 hover:border-red-400/30 rounded px-2 py-1 tracking-widest transition-colors"
+                        >
+                          CANCEL
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+
       </div>
     </div>
   );

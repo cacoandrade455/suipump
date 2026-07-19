@@ -22,7 +22,7 @@
 //     -> {} when this owner has no session on record, otherwise:
 //        {
 //          sessionId, ownerAddr, sessionAddress,
-//          escrow, spent, spendCap, expiryMs, revoked,
+//          escrow, spent, spendCap, expiryMs, revoked, attested,
 //        }
 //     `escrow` is the deposit amount as of the LAST recorded state-changing
 //     event (SessionOpened's deposit, or a later TopUp/Buy/Sell/Closed's
@@ -110,7 +110,7 @@ export function mountAgentSession(app, pool) {
       // field, not back to escrow) -- so they are looked up INDEPENDENTLY rather
       // than from "the single most recent event," which would go stale on
       // escrow whenever the latest event happens to be a buy.
-      const [escrowRes, spentRes, closedRes] = await Promise.all([
+      const [escrowRes, spentRes, closedRes, attestedRes] = await Promise.all([
         // Most recent event that actually reports a resulting escrow balance.
         pool.query(
           `SELECT event_type, data
@@ -140,9 +140,25 @@ export function mountAgentSession(app, pool) {
             LIMIT 1`,
           [sessionId]
         ),
+        // Was this session opened via open_and_share_attested (Nautilus)?
+        // SessionAttested is emitted exactly once, in the SAME tx as
+        // SessionOpened, and there is no un-attest path -- event existence IS
+        // the state, so a simple EXISTS answers it with no staleness class.
+        // The LIKE predicate is package-agnostic on purpose: the event types
+        // under its defining package (V12 for the V10 lineage; a V13-lineage
+        // SessionAttested would match here too, automatically).
+        pool.query(
+          `SELECT 1
+             FROM events
+            WHERE (data->>'session_id') = $1
+              AND event_type LIKE '%SessionAttested'
+            LIMIT 1`,
+          [sessionId]
+        ),
       ]);
 
       const revoked = closedRes.rows.length > 0;
+      const attested = attestedRes.rows.length > 0;
       const escrow  = revoked
         ? '0'
         : String(escrowRes.rows[0]?.data?.new_escrow ?? opened.deposit ?? '0');
@@ -169,6 +185,7 @@ export function mountAgentSession(app, pool) {
         spendCap:  String(opened.spend_cap ?? '0'),
         expiryMs:  Number(opened.expiry_ms ?? 0),
         revoked,
+        attested,
       });
     } catch (err) {
       console.error('[agent_session] /agent/session error:', err.message);
