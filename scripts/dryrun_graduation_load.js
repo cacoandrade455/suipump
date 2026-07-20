@@ -1,11 +1,10 @@
 // scripts/dryrun_graduation_load.js
 // READ-ONLY preflight for the two graduation modules. Proves that:
 //   1. Both modules dynamic-import cleanly (each against its OWN pinned
-//      @mysten/sui install: graduation-test locks 2.16.2 v2 SuiJsonRpcClient,
-//      graduation-test-turbos pins ^1.45.2 v1 SuiClient).
-//   2. Each module's OWN defaultClient() (env-driven JSON-RPC endpoint) can
-//      fetch the given curve object: prints exists, type, and the graduated
-//      field when visible.
+//      @mysten/sui install in its own dir).
+//   2. Each module's OWN defaultClient() (SuiGraphQLClient, env-driven GraphQL
+//      endpoint) can fetch the given curve object: prints exists, type, and
+//      the graduated field when visible.
 //
 // NO signing, NO keypair, NO writes. SUI_PRIVATE_KEY is NOT read.
 // DATABASE_URL is NOT needed.
@@ -14,12 +13,11 @@
 //
 //   cd C:\Users\User\Desktop\suipump\graduation-test && npm install
 //   cd C:\Users\User\Desktop\suipump\graduation-test-turbos && npm install
-//   set SUIPUMP_JSONRPC_URL=<third-party testnet JSON-RPC endpoint>
 //   node C:\Users\User\Desktop\suipump\scripts\dryrun_graduation_load.js <CURVE_ID>
 //
-// Required env: SUIPUMP_JSONRPC_URL (or legacy alias SUI_RPC_URL). The Sui
-// Foundation public testnet JSON-RPC fullnode is dead (week of 2026-07-06),
-// so there is no default endpoint.
+// Env: SUI_GRAPHQL_URL (optional GraphQL endpoint override; defaults to
+// https://graphql.testnet.sui.io/graphql inside the modules). The old
+// SUIPUMP_JSONRPC_URL / SUI_RPC_URL vars are IGNORED since the JSON-RPC purge.
 
 const curveId = process.argv[2];
 if (!curveId || !curveId.startsWith('0x')) {
@@ -28,20 +26,25 @@ if (!curveId || !curveId.startsWith('0x')) {
   process.exit(1);
 }
 
+if (process.env.SUIPUMP_JSONRPC_URL || process.env.SUI_RPC_URL) {
+  console.warn('NOTE: SUIPUMP_JSONRPC_URL / SUI_RPC_URL are deprecated and ignored - the');
+  console.warn('      graduation modules now read SUI_GRAPHQL_URL (GraphQL endpoint).');
+}
+
 const MODULES = [
   {
     label:  'deepbook',
     dir:    'graduation-test',
     href:   new URL('../graduation-test/graduate_deepbook_full.js', import.meta.url).href,
     fnName: 'graduateToDeepBook',
-    sdk:    '@mysten/sui 2.16.2 (v2 SuiJsonRpcClient)',
+    sdk:    'dir-pinned @mysten/sui, SuiGraphQLClient',
   },
   {
     label:  'turbos',
     dir:    'graduation-test-turbos',
     href:   new URL('../graduation-test-turbos/graduate_turbos_full.js', import.meta.url).href,
     fnName: 'graduateToTurbos',
-    sdk:    '@mysten/sui ^1.45.2 (v1 SuiClient)',
+    sdk:    'dir-pinned @mysten/sui, SuiGraphQLClient',
   },
 ];
 
@@ -75,29 +78,30 @@ for (const m of MODULES) {
     continue;
   }
 
-  // -- 2. Build the module's OWN client flavor (env-driven) -------------------
+  // -- 2. Build the module's OWN client (env-driven GraphQL) ------------------
   let client;
   try {
     client = mod.defaultClient();
   } catch (err) {
     failures++;
     console.error(`  [${m.label}] X defaultClient() failed: ${err?.message ?? err}`);
-    console.error(`  [${m.label}]   Fix: set SUIPUMP_JSONRPC_URL to a third-party testnet JSON-RPC endpoint`);
+    console.error(`  [${m.label}]   Fix: set SUI_GRAPHQL_URL to a testnet GraphQL endpoint`);
     continue;
   }
   console.log(`  [${m.label}] + client constructed (${client?.constructor?.name ?? 'unknown class'})`);
 
   // -- 3. READ-ONLY curve fetch ------------------------------------------------
-  // Both dirs' clients are JSON-RPC flavored, so the getObject call shape is
-  // identical: { id, options } (v2 SuiJsonRpcClient kept the old surface).
+  // Both dirs' clients are SuiGraphQLClient flavored, so the getObject call
+  // shape is identical: { objectId }, result at obj.object.* (never the old
+  // JSON-RPC { id, options } shape). The v2 core client parses Move fields
+  // into obj.object.json only when include.json is requested (verified against
+  // testnet on @mysten/sui 2.16.2); the raw-GraphQL asMoveObject.contents.fields
+  // path is kept as a fallback for clients that return raw nodes.
   try {
-    const obj = await client.getObject({
-      id: curveId,
-      options: { showContent: true, showType: true },
-    });
-    const exists = !!obj?.data;
-    const type   = obj?.data?.type ?? null;
-    const fields = obj?.data?.content?.fields ?? {};
+    const obj = await client.getObject({ objectId: curveId, include: { json: true } });
+    const exists = !!obj?.object;
+    const type   = obj?.object?.type ?? null;
+    const fields = obj?.object?.json ?? obj?.object?.asMoveObject?.contents?.fields ?? {};
     const graduated = ('graduated' in fields) ? fields.graduated : 'not visible';
     console.log(`  [${m.label}] curve:     ${curveId}`);
     console.log(`  [${m.label}] exists:    ${exists}`);
@@ -105,12 +109,12 @@ for (const m of MODULES) {
     console.log(`  [${m.label}] graduated: ${graduated}`);
     if (!exists) {
       failures++;
-      console.error(`  [${m.label}] X curve object not found via this client (error: ${JSON.stringify(obj?.error ?? null)})`);
+      console.error(`  [${m.label}] X curve object not found via this client`);
     }
   } catch (err) {
     failures++;
     console.error(`  [${m.label}] X getObject failed: ${err?.message ?? err}`);
-    console.error(`  [${m.label}]   (endpoint unreachable, or SUIPUMP_JSONRPC_URL is not a JSON-RPC endpoint)`);
+    console.error(`  [${m.label}]   (endpoint unreachable, or SUI_GRAPHQL_URL is not a GraphQL endpoint)`);
   }
 }
 

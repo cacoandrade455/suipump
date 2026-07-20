@@ -25,8 +25,8 @@
 //   PACKAGE_ID   optional; defaults to the V12 package below
 //   RPC_URL      optional; defaults to the testnet GraphQL endpoint
 //
-// SDK note: written for @mysten/sui v2 (SuiGraphQLClient). The JSON-RPC
-// SuiClient was removed from the SDK ahead of the Jul 31 2026 shutdown.
+// SDK note: written for @mysten/sui v2 (SuiGraphQLClient). The legacy JSON-RPC
+// client class was removed from the SDK ahead of the Jul 31 2026 shutdown.
 
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { Transaction } from '@mysten/sui/transactions';

@@ -26,7 +26,7 @@
 // An AdminCap id must NEVER appear in this process's env or code again.
 //
 // IMPORTANT: the client is passed in from index.js (its SuiGraphQLClient).
-// Do NOT create a client here. JSON-RPC is forbidden (SuiClient/getFullnodeUrl).
+// Do NOT create a client here. JSON-RPC is forbidden (no legacy fullnode client APIs).
 
 import { Transaction } from '@mysten/sui/transactions';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
@@ -205,7 +205,7 @@ async function pushPrice(client, keypair, priceScaled) {
   // executeTransaction({ transaction: <built bytes>, signatures: [<sig>] }) -
   // signatures is PLURAL, an array) and the frontend AgentPage userBuy flow.
   // `client` is index.js's SuiGraphQLClient. NEVER signAndExecuteTransaction
-  // here, and never a JSON-RPC SuiClient.
+  // here, and never a legacy JSON-RPC fullnode client.
   const bytes     = await tx.build({ client });
   const signature = (await keypair.signTransaction(bytes)).signature;
   const res = await client.executeTransaction({ transaction: bytes, signatures: [signature] });

@@ -1,17 +1,26 @@
 // graduation-test-turbos/graduate_turbos_full.js
 // Graduates a SuiPump bonding curve to a Turbos CLMM pool.
 //
+// GRAPHQL-ONLY (JSON-RPC purge, 2026-07-20): this module runs on the v2
+// SuiGraphQLClient exclusively. The turbos-clmm-sdk dependency is GONE - it was
+// JSON-RPC-internal (its 3.6.4 release peer-pinned @mysten/sui v1, whose
+// default client speaks only JSON-RPC), so its two on-chain writes are now
+// hand-built PTB moveCalls that reproduce the SDK's exact call shapes:
+//   pool_factory::deploy_pool_and_mint  (create pool + first liquidity + NFT)
+//   position_manager::mint              (add protocol-half liquidity)
+// The Turbos deployment ids (PackageId, PoolConfig, Positions, Versioned, fee
+// tier objects) come from the SAME runtime source the SDK used:
+// https://s3.amazonaws.com/app.turbos.finance/sdk/contract.json - fetched per
+// run, never hardcoded, so a Turbos package upgrade needs no code change here.
+//
 // DUAL-MODE:
 //   - Exported function: graduateToTurbos({ curveId, tokenType, pkgId })
 //     Called by indexer/auto_graduate.js. Callers pass PLAIN STRINGS ONLY.
-//     THIS MODULE OWNS ITS CLIENT AND KEYPAIR: it is pinned to @mysten/sui
-//     ^1.45.2 (v1, where SuiClient IS the JSON-RPC client) for turbos-clmm-sdk
-//     compatibility, so its classes are NOT interchangeable with a caller's
-//     SDK install - an injected v2 grpc/graphql client has different call
-//     shapes (getObject({objectId}) vs getObject({id, options}), no
-//     signAndExecuteTransaction({signer})), and keypair instances constructed
-//     across node_modules boundaries fail internal checks. Client comes from
-//     defaultClient() (env SUIPUMP_JSONRPC_URL / SUI_RPC_URL), keypair from
+//     THIS MODULE OWNS ITS CLIENT AND KEYPAIR: the graduation dirs pin their
+//     own @mysten/sui installs, and client/keypair instances constructed
+//     across node_modules boundaries fail internal checks - so injected
+//     client objects are refused by design. Client comes from defaultClient()
+//     (env SUI_GRAPHQL_URL, bridge.js-style default), keypair from
 //     defaultKeypair() (env GRADUATION_SIGNER_KEY).  No process.exit.
 //
 //   SIGNER SEPARATION (do not conflate): the graduation signer reads
@@ -25,8 +34,8 @@
 //   PRICE RELAYER's key (a different wallet).
 //
 //   - Standalone CLI: node graduate_turbos_full.js <CURVE_ID>
-//     Uses env GRADUATION_SIGNER_KEY + SUIPUMP_JSONRPC_URL (or SUI_RPC_URL), calls
-//     process.exit on failure.
+//     Uses env GRADUATION_SIGNER_KEY + SUI_GRAPHQL_URL (optional; defaults to
+//     the public testnet GraphQL endpoint), calls process.exit on failure.
 //
 // Steps:
 //   1. graduate()               - mark curve graduated, pay bonuses
@@ -37,9 +46,8 @@
 //   6. record_graduation_pool() - write pool_id on-chain
 
 import { Transaction } from '@mysten/sui/transactions';
-import { SuiClient } from '@mysten/sui/client';
+import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
-import { TurbosSdk, Network } from 'turbos-clmm-sdk';
 import Decimal from 'decimal.js';
 import { fromBase64 } from '@mysten/sui/utils';
 import { LATEST_WRITE_PACKAGE, V13_PACKAGE, V14_PACKAGE, assertWriteTarget, graduationAuthority } from '../indexer/write_target.js';
@@ -50,6 +58,25 @@ const MIN_TICK     = -443636;
 const MAX_TICK     =  443636;
 const TOKEN_DECIMALS = 6;
 const SUI_DECIMALS   = 9;
+const SUI_CLOCK_ID   = '0x6';
+
+// Same network convention as indexer/auto_graduate.js (the worker that imports
+// this module). Drives both the GraphQL default endpoint and which section of
+// the Turbos contract.json is used. Default preserves the previous hardcoded
+// Network.testnet behavior exactly.
+const NETWORK = process.env.NETWORK ?? 'testnet';
+
+// The runtime source of the Turbos deployment ids - the SAME URL the retired
+// turbos-clmm-sdk fetched internally (verified against sdk 3.6.4 and 4.0.0
+// sources), so behavior is unchanged: ids track Turbos upgrades with no code
+// change here.
+const TURBOS_CONTRACT_JSON_URL = 'https://s3.amazonaws.com/app.turbos.finance/sdk/contract.json';
+
+// SDK-parity trade parameters. Slippage is in PERCENT (turbos-clmm-sdk
+// getMinimumAmountBySlippage divides by 100): 0.05 = 0.05%, exactly what the
+// previous sdk.pool.createPool({ slippage: 0.05 }) calls sent on-chain.
+const SLIPPAGE_PCT = 0.05;
+const DEADLINE_MS  = 60_000;
 
 // V10-lineage package IDs (defining + upgrades). A curve's pkgId is its DEFINING
 // package; graduate/claim/record WRITES target the latest upgrade below.
@@ -103,23 +130,19 @@ const ADMIN_CAPS = {
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function fmtSui(mist) { return `${(Number(BigInt(mist)) / 1e9).toFixed(4)} SUI`; }
 
-// turbos-clmm-sdk@3.6.4 peer-depends on @mysten/sui ^1.x, whose JSON-RPC client
-// is SuiClient itself (this dir pins v1; the v2 SuiJsonRpcClient import path
-// does not exist here). The endpoint MUST come from env: the Sui Foundation
-// public testnet JSON-RPC fullnode shut off the week of 2026-07-06, so a
-// getFullnodeUrl default would be a dead endpoint. SUIPUMP_JSONRPC_URL is a
-// third-party JSON-RPC endpoint; SUI_RPC_URL kept as the legacy alias.
-// Exported so read-only tooling (scripts/dryrun_graduation_load.js) can build
-// this module's own client flavor without duplicating the env handling.
+// The v2 SuiGraphQLClient - same env + default as suipump-nexus-tools/bridge.js
+// makeClient and indexer/auto_graduate.js. SUIPUMP_JSONRPC_URL / SUI_RPC_URL
+// (the retired JSON-RPC endpoint vars) are DEPRECATED and ignored: JSON-RPC is
+// forbidden repo-wide (hard shutdown 2026-07-31) and this module no longer
+// speaks it. Exported so read-only tooling (scripts/dryrun_graduation_load.js)
+// can build this module's own client flavor without duplicating the env
+// handling.
 export function defaultClient() {
-  const url = process.env.SUIPUMP_JSONRPC_URL || process.env.SUI_RPC_URL;
-  if (!url) {
-    throw new Error(
-      'SUIPUMP_JSONRPC_URL (or SUI_RPC_URL) env var not set - the public testnet ' +
-      'JSON-RPC fullnode is dead; provide a third-party JSON-RPC endpoint for turbos-clmm-sdk'
-    );
+  if ((process.env.SUIPUMP_JSONRPC_URL || process.env.SUI_RPC_URL) && !process.env.SUI_GRAPHQL_URL) {
+    console.warn('  [turbos] SUIPUMP_JSONRPC_URL / SUI_RPC_URL are deprecated and IGNORED (JSON-RPC is retired) - set SUI_GRAPHQL_URL to override the GraphQL endpoint');
   }
-  return new SuiClient({ url });
+  const url = process.env.SUI_GRAPHQL_URL ?? 'https://graphql.' + NETWORK + '.sui.io/graphql';
+  return new SuiGraphQLClient({ url });
 }
 
 function defaultKeypair() {
@@ -140,12 +163,69 @@ function defaultKeypair() {
   return Ed25519Keypair.fromSecretKey(seed);
 }
 
+// v2 getObject shape: ({ objectId }) -> result.object.owner.Shared.initialSharedVersion
+// (never the JSON-RPC { id, options } shape).
 async function getSharedVersion(client, objectId) {
-  const obj = await client.getObject({ id: objectId, options: { showOwner: true } });
-  return obj.data?.owner?.Shared?.initial_shared_version;
+  const obj = await client.getObject({ objectId });
+  return obj?.object?.owner?.Shared?.initialSharedVersion;
 }
 
-// Extract the recorded pool_id (Option<ID>) from JSON-RPC content fields.
+// Read a Move object's struct fields as JSON (v2: include.json puts them on
+// result.object.json - the equivalent of the old showContent fields).
+async function getObjectJson(client, objectId) {
+  const obj = await client.getObject({ objectId, include: { json: true } });
+  return { type: obj?.object?.type ?? null, fields: obj?.object?.json ?? {} };
+}
+
+// -- Execution result readback (v2 discriminated union) ------------------------
+// executeTransaction returns the same shape bridge.js/price_publisher.js consume:
+//   { $kind: 'Transaction',       Transaction:       { digest, status, ... } }
+//   { $kind: 'FailedTransaction', FailedTransaction: { digest, status: { error } } }
+function txOk(result) {
+  return result?.$kind === 'Transaction' || result?.Transaction?.status?.success === true;
+}
+function txErrorOf(result) {
+  return result?.FailedTransaction?.status?.error
+      ?? result?.Transaction?.status?.error
+      ?? null;
+}
+function txDigestOf(result) {
+  return result?.Transaction?.digest
+      ?? result?.FailedTransaction?.digest
+      ?? null;
+}
+// status.error is a structured object ({ $kind, message, MoveAbort? }) on the v2
+// client; render it for logs/throws.
+function errText(err) {
+  if (err == null) return 'transaction failed';
+  if (typeof err === 'string') return err;
+  if (typeof err.message === 'string') return err.message;
+  return JSON.stringify(err, (_k, v) => typeof v === 'bigint' ? v.toString() : v);
+}
+
+// Build/sign/execute - the repo's proven SuiGraphQLClient shape (mirrors
+// indexer/price_publisher.js pushPrice): tx.build({ client }) -> keypair
+// signTransaction -> executeTransaction({ transaction: bytes, signatures: [sig] }).
+// NEVER signAndExecuteTransaction, never a JSON-RPC client.
+async function signExecute(client, keypair, tx, include) {
+  tx.setSender(keypair.toSuiAddress());
+  const bytes     = await tx.build({ client });
+  const signature = (await keypair.signTransaction(bytes)).signature;
+  return client.executeTransaction({ transaction: bytes, signatures: [signature], include });
+}
+
+// Created objects of an executed tx. Requires include { effects: true,
+// objectTypes: true }: effects.changedObjects carries idOperation 'Created',
+// objectTypes maps objectId -> full type string.
+function createdObjectsOf(result) {
+  const t = result?.Transaction ?? result?.FailedTransaction;
+  const types = t?.objectTypes ?? {};
+  return (t?.effects?.changedObjects ?? [])
+    .filter(c => c.idOperation === 'Created')
+    .map(c => ({ objectId: c.objectId, type: types[c.objectId] ?? null }));
+}
+
+// Extract the recorded pool_id (Option<ID>) from the curve's JSON fields.
 // None serializes variously (null / empty vec); Some as an id string. The zero
 // address counts as absent. Returns the id string or null.
 function extractPoolId(fields) {
@@ -158,55 +238,243 @@ function extractPoolId(fields) {
   return null;
 }
 
-// Read the V13 grad_funds_claimed<T>(&Curve<T>): bool getter via devInspect
-// (read-only dry run, same SuiClient transport). True once claim_graduation_funds
-// has run (backed by a dynamic-field marker on the curve).
-async function isGradFundsClaimed({ client, writePkg, curveId, tokenType, sender }) {
-  const sv = await getSharedVersion(client, curveId);
-  const tx = new Transaction();
-  tx.moveCall({
-    target: `${writePkg}::bonding_curve::grad_funds_claimed`,
-    typeArguments: [tokenType],
-    arguments: [tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: sv, mutable: false })],
-  });
-  const res = await client.devInspectTransactionBlock({ sender, transactionBlock: tx });
-  if (res?.effects?.status?.status !== 'success') {
-    throw new Error(`grad_funds_claimed devInspect failed: ${res?.effects?.status?.error ?? 'unknown'}`);
-  }
-  const rv = res?.results?.[0]?.returnValues?.[0];
-  const bytes = rv?.[0];
-  return Array.isArray(bytes) && bytes[0] === 1;
+// Mirror of the on-chain V13 getter grad_funds_claimed<T>(&Curve<T>): bool,
+// which is df::exists(&curve.id, b"grad_funds_claimed") in bonding_curve.move.
+// Instead of a devInspect (JSON-RPC-only surface), read the curve's dynamic
+// fields directly and look for that exact marker: name type vector<u8>, name
+// BCS = uleb length prefix + the key bytes. A plain read - retry-safe, and
+// definitive absence needs no error classification.
+const GRAD_CLAIMED_KEY = 'grad_funds_claimed';
+async function isGradFundsClaimed({ client, curveId }) {
+  const keyBytes = new TextEncoder().encode(GRAD_CLAIMED_KEY);
+  let cursor = null;
+  do {
+    const page = await client.listDynamicFields({ parentId: curveId, cursor });
+    for (const f of page?.dynamicFields ?? []) {
+      if (f?.name?.type !== 'vector<u8>') continue;
+      const bcs = f.name.bcs; // Uint8Array: [len, ...bytes] (len < 128 -> single ULEB byte)
+      if (!bcs || bcs.length !== keyBytes.length + 1 || bcs[0] !== keyBytes.length) continue;
+      let match = true;
+      for (let i = 0; i < keyBytes.length; i++) {
+        if (bcs[i + 1] !== keyBytes[i]) { match = false; break; }
+      }
+      if (match) return true;
+    }
+    cursor = page?.hasNextPage ? page.cursor : null;
+  } while (cursor);
+  return false;
 }
+
+// GraphQL events connection - the exact query shape indexer/index.js uses for
+// its backfill (client.query + events(filter: { type })).
+const EVENTS_QUERY = `
+  query TurbosGradEvents($type: String!, $after: String, $first: Int!) {
+    events(filter: { type: $type } first: $first after: $after) {
+      pageInfo { hasNextPage endCursor }
+      nodes { contents { json } }
+    }
+  }
+`;
 
 // Recover the claimed pool SUI size from the GraduationFundsClaimed event
 // { curve_id, sui_amount, lp_amount }. Used to re-size the pool when a prior run
 // claimed but failed before creating the pool. eventPkg is the curve's DEFINING
 // package (V13 for the V13 lineage): events keep their defining ids forever, even
 // when emitted by upgraded V14 bytecode (claim_graduation_funds_with_cap), so the
-// event TYPE must NOT track the write package.
+// event TYPE must NOT track the write package. Pagination is ascending (GraphQL
+// connection order); the event is emitted at most once per curve, so scan order
+// does not matter.
 async function fetchClaimedSuiAmount({ client, eventPkg, curveId }) {
   const eventType = `${eventPkg}::bonding_curve::GraduationFundsClaimed`;
+  const want = String(curveId).toLowerCase();
   let cursor = null;
   for (let page = 0; page < 40; page++) {
-    const res = await client.queryEvents({
-      query: { MoveEventType: eventType }, cursor, limit: 50, order: 'descending',
+    const result = await client.query({
+      query: EVENTS_QUERY,
+      variables: { type: eventType, after: cursor, first: 50 },
     });
-    for (const ev of res?.data ?? []) {
-      const pj = ev.parsedJson ?? {};
-      if (pj.curve_id === curveId) return BigInt(pj.sui_amount ?? 0);
+    if (result.errors?.length) throw new Error(result.errors.map(e => e.message).join('; '));
+    for (const node of result.data?.events?.nodes ?? []) {
+      const pj = node?.contents?.json ?? {};
+      if (String(pj.curve_id ?? '').toLowerCase() === want) return BigInt(pj.sui_amount ?? 0);
     }
-    if (!res?.hasNextPage) break;
-    cursor = res.nextCursor;
+    const pi = result.data?.events?.pageInfo;
+    if (!pi?.hasNextPage || !pi?.endCursor) break;
+    cursor = pi.endCursor;
   }
   return null;
 }
 
-// Detect the F-2 backstop abort EReserveTooLow (code 52) from a Move status/error
-// string - claim_graduation_funds aborts 52 when the graduated reserve is below
-// the 1000 SUI floor (likely oracle-manipulated / griefed graduation).
-function isReserveTooLow(msg) {
-  const s = String(msg ?? '');
-  return s.includes('EReserveTooLow') || /,\s*52\)/.test(s) || /MoveAbort\([^)]*\b52\b/.test(s);
+// Detect the F-2 backstop abort EReserveTooLow (code 52) - claim_graduation_funds
+// aborts 52 when the graduated reserve is below the 1000 SUI floor (likely
+// oracle-manipulated / griefed graduation). Accepts either a thrown Error /
+// string or the v2 structured status.error ({ $kind: 'MoveAbort', message,
+// MoveAbort: { abortCode } }).
+function isReserveTooLow(err) {
+  if (err == null) return false;
+  const code = err?.MoveAbort?.abortCode ?? err?.abortCode;
+  if (code != null && Number(code) === 52) return true;
+  const s = errText(err);
+  return s.includes('EReserveTooLow')
+    || /abort code:\s*52\b/.test(s)
+    || /,\s*52\)/.test(s)
+    || /MoveAbort\([^)]*\b52\b/.test(s);
+}
+
+// -- Turbos deployment config --------------------------------------------------
+
+// Fetch the Turbos deployment ids for this network - the SAME runtime JSON the
+// retired SDK read. Returns { contract: { PackageId, PoolConfig, Positions,
+// Versioned, ... }, fee: { '10000bps': '0x...', ... } }.
+async function fetchTurbosConfig() {
+  const res = await fetch(TURBOS_CONTRACT_JSON_URL + '?t=' + Date.now(), {
+    method: 'GET', signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) throw new Error(`Turbos contract.json HTTP ${res.status}`);
+  const json = await res.json();
+  const net = json?.[NETWORK];
+  if (!net?.contract?.PackageId) throw new Error(`Turbos contract.json has no ${NETWORK} deployment`);
+  return net;
+}
+
+// Resolve the fee-tier objects on-chain: each is a shared
+// {PackageIdOriginal}::fee::Fee<FEE_TYPE> whose json fields are { fee,
+// tick_spacing } and whose FEE_TYPE type parameter is the third type argument
+// of every pool call (sdk.contract.getFees parity).
+async function fetchTurbosFees(client, feeIdMap) {
+  const fees = [];
+  for (const objectId of Object.values(feeIdMap ?? {})) {
+    try {
+      const obj = await client.getObject({ objectId, include: { json: true } });
+      const typeStr = obj?.object?.type ?? '';
+      const inner = typeStr.includes('<') ? typeStr.split('<')[1].slice(0, -1) : null;
+      const j = obj?.object?.json ?? {};
+      if (!inner || j.fee == null) continue;
+      fees.push({ objectId, type: inner, fee: Number(j.fee), tickSpacing: Number(j.tick_spacing) });
+    } catch (err) {
+      console.warn(`  [turbos] ! fee object ${objectId} unreadable: ${err.message}`);
+    }
+  }
+  if (!fees.length) throw new Error('No Turbos fee tiers resolvable on-chain');
+  return fees;
+}
+
+// -- SDK math parity -----------------------------------------------------------
+
+// sqrtPriceX64 = floor(sqrt(price * 10^(decimalsB - decimalsA)) * 2^64) -
+// a verbatim port of turbos-clmm-sdk math.priceToSqrtPriceX64 (same Decimal
+// library, same default precision). Returns a decimal string for tx.pure.u128.
+function priceToSqrtPriceX64(price, decimalsA, decimalsB) {
+  return new Decimal(price)
+    .mul(Decimal.pow(10, decimalsB - decimalsA))
+    .sqrt()
+    .mul(Decimal.pow(2, 64))
+    .floor()
+    .toFixed(0);
+}
+
+// amount * (1 - slippagePct/100), floored - a verbatim port of the SDK's
+// getMinimumAmountBySlippage (slippage is in PERCENT). Takes a BigInt.
+function minAmountBySlippage(amount, slippagePct) {
+  const ratio = new Decimal(1).minus(new Decimal(slippagePct).div(100));
+  if (ratio.lte(0) || ratio.gt(1)) throw new Error('invalid slippage range');
+  return new Decimal(amount.toString()).mul(ratio).toFixed(0);
+}
+
+// -- Coin sourcing (SDK selectTradeCoins/convertTradeCoins parity) --------------
+
+// All Coin<coinType> objects owned by `owner` (paginated). Returns
+// [{ objectId, balance: BigInt }].
+async function listAllCoins(client, owner, coinType) {
+  const out = [];
+  let cursor = null;
+  do {
+    const page = await client.listCoins({ owner, coinType, cursor });
+    for (const c of page?.objects ?? []) {
+      out.push({ objectId: c.objectId, balance: BigInt(c.balance ?? 0) });
+    }
+    cursor = page?.hasNextPage ? page.cursor : null;
+  } while (cursor);
+  return out;
+}
+
+// vector<Coin<T>> holding EXACTLY `amount`, SDK convertTradeCoins parity:
+//   SUI   -> split from gas (the SDK did txb.splitCoins(txb.gas, [amount]))
+//   other -> merge every owned coin into the first, split the exact amount
+function exactCoinVec(tx, coinType, coinIds, amount) {
+  if (coinType === SUI_TYPE) {
+    const [exact] = tx.splitCoins(tx.gas, [tx.pure.u64(amount)]);
+    return tx.makeMoveVec({ elements: [exact] });
+  }
+  const [first, ...rest] = coinIds;
+  const primary = tx.object(first);
+  if (rest.length) tx.mergeCoins(primary, rest.map(id => tx.object(id)));
+  const [exact] = tx.splitCoins(primary, [tx.pure.u64(amount)]);
+  return tx.makeMoveVec({ elements: [exact] });
+}
+
+// -- Turbos PTB builders (hand-rolled, SDK call-shape parity) -------------------
+
+// pool_factory::deploy_pool_and_mint<CoinA, CoinB, FeeType> - argument order
+// verified against turbos-clmm-sdk 3.6.4 pool.createPool (and unchanged in 4.0.0):
+// pool_config, fee_object, sqrt_price: u128, positions, vector<Coin<A>>,
+// vector<Coin<B>>, |tick_lower|: u32, tick_lower_is_neg: bool, |tick_upper|: u32,
+// tick_upper_is_neg: bool, amount_a: u64, amount_b: u64, amount_a_min: u64,
+// amount_b_min: u64, recipient: address, deadline: u64, clock, versioned.
+function buildDeployPoolAndMint({ tx, turbos, fee, coinTypeA, coinTypeB, coinVecA, coinVecB, tickLower, tickUpper, sqrtPrice, amountA, amountB, recipient }) {
+  tx.moveCall({
+    target: `${turbos.contract.PackageId}::pool_factory::deploy_pool_and_mint`,
+    typeArguments: [coinTypeA, coinTypeB, fee.type],
+    arguments: [
+      tx.object(turbos.contract.PoolConfig),
+      tx.object(fee.objectId),
+      tx.pure.u128(sqrtPrice),
+      tx.object(turbos.contract.Positions),
+      coinVecA,
+      coinVecB,
+      tx.pure.u32(Math.abs(tickLower)),
+      tx.pure.bool(tickLower < 0),
+      tx.pure.u32(Math.abs(tickUpper)),
+      tx.pure.bool(tickUpper < 0),
+      tx.pure.u64(amountA),
+      tx.pure.u64(amountB),
+      tx.pure.u64(minAmountBySlippage(amountA, SLIPPAGE_PCT)),
+      tx.pure.u64(minAmountBySlippage(amountB, SLIPPAGE_PCT)),
+      tx.pure.address(recipient),
+      tx.pure.u64(Date.now() + DEADLINE_MS),
+      tx.sharedObjectRef({ objectId: SUI_CLOCK_ID, initialSharedVersion: 1, mutable: false }),
+      tx.object(turbos.contract.Versioned),
+    ],
+  });
+}
+
+// position_manager::mint<CoinA, CoinB, FeeType> - argument order verified
+// against turbos-clmm-sdk 3.6.4 pool.addLiquidity: pool, positions,
+// vector<Coin<A>>, vector<Coin<B>>, ticks (same 4-arg encoding), amounts,
+// mins, recipient, deadline, clock, versioned.
+function buildAddLiquidity({ tx, turbos, fee, poolId, poolSharedVersion, coinTypeA, coinTypeB, coinVecA, coinVecB, tickLower, tickUpper, amountA, amountB, recipient }) {
+  tx.moveCall({
+    target: `${turbos.contract.PackageId}::position_manager::mint`,
+    typeArguments: [coinTypeA, coinTypeB, fee.type],
+    arguments: [
+      tx.sharedObjectRef({ objectId: poolId, initialSharedVersion: poolSharedVersion, mutable: true }),
+      tx.object(turbos.contract.Positions),
+      coinVecA,
+      coinVecB,
+      tx.pure.u32(Math.abs(tickLower)),
+      tx.pure.bool(tickLower < 0),
+      tx.pure.u32(Math.abs(tickUpper)),
+      tx.pure.bool(tickUpper < 0),
+      tx.pure.u64(amountA),
+      tx.pure.u64(amountB),
+      tx.pure.u64(minAmountBySlippage(amountA, SLIPPAGE_PCT)),
+      tx.pure.u64(minAmountBySlippage(amountB, SLIPPAGE_PCT)),
+      tx.pure.address(recipient),
+      tx.pure.u64(Date.now() + DEADLINE_MS),
+      tx.sharedObjectRef({ objectId: SUI_CLOCK_ID, initialSharedVersion: 1, mutable: false }),
+      tx.object(turbos.contract.Versioned),
+    ],
+  });
 }
 
 // -- Core exported function ----------------------------------------------------
@@ -216,9 +484,9 @@ function isReserveTooLow(msg) {
  * Called by auto_graduate.js - never calls process.exit.
  *
  * Takes plain strings ONLY. The module builds its own client + keypair from
- * env (SUIPUMP_JSONRPC_URL / SUI_RPC_URL, GRADUATION_SIGNER_KEY): this dir's
- * pinned @mysten/sui ^1.45.2 classes are not interchangeable with the caller's
- * SDK install, so injected client/keypair objects are refused by design.
+ * env (SUI_GRAPHQL_URL, GRADUATION_SIGNER_KEY): this dir pins its own
+ * @mysten/sui install, so injected client/keypair objects are refused by
+ * design (classes across node_modules boundaries fail internal checks).
  *
  * @param {object} opts
  * @param {string}   opts.curveId   - Shared curve object ID
@@ -244,8 +512,6 @@ export async function graduateToTurbos({ curveId, tokenType, pkgId }) {
   // upgrade of its lineage that contains claim_graduation_funds.
   const writePkg = writePackageFor(pkgId);
 
-  const sdk = new TurbosSdk(Network.testnet, client);
-
   console.log(`  [turbos] Graduating ${curveId} -> Turbos CLMM`);
   console.log(`  [turbos] token: ${tokenType}`);
   console.log(`  [turbos] pkg:   ${pkgId} (write ${writePkg})`);
@@ -255,14 +521,13 @@ export async function graduateToTurbos({ curveId, tokenType, pkgId }) {
     : `  [turbos] auth:  AdminCap ${adminCapId} (pre-V14 path; set SUIPUMP_V14_PACKAGE+SUIPUMP_GRADUATION_CAP+SUIPUMP_GRADUATION_REGISTRY to use the GraduationCap)`);
 
   // -- Step 1: graduate() if needed -------------------------------------------
-  const curveObj = await client.getObject({ id: curveId, options: { showContent: true } });
-  let fields   = curveObj.data?.content?.fields ?? {};
+  let { fields } = await getObjectJson(client, curveId);
 
   if (!fields.graduated) {
     console.log(`  [turbos] [1/5] Calling graduate()...`);
 
     const metadataId = await (async () => {
-      try { const m = await client.getCoinMetadata({ coinType: tokenType }); return m?.id ?? null; }
+      try { const m = await client.getCoinMetadata({ coinType: tokenType }); return m?.coinMetadata?.id ?? null; }
       catch { return null; }
     })();
 
@@ -271,8 +536,7 @@ export async function graduateToTurbos({ curveId, tokenType, pkgId }) {
     const ref = tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: sv, mutable: true });
 
     if (metadataId) {
-      const metaObj = await client.getObject({ id: metadataId, options: { showOwner: true } });
-      const metaSv  = metaObj.data?.owner?.Shared?.initial_shared_version;
+      const metaSv  = await getSharedVersion(client, metadataId);
       const metaRef = metaSv
         ? tx.sharedObjectRef({ objectId: metadataId, initialSharedVersion: metaSv, mutable: true })
         : tx.object(metadataId);
@@ -289,14 +553,11 @@ export async function graduateToTurbos({ curveId, tokenType, pkgId }) {
       });
     }
 
-    const r = await client.signAndExecuteTransaction({
-      signer: keypair, transaction: tx, options: { showEffects: true },
-    });
-    if (r.effects.status.status !== 'success') throw new Error(`graduate() failed: ${r.effects.status.error}`);
-    console.log(`  [turbos] + graduate: ${r.digest}`);
+    const r = await signExecute(client, keypair, tx, { effects: true });
+    if (!txOk(r)) throw new Error(`graduate() failed: ${errText(txErrorOf(r))}`);
+    console.log(`  [turbos] + graduate: ${txDigestOf(r)}`);
     await sleep(3000);
-    const after = await client.getObject({ id: curveId, options: { showContent: true } });
-    fields = after.data?.content?.fields ?? {};
+    ({ fields } = await getObjectJson(client, curveId));
   } else {
     console.log(`  [turbos] [1/5] Already graduated - skipping`);
   }
@@ -321,7 +582,7 @@ export async function graduateToTurbos({ curveId, tokenType, pkgId }) {
     return { poolId: existingPool, txDigest: null };
   }
 
-  const claimed = await isGradFundsClaimed({ client, writePkg, curveId, tokenType, sender: address });
+  const claimed = await isGradFundsClaimed({ client, curveId });
   let poolSuiMist;
 
   if (!claimed) {
@@ -349,24 +610,23 @@ export async function graduateToTurbos({ curveId, tokenType, pkgId }) {
     tx2.transferObjects([poolSuiCoin, lpCoin], address);
     let r2;
     try {
-      r2 = await client.signAndExecuteTransaction({
-        signer: keypair, transaction: tx2, options: { showEffects: true },
-      });
+      r2 = await signExecute(client, keypair, tx2, { effects: true });
     } catch (err) {
-      if (isReserveTooLow(err?.message)) {
+      if (isReserveTooLow(err)) {
         console.warn(`  [turbos] ! ${curveId} graduated below the F-2 min-reserve floor (likely oracle-manipulated / griefed) - skipping, needs manual review`);
         return { poolId: null, txDigest: null, skipped: true, reason: 'reserve-too-low' };
       }
       throw err;
     }
-    if (r2.effects.status.status !== 'success') {
-      if (isReserveTooLow(r2.effects.status.error)) {
+    if (!txOk(r2)) {
+      const e2 = txErrorOf(r2);
+      if (isReserveTooLow(e2)) {
         console.warn(`  [turbos] ! ${curveId} graduated below the F-2 min-reserve floor (likely oracle-manipulated / griefed) - skipping, needs manual review`);
         return { poolId: null, txDigest: null, skipped: true, reason: 'reserve-too-low' };
       }
-      throw new Error(`claim_graduation_funds() failed: ${r2.effects.status.error}`);
+      throw new Error(`claim_graduation_funds() failed: ${errText(e2)}`);
     }
-    console.log(`  [turbos] + claimed (SUI + LP): ${r2.digest}`);
+    console.log(`  [turbos] + claimed (SUI + LP): ${txDigestOf(r2)}`);
     await sleep(3000);
   } else {
     // State C: claimed in a prior run but pool creation failed. The SUI + 200M LP
@@ -382,10 +642,16 @@ export async function graduateToTurbos({ curveId, tokenType, pkgId }) {
 
   // -- Step 3: Compute 50/50 split --------------------------------------------
   // LP now arrives in the admin wallet from claim_graduation_funds() above
-  // (graduate() no longer mints the 200M LP allocation).
-  const lpCoins = await client.getCoins({ owner: address, coinType: tokenType });
-  if (!lpCoins.data.length) throw new Error('No LP tokens in admin wallet');
-  const totalLp = lpCoins.data.reduce((s, c) => s + BigInt(c.balance), 0n);
+  // (graduate() no longer mints the 200M LP allocation). GraphQL object
+  // indexing can lag the claim by a beat - retry the read before giving up.
+  let lpCoins = [];
+  for (let i = 0; i < 10; i++) {
+    lpCoins = await listAllCoins(client, address, tokenType);
+    if (lpCoins.length) break;
+    await sleep(3000);
+  }
+  if (!lpCoins.length) throw new Error('No LP tokens in admin wallet');
+  const totalLp = lpCoins.reduce((s, c) => s + c.balance, 0n);
   const halfLp  = totalLp / 2n;
   const halfSui = poolSuiMist / 2n;
 
@@ -393,17 +659,15 @@ export async function graduateToTurbos({ curveId, tokenType, pkgId }) {
 
   // -- Step 4: Turbos fee tier + sqrtPrice ------------------------------------
   console.log(`  [turbos] [4/5] Fetching Turbos config...`);
-  const fees = await sdk.contract.getFees();
-  const fee  = fees.find(f => f.fee === 10000) ?? fees[fees.length - 1];
-  console.log(`  [turbos] Fee tier: ${fee.fee / 100}% (tickSpacing: ${fee.tickSpacing})`);
+  const turbos = await fetchTurbosConfig();
+  const fees   = await fetchTurbosFees(client, turbos.fee);
+  const fee    = fees.find(f => f.fee === 10000) ?? fees[fees.length - 1];
+  // Turbos fee units are hundredths of a bip: 10000 = 1%.
+  console.log(`  [turbos] Fee tier: ${fee.fee / 10000}% (tickSpacing: ${fee.tickSpacing})`);
 
   // price = SUI per TOKEN (adjusted for decimals)
-  const suiPerToken = (Number(halfSui) / 1e9) / (Number(halfLp) / 1e6);
-  const sqrtPriceX64 = sdk.math.priceToSqrtPriceX64(
-    new Decimal(suiPerToken),
-    TOKEN_DECIMALS,
-    SUI_DECIMALS,
-  );
+  const suiPerToken  = (Number(halfSui) / 1e9) / (Number(halfLp) / 1e6);
+  const sqrtPriceX64 = priceToSqrtPriceX64(suiPerToken, TOKEN_DECIMALS, SUI_DECIMALS);
 
   const tickSpacing = fee.tickSpacing;
   const tickLower   = Math.ceil(MIN_TICK / tickSpacing) * tickSpacing;
@@ -411,51 +675,42 @@ export async function graduateToTurbos({ curveId, tokenType, pkgId }) {
 
   // -- Step 5: Create Turbos pool + add creator half --------------------------
   console.log(`  [turbos] [5/5] Creating Turbos pool + adding creator liquidity...`);
-  const poolTxb = await sdk.pool.createPool({
-    fee,
-    address,
-    tickLower,
-    tickUpper,
-    sqrtPrice:  sqrtPriceX64,
-    slippage:   0.05,
-    coinTypeA:  tokenType,
-    coinTypeB:  SUI_TYPE,
-    amountA:    halfLp.toString(),
-    amountB:    halfSui.toString(),
+  const poolTx = new Transaction();
+  buildDeployPoolAndMint({
+    tx: poolTx, turbos, fee,
+    coinTypeA: tokenType,
+    coinTypeB: SUI_TYPE,
+    coinVecA:  exactCoinVec(poolTx, tokenType, lpCoins.map(c => c.objectId), halfLp),
+    coinVecB:  exactCoinVec(poolTx, SUI_TYPE, [], halfSui),
+    tickLower, tickUpper,
+    sqrtPrice: sqrtPriceX64,
+    amountA:   halfLp,
+    amountB:   halfSui,
+    recipient: address,
   });
 
-  const poolResult = await client.signAndExecuteTransaction({
-    signer: keypair, transaction: poolTxb,
-    options: { showEffects: true, showObjectChanges: true },
-  });
-  if (poolResult.effects.status.status !== 'success') {
-    throw new Error(`Turbos pool creation failed: ${poolResult.effects.status.error}`);
+  const poolResult = await signExecute(client, keypair, poolTx, { effects: true, objectTypes: true });
+  if (!txOk(poolResult)) {
+    throw new Error(`Turbos pool creation failed: ${errText(txErrorOf(poolResult))}`);
   }
-  console.log(`  [turbos] + Pool created: ${poolResult.digest}`);
+  console.log(`  [turbos] + Pool created: ${txDigestOf(poolResult)}`);
   await sleep(3000);
 
   // Find pool ID
-  const poolObj = poolResult.objectChanges?.find(c =>
-    c.type === 'created' && c.objectType?.includes('::pool::Pool<')
-  );
-  const poolId = poolObj?.objectId;
-  if (!poolId) throw new Error('Could not find pool ID in object changes');
+  const created = createdObjectsOf(poolResult);
+  const poolId  = created.find(c => c.type?.includes('::pool::Pool<'))?.objectId;
+  if (!poolId) throw new Error('Could not find pool ID in created objects');
 
   // Find creator LP NFT - transfer to curve creator
-  const creatorNft = poolResult.objectChanges?.find(c =>
-    c.type === 'created' && c.objectType?.includes('::position::Position')
-  );
-  const creatorNftId = creatorNft?.objectId;
+  const creatorNftId = created.find(c => c.type?.includes('::position::Position'))?.objectId;
   if (creatorNftId && creator !== address) {
     const txTransfer = new Transaction();
     txTransfer.transferObjects([txTransfer.object(creatorNftId)], creator);
-    const rTransfer = await client.signAndExecuteTransaction({
-      signer: keypair, transaction: txTransfer, options: { showEffects: true },
-    });
-    if (rTransfer.effects.status.status === 'success') {
-      console.log(`  [turbos] + LP NFT transferred to creator: ${rTransfer.digest}`);
+    const rTransfer = await signExecute(client, keypair, txTransfer, { effects: true });
+    if (txOk(rTransfer)) {
+      console.log(`  [turbos] + LP NFT transferred to creator: ${txDigestOf(rTransfer)}`);
     } else {
-      console.warn(`  [turbos] ! LP NFT transfer failed: ${rTransfer.effects.status.error}`);
+      console.warn(`  [turbos] ! LP NFT transfer failed: ${errText(txErrorOf(rTransfer))}`);
     }
     await sleep(2000);
   }
@@ -467,41 +722,39 @@ export async function graduateToTurbos({ curveId, tokenType, pkgId }) {
     let poolSv = null;
     for (let i = 0; i < 5; i++) {
       try {
-        const po = await client.getObject({ id: poolId, options: { showOwner: true } });
-        poolSv = po.data?.owner?.Shared?.initial_shared_version;
+        poolSv = await getSharedVersion(client, poolId);
         if (poolSv) break;
       } catch {}
       await sleep(3000);
     }
 
     if (poolSv) {
-      const suiCoins2 = await client.getCoins({ owner: address, coinType: SUI_TYPE });
-      const suiCoin2  = suiCoins2.data
-        .filter(c => BigInt(c.balance) >= halfSui + 500_000_000n)
-        .sort((a, b) => Number(BigInt(a.balance) - BigInt(b.balance)))[0];
+      const suiCoins2 = await listAllCoins(client, address, SUI_TYPE);
+      const totalSui2 = suiCoins2.reduce((s, c) => s + c.balance, 0n);
+      const lpCoins2  = await listAllCoins(client, address, tokenType);
+      const totalLp2  = lpCoins2.reduce((s, c) => s + c.balance, 0n);
 
-      const lpCoins2 = await client.getCoins({ owner: address, coinType: tokenType });
-      const totalLp2 = lpCoins2.data.reduce((s, c) => s + BigInt(c.balance), 0n);
-
-      if (suiCoin2 && totalLp2 >= halfLp) {
-        const addTxb = await sdk.pool.addLiquidity({
-          pool:     { objectId: poolId, initialSharedVersion: poolSv },
-          address,
-          tickLower,
-          tickUpper,
-          slippage: 0.05,
+      // The SUI half is split from gas, so the check is on the TOTAL balance
+      // (build merges owned SUI coins into the gas coin): half + 0.5 SUI headroom.
+      if (totalSui2 >= halfSui + 500_000_000n && totalLp2 >= halfLp) {
+        const addTx = new Transaction();
+        buildAddLiquidity({
+          tx: addTx, turbos, fee,
+          poolId, poolSharedVersion: poolSv,
           coinTypeA: tokenType,
           coinTypeB: SUI_TYPE,
-          amountA:   halfLp.toString(),
-          amountB:   halfSui.toString(),
+          coinVecA:  exactCoinVec(addTx, tokenType, lpCoins2.map(c => c.objectId), halfLp),
+          coinVecB:  exactCoinVec(addTx, SUI_TYPE, [], halfSui),
+          tickLower, tickUpper,
+          amountA:   halfLp,
+          amountB:   halfSui,
+          recipient: address,
         });
-        const rAdd = await client.signAndExecuteTransaction({
-          signer: keypair, transaction: addTxb, options: { showEffects: true },
-        });
-        if (rAdd.effects.status.status === 'success') {
-          console.log(`  [turbos] + Protocol liquidity added: ${rAdd.digest}`);
+        const rAdd = await signExecute(client, keypair, addTx, { effects: true });
+        if (txOk(rAdd)) {
+          console.log(`  [turbos] + Protocol liquidity added: ${txDigestOf(rAdd)}`);
         } else {
-          console.warn(`  [turbos] ! Protocol liquidity failed: ${rAdd.effects.status.error}`);
+          console.warn(`  [turbos] ! Protocol liquidity failed: ${errText(txErrorOf(rAdd))}`);
         }
       } else {
         console.warn(`  [turbos] ! Insufficient balance for protocol half - skipped`);
@@ -536,17 +789,15 @@ export async function graduateToTurbos({ curveId, tokenType, pkgId }) {
           tx5.pure.id(creatorNftId ?? poolId),
         ],
   });
-  const r5 = await client.signAndExecuteTransaction({
-    signer: keypair, transaction: tx5, options: { showEffects: true },
-  });
-  if (r5.effects.status.status !== 'success') {
-    console.warn(`  [turbos] ! record_graduation_pool failed: ${r5.effects.status.error}`);
+  const r5 = await signExecute(client, keypair, tx5, { effects: true });
+  if (!txOk(r5)) {
+    console.warn(`  [turbos] ! record_graduation_pool failed: ${errText(txErrorOf(r5))}`);
   } else {
-    console.log(`  [turbos] + recorded: ${r5.digest}`);
+    console.log(`  [turbos] + recorded: ${txDigestOf(r5)}`);
   }
 
   console.log(`  [turbos] OK Done - Pool: ${poolId}`);
-  return { poolId, txDigest: poolResult.digest };
+  return { poolId, txDigest: txDigestOf(poolResult) };
 }
 
 // -- Standalone CLI entry point ------------------------------------------------
@@ -589,9 +840,8 @@ if (process.argv[1] && process.argv[1].endsWith('graduate_turbos_full.js')) {
     process.exit(1);
   }
 
-  const obj     = await client.getObject({ id: curveId, options: { showContent: true, showType: true } });
-  const fields  = obj.data?.content?.fields ?? {};
-  const tokenType = obj.data?.type?.match(/Curve<(.+)>$/)?.[1];
+  const { type, fields } = await getObjectJson(client, curveId);
+  const tokenType = type?.match(/Curve<(.+)>$/)?.[1];
   if (!tokenType) { console.error('X Could not parse token type'); process.exit(1); }
   const pkgId = tokenType.split('::')[0];
 
@@ -606,6 +856,10 @@ if (process.argv[1] && process.argv[1].endsWith('graduate_turbos_full.js')) {
 
   try {
     const result = await graduateToTurbos({ curveId, tokenType, pkgId });
+    if (!result) {
+      console.error('X Curve not ready (not graduated) - nothing claimed');
+      process.exit(1);
+    }
     console.log();
     console.log(`  txDigest: ${result.txDigest}`);
     console.log(`  poolId:   ${result.poolId}`);
