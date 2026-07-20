@@ -1,4 +1,4 @@
-// db.js — PostgreSQL connection, schema, and query helpers
+// db.js -- PostgreSQL connection, schema, and query helpers
 
 import pg from 'pg';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
@@ -10,15 +10,15 @@ export const pool = new Pool({
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
 });
 
-// ── Internal GraphQL client for metadata fetches ──────────────────────────────
+// -- Internal GraphQL client for metadata fetches ------------------------------
 // enrichCurveMetadata / refreshCurveMetadata need getObject + getCoinMetadata.
-// SuiGrpcClient does NOT support these — throws INVALID_ARGUMENT.
+// SuiGrpcClient does NOT support these -- throws INVALID_ARGUMENT.
 // SuiGraphQLClient v2 supports both methods natively.
 const NETWORK     = process.env.NETWORK         ?? 'testnet';
 const GRAPHQL_URL = process.env.SUI_GRAPHQL_URL ?? `https://graphql.${NETWORK}.sui.io/graphql`;
-const rpcClient   = new SuiGraphQLClient({ url: GRAPHQL_URL });
+const gqlClient   = new SuiGraphQLClient({ url: GRAPHQL_URL });
 
-// ── Schema ────────────────────────────────────────────────────────────────────
+// -- Schema --------------------------------------------------------------------
 
 export async function initSchema() {
   await pool.query(`
@@ -114,11 +114,22 @@ export async function initSchema() {
     );
 
     CREATE INDEX IF NOT EXISTS idx_token_holders_curve_id ON token_holders (curve_id);
+
+    -- Who first funded a wallet (bundle detection, read/written by bundles.js).
+    -- Funding is a property of the WALLET, not of any curve, so this table is
+    -- GLOBAL by design: one row per address, reused across all tokens.
+    -- funder NULL = resolved, but no external funder found in the earliest txs.
+    CREATE TABLE IF NOT EXISTS wallet_funders (
+      address       TEXT PRIMARY KEY,
+      funder        TEXT,
+      first_seen_ms BIGINT,
+      resolved_at   BIGINT NOT NULL
+    );
   `);
-  console.log('✓ Schema initialized');
+  console.log('OK Schema initialized');
 }
 
-// ── Cursor helpers ────────────────────────────────────────────────────────────
+// -- Cursor helpers ------------------------------------------------------------
 
 export async function getCursor(eventType) {
   const res = await pool.query(
@@ -137,7 +148,7 @@ export async function saveCursor(eventType, cursor) {
   );
 }
 
-// ── Event insert ──────────────────────────────────────────────────────────────
+// -- Event insert --------------------------------------------------------------
 
 export async function insertEvent(eventType, evt) {
   const curveId = evt.parsedJson?.curve_id ?? null;
@@ -160,7 +171,7 @@ export async function insertEvent(eventType, evt) {
   }
 }
 
-// ── Curve insert ──────────────────────────────────────────────────────────────
+// -- Curve insert --------------------------------------------------------------
 
 export async function upsertCurve(evt, packageId) {
   const j = evt.parsedJson;
@@ -190,11 +201,11 @@ export async function upsertCurve(evt, packageId) {
   );
 
   // Fetch and store initial_shared_version if missing
-  // This is a one-time enrichment per curve — safe to do async
+  // This is a one-time enrichment per curve -- safe to do async
   backfillSharedVersion(j.curve_id).catch(() => {});
 }
 
-// ── Backfill initial_shared_version for a curve ───────────────────────────────
+// -- Backfill initial_shared_version for a curve -------------------------------
 // Called once per new CurveCreated event. Stores the shared object version
 // so the frontend can build sharedObjectRef without a direct RPC call.
 
@@ -207,7 +218,7 @@ async function backfillSharedVersion(curveId) {
     );
     if (existing.rows[0]?.initial_shared_version) return;
 
-    const obj = await rpcClient.getObject({ objectId: curveId });
+    const obj = await gqlClient.getObject({ objectId: curveId });
     const isv = obj?.object?.owner?.Shared?.initialSharedVersion;
     if (!isv) return;
 
@@ -216,11 +227,11 @@ async function backfillSharedVersion(curveId) {
       [curveId, Number(isv)]
     );
   } catch {
-    // Non-fatal — will retry on next event for this curve
+    // Non-fatal -- will retry on next event for this curve
   }
 }
 
-// ── Stats recompute ───────────────────────────────────────────────────────────
+// -- Stats recompute -----------------------------------------------------------
 
 export async function recomputeStats(curveId) {
   const now        = Date.now();
@@ -341,9 +352,9 @@ export async function recomputeStats(curveId) {
   );
 }
 
-// ── Holders recompute ─────────────────────────────────────────────────────────
+// -- Holders recompute ---------------------------------------------------------
 // Materializes net token balances from all buy/sell events into token_holders.
-// Called on every trade — O(trades for this curve), fast with index on curve_id.
+// Called on every trade -- O(trades for this curve), fast with index on curve_id.
 
 export async function recomputeHolders(curveId) {
   const TOK = 1_000_000;
@@ -381,18 +392,18 @@ export async function recomputeHolders(curveId) {
   );
 }
 
-// ── Enrich curve with icon_url + token_type (COALESCE — only fills nulls) ────
-// Uses internal SuiGraphQLClient — NOT the gRPC client passed in.
+// -- Enrich curve with icon_url + token_type (COALESCE -- only fills nulls) ----
+// Uses internal SuiGraphQLClient -- NOT the gRPC client passed in.
 // The _unusedClient parameter is kept for backwards-compat with callers.
 export async function enrichCurveMetadata(curveId, _unusedClient) {
   try {
-    const obj = await rpcClient.getObject({ objectId: curveId });
+    const obj = await gqlClient.getObject({ objectId: curveId });
     const typeStr   = obj?.object?.type ?? '';
     const match     = typeStr.match(/Curve<(.+)>$/);
     const tokenType = match ? match[1] : null;
     if (!tokenType) return;
 
-    const meta        = await rpcClient.getCoinMetadata({ coinType: tokenType });
+    const meta        = await gqlClient.getCoinMetadata({ coinType: tokenType });
     const iconUrl     = meta?.coinMetadata?.iconUrl     ?? null;
     const description = meta?.coinMetadata?.description ?? null;
 
@@ -411,21 +422,21 @@ export async function enrichCurveMetadata(curveId, _unusedClient) {
     // Backfill metadata object ID + ISV
     backfillMetadataObject(curveId).catch(() => {});
   } catch (err) {
-    console.error(`  enrich ${curveId.slice(0, 12)}… failed:`, err.message);
+    console.error(`  enrich ${curveId.slice(0, 12)}... failed:`, err.message);
   }
 }
 
-// ── Refresh curve metadata (OVERWRITE — called on MetadataUpdated event) ──────
-// Uses internal SuiGraphQLClient — NOT the gRPC client passed in.
+// -- Refresh curve metadata (OVERWRITE -- called on MetadataUpdated event) ------
+// Uses internal SuiGraphQLClient -- NOT the gRPC client passed in.
 export async function refreshCurveMetadata(curveId, _unusedClient) {
   try {
-    const obj = await rpcClient.getObject({ objectId: curveId });
+    const obj = await gqlClient.getObject({ objectId: curveId });
     const typeStr   = obj?.object?.type ?? '';
     const match     = typeStr.match(/Curve<(.+)>$/);
     const tokenType = match ? match[1] : null;
     if (!tokenType) return;
 
-    const meta        = await rpcClient.getCoinMetadata({ coinType: tokenType });
+    const meta        = await gqlClient.getCoinMetadata({ coinType: tokenType });
     const iconUrl     = meta?.coinMetadata?.iconUrl     ?? null;
     const description = meta?.coinMetadata?.description ?? null;
     const name        = meta?.coinMetadata?.name        ?? null;
@@ -442,26 +453,26 @@ export async function refreshCurveMetadata(curveId, _unusedClient) {
       [curveId, tokenType, iconUrl, description, name, symbol]
     );
   } catch (err) {
-    console.error(`  refresh ${curveId.slice(0, 12)}… failed:`, err.message);
+    console.error(`  refresh ${curveId.slice(0, 12)}... failed:`, err.message);
   }
 }
 
-// ── Startup sweep: fill icon_url for curves missing it ───────────────────────
+// -- Startup sweep: fill icon_url for curves missing it -----------------------
 
 export async function backfillMissingIcons(_unusedClient) {
   const res = await pool.query(
     `SELECT curve_id FROM curves WHERE icon_url IS NULL OR token_type IS NULL`
   );
   if (res.rows.length === 0) return;
-  console.log(`  Backfilling icons for ${res.rows.length} tokens…`);
+  console.log(`  Backfilling icons for ${res.rows.length} tokens...`);
   for (const row of res.rows) {
     await enrichCurveMetadata(row.curve_id);
     await new Promise(r => setTimeout(r, 300));
   }
-  console.log(`  ✓ Icon backfill complete`);
+  console.log(`  OK Icon backfill complete`);
 }
 
-// ── Vesting lock helpers ─────────────────────────────────────────────────────
+// -- Vesting lock helpers -----------------------------------------------------
 
 export async function upsertLock(evt) {
   const j = evt.parsedJson;
@@ -490,7 +501,7 @@ export async function updateLockClaimed(evt) {
 }
 
 
-// ── Fetch and store CoinMetadata object ID + ISV ─────────────────────────────
+// -- Fetch and store CoinMetadata object ID + ISV -----------------------------
 export async function backfillMetadataObject(curveId) {
   try {
     const row = await pool.query(
@@ -517,7 +528,7 @@ export async function backfillMetadataObject(curveId) {
       body: JSON.stringify({ query: q2 }), signal: AbortSignal.timeout(8000),
     });
     // ISV = the version at which the object was first shared = sequence number
-    // For shared objects, ISV is stored in the object's ownership — use
+    // For shared objects, ISV is stored in the object's ownership -- use
     // the tx effects from the curve's creation tx to find the metadata ISV.
     // Simplest: look it up from the events table (tx_digest of CurveCreated)
     const txRow = await pool.query(
@@ -546,14 +557,14 @@ export async function backfillMetadataObject(curveId) {
       'UPDATE curves SET metadata_object_id = $2, metadata_shared_version = $3 WHERE curve_id = $1',
       [curveId, objectId, isv]
     );
-    console.log(`  ✓ metadata ISV stored for ${curveId.slice(0,10)}: ${objectId.slice(0,10)} v${isv}`);
+    console.log(`  OK metadata ISV stored for ${curveId.slice(0,10)}: ${objectId.slice(0,10)} v${isv}`);
   } catch (err) {
     // non-fatal
   }
 }
 
 
-// ── Batch backfill metadata objects for all tokens missing ISV ───────────────
+// -- Batch backfill metadata objects for all tokens missing ISV ---------------
 export async function backfillAllMetadataObjects() {
   try {
     const rows = await pool.query(
@@ -565,7 +576,7 @@ export async function backfillAllMetadataObjects() {
       await backfillMetadataObject(row.curve_id);
       await new Promise(r => setTimeout(r, 200));
     }
-    console.log('  ✓ Metadata ISV backfill complete');
+    console.log('  OK Metadata ISV backfill complete');
   } catch {}
 }
 
@@ -593,7 +604,7 @@ export async function getLocksForCurve(curveId, beneficiary = null) {
   return res.rows;
 }
 
-// ── Query helpers ─────────────────────────────────────────────────────────────
+// -- Query helpers -------------------------------------------------------------
 
 export async function getAllTokenStats() {
   const res = await pool.query('SELECT * FROM token_stats');
