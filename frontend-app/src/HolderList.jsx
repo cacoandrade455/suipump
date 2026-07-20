@@ -1,9 +1,10 @@
-// HolderList.jsx — SSE triggers re-fetch on trade, no time-based polling
+// HolderList.jsx - SSE triggers re-fetch on trade, no time-based polling
 import React, { useState, useEffect, useRef } from 'react';
 import { useCurrentAccount } from '@mysten/dapp-kit-react';
-import { Users, BarChart2, Lock } from 'lucide-react';
+import { Users, BarChart2, Lock, Network } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { ALL_PACKAGE_IDS } from './constants.js';
+import BubbleMap from './BubbleMap.jsx';
 
 const INDEXER_URL  = import.meta.env.VITE_INDEXER_URL || '';
 const TOKEN_SCALE  = 1e6;
@@ -44,6 +45,7 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = n
   const [traders, setTraders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [locks,   setLocks]   = useState([]);
+  const [showMap, setShowMap] = useState(false);
   const esRef    = useRef(null);
   const timerRef = useRef(null);
   const loadingRef = useRef(false);
@@ -59,17 +61,21 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = n
       for (const e of sells) { const a = e.parsedJson?.seller; if (a) candidates.add(a); }
 
       let holderList = [];
-      // Load holder balances from indexer — avoids CORS on graphql endpoint
+      // Load holder balances from indexer - avoids CORS on graphql endpoint
       if (INDEXER_URL) {
         try {
           const res = await fetch(`${INDEXER_URL}/token/${curveId}/holders`, { signal: AbortSignal.timeout(5000) });
           if (res.ok) {
             const rows = await res.json();
-            // Endpoint returns `balance` as a float in WHOLE tokens (e.g. 276396.9).
+            // Endpoint returns `balance`/`locked` as floats in WHOLE tokens (e.g. 276396.9).
             // BigInt() throws on non-integer floats, so round to atomic units first.
             // Atomic units also match the TOTAL_SUPPLY scale used for the % bar below.
-            holderList = rows.map(r => ({ addr: r.address, raw: BigInt(Math.round(Number(r.balance ?? 0) * TOKEN_SCALE)) }))
-              .filter(b => b.raw > 0n);
+            // lockedRaw is carried for the BubbleMap locked-share inner circle.
+            holderList = rows.map(r => ({
+              addr: r.address,
+              raw: BigInt(Math.round(Number(r.balance ?? 0) * TOKEN_SCALE)),
+              lockedRaw: BigInt(Math.round(Number(r.locked ?? 0) * TOKEN_SCALE)),
+            })).filter(b => b.raw > 0n);
           }
         } catch {}
       }
@@ -148,6 +154,9 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = n
         </button>
         <button onClick={() => setTab('vesting')} className={`flex-1 py-3 text-[10px] font-mono font-bold tracking-[0.1em] transition-colors flex items-center justify-center gap-1.5 ${tab === 'vesting' ? 'text-lime-400 bg-lime-400/[0.06] border-b-2 border-lime-400' : 'text-white/40 hover:text-white/70'}`}>
           <Lock size={10} /> VESTING
+        </button>
+        <button onClick={() => setShowMap(true)} className="px-3 py-3 text-[10px] font-mono font-bold tracking-[0.1em] text-lime-400/70 hover:text-lime-400 hover:bg-lime-400/[0.06] transition-colors flex items-center justify-center gap-1.5 border-l border-white/[0.07]">
+          <Network size={10} /> BUBBLE MAP
         </button>
       </div>
 
@@ -257,6 +266,10 @@ export default function HolderList({ curveId, tokenType, suiUsd = 0, creator = n
             })}
           </div>
         )
+      )}
+
+      {showMap && (
+        <BubbleMap curveId={curveId} holders={holders} creator={creator} onClose={() => setShowMap(false)} />
       )}
     </div>
   );

@@ -1649,23 +1649,27 @@ const HANDLERS = {
       }
       if (!Array.isArray(candidates) || !candidates.length) return;
 
-      // Concentration veto: top NON-creator holder's LIQUID share of 1B total.
+      // Concentration veto: top NON-creator holder's LIQUID share of CIRCULATING
+      // supply (sum of all holder balances from this same response - NOT the 1B
+      // total, which understates concentration early in a curve's life, exactly
+      // when autopilot entries are riskiest).
       // GET /token/:curveId/holders -> [{ address, balance, locked, liquid, isCreator }].
-      // Mirrors AIAnalysis.jsx's concentration logic (liquid, non-creator, vs 1B).
-      const TOTAL_SUPPLY_WHOLE = 1_000_000_000;
+      // Mirrors AIAnalysis.jsx's concentration logic (liquid, non-creator, vs circulating).
       const concentrationOf = async (curveId) => {
         try {
           const r = await fetch(`${INDEXER_URL}/token/${curveId}/holders`, { signal: AbortSignal.timeout(8000) });
           if (!r.ok) return null;
           const holders = await r.json();
           if (!Array.isArray(holders) || !holders.length) return null;
-          let topLiquid = 0;
+          let topLiquid = 0, circulating = 0;
           for (const h of holders) {
+            circulating += Number(h.balance ?? 0);
             if (h.isCreator) continue;
             const liquid = Number(h.liquid ?? h.balance ?? 0);
             if (liquid > topLiquid) topLiquid = liquid;
           }
-          return { pct: (topLiquid / TOTAL_SUPPLY_WHOLE) * 100, holderCount: holders.length };
+          const pct = circulating > 0 ? (topLiquid / circulating) * 100 : 0;
+          return { pct, holderCount: holders.length };
         } catch { return null; }
       };
 

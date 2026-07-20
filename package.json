@@ -1,0 +1,8 @@
+{
+  "name": "suipump",
+  "private": true,
+  "devDependencies": {
+    "acorn": "^8.15.0",
+    "esbuild": "^0.25.0"
+  }
+}

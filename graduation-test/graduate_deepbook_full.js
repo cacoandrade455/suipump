@@ -4,14 +4,21 @@
 // DUAL-MODE:
 //   - Exported function: graduateToDeepBook({ curveId, tokenType, pkgId })
 //     Called by indexer/auto_graduate.js. Callers pass PLAIN STRINGS ONLY.
-//     THIS MODULE OWNS ITS CLIENT AND KEYPAIR: it is pinned to @mysten/sui
-//     2.16.2 (v2 SuiJsonRpcClient), whose classes are NOT interchangeable with
-//     a caller's SDK install - an injected v2 grpc/graphql client has different
-//     call shapes (getObject({objectId}) vs getObject({id, options}), no
-//     signAndExecuteTransaction({signer})), and keypair instances constructed
-//     across node_modules boundaries fail internal checks. Client comes from
-//     defaultClient() (env SUIPUMP_JSONRPC_URL / SUI_RPC_URL), keypair from
-//     defaultKeypair() (env GRADUATION_SIGNER_KEY).  No process.exit.
+//     THIS MODULE OWNS ITS CLIENT AND KEYPAIR: this dir carries its own
+//     node_modules tree, and client/keypair instances constructed across
+//     node_modules boundaries fail internal SDK checks - so injection never
+//     worked and is refused by design. Client comes from defaultClient()
+//     (env SUI_GRAPHQL_URL, default https://graphql.testnet.sui.io/graphql),
+//     keypair from defaultKeypair() (env GRADUATION_SIGNER_KEY). No process.exit.
+//
+//   JSON-RPC PURGE (2026-07): this module is GraphQL-ONLY (SuiGraphQLClient,
+//   v2 call shapes: getObject({ objectId }) reading result.object.*,
+//   signAndExecuteTransaction returning the { $kind, Transaction /
+//   FailedTransaction } union). The old JSON-RPC client and the
+//   @mysten/deepbook-v3 DeepBookClient (JSON-RPC-internal) are gone; the
+//   DeepBook calls were always plain moveCalls, now against the pinned
+//   DEEPBOOK_PACKAGE_ID constant below. SUIPUMP_JSONRPC_URL / SUI_RPC_URL are
+//   DEPRECATED and ignored (a warning is logged if set).
 //
 //   SIGNER SEPARATION (do not conflate): the graduation signer reads
 //   GRADUATION_SIGNER_KEY ONLY. In GraduationCap mode (SUIPUMP_V14_PACKAGE +
@@ -24,7 +31,7 @@
 //   PRICE RELAYER's key (a different wallet).
 //
 //   - Standalone CLI: node graduate_deepbook_full.js <CURVE_ID>
-//     Uses env GRADUATION_SIGNER_KEY + SUIPUMP_JSONRPC_URL (or SUI_RPC_URL), calls
+//     Uses env GRADUATION_SIGNER_KEY (+ optional SUI_GRAPHQL_URL), calls
 //     process.exit on failure.
 //
 // Steps:
@@ -33,18 +40,22 @@
 //   3. Build BalanceManager, deposit TOKEN + SUI, transfer to curve.creator
 
 import { Transaction } from '@mysten/sui/transactions';
-// This dir locks @mysten/sui 2.16.2: the v2 SDK moved the JSON-RPC client to
-// '@mysten/sui/jsonRpc' as SuiJsonRpcClient ('@mysten/sui/client' no longer
-// exports SuiClient/getFullnodeUrl - importing them rejects at module load,
-// which also killed auto_graduate's dynamic import of this file).
-import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
+import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
-import { DeepBookClient } from '@mysten/deepbook-v3';
 import { fromBase64 } from '@mysten/sui/utils';
 import { LATEST_WRITE_PACKAGE, V13_PACKAGE, V14_PACKAGE, assertWriteTarget, graduationAuthority } from '../indexer/write_target.js';
 
 // -- Constants -----------------------------------------------------------------
 const SUI_CLOCK_ID = '0x6';
+
+// DeepBook v3 TESTNET package id - the value @mysten/deepbook-v3's testnet
+// config resolved before the SDK (JSON-RPC-internal) was purged; the SDK was
+// only ever used to look this constant up, the on-chain calls were always
+// plain moveCalls. Matches deposit_deepbook.js / withdraw_deepbook.js in this
+// dir. Env-overridable for the mainnet cutover (mainnet DeepBook package
+// 0xf48222c4e057fa468baf136bff8e12504209d43850c5778f76159292a96f621e).
+const DEEPBOOK_PACKAGE_ID = process.env.DEEPBOOK_PACKAGE_ID
+  ?? '0x22be4cade64bf2d02412c7e8d0e8beea2f78828b948118d46735315409371a3c';
 
 // V10-lineage package IDs (defining + upgrades). A curve's pkgId is its DEFINING
 // package; graduate/claim/record WRITES target the latest upgrade below.
@@ -101,21 +112,20 @@ function fmtSui(mist) {
   return `${(Number(BigInt(mist)) / 1e9).toFixed(4)} SUI`;
 }
 
-// The endpoint MUST come from env: the Sui Foundation public testnet JSON-RPC
-// fullnode shut off the week of 2026-07-06, so a getFullnodeUrl-style default
-// would be a dead endpoint. SUIPUMP_JSONRPC_URL is a third-party JSON-RPC
-// endpoint; SUI_RPC_URL kept as the legacy alias. Exported so read-only
-// tooling (scripts/dryrun_graduation_load.js) can build this module's own
-// client flavor without duplicating the env handling.
+// The client is a v2 SuiGraphQLClient (JSON-RPC is purged repo-wide, hard
+// shutdown 2026-07-31). SUI_GRAPHQL_URL matches the rest of the repo
+// (bridge.js / auto_graduate.js) and safely defaults to the public testnet
+// GraphQL endpoint. The old SUIPUMP_JSONRPC_URL / SUI_RPC_URL vars are
+// DEPRECATED no-ops: still tolerated in the env (Render may carry them) but
+// ignored, with a warning so operators notice. Exported so read-only tooling
+// (scripts/dryrun_graduation_load.js) can build this module's own client
+// flavor without duplicating the env handling.
 export function defaultClient() {
-  const url = process.env.SUIPUMP_JSONRPC_URL || process.env.SUI_RPC_URL;
-  if (!url) {
-    throw new Error(
-      'SUIPUMP_JSONRPC_URL (or SUI_RPC_URL) env var not set - the public testnet ' +
-      'JSON-RPC fullnode is dead; provide a third-party JSON-RPC endpoint'
-    );
+  if (process.env.SUIPUMP_JSONRPC_URL || process.env.SUI_RPC_URL) {
+    console.warn('[deepbook] SUIPUMP_JSONRPC_URL / SUI_RPC_URL are DEPRECATED (JSON-RPC purge) and ignored - this module reads SUI_GRAPHQL_URL');
   }
-  return new SuiJsonRpcClient({ url });
+  const url = process.env.SUI_GRAPHQL_URL ?? 'https://graphql.testnet.sui.io/graphql';
+  return new SuiGraphQLClient({ url });
 }
 
 function defaultKeypair() {
@@ -137,12 +147,53 @@ function defaultKeypair() {
   return Ed25519Keypair.fromSecretKey(seed);
 }
 
-async function getSharedVersion(client, objectId) {
-  const obj = await client.getObject({ id: objectId, options: { showOwner: true } });
-  return obj.data?.owner?.Shared?.initial_shared_version;
+// v2 result-union readback (same shapes bridge.js txOk/txErrorOf use):
+// signAndExecuteTransaction / simulateTransaction return
+//   { $kind: 'Transaction',       Transaction:       { digest, status, ... } }  // success
+//   { $kind: 'FailedTransaction', FailedTransaction: { status: { error } } }    // executed, failed
+function txOk(result) {
+  return result?.$kind === 'Transaction';
+}
+function txDigestOf(result) {
+  return result?.Transaction?.digest ?? result?.FailedTransaction?.digest ?? null;
+}
+function txErrorOf(result) {
+  const err = (result?.FailedTransaction?.status ?? result?.Transaction?.status)?.error;
+  if (!err) return 'transaction failed';
+  const abort = err?.MoveAbort
+    ? ` (MoveAbort code ${err.MoveAbort.abortCode} in ${err.MoveAbort.location?.module ?? '?'})`
+    : '';
+  return `${err.message ?? JSON.stringify(err)}${abort}`;
 }
 
-// Extract the recorded pool_id (Option<ID>) from JSON-RPC content fields.
+async function getSharedVersion(client, objectId) {
+  // v2 shape: { objectId } in, result.object.owner out (never {id, options}).
+  const obj = await client.getObject({ objectId });
+  return obj?.object?.owner?.Shared?.initialSharedVersion;
+}
+
+// Fetch an object's Move struct fields as JSON plus its type string.
+// include:{json:true} adds object.json = the struct fields (bridge.js
+// sessionAddressOf pattern). Returns { type, fields } with fields {} when the
+// object or its json is not visible.
+async function getObjectFields(client, objectId) {
+  const obj = await client.getObject({ objectId, include: { json: true } });
+  return {
+    type:   obj?.object?.type ?? null,
+    fields: obj?.object?.json ?? {},
+  };
+}
+
+// A Balance<T> field can arrive from the JSON layer as a bare number string or
+// wrapped ({ value } / { fields: { value } } depending on the node). Coerce to
+// BigInt either way - u64 chain values must never hit JS number arithmetic.
+function balanceValue(v) {
+  if (v == null) return 0n;
+  if (typeof v === 'object') return BigInt(v.value ?? v.fields?.value ?? 0);
+  return BigInt(v);
+}
+
+// Extract the recorded pool_id (Option<ID>) from the object's JSON fields.
 // None serializes variously (null / empty vec); Some as an id string. The zero
 // address counts as absent. Returns the id string or null.
 function extractPoolId(fields) {
@@ -155,25 +206,39 @@ function extractPoolId(fields) {
   return null;
 }
 
-// Read the V13 grad_funds_claimed<T>(&Curve<T>): bool getter via devInspect
-// (read-only dry run, same SuiClient transport). True once claim_graduation_funds
-// has run (backed by a dynamic-field marker on the curve).
+// Read the V13 grad_funds_claimed<T>(&Curve<T>): bool getter via
+// simulateTransaction (the v2 GraphQL read-only dry run; replaces the old
+// JSON-RPC devInspect). True once claim_graduation_funds has run (backed by a
+// dynamic-field marker on the curve). include:{commandResults:true} surfaces
+// each command's BCS return values; a bool is a single byte 0/1.
 async function isGradFundsClaimed({ client, writePkg, curveId, tokenType, sender }) {
   const sv = await getSharedVersion(client, curveId);
   const tx = new Transaction();
+  tx.setSender(sender);
   tx.moveCall({
     target: `${writePkg}::bonding_curve::grad_funds_claimed`,
     typeArguments: [tokenType],
     arguments: [tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: sv, mutable: false })],
   });
-  const res = await client.devInspectTransactionBlock({ sender, transactionBlock: tx });
-  if (res?.effects?.status?.status !== 'success') {
-    throw new Error(`grad_funds_claimed devInspect failed: ${res?.effects?.status?.error ?? 'unknown'}`);
+  const res = await client.simulateTransaction({ transaction: tx, include: { commandResults: true } });
+  if (!txOk(res)) {
+    throw new Error(`grad_funds_claimed simulate failed: ${txErrorOf(res)}`);
   }
-  const rv = res?.results?.[0]?.returnValues?.[0];
-  const bytes = rv?.[0];
-  return Array.isArray(bytes) && bytes[0] === 1;
+  const bytes = res?.commandResults?.[0]?.returnValues?.[0]?.bcs;
+  return !!bytes && bytes.length > 0 && bytes[0] === 1;
 }
+
+// Raw GraphQL events query (indexer/index.js EVENTS_QUERY pattern), paged
+// NEWEST-FIRST via last/before backward pagination - the most recent claim for
+// the curve is the one we want.
+const GRAD_CLAIMED_EVENTS_QUERY = `
+  query GraduationFundsClaimedEvents($type: String!, $before: String, $last: Int!) {
+    events(filter: { type: $type } last: $last before: $before) {
+      pageInfo { hasPreviousPage startCursor }
+      nodes { contents { json } }
+    }
+  }
+`;
 
 // Recover the claimed pool SUI size from the GraduationFundsClaimed event
 // { curve_id, sui_amount, lp_amount }. Used to re-size the pool when a prior run
@@ -183,27 +248,41 @@ async function isGradFundsClaimed({ client, writePkg, curveId, tokenType, sender
 // event TYPE must NOT track the write package.
 async function fetchClaimedSuiAmount({ client, eventPkg, curveId }) {
   const eventType = `${eventPkg}::bonding_curve::GraduationFundsClaimed`;
-  let cursor = null;
+  const want = String(curveId).toLowerCase();
+  let before = null;
   for (let page = 0; page < 40; page++) {
-    const res = await client.queryEvents({
-      query: { MoveEventType: eventType }, cursor, limit: 50, order: 'descending',
+    const result = await client.query({
+      query: GRAD_CLAIMED_EVENTS_QUERY,
+      variables: { type: eventType, before, last: 50 },
     });
-    for (const ev of res?.data ?? []) {
-      const pj = ev.parsedJson ?? {};
-      if (pj.curve_id === curveId) return BigInt(pj.sui_amount ?? 0);
+    if (result.errors?.length) {
+      throw new Error(`GraduationFundsClaimed event query failed: ${result.errors.map(e => e.message).join('; ')}`);
     }
-    if (!res?.hasNextPage) break;
-    cursor = res.nextCursor;
+    const nodes = result.data?.events?.nodes ?? [];
+    // Each page arrives in ascending order; walk it backwards for newest-first.
+    for (let i = nodes.length - 1; i >= 0; i--) {
+      const raw = nodes[i]?.contents?.json ?? {};
+      const pj  = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      if (String(pj.curve_id ?? '').toLowerCase() === want) return BigInt(pj.sui_amount ?? 0);
+    }
+    const pageInfo = result.data?.events?.pageInfo;
+    if (!pageInfo?.hasPreviousPage || !pageInfo?.startCursor) break;
+    before = pageInfo.startCursor;
   }
   return null;
 }
 
-// Detect the F-2 backstop abort EReserveTooLow (code 52) from a Move status/error
-// string - claim_graduation_funds aborts 52 when the graduated reserve is below
-// the 1000 SUI floor (likely oracle-manipulated / griefed graduation).
-function isReserveTooLow(msg) {
-  const s = String(msg ?? '');
-  return s.includes('EReserveTooLow') || /,\s*52\)/.test(s) || /MoveAbort\([^)]*\b52\b/.test(s);
+// Detect the F-2 backstop abort EReserveTooLow (code 52) from a thrown message
+// OR a v2 ExecutionError object - claim_graduation_funds aborts 52 when the
+// graduated reserve is below the 1000 SUI floor (likely oracle-manipulated /
+// griefed graduation).
+function isReserveTooLow(err) {
+  if (err && typeof err === 'object') {
+    if (String(err?.MoveAbort?.abortCode ?? '') === '52') return true;
+    return isReserveTooLow(err.message);
+  }
+  const s = String(err ?? '');
+  return s.includes('EReserveTooLow') || /,\s*52\)/.test(s) || /MoveAbort\([^)]*\b52\b/.test(s) || /MoveAbort code 52\b/.test(s);
 }
 
 // -- Core exported function ----------------------------------------------------
@@ -213,9 +292,8 @@ function isReserveTooLow(msg) {
  * Called by auto_graduate.js - never calls process.exit.
  *
  * Takes plain strings ONLY. The module builds its own client + keypair from
- * env (SUIPUMP_JSONRPC_URL / SUI_RPC_URL, GRADUATION_SIGNER_KEY): this dir's
- * pinned @mysten/sui 2.16.2 classes are not interchangeable with the caller's
- * SDK install, so injected client/keypair objects are refused by design.
+ * env (SUI_GRAPHQL_URL, GRADUATION_SIGNER_KEY): this dir carries its own
+ * node_modules tree, so injected client/keypair objects are refused by design.
  *
  * @param {object} opts
  * @param {string}   opts.curveId   - Shared curve object ID
@@ -250,8 +328,7 @@ export async function graduateToDeepBook({ curveId, tokenType, pkgId }) {
     : `  [deepbook] auth:  AdminCap ${adminCapId} (pre-V14 path; set SUIPUMP_V14_PACKAGE+SUIPUMP_GRADUATION_CAP+SUIPUMP_GRADUATION_REGISTRY to use the GraduationCap)`);
 
   // -- Step 1: graduate() if needed -------------------------------------------
-  const curveObj = await client.getObject({ id: curveId, options: { showContent: true } });
-  let fields   = curveObj.data?.content?.fields ?? {};
+  let { fields } = await getObjectFields(client, curveId);
 
   if (!fields.graduated) {
     console.log(`  [deepbook] [1/3] Calling graduate()...`);
@@ -260,7 +337,7 @@ export async function graduateToDeepBook({ curveId, tokenType, pkgId }) {
     const metadataId = await (async () => {
       try {
         const meta = await client.getCoinMetadata({ coinType: tokenType });
-        return meta?.id ?? null;
+        return meta?.coinMetadata?.id ?? null;
       } catch { return null; }
     })();
 
@@ -269,8 +346,7 @@ export async function graduateToDeepBook({ curveId, tokenType, pkgId }) {
     const ref = tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: sv, mutable: true });
 
     if (metadataId) {
-      const metaObj = await client.getObject({ id: metadataId, options: { showOwner: true } });
-      const metaSv  = metaObj.data?.owner?.Shared?.initial_shared_version;
+      const metaSv  = await getSharedVersion(client, metadataId);
       const metaRef = metaSv
         ? tx.sharedObjectRef({ objectId: metadataId, initialSharedVersion: metaSv, mutable: true })
         : tx.object(metadataId);
@@ -289,15 +365,14 @@ export async function graduateToDeepBook({ curveId, tokenType, pkgId }) {
     }
 
     const r = await client.signAndExecuteTransaction({
-      signer: keypair, transaction: tx, options: { showEffects: true },
+      signer: keypair, transaction: tx, include: { effects: true },
     });
-    if (r.effects.status.status !== 'success') {
-      throw new Error(`graduate() failed: ${r.effects.status.error}`);
+    if (!txOk(r)) {
+      throw new Error(`graduate() failed: ${txErrorOf(r)}`);
     }
-    console.log(`  [deepbook] + graduate: ${r.digest}`);
+    console.log(`  [deepbook] + graduate: ${txDigestOf(r)}`);
     await sleep(3000);
-    const after = await client.getObject({ id: curveId, options: { showContent: true } });
-    fields = after.data?.content?.fields ?? {};
+    ({ fields } = await getObjectFields(client, curveId));
   } else {
     console.log(`  [deepbook] [1/3] Already graduated - skipping`);
   }
@@ -327,7 +402,7 @@ export async function graduateToDeepBook({ curveId, tokenType, pkgId }) {
 
   if (!claimed) {
     // State B: reserve is full. Claim (both coins -> admin wallet); size from reserve.
-    poolSuiMist = BigInt(fields.sui_reserve ?? 0);
+    poolSuiMist = balanceValue(fields.sui_reserve);
     console.log(`  [deepbook] [2/3] Claiming ${fmtSui(poolSuiMist)} pool SUI + 200M LP...`);
 
     const sv2  = await getSharedVersion(client, curveId);
@@ -354,7 +429,7 @@ export async function graduateToDeepBook({ curveId, tokenType, pkgId }) {
     let r2;
     try {
       r2 = await client.signAndExecuteTransaction({
-        signer: keypair, transaction: tx2, options: { showEffects: true },
+        signer: keypair, transaction: tx2, include: { effects: true },
       });
     } catch (err) {
       if (isReserveTooLow(err?.message)) {
@@ -363,14 +438,15 @@ export async function graduateToDeepBook({ curveId, tokenType, pkgId }) {
       }
       throw err;
     }
-    if (r2.effects.status.status !== 'success') {
-      if (isReserveTooLow(r2.effects.status.error)) {
+    if (!txOk(r2)) {
+      const failErr = (r2?.FailedTransaction?.status ?? {}).error;
+      if (isReserveTooLow(failErr)) {
         console.warn(`  [deepbook] ! ${curveId} graduated below the F-2 min-reserve floor (likely oracle-manipulated / griefed) - skipping, needs manual review`);
         return { poolId: null, txDigest: null, skipped: true, reason: 'reserve-too-low' };
       }
-      throw new Error(`claim_graduation_funds() failed: ${r2.effects.status.error}`);
+      throw new Error(`claim_graduation_funds() failed: ${txErrorOf(r2)}`);
     }
-    console.log(`  [deepbook] + claimed (SUI + LP): ${r2.digest}`);
+    console.log(`  [deepbook] + claimed (SUI + LP): ${txDigestOf(r2)}`);
     await sleep(3000);
   } else {
     // State C: claimed in a prior run but pool creation failed. The SUI + 200M LP
@@ -389,48 +465,45 @@ export async function graduateToDeepBook({ curveId, tokenType, pkgId }) {
 
   // Collect LP tokens - the 200M LP allocation arrives in the admin wallet from
   // claim_graduation_funds (graduate() no longer mints it); in State C it is
-  // already there from the prior claim.
-  const lpCoins = await client.getCoins({ owner: address, coinType: tokenType });
-  if (!lpCoins.data.length) throw new Error('No LP tokens found in admin wallet');
+  // already there from the prior claim. v2: listCoins returns .objects with
+  // { objectId, balance }.
+  const lpCoins = await client.listCoins({ owner: address, coinType: tokenType });
+  if (!lpCoins.objects.length) throw new Error('No LP tokens found in admin wallet');
 
-  const totalLp = lpCoins.data.reduce((s, c) => s + BigInt(c.balance), 0n);
+  const totalLp = lpCoins.objects.reduce((s, c) => s + BigInt(c.balance), 0n);
   console.log(`  [deepbook]   LP tokens: ${(Number(totalLp) / 1e6).toLocaleString()}`);
 
   // Find a SUI coin large enough
-  const suiCoins   = await client.getCoins({ owner: address, coinType: '0x2::sui::SUI' });
-  const suiForDeposit = suiCoins.data
+  const suiCoins   = await client.listCoins({ owner: address, coinType: '0x2::sui::SUI' });
+  const suiForDeposit = suiCoins.objects
     .filter(c => BigInt(c.balance) >= poolSuiMist + 500_000_000n)
     .sort((a, b) => Number(BigInt(a.balance) - BigInt(b.balance)))[0];
   if (!suiForDeposit) throw new Error(`No SUI coin large enough - need ${fmtSui(poolSuiMist + 500_000_000n)}`);
-
-  // DeepBook client for package ID resolution
-  const dbClient = new DeepBookClient({ address, network: 'testnet', client });
-  const DB_PKG   = dbClient.config.DEEPBOOK_PACKAGE_ID;
 
   const tx3 = new Transaction();
 
   // Create BalanceManager
   const balanceManager = tx3.moveCall({
-    target: `${DB_PKG}::balance_manager::new`,
+    target: `${DEEPBOOK_PACKAGE_ID}::balance_manager::new`,
     arguments: [],
   });
 
   // Deposit SUI
   const [suiSplit] = tx3.splitCoins(
-    tx3.object(suiForDeposit.coinObjectId),
+    tx3.object(suiForDeposit.objectId),
     [tx3.pure.u64(poolSuiMist)],
   );
   tx3.moveCall({
-    target: `${DB_PKG}::balance_manager::deposit`,
+    target: `${DEEPBOOK_PACKAGE_ID}::balance_manager::deposit`,
     typeArguments: ['0x2::sui::SUI'],
     arguments: [balanceManager, suiSplit],
   });
 
   // Merge LP coins if needed, then deposit
-  const lpObjs = lpCoins.data.map(c => tx3.object(c.coinObjectId));
+  const lpObjs = lpCoins.objects.map(c => tx3.object(c.objectId));
   if (lpObjs.length > 1) tx3.mergeCoins(lpObjs[0], lpObjs.slice(1));
   tx3.moveCall({
-    target: `${DB_PKG}::balance_manager::deposit`,
+    target: `${DEEPBOOK_PACKAGE_ID}::balance_manager::deposit`,
     typeArguments: [tokenType],
     arguments: [balanceManager, lpObjs[0]],
   });
@@ -440,14 +513,18 @@ export async function graduateToDeepBook({ curveId, tokenType, pkgId }) {
 
   const r3 = await client.signAndExecuteTransaction({
     signer: keypair, transaction: tx3,
-    options: { showEffects: true, showObjectChanges: true },
+    include: { effects: true, objectTypes: true },
   });
-  if (r3.effects.status.status !== 'success') {
-    throw new Error(`DeepBook deposit failed: ${r3.effects.status.error}`);
+  if (!txOk(r3)) {
+    throw new Error(`DeepBook deposit failed: ${txErrorOf(r3)}`);
   }
 
-  const bmObj = r3.objectChanges?.find(c =>
-    c.type === 'created' && c.objectType?.toLowerCase().includes('balancemanager')
+  // Locate the created BalanceManager: effects.changedObjects carries the
+  // created ids, objectTypes maps id -> type (the v2 replacement for the
+  // JSON-RPC objectChanges array).
+  const objTypes = r3.Transaction?.objectTypes ?? {};
+  const bmObj = (r3.Transaction?.effects?.changedObjects ?? []).find(c =>
+    c.idOperation === 'Created' && String(objTypes[c.objectId] ?? '').toLowerCase().includes('balancemanager')
   );
   const poolId = bmObj?.objectId ?? 'unknown';
 
@@ -466,17 +543,17 @@ export async function graduateToDeepBook({ curveId, tokenType, pkgId }) {
       : [tx4.object(adminCapId), ref4, tx4.pure.id(poolId), tx4.pure.id(poolId)],
   });
   const r4 = await client.signAndExecuteTransaction({
-    signer: keypair, transaction: tx4, options: { showEffects: true },
+    signer: keypair, transaction: tx4, include: { effects: true },
   });
-  if (r4.effects.status.status !== 'success') {
+  if (!txOk(r4)) {
     // Non-fatal - pool is created, just record failed
-    console.warn(`  [deepbook] ! record_graduation_pool failed: ${r4.effects.status.error}`);
+    console.warn(`  [deepbook] ! record_graduation_pool failed: ${txErrorOf(r4)}`);
   } else {
-    console.log(`  [deepbook] + recorded: ${r4.digest}`);
+    console.log(`  [deepbook] + recorded: ${txDigestOf(r4)}`);
   }
 
   console.log(`  [deepbook] OK Done - BalanceManager: ${poolId}`);
-  return { poolId, txDigest: r3.digest };
+  return { poolId, txDigest: txDigestOf(r3) };
 }
 
 // -- Standalone CLI entry point ------------------------------------------------
@@ -520,9 +597,8 @@ if (process.argv[1] && process.argv[1].endsWith('graduate_deepbook_full.js')) {
   }
 
   // Fetch curve to resolve pkgId + tokenType
-  const obj    = await client.getObject({ id: curveId, options: { showContent: true, showType: true } });
-  const fields = obj.data?.content?.fields ?? {};
-  const tokenType = obj.data?.type?.match(/Curve<(.+)>$/)?.[1];
+  const { type: curveType, fields } = await getObjectFields(client, curveId);
+  const tokenType = curveType?.match(/Curve<(.+)>$/)?.[1];
   if (!tokenType) { console.error('X Could not parse token type'); process.exit(1); }
 
   // Resolve pkgId from token type (first segment)
@@ -539,6 +615,10 @@ if (process.argv[1] && process.argv[1].endsWith('graduate_deepbook_full.js')) {
 
   try {
     const result = await graduateToDeepBook({ curveId, tokenType, pkgId });
+    if (!result) {
+      console.error('X Curve not ready (not graduated) - nothing claimed');
+      process.exit(1);
+    }
     console.log();
     console.log(`  txDigest: ${result.txDigest}`);
     console.log(`  poolId:   ${result.poolId}`);

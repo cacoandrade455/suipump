@@ -3,13 +3,13 @@
 // and fires the appropriate graduation script automatically.
 //
 // IMPORTANT: this watcher passes the graduation modules PLAIN STRINGS ONLY
-// ({ curveId, tokenType, pkgId }). Each module owns its OWN client + keypair
-// (env-driven defaultClient()/defaultKeypair()) because the graduation dirs
-// pin their own @mysten/sui installs (graduation-test: 2.16.2 v2
-// SuiJsonRpcClient; graduation-test-turbos: ^1.45.2 v1 SuiClient) whose call
-// shapes and classes are NOT interchangeable with this indexer's v2 grpc/
-// graphql clients - injecting our client or a cross-install keypair object
-// into them never worked. The watcher's OWN reads stay on GraphQL below.
+// ({ curveId, tokenType, pkgId }). Each module owns its OWN SuiGraphQLClient +
+// keypair (env-driven defaultClient()/defaultKeypair(): SUI_GRAPHQL_URL +
+// GRADUATION_SIGNER_KEY) because the graduation dirs carry their own
+// node_modules trees - injecting this indexer's client or a cross-install
+// keypair object into them never worked. Since the JSON-RPC purge both
+// modules are GraphQL-only (no pinned v1/JSON-RPC SDKs remain). The
+// watcher's OWN reads stay on GraphQL below.
 //
 // SIGNER SEPARATION (do not conflate): the graduation subsystem (this watcher and
 // the graduation-test/graduation-test-turbos scripts it imports) signs with
@@ -133,8 +133,8 @@ function hasPool(fields) {
 // -- DEX pool creation ---------------------------------------------------------
 
 // Dispatches to the graduation module for the curve's DEX target. Plain
-// strings only - each module builds its OWN client + keypair from env (see
-// module headers; their pinned SDK installs are not interchangeable with ours).
+// strings only - each module builds its OWN SuiGraphQLClient + keypair from
+// env (see module headers; cross-install client/keypair injection never worked).
 async function createDexPool(curveId, tokenType, pkgId, graduationTarget) {
   const target = Number(graduationTarget ?? 0);
 
@@ -229,7 +229,7 @@ async function graduateCurve(curveId, curveData) {
 // index.js still calls startGraduationWatcher(grpcClient); the parameter is
 // accepted for call-compat but intentionally UNUSED - the watcher's own reads
 // go through graphqlClient above, and the dispatched graduation modules build
-// their own clients (their pinned SDKs are not interchangeable with ours).
+// their own SuiGraphQLClients from env (see their module headers).
 
 export async function startGraduationWatcher(_grpcClient) {
   console.log('  [auto-grad] Graduation watcher started - polling every 30s');

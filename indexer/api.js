@@ -13,6 +13,7 @@ import { mountPartnerLaunches } from './partner_launches.js';
 import { mountGameProgress } from './game_progress.js';
 import { mountTakeover } from './takeover_api.js';
 import { mountAgentSession } from './agent_session_api.js';
+import { mountBundles } from './bundles.js';
 
 const PORT = parseInt(process.env.PORT || '3001');
 const app  = express();
@@ -50,6 +51,12 @@ mountTakeover(app, pool);
 // the agent_session module's events from the events table, tracked by index.js
 // since the SESSION_EVENT_NAMES addition). Adds GET /agent/session?owner=.
 mountAgentSession(app, pool);
+
+// Bundle detection -- self-contained module; ALL clustering logic (funding
+// provenance via GraphQL, temporal co-buy analysis over the events table)
+// lives in bundles.js. Its wallet_funders table is created by db.js
+// initSchema. Adds GET /token/:curveId/bundles.
+mountBundles(app, pool);
 
 // -- Virtual reserves per package -- must match frontend constants.js ---------
 const MIST = 1_000_000_000;
@@ -312,6 +319,24 @@ app.get('/token/:curveId/stats', async (req, res) => {
 app.get('/token/:curveId/trades', async (req, res) => {
   try { const limit = Math.min(parseInt(req.query.limit || '200'), 1000); res.json(await getTradeHistory(req.params.curveId, limit)); }
   catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Launch-window trades -- the FIRST trades of a token's life, ascending. Same
+// event-type filter as /trades above; used by bundle/sniper inspection of the
+// opening seconds. Row shape matches /trades: { data, timestamp_ms, event_type }.
+app.get('/token/:curveId/trades/first', async (req, res) => {
+  try {
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 25, 1), 50);
+    const result = await pool.query(
+      `SELECT data, timestamp_ms, event_type FROM events
+       WHERE curve_id = $1
+         AND (event_type LIKE '%TokensPurchased' OR event_type LIKE '%TokensBought' OR event_type LIKE '%TokensSold')
+       ORDER BY timestamp_ms ASC
+       LIMIT $2`,
+      [req.params.curveId, limit]
+    );
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.get('/token/:curveId/comments', async (req, res) => {

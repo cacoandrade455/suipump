@@ -19,7 +19,7 @@
 //   SUI_PRIVATE_KEY        - base64WithFlag Ed25519 key (legacy drain ONLY;
 //                            loadable solely behind SUIPUMP_LEGACY_SIGNER=1)
 //   SUIPUMP_LEGACY_SIGNER  - '1' enables the legacy shared-key drain path
-//   SUI_RPC_URL            - default: testnet fullnode
+//   SUI_GRAPHQL_URL        - default: https://graphql.testnet.sui.io/graphql
 //   SUIPUMP_INDEXER_URL    - indexer base URL (for curve lookups)
 //   PORT                   - default: 3030
 

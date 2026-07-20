@@ -34,7 +34,7 @@
 //   V10-lineage / new-launch write target and may legitimately differ.
 //
 // TRANSPORT
-//   JSON-RPC is FORBIDDEN (no SuiClient/getFullnodeUrl). The SuiGraphQLClient is
+//   JSON-RPC is FORBIDDEN (no legacy fullnode client APIs). The SuiGraphQLClient is
 //   PASSED IN from index.js - this module never constructs one. Build/sign/
 //   execute uses the same proven SuiGraphQLClient shape as price_publisher.js:
 //   bytes = tx.build({ client }); sig = keypair.signTransaction(bytes).signature;

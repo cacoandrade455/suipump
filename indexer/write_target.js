@@ -109,13 +109,12 @@ export function graduationAuthority() {
 //   entrypoints, which live on SUIPUMP_V14_PACKAGE, not on the lineage write
 //   target). Omitting the third element keeps pre-V14 behavior exactly.
 //
-// Supports BOTH client flavors:
-//   - v2 SuiGraphQLClient / SuiGrpcClient: client.getMoveFunction({ packageId,
-//     moduleName, name }) - the result carries the definition on .function when
-//     found (mirrors sessionCurvePackage in suipump-nexus-tools/bridge.js).
-//   - v1 JSON-RPC SuiClient: client.getNormalizedMoveFunction({ package,
-//     module, function }) - the graduation-test dirs pin @mysten/sui v1 for
-//     turbos-clmm-sdk compatibility.
+// Client contract: v2 SuiGraphQLClient / SuiGrpcClient only -
+// client.getMoveFunction({ packageId, moduleName, name }); the result carries
+// the definition on .function when found (mirrors sessionCurvePackage in
+// suipump-nexus-tools/bridge.js). The v1 JSON-RPC introspection flavor was
+// removed with the JSON-RPC purge: every caller (indexer, bridge.js, both
+// graduation dirs) now passes a v2 GraphQL client.
 //
 // Behavior contract: only a DEFINITIVE "this package has no such function"
 // answer throws (refusing to start beats silently targeting a package without
@@ -156,27 +155,8 @@ export async function assertWriteTarget(client, requiredFunctions) {
           transportErr = err;
         }
       }
-    } else if (client && typeof client.getNormalizedMoveFunction === 'function') {
-      // v1 JSON-RPC flavor. Absence surfaces as a THROWN RPC error, so we
-      // classify by message: "not found"-shaped errors are definitive absence;
-      // anything else (network, timeout, 5xx) is a transport failure.
-      try {
-        const res = await client.getNormalizedMoveFunction({
-          package: targetPkg,
-          module: moduleName,
-          function: functionName,
-        });
-        found = !!res;
-      } catch (err) {
-        const msg = String(err && err.message ? err.message : err);
-        if (/no function|function not found|cannot find function|no module|module not found|does not exist|not found in/i.test(msg)) {
-          found = false;
-        } else {
-          transportErr = err;
-        }
-      }
     } else {
-      console.warn(`[write-target] client exposes neither getMoveFunction nor getNormalizedMoveFunction - verification skipped for ${label} on ${targetPkg}`);
+      console.warn(`[write-target] client does not expose getMoveFunction - verification skipped for ${label} on ${targetPkg}`);
       continue;
     }
 
