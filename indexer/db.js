@@ -90,6 +90,12 @@ export async function initSchema() {
     ALTER TABLE token_stats ADD COLUMN IF NOT EXISTS grad_threshold_sui  DOUBLE PRECISION;
     ALTER TABLE curves ADD COLUMN IF NOT EXISTS metadata_object_id      TEXT;
     ALTER TABLE curves ADD COLUMN IF NOT EXISTS metadata_shared_version BIGINT;
+    -- Precomputed bundle badge inputs (bundles.js). bundle_score is the largest
+    -- wallet-cluster pct_of_circulating as a 0..1 fraction; NULL = not enough
+    -- data to judge (below the too-early gate). bundle_score_at is the ms
+    -- timestamp of the last compute, used to skip recomputes < 60s old.
+    ALTER TABLE curves ADD COLUMN IF NOT EXISTS bundle_score    REAL;
+    ALTER TABLE curves ADD COLUMN IF NOT EXISTS bundle_score_at BIGINT;
 
     CREATE TABLE IF NOT EXISTS vesting_locks (
       lock_id       TEXT PRIMARY KEY,
@@ -125,6 +131,21 @@ export async function initSchema() {
       first_seen_ms BIGINT,
       resolved_at   BIGINT NOT NULL
     );
+
+    -- Off-chain comment up/down votes. ENGAGEMENT SIGNAL ONLY -- NOT governance,
+    -- NOT Sybil-resistant (one person can vote from many wallets; there is no
+    -- signature and no gas, the wallet address is used purely as an identity
+    -- key). Keyed by the comment's tx_digest -- the same stable id the frontend
+    -- already uses as its comment key -- and the lowercased voter address.
+    -- direction = +1 up / -1 down; a cleared vote DELETEs its row.
+    CREATE TABLE IF NOT EXISTS comment_votes (
+      comment_id  TEXT     NOT NULL,
+      voter       TEXT     NOT NULL,
+      direction   SMALLINT NOT NULL,
+      updated_ms  BIGINT   NOT NULL,
+      PRIMARY KEY (comment_id, voter)
+    );
+    CREATE INDEX IF NOT EXISTS comment_votes_comment_idx ON comment_votes (comment_id);
   `);
   console.log('OK Schema initialized');
 }
@@ -661,6 +682,7 @@ export async function getAllCurves() {
       c.graduation_target      AS "graduationTarget",
       c.anti_bot_delay         AS "antiBotDelay",
       c.initial_shared_version AS "initialSharedVersion",
+      c.bundle_score           AS "bundleScore",
       row_to_json(s.*)         AS stats
     FROM curves c
     LEFT JOIN token_stats s ON s.curve_id = c.curve_id

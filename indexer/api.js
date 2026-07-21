@@ -205,6 +205,7 @@ app.get('/tokens', async (req, res) => {
                 c.icon_url AS "iconUrl", c.token_type AS "tokenType", c.package_id AS "packageId",
                 c.created_at AS "createdAt", c.graduation_target AS "graduationTarget",
                 c.anti_bot_delay AS "antiBotDelay", c.initial_shared_version AS "initialSharedVersion",
+                c.bundle_score AS "bundleScore",
                 row_to_json(s.*) AS stats
          FROM curves c LEFT JOIN token_stats s ON s.curve_id = c.curve_id
          WHERE lower(c.creator) = lower($1)
@@ -343,6 +344,150 @@ app.get('/token/:curveId/comments', async (req, res) => {
   try {
     const result = await pool.query(`SELECT tx_digest, event_seq, timestamp_ms, data FROM events WHERE curve_id = $1 AND event_type LIKE '%::bonding_curve::Comment' ORDER BY timestamp_ms ASC`, [req.params.curveId]);
     res.json(result.rows.map(r => ({ tx_digest: r.tx_digest, event_seq: r.event_seq, timestamp_ms: r.timestamp_ms, author: r.data?.author ?? null, text: r.data?.text ?? null })));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// -- Comment up/down voting ----------------------------------------------------
+// OFF-CHAIN engagement signal ONLY. NOT governance and NOT Sybil-resistant: one
+// person can vote from many wallets. There is no signature and no gas -- the
+// connected wallet address is used purely as an identity key. Votes are keyed
+// by the comment's tx_digest (the same stable id the frontend uses as its
+// comment key) in the comment_votes table (db.js initSchema).
+
+// A lowercased Sui address, 60-66 hex chars after 0x (matches the vote spec).
+const VOTER_RE = /^0x[a-fA-F0-9]{60,66}$/;
+
+// Lightweight in-memory rate guard for the unauthenticated POST /vote. Keyed by
+// client IP, sliding 60s window; resets on redeploy (same tradeoff as the other
+// in-memory stores here). Not a security control -- just a courtesy throttle.
+const voteRate = new Map();   // ip -> [timestamps]
+const VOTE_RATE_WINDOW_MS = 60_000;
+const VOTE_RATE_MAX       = 60;   // max vote writes per IP per window
+function voteRateOk(ip) {
+  const now = Date.now();
+  const hits = (voteRate.get(ip) ?? []).filter(t => now - t < VOTE_RATE_WINDOW_MS);
+  if (hits.length >= VOTE_RATE_MAX) { voteRate.set(ip, hits); return false; }
+  hits.push(now);
+  voteRate.set(ip, hits);
+  return true;
+}
+
+// Tally a single comment's votes. score = sum(direction); up/down are the +1/-1
+// counts; yourVote is the caller's own direction (0 when absent or no voter).
+async function voteTallies(commentId, voter) {
+  const agg = await pool.query(
+    `SELECT
+       COALESCE(SUM(direction), 0)                          AS score,
+       COALESCE(SUM(CASE WHEN direction =  1 THEN 1 ELSE 0 END), 0) AS up,
+       COALESCE(SUM(CASE WHEN direction = -1 THEN 1 ELSE 0 END), 0) AS down
+     FROM comment_votes WHERE comment_id = $1`,
+    [commentId]
+  );
+  let yourVote = 0;
+  if (voter) {
+    const mine = await pool.query(
+      'SELECT direction FROM comment_votes WHERE comment_id = $1 AND voter = $2',
+      [commentId, voter]
+    );
+    yourVote = Number(mine.rows[0]?.direction ?? 0);
+  }
+  const row = agg.rows[0] ?? {};
+  return { score: Number(row.score ?? 0), up: Number(row.up ?? 0), down: Number(row.down ?? 0), yourVote };
+}
+
+// POST /comment/:commentId/vote  body { voter, direction in {1,-1,0} }
+//   0  -> clear the caller's vote (DELETE the row)
+//   1  -> upvote   (upsert; switching direction overwrites)
+//  -1  -> downvote (upsert)
+// Returns the updated { score, up, down, yourVote }.
+app.post('/comment/:commentId/vote', async (req, res) => {
+  try {
+    const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown';
+    if (!voteRateOk(ip)) return res.status(429).json({ error: 'rate limited' });
+
+    const commentId = String(req.params.commentId ?? '').trim();
+    if (!commentId || commentId.length > 100) return res.status(400).json({ error: 'invalid commentId' });
+
+    const voter = String(req.body?.voter ?? '').trim().toLowerCase();
+    if (!VOTER_RE.test(voter)) return res.status(400).json({ error: 'invalid voter address' });
+
+    const direction = Number(req.body?.direction);
+    if (![1, -1, 0].includes(direction)) return res.status(400).json({ error: 'direction must be 1, -1, or 0' });
+
+    if (direction === 0) {
+      await pool.query('DELETE FROM comment_votes WHERE comment_id = $1 AND voter = $2', [commentId, voter]);
+    } else {
+      await pool.query(
+        `INSERT INTO comment_votes (comment_id, voter, direction, updated_ms)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (comment_id, voter) DO UPDATE SET direction = $3, updated_ms = $4`,
+        [commentId, voter, direction, Date.now()]
+      );
+    }
+    res.json(await voteTallies(commentId, voter));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /comment/:commentId/votes?voter=0x...  -> { score, up, down, yourVote }.
+app.get('/comment/:commentId/votes', async (req, res) => {
+  try {
+    const commentId = String(req.params.commentId ?? '').trim();
+    if (!commentId) return res.status(400).json({ error: 'invalid commentId' });
+    const raw = String(req.query.voter ?? '').trim().toLowerCase();
+    const voter = VOTER_RE.test(raw) ? raw : null;
+    res.json(await voteTallies(commentId, voter));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /token/:curveId/comment-votes?voter=0x...  -> { [commentId]: { score, up,
+// down, yourVote } } for EVERY comment on the curve that has at least one vote,
+// in ONE request (so the comment list loads all vote states without N fetches).
+// commentId is the comment's tx_digest -- the frontend keys its rows the same
+// way. Comments with no votes are simply absent from the map (score defaults 0).
+app.get('/token/:curveId/comment-votes', async (req, res) => {
+  try {
+    const curveId = req.params.curveId;
+    const raw = String(req.query.voter ?? '').trim().toLowerCase();
+    const voter = VOTER_RE.test(raw) ? raw : null;
+
+    // Restrict to this curve's own comments (tx_digests of its Comment events),
+    // so one token's map never leaks another's rows.
+    const commentIdsRes = await pool.query(
+      `SELECT DISTINCT tx_digest FROM events
+        WHERE curve_id = $1 AND event_type LIKE '%::bonding_curve::Comment'`,
+      [curveId]
+    );
+    const commentIds = commentIdsRes.rows.map(r => r.tx_digest).filter(Boolean);
+    if (commentIds.length === 0) return res.json({});
+
+    const tallyRes = await pool.query(
+      `SELECT comment_id,
+              COALESCE(SUM(direction), 0)                                 AS score,
+              COALESCE(SUM(CASE WHEN direction =  1 THEN 1 ELSE 0 END), 0) AS up,
+              COALESCE(SUM(CASE WHEN direction = -1 THEN 1 ELSE 0 END), 0) AS down
+         FROM comment_votes WHERE comment_id = ANY($1)
+        GROUP BY comment_id`,
+      [commentIds]
+    );
+    const mineRes = voter
+      ? await pool.query(
+          'SELECT comment_id, direction FROM comment_votes WHERE comment_id = ANY($1) AND voter = $2',
+          [commentIds, voter]
+        )
+      : { rows: [] };
+    const mineOf = {};
+    for (const r of mineRes.rows) mineOf[r.comment_id] = Number(r.direction ?? 0);
+
+    const out = {};
+    for (const r of tallyRes.rows) {
+      out[r.comment_id] = {
+        score:    Number(r.score ?? 0),
+        up:       Number(r.up ?? 0),
+        down:     Number(r.down ?? 0),
+        yourVote: mineOf[r.comment_id] ?? 0,
+      };
+    }
+    res.json(out);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

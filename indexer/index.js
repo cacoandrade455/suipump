@@ -15,6 +15,7 @@ import {
   upsertCurve, recomputeStats, recomputeHolders, enrichCurveMetadata, backfillMissingIcons,
   upsertLock, updateLockClaimed,
 } from './db.js';
+import { refreshBundleScoreCheap } from './bundles.js';
 import { startGraduationWatcher } from './auto_graduate.js';
 import { startPricePublisher } from './price_publisher.js';
 import { startCtoReclaimSweeper } from './cto_reclaim_sweeper.js';
@@ -298,6 +299,11 @@ async function processEvent(eventType, evt, packageId) {
     eventType.includes('TokensSold')
   )) {
     await recomputeHolders(curveId);
+    // Piggyback the cheap bundle-score recompute on the same trade cadence that
+    // just moved holders/balances. It self-throttles (skips curves scored in
+    // the last 60s) and never resolves fresh funders, so this stays a light DB
+    // read; failures are swallowed inside refreshBundleScoreCheap.
+    await refreshBundleScoreCheap(pool, curveId);
   }
 
   if (eventType.includes('TokensLocked')) {
