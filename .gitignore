@@ -73,3 +73,8 @@ design/
 
 # Local dev ship log (never commit)
 SHIP_LOG.md
+
+# load-test wallet manifests (contain private keys) and outputs
+loadtest_wallets_*.json
+loadtest_recovery_keys_*.json
+scripts/loadtest_wallets_*.json
