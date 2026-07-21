@@ -7,6 +7,7 @@ import { ConnectButton, ConnectModal } from '@mysten/dapp-kit-react/ui';
 import { Flame, Rocket, Plus, Gift, TrendingUp, Coins, Users, Trophy, Wallet, Search, Menu, X, Map, Copy, Crown, BarChart3, Github, MessageCircle, Bell, Star, Zap, Activity, ChevronRight, AlertTriangle, Bot } from 'lucide-react';
 
 import FlameMark, { FlameLockup } from './Flame.jsx';
+import BundleBadge from './BundleBadge.jsx';
 import { useTokenList } from './useTokenList.js';
 import { useTokenStats } from './useTokenStats.js';
 import TokenPage from './TokenPage.jsx';
@@ -71,7 +72,7 @@ function timeAgoShort(ts) {
   return `${Math.floor(diff / 86_400_000)}d ago`;
 }
 
-// ── Network detection banner ──────────────────────────────────────────────────
+// -- Network detection banner --------------------------------------------------
 function NetworkBanner() {
   const account = useCurrentAccount();
   const [dismissed, setDismissed] = useState(
@@ -105,7 +106,7 @@ function NetworkBanner() {
   );
 }
 
-// ── Strategies locked banner ──────────────────────────────────────────────────
+// -- Strategies locked banner --------------------------------------------------
 function StrategiesLockedBanner({ tradeKey, onOpenStrategies }) {
   const account = useCurrentAccount();
   const [dismissed, setDismissed] = useState(
@@ -147,7 +148,7 @@ function ScrollToTop() {
   return null;
 }
 
-// ── Live stats hook ───────────────────────────────────────────────────────────
+// -- Live stats hook -----------------------------------------------------------
 const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
 const DEX_LABEL = { 0: 'Cetus', 1: 'DeepBook', 2: 'Turbos' };
 
@@ -189,7 +190,7 @@ function useStats() {
   return stats;
 }
 
-// ── % change badge ────────────────────────────────────────────────────────────
+// -- % change badge ------------------------------------------------------------
 function PctBadge({ pct }) {
   if (pct == null || !Number.isFinite(pct)) return null;
   const isUp = pct >= 0;
@@ -202,7 +203,7 @@ function PctBadge({ pct }) {
   );
 }
 
-// ── Sparkline mini chart ──────────────────────────────────────────────────────
+// -- Sparkline mini chart ------------------------------------------------------
 function Sparkline({ points, width = 80, height = 24 }) {
   if (!points || points.length < 2) return null;
   const prices = points.map(p => p.p);
@@ -222,7 +223,7 @@ function Sparkline({ points, width = 80, height = 24 }) {
   );
 }
 
-// ── Token card ────────────────────────────────────────────────────────────────
+// -- Token card ----------------------------------------------------------------
 function TokenCard({ token, stats, curveState: curveStateProp, isCrown, suiUsd = 0, isWatched, onToggleWatch }) {
   const navigate = useNavigate();
   const iconUrl = token.iconUrl || null;
@@ -290,6 +291,8 @@ function TokenCard({ token, stats, curveState: curveStateProp, isCrown, suiUsd =
             {isTrending && <span className="text-[7.5px] font-mono font-bold text-lime-400 bg-lime-400/12 px-1.5 py-0.5 rounded-full shrink-0">HOT</span>}
             {isNew && !isTrending && <span className="text-[7.5px] font-mono font-bold text-blue-400 bg-blue-400/12 px-1.5 py-0.5 rounded-full shrink-0">NEW</span>}
             {graduated && <span className="text-[7.5px] font-mono font-bold text-emerald-400 bg-emerald-400/12 px-1.5 py-0.5 rounded-full shrink-0">GRAD</span>}
+            {/* Precomputed bundle score (null = unmeasured -> no badge, never green-for-unknown). */}
+            <BundleBadge score={token.bundleScore} />
           </div>
           <div className="text-[9.5px] font-mono text-white/30 truncate">
             ${token.symbol} · {timeAgo}
@@ -373,7 +376,7 @@ function SkeletonCard() {
   );
 }
 
-// ── Community Crown featured banner ───────────────────────────────────────────
+// -- Community Crown featured banner -------------------------------------------
 function CrownBanner({ token, stats, curveState: curveStateProp, suiUsd, compact = false }) {
   const navigate = useNavigate();
   const iconUrl = token?.iconUrl || null;
@@ -455,7 +458,7 @@ function CrownBanner({ token, stats, curveState: curveStateProp, suiUsd, compact
   );
 }
 
-// ── Create CTA rail card ────────────────────────────────────────────────────────────────────
+// -- Create CTA rail card --------------------------------------------------------------------
 function CreateCtaCard({ onLaunch, lang }) {
   const account = useCurrentAccount();
   return (
@@ -473,7 +476,7 @@ function CreateCtaCard({ onLaunch, lang }) {
   );
 }
 
-// ── Graduating soon rail card (top-3 non-graduated by bonded %) ──────────────
+// -- Graduating soon rail card (top-3 non-graduated by bonded %) --------------
 function GraduatingSoonCard({ tokens, curveStates, onNavigate, horizontal = false }) {
   const top = React.useMemo(() => {
     return tokens
@@ -524,8 +527,8 @@ function GraduatingSoonCard({ tokens, curveStates, onNavigate, horizontal = fals
   );
 }
 
-// ── Live trades rail (board-local SSE; header LiveFeedSidebar toggle unaffected) ──
-// ── Shared live-trades SSE hook (rail on desktop, ticker on mobile - one EventSource) ──
+// -- Live trades rail (board-local SSE; header LiveFeedSidebar toggle unaffected) --
+// -- Shared live-trades SSE hook (rail on desktop, ticker on mobile - one EventSource) --
 function useLiveTrades(tokens) {
   const [trades, setTrades] = React.useState([]);
   const esRef = React.useRef(null);
@@ -610,7 +613,7 @@ function useLiveTrades(tokens) {
   return trades;
 }
 
-// ── Mobile trades ticker (5a) - marquee strip under the header ──────────────
+// -- Mobile trades ticker (5a) - marquee strip under the header --------------
 function MobileTradesTicker({ tokens }) {
   const navigate = useNavigate();
   const trades = useLiveTrades(tokens);
@@ -632,7 +635,7 @@ function MobileTradesTicker({ tokens }) {
   );
 }
 
-// ── Mobile bottom tab bar (5a app shell): BOARD / AGENT / FAB / FOLIO / REWARDS ──
+// -- Mobile bottom tab bar (5a app shell): BOARD / AGENT / FAB / FOLIO / REWARDS --
 function MobileTabBar({ onLaunch }) {
   const navigate = useNavigate();
   const { pathname } = useLocation();
@@ -707,7 +710,7 @@ function LiveTradesRail({ tokens }) {
   );
 }
 
-// ── Stats bar ─────────────────────────────────────────────────────────────────
+// -- Stats bar -----------------------------------------------------------------
 function StatsBar({ stats }) {
   const items = [
     { icon: <Coins size={13} />, label: 'TOKENS', value: stats.tokenCount != null ? stats.tokenCount : ' - ' },
@@ -730,7 +733,7 @@ function StatsBar({ stats }) {
   );
 }
 
-// ── Mobile wallet buttons ─────────────────────────────────────────────────────
+// -- Mobile wallet buttons -----------------------------------------------------
 function MobileWalletButtons() {
   const [show, setShow] = React.useState(false);
   const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
@@ -765,7 +768,7 @@ function MobileWalletButtons() {
   );
 }
 
-// ── Notifications ─────────────────────────────────────────────────────────────
+// -- Notifications -------------------------------------------------------------
 // The autonomous agent executes from this wallet. Agent activity (buy/sell/launch/
 // claim/TP/SL) is surfaced in the bell alongside the existing comment + graduation
 // notifications on the user's own tokens.
@@ -817,10 +820,10 @@ function useNotifications(walletAddress) {
         const allComments = commentResults.flat().filter(c => c.author !== walletAddress);
         const allGrads = gradResults.flat();
 
-        // Agent activity — buy/sell/launch from the events table (real amounts +
+        // Agent activity -- buy/sell/launch from the events table (real amounts +
         // symbol) and tpsl/claim fires from the notify store (trigger reason +
         // claim amount). AGENT-ONLY: these notifications belong solely to the
-        // agent wallet's own console — a normal user connecting must NOT see the
+        // agent wallet's own console -- a normal user connecting must NOT see the
         // agent's trades. Gated by an exact wallet match. (When the per-user agent
         // model ships, this generalizes to "this user's agent wallet".) Best-effort;
         // a failure here must not drop the comment/graduation notifications.
@@ -1019,7 +1022,7 @@ function NotificationBell({ walletAddress }) {
   );
 }
 
-// ── Custom wallet button ──────────────────────────────────────────────────────
+// -- Custom wallet button ------------------------------------------------------
 function WalletButton({ size = 'md', lang = 'en' }) {
   const account = useCurrentAccount();
   const dAppKit = useDAppKit();
@@ -1086,7 +1089,7 @@ function WalletButton({ size = 'md', lang = 'en' }) {
   );
 }
 
-// ── Hero connect button ───────────────────────────────────────────────────────
+// -- Hero connect button -------------------------------------------------------
 function ConnectWalletHero({ lang = 'en' }) {
   const [open, setOpen] = useState(false);
   return (
@@ -1102,7 +1105,7 @@ function ConnectWalletHero({ lang = 'en' }) {
   );
 }
 
-// ── Language flag emoji ───────────────────────────────────────────────────────
+// -- Language flag emoji -------------------------------------------------------
 const LANG_FLAG_EMOJI = {
   en: '🇺🇸', zh: '🇨🇳', pt: '🇧🇷', ko: '🇰🇷', vi: '🇻🇳', ru: '🇷🇺', es: '🇪🇸',
 };
@@ -1116,7 +1119,7 @@ function FlagImg({ code }) {
   );
 }
 
-// ── Header ────────────────────────────────────────────────────────────────────
+// -- Header --------------------------------------------------------------------
 function Header({ onLaunch, lang, setLang, onToggleFeed, showFeed, onStrategies }) {
   const account = useCurrentAccount();
   const { poolSui, tradeCount } = useStats();
@@ -1273,7 +1276,7 @@ function Header({ onLaunch, lang, setLang, onToggleFeed, showFeed, onStrategies 
   );
 }
 
-// ── Live Ticker ──────────────────────────────────────────────────────────────
+// -- Live Ticker --------------------------------------------------------------
 function LiveTicker({ stats }) {
   if (!stats) return null;
   const items = [
@@ -1294,8 +1297,8 @@ function LiveTicker({ stats }) {
   );
 }
 
-// ── Home page ─────────────────────────────────────────────────────────────────
-// ── Trending Bar — 1h momentum, top 10 ────────────────────────────────────────
+// -- Home page -----------------------------------------------------------------
+// -- Trending Bar -- 1h momentum, top 10 ----------------------------------------
 function TrendingBar({ lang = 'en' }) {
   const navigate = useNavigate();
   const [items, setItems]   = React.useState([]);
@@ -1669,7 +1672,7 @@ function HomePage({ onLaunch, lang = 'en' }) {
   );
 }
 
-// ── Token page wrapper ────────────────────────────────────────────────────────
+// -- Token page wrapper --------------------------------------------------------
 function TokenPageWrapper({ lang, tradeKey, onOpenStrategies }) {
   const { curveId } = useParams();
   const navigate = useNavigate();
@@ -1741,7 +1744,7 @@ function TokenPageWrapper({ lang, tradeKey, onOpenStrategies }) {
   return <TokenPage curveId={curveId} tokenType={tokenType} packageId={packageId} initialSharedVersion={initialSharedVersion} onBack={() => navigate('/')} lang={lang} tradeKeypair={tradeKey?.keypair ?? null} tradeKeyReady={tradeKey?.isReady ?? false} onOpenStrategies={onOpenStrategies} />;
 }
 
-// ── 404 ───────────────────────────────────────────────────────────────────────
+// -- 404 -----------------------------------------------------------------------
 function NotFoundPage({ onBack }) {
   return (
     <div className="min-h-screen bg-sp-void flex flex-col items-center justify-center gap-6 px-4">
@@ -1761,7 +1764,7 @@ function NotFoundPage({ onBack }) {
   );
 }
 
-// ── App root ──────────────────────────────────────────────────────────────────
+// -- App root ------------------------------------------------------------------
 export default function App() {
   const navigate   = useNavigate();
   const account    = useCurrentAccount();
@@ -1789,7 +1792,7 @@ export default function App() {
   const tradeKey = useTradeKey();
   const appStats  = useStats();
 
-  // Strategy hooks lifted to app level — survive modal open/close
+  // Strategy hooks lifted to app level -- survive modal open/close
   // Only stop when the browser tab is closed
   const sniper    = useSniper({    walletAddress: account?.address, keypair: tradeKey.isReady ? tradeKey.keypair : null });
   const dca       = useDCA({       walletAddress: account?.address, keypair: tradeKey.isReady ? tradeKey.keypair : null });

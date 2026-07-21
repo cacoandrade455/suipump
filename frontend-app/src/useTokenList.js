@@ -31,6 +31,8 @@ export function useTokenList() {
         antiBotDelay:          r.antiBotDelay,
         tokenType:             r.tokenType,
         initialSharedVersion:  r.initialSharedVersion ?? null,
+        // Precomputed bundle badge score (0..1 fraction, or null = unmeasured).
+        bundleScore:           r.bundleScore ?? r.bundle_score ?? null,
       }));
     }
 
@@ -39,7 +41,7 @@ export function useTokenList() {
     }
 
     // `initial` is true only for the first load. Background refreshes (the 15s
-    // interval) must NOT flip `loading` — doing so unmounts the homepage grid to
+    // interval) must NOT flip `loading` -- doing so unmounts the homepage grid to
     // its loading state and remounts it every 15s, which is the visible flicker.
     // Refreshes update `tokens` silently; only the first load shows the spinner.
     async function load(initial = false) {
