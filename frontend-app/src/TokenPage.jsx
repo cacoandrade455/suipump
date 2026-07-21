@@ -13,6 +13,7 @@ import { useTokenPageFeed } from './useRealtimeFeed.js';
 import HolderList from './HolderList.jsx';
 import Comments from './Comments.jsx';
 import AIAnalysis from './AIAnalysis.jsx';
+import BundleBadge from './BundleBadge.jsx';
 import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8, PACKAGE_ID_V9, PACKAGE_ID_V10, PACKAGE_ID_V12, PACKAGE_ID_V13, PRICE_CONFIG_ID, V13_BUY_ENABLED, ALL_PACKAGE_IDS, MIST_PER_SUI, DRAIN_SUI_APPROX, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_SUI_V6, VIRTUAL_SUI_V7, VIRTUAL_SUI_V8, VIRTUAL_SUI_V9, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, VIRTUAL_TOKENS_V6, VIRTUAL_TOKENS_V7, VIRTUAL_TOKENS_V8, VIRTUAL_TOKENS_V9, DRAIN_SUI_V4, DRAIN_SUI_V5, DRAIN_SUI_V6, DRAIN_SUI_V7, DRAIN_SUI_V8, DRAIN_SUI_V9, isNewCurve, isV5OrLater, isV7OrLater, isV8OrLater, isV9OrLater, isV10OrLater, supportsMetadataUpdate, curveShapeFor, resolveGradThresholdSui } from './constants.js';
 import { buyQuote, sellQuote } from './curve.js';
 import { t } from './i18n.js';
@@ -1745,6 +1746,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   const [mVestOpen,       setMVestOpen]       = useState(false); // mobile-only Vesting accordion (right column hidden <lg)
   const [mTradeSheet,     setMTradeSheet]     = useState(false); // mobile-only trade bottom-sheet open state (5b thumb-zone BUY/SELL)
   const [volumeSui,       setVolumeSui]       = useState(null);  // authoritative all-time volume (token_stats.volume_sui - same as leaderboard/Crown)
+  const [bundleScore,     setBundleScore]     = useState(null);  // precomputed bundle badge score (0..1, or null = unmeasured)
 
   // -- data loading ----------------------------------------------------------
 
@@ -1770,6 +1772,13 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
           // always matches the rest of the app. (Available top-level and under stats.)
           const _vol = d.volume_sui ?? d.stats?.volume_sui ?? null;
           if (_vol != null && !cancelled) setVolumeSui(Number(_vol));
+          // Bundle badge score rides on the same curve row (SELECT c.*). null =
+          // unmeasured -> no badge; converges to the resolved value after a
+          // BubbleMap open. Read snake_case (raw c.*) and camelCase for safety.
+          if (!cancelled) {
+            const _bs = d.bundle_score ?? d.bundleScore ?? null;
+            setBundleScore(_bs == null ? null : Number(_bs));
+          }
           // Map indexer response to curve state field names expected by component
           // Handle both camelCase (getAllCurves alias) and snake_case (raw SELECT c.*)
           const stats = d.stats ?? {};
@@ -1926,9 +1935,9 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
   const priceSui        = Number(priceMist) / 1e9;
   const priceUsd        = priceSui * suiUsd;
   // Pump.fun-style mcap using constant-product curve price x total supply.
-  // Formula: price = (vSui + realSui)² / (vSui * vTok)
+  // Formula: price = (vSui + realSui)^2 / (vSui * vTok)
   //          mcap  = price * TOTAL_SUPPLY
-  // Gives ~$4.4K at launch -> ~$66K at graduation = 15x ✓
+  // Gives ~$4.4K at launch -> ~$66K at graduation = 15x (check)
   const _realSui    = Number(reserveMist) / 1e9;
   const _k          = vSui * vTok;
   const _priceSui   = _k > 0 ? (vSui + _realSui) * (vSui + _realSui) / _k : 0;
@@ -2182,6 +2191,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
                 <div className="flex items-center gap-2 flex-wrap">
                   <h1 className="text-white font-extrabold text-xl font-mono">{name}</h1>
                   <span className="text-white/40 text-xs font-mono font-medium">${symbol}</span>
+                  <BundleBadge score={bundleScore} />
                 </div>
                 <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
                   <span className="text-white/35 text-[10px] font-mono truncate max-w-[180px]">{curveId ? `${curveId.slice(0, 6)}...${curveId.slice(-4)}` : ''}</span>

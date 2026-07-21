@@ -4,8 +4,9 @@
 //          holder_coin + parent_id args. parent_id = parent comment's tx digest.
 import React, { useState, useEffect, useRef } from 'react';
 import { useCurrentAccount, useDAppKit, useCurrentClient } from '@mysten/dapp-kit-react';
+import { ConnectModal } from '@mysten/dapp-kit-react/ui';
 import { Transaction } from '@mysten/sui/transactions';
-import { Send, Reply, ChevronDown, ChevronUp } from 'lucide-react';
+import { Send, Reply, ChevronDown, ChevronUp, ArrowUp, ArrowDown } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { t } from './i18n.js';
 import { executeTx } from './lib/executeTx.js';
@@ -65,6 +66,53 @@ function timeAgo(ts) {
   if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
   if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
   return `${Math.floor(diff / 86_400_000)}d ago`;
+}
+
+// Apply a new vote direction to a tally locally (optimistic UI). newDir is the
+// resulting direction: +1 up, -1 down, 0 cleared. Mirrors the server math so
+// the count updates instantly and reconciles with the POST response.
+function applyVote(prev, newDir) {
+  const cur = prev ?? { score: 0, up: 0, down: 0, yourVote: 0 };
+  let { score, up, down } = cur;
+  if (cur.yourVote === 1)  { up--;   score--; }
+  if (cur.yourVote === -1) { down--; score++; }
+  if (newDir === 1)  { up++;   score++; }
+  if (newDir === -1) { down++; score--; }
+  return { score, up, down, yourVote: newDir };
+}
+
+// Up/net/down vote controls for one comment. Engagement signal only -- NOT
+// governance and NOT Sybil-resistant (see the indexer comment_votes note).
+// commentId is the comment's tx digest; disabled until it is on-chain.
+function VoteControls({ commentId, vote, onVote }) {
+  const v = vote ?? { score: 0, up: 0, down: 0, yourVote: 0 };
+  const ready = !!commentId;
+  const upActive   = v.yourVote === 1;
+  const downActive = v.yourVote === -1;
+  const scoreCol = v.score > 0 ? 'text-lime-400' : v.score < 0 ? 'text-red-400' : 'text-white/40';
+  return (
+    <div className="flex items-center gap-1">
+      <button
+        type="button"
+        onClick={() => ready && onVote(commentId, 1)}
+        disabled={!ready}
+        title={ready ? 'Upvote' : 'Pending on-chain'}
+        className={`transition-colors ${!ready ? 'text-white/15 cursor-not-allowed' : upActive ? 'text-lime-400' : 'text-white/25 hover:text-lime-400'}`}
+      >
+        <ArrowUp size={12} />
+      </button>
+      <span className={`text-[10px] font-mono font-bold min-w-[12px] text-center tabular-nums ${scoreCol}`}>{v.score}</span>
+      <button
+        type="button"
+        onClick={() => ready && onVote(commentId, -1)}
+        disabled={!ready}
+        title={ready ? 'Downvote' : 'Pending on-chain'}
+        className={`transition-colors ${!ready ? 'text-white/15 cursor-not-allowed' : downActive ? 'text-red-400' : 'text-white/25 hover:text-red-400'}`}
+      >
+        <ArrowDown size={12} />
+      </button>
+    </div>
+  );
 }
 
 // Build a lineage post_comment moveCall onto `tx`. parentId = ZERO_ADDR for a
@@ -143,7 +191,8 @@ function saveReply(curveId, reply) {
 
 function CommentItem({ comment, replies, account, curveId, onReplyPosted,
                       isV10, packageId, tokenType, initialSharedVersion,
-                      client, dAppKit, holderCoinId, holderGated, onNeedHolder }) {
+                      client, dAppKit, holderCoinId, holderGated, onNeedHolder,
+                      vote, onVote }) {
   const [showReplies, setShowReplies] = useState(false);
   const [replyOpen, setReplyOpen] = useState(false);
   const [replyText, setReplyText] = useState('');
@@ -243,6 +292,7 @@ function CommentItem({ comment, replies, account, curveId, onReplyPosted,
           </div>
           <p className="text-xs text-white/60 leading-[1.55] break-words mt-1.5">{comment.text}</p>
           <div className="flex items-center gap-3 mt-2">
+            <VoteControls commentId={comment.digestKey} vote={vote} onVote={onVote} />
             {account && (
               <button onClick={handleOpenReply}
                 className={`flex items-center gap-1 text-[10px] font-mono transition-colors ${replyOpen ? 'text-lime-400' : 'text-white/25 hover:text-white/50'}`}>
@@ -327,6 +377,11 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
   // then behaves exactly like pre-toggle V10, and the on-chain abort mapping
   // remains the backstop either way.
   const [holderGated, setHolderGated] = useState(true);
+  // Off-chain comment votes: commentId(tx_digest) -> { score, up, down, yourVote }.
+  // Engagement signal ONLY -- not governance, not Sybil-resistant (see indexer).
+  const [voteMap, setVoteMap] = useState({});
+  const [sortMode, setSortMode] = useState('newest'); // 'newest' (existing) | 'top'
+  const [connectOpen, setConnectOpen] = useState(false);
   const bottomRef = useRef(null);
   const esRef = useRef(null);
   const timerRef = useRef(null);
@@ -490,6 +545,45 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
     };
   }, [curveId]);
 
+  // Batch-load all vote states for this token in ONE request (no per-comment
+  // fetch). Re-runs when the wallet changes so `yourVote` reflects the caller.
+  useEffect(() => {
+    if (!curveId || !INDEXER_URL) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const q = account?.address ? `?voter=${account.address}` : '';
+        const r = await fetch(`${INDEXER_URL}/token/${curveId}/comment-votes${q}`, { signal: AbortSignal.timeout(5000) });
+        if (r.ok) { const m = await r.json(); if (!cancelled && m && typeof m === 'object') setVoteMap(m); }
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [curveId, account?.address]);
+
+  // Cast / toggle / clear a vote. Requires a connected wallet -- prompts connect
+  // otherwise, and NEVER sends a vote without an address. Optimistic: bump the
+  // count immediately, reconcile with the POST response, roll back on error.
+  const castVote = async (commentId, dir) => {
+    if (!account) { setConnectOpen(true); return; }
+    if (!commentId || !INDEXER_URL) return;
+    const prev = voteMap[commentId] ?? { score: 0, up: 0, down: 0, yourVote: 0 };
+    const newDir = prev.yourVote === dir ? 0 : dir; // clicking the active arrow clears
+    setVoteMap(m => ({ ...m, [commentId]: applyVote(prev, newDir) }));
+    try {
+      const r = await fetch(`${INDEXER_URL}/comment/${commentId}/vote`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ voter: account.address, direction: newDir }),
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!r.ok) throw new Error('vote failed');
+      const fresh = await r.json();
+      setVoteMap(m => ({ ...m, [commentId]: fresh }));
+    } catch {
+      setVoteMap(m => ({ ...m, [commentId]: prev })); // roll back the optimistic bump
+    }
+  };
+
   const handlePost = async () => {
     const trimmed = text.trim();
     if (!trimmed || !account || posting) return;
@@ -587,6 +681,14 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
     return true;
   });
 
+  // Sort toggle. 'newest' keeps the existing (chronological) order; 'top' ranks
+  // by net vote score desc, tie-broken by newest. Client-side over the already-
+  // loaded comments + their scores -- no extra fetch.
+  const scoreOf = (c) => Number(voteMap[c.digestKey]?.score ?? 0);
+  const orderedComments = sortMode === 'top'
+    ? [...visibleComments].sort((a, b) => (scoreOf(b) - scoreOf(a)) || ((b.timestamp ?? 0) - (a.timestamp ?? 0)))
+    : visibleComments;
+
   const repliesByParent = {};
   for (const r of replies) {
     // V10 replies reference the parent's tx digest; legacy reference parent id.
@@ -608,7 +710,21 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
             {holderGated ? t(lang, 'commentsGateHolders') : t(lang, 'commentsGateOpen')} {'·'} {t(lang, 'commentsPostInfo')}
           </span>
         )}
+        {/* Sort toggle: Newest (existing default) vs Top (net vote score). */}
+        <div className="ml-auto flex items-center gap-1">
+          <button onClick={() => setSortMode('newest')}
+            className={`text-[9px] font-mono font-bold tracking-[0.1em] px-2 py-1 rounded-md transition-colors ${sortMode === 'newest' ? 'text-lime-400 bg-lime-400/[0.08]' : 'text-white/30 hover:text-white/60'}`}>
+            NEWEST
+          </button>
+          <button onClick={() => setSortMode('top')}
+            className={`text-[9px] font-mono font-bold tracking-[0.1em] px-2 py-1 rounded-md transition-colors ${sortMode === 'top' ? 'text-lime-400 bg-lime-400/[0.08]' : 'text-white/30 hover:text-white/60'}`}>
+            TOP
+          </button>
+        </div>
       </div>
+
+      {/* Connect prompt for a not-connected user clicking a vote arrow. */}
+      <ConnectModal open={connectOpen} onOpenChange={setConnectOpen} />
 
       {/* Composer (design: bordered box directly under header) */}
       {account && (
@@ -645,11 +761,11 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
       {/* Comment list */}
       {loading ? (
         <div className="py-8 text-center text-white/20 text-xs font-mono">Loading...</div>
-      ) : visibleComments.length === 0 ? (
+      ) : orderedComments.length === 0 ? (
         <div className="py-8 text-center text-white/20 text-xs font-mono">No comments yet. Be the first!</div>
       ) : (
         <div className="flex flex-col gap-3 max-h-[500px] overflow-y-auto">
-          {visibleComments.map(c => (
+          {orderedComments.map(c => (
             <CommentItem
               key={c.id}
               comment={c}
@@ -666,6 +782,8 @@ export default function Comments({ curveId, packageId, initialSharedVersion = nu
               holderCoinId={holderCoinId}
               holderGated={holderGated}
               onNeedHolder={() => {}}
+              vote={voteMap[c.digestKey]}
+              onVote={castVote}
             />
           ))}
           <div ref={bottomRef} />
