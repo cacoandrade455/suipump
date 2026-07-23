@@ -20,6 +20,8 @@ import RoadmapPage from './RoadmapPage.jsx';
 import StatsPage from './StatsPage.jsx';
 import AgentPage from './AgentPage.jsx';
 import GamePage from './GamePage.jsx';
+import ReferralsPage from './ReferralsPage.jsx';
+import { useReferralCapture } from './useReferral.js';
 import { LANGUAGES, translations, t } from './i18n.js';
 import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7, PACKAGE_ID_V8_1, PACKAGE_ID_V8, PACKAGE_ID_V13, ALL_PACKAGE_IDS, DRAIN_SUI_APPROX, DRAIN_SUI_V4, DRAIN_SUI_V5, DRAIN_SUI_V6, DRAIN_SUI_V7, VIRTUAL_SUI_V4, VIRTUAL_SUI_V5, VIRTUAL_SUI_V6, VIRTUAL_TOKENS_V4, VIRTUAL_TOKENS_V5, VIRTUAL_TOKENS_V6, TOKEN_DECIMALS, isNewCurve, isV7OrLater, curveShapeFor, resolveGradThresholdSui } from './constants.js';
 import { mistToSui, priceMistPerToken } from './curve.js';
@@ -1152,6 +1154,7 @@ function Header({ onLaunch, lang, setLang, onToggleFeed, showFeed, onStrategies 
               { label: t(lang, 'leaderboard'), path: '/leaderboard' },
               { label: t(lang, 'stats'),       path: '/stats' },
               { label: t(lang, 'portfolio'),   path: '/portfolio' },
+              { label: 'REFERRALS',            path: '/referrals' },
               { label: t(lang, 's1Airdrop'),   path: '/airdrop' },
               { label: t(lang, 'whitepaper'),  path: '/whitepaper' },
               { label: t(lang, 'roadmap'),     path: '/roadmap' },
@@ -1249,6 +1252,7 @@ function Header({ onLaunch, lang, setLang, onToggleFeed, showFeed, onStrategies 
             { label: t(lang, 'leaderboard'), path: '/leaderboard' },
             { label: t(lang, 'stats'),       path: '/stats' },
             { label: t(lang, 'portfolio'),   path: '/portfolio' },
+            { label: 'REFERRALS',            path: '/referrals' },
             { label: t(lang, 's1Airdrop'),   path: '/airdrop' },
             { label: t(lang, 'whitepaper'),  path: '/whitepaper' },
             { label: t(lang, 'roadmap'),     path: '/roadmap' },
@@ -1792,6 +1796,11 @@ export default function App() {
   const tradeKey = useTradeKey();
   const appStats  = useStats();
 
+  // Referral capture: read ?ref= from the URL once on load (persist + strip it),
+  // then report the visit intent to the indexer on connect / wallet change. The
+  // server enforces first-touch; the binding is written on the first trade.
+  useReferralCapture();
+
   // Strategy hooks lifted to app level -- survive modal open/close
   // Only stop when the browser tab is closed
   const sniper    = useSniper({    walletAddress: account?.address, keypair: tradeKey.isReady ? tradeKey.keypair : null });
@@ -1828,6 +1837,7 @@ export default function App() {
               PortfolioPage view (own-wallet features stay gated behind isOwnWallet).
               Same :walletAddress param name so PortfolioPage needs no change. */}
           <Route path="/profile/:walletAddress" element={<PortfolioPage onBack={() => navigate(-1)} lang={lang} tradeKeypair={tradeKey.isReady ? tradeKey.keypair : null} />} />
+          <Route path="/referrals" element={<ReferralsPage onBack={() => navigate('/')} lang={lang} />} />
           <Route path="/roadmap" element={<RoadmapPage onBack={() => navigate('/')} lang={lang} />} />
           <Route path="/agent" element={<AgentPage onBack={() => navigate('/')} />} />
           <Route path="/play" element={<GamePage onBack={() => navigate('/')} lang={lang} />} />
