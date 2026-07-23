@@ -13,7 +13,7 @@ import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import {
   pool, initSchema, getCursor, saveCursor, insertEvent,
   upsertCurve, recomputeStats, recomputeHolders, enrichCurveMetadata, backfillMissingIcons,
-  upsertLock, updateLockClaimed,
+  upsertLock, updateLockClaimed, promoteReferralBinding,
 } from './db.js';
 import { refreshBundleScoreCheap } from './bundles.js';
 import { startGraduationWatcher } from './auto_graduate.js';
@@ -304,6 +304,14 @@ async function processEvent(eventType, evt, packageId) {
     // the last 60s) and never resolves fresh funders, so this stays a light DB
     // read; failures are swallowed inside refreshBundleScoreCheap.
     await refreshBundleScoreCheap(pool, curveId);
+
+    // Referral first-touch binding. The trader's FIRST buy/sell promotes any
+    // pending ref-link intent into a permanent binding (server-side, so it
+    // survives client storage clearing). No-op when there is no pending intent
+    // or a binding already exists. buyer on a purchase, seller on a sale.
+    const trader = evt.parsedJson?.buyer ?? evt.parsedJson?.seller ?? null;
+    const boundMs = evt.timestampMs ? Number(evt.timestampMs) : Date.now();
+    await promoteReferralBinding(trader, boundMs, evt.id?.txDigest ?? null);
   }
 
   if (eventType.includes('TokensLocked')) {

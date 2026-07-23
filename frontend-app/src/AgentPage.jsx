@@ -20,6 +20,7 @@ import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { PACKAGE_ID, PACKAGE_ID_V10, PACKAGE_ID_V11, PACKAGE_ID_V12, PACKAGE_ID_V13, PRICE_CONFIG_ID, V13_BUY_ENABLED, MIST_PER_SUI } from './constants.js';
 import { signOwnerAuth } from './authSign.js';
 import { executeTx } from './lib/executeTx.js';
+import { resolveReferralArg } from './useReferral.js';
 
 // The agent's execution wallet - the session_address authorized to trade the
 // escrow. buy_with_session/sell_with_session are signed by THIS wallet
@@ -171,7 +172,7 @@ const suiscanTx     = (d)  => `https://suiscan.xyz/testnet/tx/${d}`;
 const GRAD = { 0: 'Cetus', 1: 'DeepBook', 2: 'Turbos' };
 
 // Token avatar with the app's standard fallback: if the icon URL is missing or
-// fails to load, show the 🔥 placeholder (same convention as TokenCard / token
+// fails to load, show the fire placeholder (same convention as TokenCard / token
 // header). Symbol kept in the signature for the alt text only.
 function TokenIcon({ url, symbol, size = 28 }) {
   const [failed, setFailed] = useState(false);
@@ -2414,6 +2415,10 @@ export default function AgentPage({ onBack }) {
       ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion: sharedVersion, mutable: true })
       : tx.object(curveId);
     const [payment] = tx.splitCoins(tx.gas, [tx.pure.u64(suiMist)]);
+    // Referral: this user's first-touch referrer (or null). Resolved server-side;
+    // null on any failure or self-referral, so the manual buy always proceeds
+    // with option::none() and referral never blocks the trade.
+    const referralArg = await resolveReferralArg(account.address);
     // V9-V12: buy(curve, payment, min_out, referral, sui_price_scaled u64, clock) -> (Coin<T>, Coin<SUI>)
     // V13:    buy(curve, payment, min_out, referral, &PriceConfig,          clock) - same arity,
     // position 5 becomes the shared PriceConfig object and the call must target
@@ -2424,7 +2429,7 @@ export default function AgentPage({ onBack }) {
     const [tokens, refund] = tx.moveCall({
       target: useV13Buy ? `${PACKAGE_ID_V13}::bonding_curve::buy` : `${packageId}::bonding_curve::buy`,
       typeArguments: [tokenType],
-      arguments: [curveRef, payment, tx.pure.u64(0), tx.pure.option('address', null), useV13Buy ? tx.object(PRICE_CONFIG_ID) : tx.pure.u64(suiPriceScaled), tx.object(AGENT_SUI_CLOCK_ID)],
+      arguments: [curveRef, payment, tx.pure.u64(0), tx.pure.option('address', referralArg), useV13Buy ? tx.object(PRICE_CONFIG_ID) : tx.pure.u64(suiPriceScaled), tx.object(AGENT_SUI_CLOCK_ID)],
     });
     tx.transferObjects([tokens, refund], account.address);
 
@@ -2469,11 +2474,14 @@ export default function AgentPage({ onBack }) {
     const coinObjs = coinList.map(c => tx.object(c.objectId ?? c.id ?? c.coinObjectId));
     if (coinObjs.length > 1) tx.mergeCoins(coinObjs[0], coinObjs.slice(1));
     const tokenCoin = wantAll ? coinObjs[0] : tx.splitCoins(coinObjs[0], [tx.pure.u64(tokAtomic)])[0];
+    // Referral: this user's first-touch referrer (or null). Null on any failure
+    // or self-referral, so the manual sell always proceeds with option::none().
+    const referralArg = await resolveReferralArg(account.address);
     // V7+: sell(curve, tokens, min_out, referral) -> Coin<SUI>
     const [suiOut] = tx.moveCall({
       target: `${packageId}::bonding_curve::sell`,
       typeArguments: [tokenType],
-      arguments: [curveRef, tokenCoin, tx.pure.u64(0), tx.pure.option('address', null)],
+      arguments: [curveRef, tokenCoin, tx.pure.u64(0), tx.pure.option('address', referralArg)],
     });
     tx.transferObjects([suiOut], account.address);
 

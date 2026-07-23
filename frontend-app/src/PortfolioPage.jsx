@@ -13,6 +13,7 @@ import { paginateMultipleEvents } from './paginateEvents.js';
 import { useSessionPositions, sellSessionPosition } from './useSessionPositions.js';
 import { t } from './i18n.js';
 import { executeTx } from './lib/executeTx.js';
+import { ReferralLinkCard } from './ReferralsPage.jsx';
 
 const MIST_PER_SUI = 1e9;
 const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
@@ -1181,6 +1182,9 @@ export default function PortfolioPage({ onBack, lang = 'en', tradeKeypair = null
             Viewing portfolio for <span className="text-lime-400">{viewAddress.slice(0, 8)}…{viewAddress.slice(-6)}</span>
           </div>
         )}
+
+        {/* Referral link CTA - own wallet only; links through to /referrals. */}
+        {isOwnWallet && <ReferralLinkCard lang={lang} />}
 
         {/* Summary card */}
         <div

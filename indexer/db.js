@@ -146,8 +146,92 @@ export async function initSchema() {
       PRIMARY KEY (comment_id, voter)
     );
     CREATE INDEX IF NOT EXISTS comment_votes_comment_idx ON comment_votes (comment_id);
+
+    -- Referral program. Vanity codes -> first-touch bindings -> earnings ledger.
+    -- The on-chain plumbing already pays the referrer directly at settlement
+    -- (bonding_curve split_fee_v7 routes REFERRAL_SHARE_BPS to the referral
+    -- address via public_transfer); these tables only track WHO refers WHOM and
+    -- WHICH vanity code was used. Earnings themselves are read from the indexed
+    -- trade events (data->>'referral' / data->>'referral_fee'), never stored here.
+    --
+    -- referral_codes: one human-readable code per owner. code stored UPPERCASE
+    -- (canonical); owner stored lowercased. The unique index on owner enforces
+    -- one code per owner.
+    CREATE TABLE IF NOT EXISTS referral_codes (
+      code        TEXT PRIMARY KEY,
+      owner       TEXT NOT NULL,
+      created_ms  BIGINT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS referral_codes_owner_idx ON referral_codes (owner);
+
+    -- referral_bindings: the PERMANENT first-touch link. wallet (referee) ->
+    -- referrer, written by the indexer's trade-event ingestion the moment the
+    -- referee completes its first buy/sell (promoteReferralBinding below). Never
+    -- overwritten once set -- first-touch is forever.
+    CREATE TABLE IF NOT EXISTS referral_bindings (
+      wallet        TEXT PRIMARY KEY,
+      referrer      TEXT NOT NULL,
+      code          TEXT NOT NULL,
+      bound_ms      BIGINT NOT NULL,
+      first_tx      TEXT
+    );
+    CREATE INDEX IF NOT EXISTS referral_bindings_referrer_idx ON referral_bindings (referrer);
+
+    -- referral_pending: a wallet visited a ref link but has not traded yet.
+    -- Promoted to a binding on the first trade, then deleted. First-touch: a
+    -- second visit never overwrites an existing pending/binding row.
+    CREATE TABLE IF NOT EXISTS referral_pending (
+      wallet      TEXT PRIMARY KEY,
+      code        TEXT NOT NULL,
+      seen_ms     BIGINT NOT NULL
+    );
   `);
   console.log('OK Schema initialized');
+}
+
+// -- Referral first-touch promotion -------------------------------------------
+// Called from the trade-event ingestion path (index.js processEvent) on every
+// indexed Buy/Sell. If the trader has a referral_pending row AND no existing
+// binding, promote it: write referral_bindings and delete the pending row.
+// Server-side promotion is what makes first-touch enforceable and survives the
+// client clearing its storage. Self-referral is rejected here too (belt-and-
+// suspenders with the client and the /referral/visit guard). Best-effort:
+// never throws into the ingestion loop.
+export async function promoteReferralBinding(trader, boundMs, txDigest) {
+  try {
+    if (!trader) return;
+    const wallet = String(trader).toLowerCase();
+    if (!/^0x[a-f0-9]{60,66}$/.test(wallet)) return;
+
+    // No pending intent -> nothing to promote. (A wallet with an existing
+    // binding also has no pending row, since promotion deletes it, so this
+    // single lookup covers the "already bound" case too.)
+    const pend = await pool.query('SELECT code FROM referral_pending WHERE wallet = $1', [wallet]);
+    const code = pend.rows[0]?.code ?? null;
+    if (!code) return;
+
+    // Resolve the code to its current owner. If the code was never claimed / was
+    // removed, or resolves to the trader themselves, drop the stale pending row
+    // so it never lingers, and record no binding.
+    const ownerRes = await pool.query('SELECT owner FROM referral_codes WHERE code = $1', [code]);
+    const owner = ownerRes.rows[0]?.owner ?? null;
+    if (!owner || owner === wallet) {
+      await pool.query('DELETE FROM referral_pending WHERE wallet = $1', [wallet]);
+      return;
+    }
+
+    // First-touch: only insert if no binding exists (ON CONFLICT DO NOTHING),
+    // then clear the pending intent regardless.
+    await pool.query(
+      `INSERT INTO referral_bindings (wallet, referrer, code, bound_ms, first_tx)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (wallet) DO NOTHING`,
+      [wallet, owner, code, boundMs ?? Date.now(), txDigest ?? null]
+    );
+    await pool.query('DELETE FROM referral_pending WHERE wallet = $1', [wallet]);
+  } catch (err) {
+    console.error('promoteReferralBinding error:', err.message);
+  }
 }
 
 // -- Cursor helpers ------------------------------------------------------------
