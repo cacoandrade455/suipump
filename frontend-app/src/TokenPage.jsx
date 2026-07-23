@@ -18,6 +18,7 @@ import { PACKAGE_ID, PACKAGE_ID_V4, PACKAGE_ID_V5, PACKAGE_ID_V6, PACKAGE_ID_V7,
 import { buyQuote, sellQuote } from './curve.js';
 import { t } from './i18n.js';
 import { executeTx } from './lib/executeTx.js';
+import { resolveReferralArg } from './useReferral.js';
 import CommunityTakeoverPanel from './CommunityTakeoverPanel.jsx';
 
 // BCS helpers
@@ -2030,6 +2031,11 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
         ? tx.sharedObjectRef({ objectId: curveId, initialSharedVersion, mutable: true })
         : tx.object(curveId);
 
+      // Referral: the connected wallet's first-touch referrer (or null). Resolved
+      // server-side; returns null on any failure or self-referral, so the trade
+      // always proceeds with option::none() and referral never blocks a trade.
+      const referralArg = await resolveReferralArg(account.address);
+
       const isV5 = isV5OrLater(pkgId);
 
       if (side === 'buy') {
@@ -2092,11 +2098,11 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
         }
         const isV9 = isV9OrLater(pkgId);
         const buyArgs = useV13Buy
-          ? [curveRef, payment, tx.pure.u64(minOut), tx.pure.option('address', null), tx.object(PRICE_CONFIG_ID), tx.object(SUI_CLOCK_ID)]
+          ? [curveRef, payment, tx.pure.u64(minOut), tx.pure.option('address', referralArg), tx.object(PRICE_CONFIG_ID), tx.object(SUI_CLOCK_ID)]
           : isV9
-          ? [curveRef, payment, tx.pure.u64(minOut), tx.pure.option('address', null), tx.pure.u64(suiPriceScaled), tx.object(SUI_CLOCK_ID)]
+          ? [curveRef, payment, tx.pure.u64(minOut), tx.pure.option('address', referralArg), tx.pure.u64(suiPriceScaled), tx.object(SUI_CLOCK_ID)]
           : isV5
-          ? [curveRef, payment, tx.pure.u64(minOut), tx.pure.option('address', null), tx.object(SUI_CLOCK_ID)]
+          ? [curveRef, payment, tx.pure.u64(minOut), tx.pure.option('address', referralArg), tx.object(SUI_CLOCK_ID)]
           : [curveRef, payment, tx.pure.u64(minOut)];
         const [tokens, refund] = tx.moveCall({ target: `${useV13Buy ? PACKAGE_ID_V13 : pkgId}::bonding_curve::buy`, typeArguments: [tokenType], arguments: buyArgs });
         tx.transferObjects([tokens, refund], account.address);
@@ -2132,7 +2138,7 @@ export default function TokenPage({ curveId, tokenType, packageId: packageIdHint
         const effectiveSlippage = resolveSlippagePct(slippage, sq?.priceImpact ?? 0);
         const minOut = sq?.suiOut != null ? BigInt(Math.floor(Number(sq.suiOut) * (1 - effectiveSlippage / 100))) : 0n;
         const sellArgs = isV7OrLater(pkgId)
-          ? [curveRef, tokenCoin, tx.pure.u64(minOut), tx.pure.option('address', null)]
+          ? [curveRef, tokenCoin, tx.pure.u64(minOut), tx.pure.option('address', referralArg)]
           : [curveRef, tokenCoin, tx.pure.u64(minOut)];
         const [suiOut] = tx.moveCall({ target: `${pkgId}::bonding_curve::sell`, typeArguments: [tokenType], arguments: sellArgs });
         tx.transferObjects([suiOut], account.address);

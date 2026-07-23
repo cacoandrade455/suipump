@@ -1,4 +1,4 @@
-// LaunchModal.jsx — v5 wired
+// LaunchModal.jsx - v5 wired
 import React, { useState, useCallback } from 'react';
 import { useCurrentAccount, useDAppKit, useCurrentClient } from '@mysten/dapp-kit-react';
 import { Transaction } from '@mysten/sui/transactions';
@@ -7,8 +7,9 @@ import wasmInit, * as bytecodeTemplate from '@mysten/move-bytecode-template';
 import { PACKAGE_ID, PACKAGE_ID_V5, PACKAGE_ID_V7, MIST_PER_SUI, ANTI_BOT_NONE, ANTI_BOT_15S, ANTI_BOT_30S, GRAD_TARGET_CETUS, GRAD_TARGET_DEEPBOOK, GRAD_TARGET_TURBOS, isV7OrLater, isV9OrLater, isV10OrLater, EPOCH_PKG, EPOCH_TREASURY, EPOCH_CUT_MIST, PROTOCOL_SURCHARGE_MIST, PROTOCOL_WALLET, EPOCH_SIGN_URL, EPOCH_CHECK_URL, EPOCH_SESSION_PROXY, EPOCH_RECOVERY_PROXY, EPOCH_NETWORK } from './constants.js';
 import { t } from './i18n.js';
 import { executeTx } from './lib/executeTx.js';
+import { resolveReferralArg } from './useReferral.js';
 
-// Vesting modes / durations — must match bonding_curve.move v7
+// Vesting modes / durations - must match bonding_curve.move v7
 const VEST_MODE_CLIFF   = 0;
 const VEST_MODE_LINEAR  = 1;
 const VEST_MODE_MONTHLY = 2;
@@ -81,7 +82,7 @@ function encodeDescription(desc, links) {
   return `${desc}||${JSON.stringify(linksObj)}`;
 }
 
-// Placeholder constants — must exactly match coin-template/sources/template.move
+// Placeholder constants - must exactly match coin-template/sources/template.move
 const PLACEHOLDER_NAME = 'Template Coin';
 const PLACEHOLDER_SYM  = 'TMPLSYMBL';
 const PLACEHOLDER_DESC = 'Template description placeholder that is intentionally long to accommodate real token descriptions.';
@@ -142,7 +143,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
   const [lockDuration, setLockDuration] = useState('30d');     // 7d / 30d / 180d / 365d
   // V10 creator buyback (carved from the creator's own 40% fee slice).
   const [buybackEnabled, setBuybackEnabled] = useState(false);
-  const [buybackBps,     setBuybackBps]     = useState(2000);  // 0–10000; default 20%
+  const [buybackBps,     setBuybackBps]     = useState(2000);  // 0-10000; default 20%
   const [buybackBurn,    setBuybackBurn]    = useState(true);  // true=burn, false=return to creator
   const [launching, setLaunching] = useState(false);
   const [txStep, setTxStep] = useState(null);
@@ -151,7 +152,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
   const [error, setError] = useState(null);
   const [newCurveId, setNewCurveId] = useState(null);
 
-  // ── Epoch launch-with-site state ────────────────────────────────────────────
+  // -- Epoch launch-with-site state --------------------------------------------
   // epochSite holds the VERIFIED site once the creator registered through our ref
   // and we confirmed they own the NameCap: { name: 'foo.epoch', nameCap, sessionId }.
   // The 5-SUI surcharge is only added to the launch PTB when epochSite is set.
@@ -177,11 +178,11 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
   };
   const removePayout = (i) => { if (payouts.length > 1) setPayouts(payouts.filter((_, idx) => idx !== i)); };
 
-  // ── Epoch launch-with-site helpers ──────────────────────────────────────────
+  // -- Epoch launch-with-site helpers ------------------------------------------
 
   // The live site URL is deterministic from the name: <name>.epoch always maps
   // to https://<name>.epochsui.com/. Derive it from the verified name rather than
-  // trusting the callback's `site` param — so the site autofills reliably even if
+  // trusting the callback's `site` param - so the site autofills reliably even if
   // the redirect ever drops that param. Strips an optional trailing ".epoch".
   const epochSiteUrl = useCallback((rawName) => {
     const label = String(rawName || '').trim().toLowerCase().replace(/\.epoch$/i, '');
@@ -190,7 +191,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
 
   // Handoff: authorize ONE comped registration server-side (proxy holds the
   // secret), then redirect the creator to Epoch's sign page carrying the session.
-  // No client-side name check — Epoch validates on its side (public /partner/check
+  // No client-side name check - Epoch validates on its side (public /partner/check
   // is enforced on their sign page) and the contract is the final guard. The
   // desired .epoch name defaults to the token symbol (or name), lowercased and
   // cleaned to Epoch's charset; the creator can change it on Epoch's sign page.
@@ -213,9 +214,9 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
     } catch {}
     try {
       // The return URL is sent in the SERVER-SIDE session call (not the browser
-      // redirect), so Epoch takes it from there — the browser can't spoof it.
+      // redirect), so Epoch takes it from there - the browser can't spoof it.
       const returnUrl = `${window.location.origin}${window.location.pathname}?epoch_return=1`;
-      // Server-to-server auth — proxy injects the Bearer secret, never the browser.
+      // Server-to-server auth - proxy injects the Bearer secret, never the browser.
       const r = await fetch(EPOCH_SESSION_PROXY, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -223,7 +224,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
         signal: AbortSignal.timeout(8000),
       });
       if (!r.ok) throw new Error(`session ${r.status}`);
-      // Redirect carries name + partner + session (no return= — Epoch has it from
+      // Redirect carries name + partner + session (no return= - Epoch has it from
       // the session call). The creator can adjust the name on Epoch's sign page.
       const url = `${EPOCH_SIGN_URL}?name=${encodeURIComponent(name)}&partner=suipump&session=${encodeURIComponent(sessionId)}`;
       window.location.href = url; // full redirect; we come back via ?epoch_return=1
@@ -240,7 +241,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
     if (!nameCapId) return null;
 
     // Verify by OBJECT OWNERSHIP of the exact NameCap Epoch handed back. Epoch
-    // told us "this wallet registered, here's the NameCap id" — so confirming
+    // told us "this wallet registered, here's the NameCap id" - so confirming
     // that object is owned by the launching wallet IS the proof. No StructType
     // assumption (Epoch's struct name was never confirmed and is irrelevant here).
     //
@@ -352,7 +353,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
     return () => { cancelled = true; };
   }, [verifyEpochOwnership, epochSiteUrl]);
 
-  // Manual "Verify" retry — if auto-verify missed (finalization lag, etc.), the
+  // Manual "Verify" retry - if auto-verify missed (finalization lag, etc.), the
   // creator can re-trigger it. Re-fetches the registration via recovery (in case
   // the nft id needs refreshing) then re-runs the ownership check.
   const retryEpochVerify = useCallback(async () => {
@@ -460,7 +461,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
       const newTokenType = treasuryCapEntry[1].match(/<(.+)>/)?.[1];
       if (!newTokenType) throw new Error('Could not parse token type');
 
-      // Extract CoinMetadata objectId from Tx1 — type includes 'CoinMetadata'
+      // Extract CoinMetadata objectId from Tx1 - type includes 'CoinMetadata'
       const metaEntry1 = Object.entries(objectTypes1).find(([, t]) => t?.includes('CoinMetadata'));
       const tx1MetadataId = metaEntry1?.[0] ?? null;
 
@@ -520,6 +521,11 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
         const devBuyMist = BigInt(Math.floor(devBuyAmount * Number(MIST_PER_SUI)));
         const [devPayment] = tx2.splitCoins(tx2.gas, [tx2.pure.u64(devBuyMist)]);
 
+        // Referral on the launcher's dev-buy: the launcher's own first-touch
+        // referrer (or null). Null on any failure or self-referral, so the
+        // dev-buy always proceeds with option::none() and never blocks a launch.
+        const referralArg = await resolveReferralArg(account?.address);
+
         let buyArgs;
         if (isV9OrLater(PACKAGE_ID)) {
           // V9+ buy: sui_price_scaled before clock
@@ -528,17 +534,17 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
             curve,
             devPayment,
             tx2.pure.u64(0),
-            tx2.pure.option('address', null),
+            tx2.pure.option('address', referralArg),
             tx2.pure.u64(0),              // sui_price_scaled = 0 (oracle fallback)
             tx2.object(SUI_CLOCK_ID),
           ];
         } else if (PACKAGE_ID_V5) {
-          // V5+ buy: curve, payment, min_tokens_out, referral (none), clock
+          // V5+ buy: curve, payment, min_tokens_out, referral, clock
           buyArgs = [
             curve,
             devPayment,
             tx2.pure.u64(0),
-            tx2.pure.option('address', null), // Option::none<address> for referral
+            tx2.pure.option('address', referralArg),
             tx2.object(SUI_CLOCK_ID),
           ];
         } else {
@@ -573,11 +579,11 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
         }
       }
 
-      // ── Epoch launch-with-site surcharge (only when a site is verified) ─────
+      // -- Epoch launch-with-site surcharge (only when a site is verified) -----
       // 5 SUI surcharge on top of the 2 SUI base, composed into THIS same tx2 so
       // the user signs once and Epoch's cut is sent automatically inside their
-      // own transaction. 3 → Epoch treasury via record_partner_launch (deposits +
-      // emits PartnerLaunch), 2 → protocol wallet. SuiPump never custodies the 3.
+      // own transaction. 3 -> Epoch treasury via record_partner_launch (deposits +
+      // emits PartnerLaunch), 2 -> protocol wallet. SuiPump never custodies the 3.
       // If record_partner_launch aborts, the whole launch reverts (atomic).
       if (epochSite && epochSite.name) {
         const [epochCut] = tx2.splitCoins(tx2.gas, [tx2.pure.u64(EPOCH_CUT_MIST)]);
@@ -594,7 +600,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
         if (isV10OrLater(PACKAGE_ID)) {
           // V10: route the +2 SUI into the curve's protocol_fees bucket (claimable
           // via AdminCap) instead of a raw wallet transfer. Must run while `curve`
-          // is still owned — i.e. before share_curve below.
+          // is still owned - i.e. before share_curve below.
           tx2.moveCall({
             target: `${PACKAGE_ID}::bonding_curve::collect_protocol_surcharge`,
             typeArguments: [newTokenType],
@@ -606,10 +612,10 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
         }
       }
 
-      // ── V10: optional creator buyback config at launch ─────────────────────
+      // -- V10: optional creator buyback config at launch ---------------------
       // If the creator opted in, set the fraction of THEIR fee slice routed to
       // buyback and whether bought tokens are burned or returned. Uses `cap`
-      // before it is transferred below. buyback_bps is 0–10000.
+      // before it is transferred below. buyback_bps is 0-10000.
       if (isV10OrLater(PACKAGE_ID) && buybackEnabled && buybackBps > 0) {
         tx2.moveCall({
           target: `${PACKAGE_ID}::bonding_curve::set_buyback_config`,
@@ -818,7 +824,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
                 )}
               </div>
 
-              {/* Anti-bot delay — v5 only */}
+              {/* Anti-bot delay - v5 only */}
               {PACKAGE_ID_V5 && (
                 <div className="space-y-2 pt-1">
                   <div className="text-[9px] font-semibold tracking-[0.14em] text-white/[0.35]">ANTI-BOT COOLDOWN <span className="text-white/20 tracking-normal">· only your wallet can buy during the delay</span></div>
@@ -1013,7 +1019,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
                 </div>
               )}
 
-              {/* Optional dev-buy vesting lock — V7+ only */}
+              {/* Optional dev-buy vesting lock - V7+ only */}
               {parseFloat(devBuy) > 0 && isV7OrLater(PACKAGE_ID) && (
                 <div className="space-y-2">
                   <div className="text-[9px] font-semibold tracking-[0.14em] text-white/[0.35]">LOCK DEV BUY <span className="text-white/20 tracking-normal">· immutable on-chain vesting · signal you can't dump</span></div>
@@ -1069,7 +1075,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
                               key={d}
                               onClick={() => {
                                 setLockDuration(d);
-                                // Monthly is invalid for 7d — fall back to cliff
+                                // Monthly is invalid for 7d - fall back to cliff
                                 if (d === '7d' && lockMode === VEST_MODE_MONTHLY) {
                                   setLockMode(VEST_MODE_CLIFF);
                                 }
@@ -1095,7 +1101,7 @@ export default function LaunchModal({ onClose, onLaunched, lang = 'en' }) {
                 </div>
               )}
 
-              {/* V10: creator buyback config — carved from the creator's own fee slice */}
+              {/* V10: creator buyback config - carved from the creator's own fee slice */}
               {isV10OrLater(PACKAGE_ID) && (
                 <div className="space-y-2">
                   <div className="text-[9px] font-semibold tracking-[0.14em] text-white/[0.35]">CREATOR SETTINGS</div>
