@@ -491,6 +491,231 @@ app.get('/token/:curveId/comment-votes', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// -- Referral program ---------------------------------------------------------
+// Vanity codes, first-touch bindings, and the earnings dashboard. The on-chain
+// plumbing already pays the referrer directly at settlement (there is NO claim
+// flow); these routes only manage codes/bindings and READ earnings from the
+// indexed trade events. Trade events carry referral (Option<address>, flattened
+// to a lowercase 0x string or null in the event JSON) and referral_fee (u64
+// MIST), so earnings are computed straight from events -- no ingestion change.
+// Addresses are validated against VOTER_RE (/^0x[a-fA-F0-9]{60,66}$/, defined
+// above) and lowercased; codes are canonicalized UPPERCASE.
+
+// A2 code rules -- the single server-side source of truth for code validation.
+const REFERRAL_RESERVED = new Set([
+  'SUIPUMP', 'ADMIN', 'OFFICIAL', 'SUPPORT', 'TEAM', 'SYSTEM', 'NULL', 'UNDEFINED', 'MOD', 'STAFF',
+]);
+function validateReferralCode(raw) {
+  const code = String(raw ?? '').trim().toUpperCase();
+  // 3-20 chars, letters/numbers/underscore only (compared UPPERCASE).
+  if (!/^[A-Z0-9_]{3,20}$/.test(code)) {
+    return { ok: false, error: 'code must be 3-20 characters, letters, numbers or underscore only' };
+  }
+  // Reject anything that looks like an address (starts with 0X after upcasing).
+  if (code.startsWith('0X')) return { ok: false, error: 'code cannot start with 0x' };
+  if (REFERRAL_RESERVED.has(code)) return { ok: false, error: 'that code is reserved' };
+  return { ok: true, code };
+}
+
+// POST /referral/claim { owner, code } -> claim a vanity code.
+//   409 if taken by someone else; 200 + idempotent if the owner already owns
+//   exactly that code. Claiming a second code REPLACES the first ONLY when the
+//   old code has no bindings (a KOL's existing referrals never break).
+app.post('/referral/claim', async (req, res) => {
+  try {
+    const owner = String(req.body?.owner ?? '').trim().toLowerCase();
+    if (!VOTER_RE.test(owner)) return res.status(400).json({ error: 'invalid owner address' });
+    const v = validateReferralCode(req.body?.code);
+    if (!v.ok) return res.status(400).json({ error: v.error });
+    const code = v.code;
+
+    // Is this code already owned?
+    const codeOwner = await pool.query('SELECT owner FROM referral_codes WHERE code = $1', [code]);
+    if (codeOwner.rows[0]) {
+      if (codeOwner.rows[0].owner === owner) return res.json({ code, owner }); // idempotent
+      return res.status(409).json({ error: 'code already taken' });
+    }
+
+    // Owner already has a DIFFERENT code? Replace only if it has no bindings.
+    const mine = await pool.query('SELECT code FROM referral_codes WHERE owner = $1', [owner]);
+    if (mine.rows[0] && mine.rows[0].code !== code) {
+      const used = await pool.query('SELECT 1 FROM referral_bindings WHERE code = $1 LIMIT 1', [mine.rows[0].code]);
+      if (used.rows[0]) {
+        return res.status(409).json({ error: 'your current code already has referrals and cannot be changed' });
+      }
+      await pool.query('DELETE FROM referral_codes WHERE owner = $1', [owner]);
+    }
+
+    await pool.query(
+      `INSERT INTO referral_codes (code, owner, created_ms) VALUES ($1, $2, $3)
+       ON CONFLICT (code) DO NOTHING`,
+      [code, owner, Date.now()]
+    );
+    // Confirm ownership (guards a race where another owner claimed it first).
+    const confirm = await pool.query('SELECT owner FROM referral_codes WHERE code = $1', [code]);
+    if (confirm.rows[0]?.owner !== owner) return res.status(409).json({ error: 'code already taken' });
+    res.json({ code, owner });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /referral/code/:code -> { code, owner } or 404. Case-insensitive.
+app.get('/referral/code/:code', async (req, res) => {
+  try {
+    const code = String(req.params.code ?? '').trim().toUpperCase();
+    if (!code) return res.status(404).json({ error: 'not found' });
+    const r = await pool.query('SELECT code, owner FROM referral_codes WHERE code = $1', [code]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    res.json({ code: r.rows[0].code, owner: r.rows[0].owner });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /referral/mine?owner=0x... -> { code | null, referrer | null }.
+// The caller's own code, and who referred THEM.
+app.get('/referral/mine', async (req, res) => {
+  try {
+    const owner = String(req.query.owner ?? '').trim().toLowerCase();
+    if (!VOTER_RE.test(owner)) return res.status(400).json({ error: 'invalid owner address' });
+    const [codeRes, refRes] = await Promise.all([
+      pool.query('SELECT code FROM referral_codes WHERE owner = $1', [owner]),
+      pool.query('SELECT referrer FROM referral_bindings WHERE wallet = $1', [owner]),
+    ]);
+    res.json({ code: codeRes.rows[0]?.code ?? null, referrer: refRes.rows[0]?.referrer ?? null });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /referral/visit { wallet, code } -> record a PENDING intent.
+//   FIRST-TOUCH: if a pending row OR a binding already exists for this wallet,
+//   do NOT overwrite; silently succeed. Self-referral (wallet === code owner)
+//   is rejected 400. An unknown code is a silent no-op.
+app.post('/referral/visit', async (req, res) => {
+  try {
+    const wallet = String(req.body?.wallet ?? '').trim().toLowerCase();
+    if (!VOTER_RE.test(wallet)) return res.status(400).json({ error: 'invalid wallet address' });
+    const code = String(req.body?.code ?? '').trim().toUpperCase();
+    if (!code) return res.status(400).json({ error: 'code required' });
+
+    const ownerRes = await pool.query('SELECT owner FROM referral_codes WHERE code = $1', [code]);
+    const owner = ownerRes.rows[0]?.owner ?? null;
+    if (!owner) return res.json({ ok: true });                 // unknown code -> no-op
+    if (owner === wallet) return res.status(400).json({ error: 'cannot refer yourself' });
+
+    // First-touch: an existing binding wins forever.
+    const bound = await pool.query('SELECT 1 FROM referral_bindings WHERE wallet = $1 LIMIT 1', [wallet]);
+    if (bound.rows[0]) return res.json({ ok: true });
+
+    // Insert pending only if none exists (ON CONFLICT preserves the first touch).
+    await pool.query(
+      `INSERT INTO referral_pending (wallet, code, seen_ms) VALUES ($1, $2, $3)
+       ON CONFLICT (wallet) DO NOTHING`,
+      [wallet, code, Date.now()]
+    );
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /referral/binding?wallet=0x... -> { referrer | null, code | null }.
+// Called by the frontend so every trade knows what to pass in `referral`.
+app.get('/referral/binding', async (req, res) => {
+  try {
+    const wallet = String(req.query.wallet ?? '').trim().toLowerCase();
+    if (!VOTER_RE.test(wallet)) return res.status(400).json({ error: 'invalid wallet address' });
+    const r = await pool.query('SELECT referrer, code FROM referral_bindings WHERE wallet = $1', [wallet]);
+    res.json({ referrer: r.rows[0]?.referrer ?? null, code: r.rows[0]?.code ?? null });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /referral/stats?owner=0x... -> the dashboard payload (earnings LEDGER,
+// not a claim surface). Earnings come straight from indexed trade events whose
+// referral address equals the owner; referral_fee is the exact MIST the curve
+// transferred to the referrer on-chain, so total_earned_sui is the sum of that
+// field (no bps recomputation needed -- it already equals REFERRAL_SHARE_BPS of
+// the trade fee). total_volume_sui is the referral-attributed trade volume of
+// the referred wallets.
+app.get('/referral/stats', async (req, res) => {
+  try {
+    const owner = String(req.query.owner ?? '').trim().toLowerCase();
+    if (!VOTER_RE.test(owner)) return res.status(400).json({ error: 'invalid owner address' });
+    const TRADE = `(event_type LIKE '%TokensPurchased' OR event_type LIKE '%TokensBought' OR event_type LIKE '%TokensSold')`;
+
+    const [codeRes, totalsRes, referredRes, recentRes] = await Promise.all([
+      pool.query('SELECT code FROM referral_codes WHERE owner = $1', [owner]),
+      pool.query(
+        `SELECT
+           COALESCE(SUM(CASE WHEN event_type LIKE '%TokensSold'
+                             THEN (data->>'sui_out')::numeric
+                             ELSE (data->>'sui_in')::numeric END), 0) AS volume_mist,
+           COALESCE(SUM((data->>'referral_fee')::numeric), 0)        AS earned_mist
+         FROM events
+         WHERE ${TRADE} AND LOWER(data->>'referral') = $1`,
+        [owner]
+      ),
+      // Per referred wallet: their referral-attributed volume + the fees they
+      // have generated for the owner. LEFT JOIN so a freshly bound wallet that
+      // has not traded again yet still appears (with zeros). Distinct bound
+      // wallets = referral_count.
+      pool.query(
+        `SELECT b.wallet, b.bound_ms,
+                COALESCE(v.volume_mist, 0) AS volume_mist,
+                COALESCE(v.fees_mist, 0)   AS fees_mist
+           FROM referral_bindings b
+           LEFT JOIN (
+             SELECT LOWER(COALESCE(data->>'buyer', data->>'seller')) AS trader,
+                    SUM(CASE WHEN event_type LIKE '%TokensSold'
+                             THEN (data->>'sui_out')::numeric
+                             ELSE (data->>'sui_in')::numeric END) AS volume_mist,
+                    SUM((data->>'referral_fee')::numeric)          AS fees_mist
+               FROM events
+              WHERE ${TRADE} AND LOWER(data->>'referral') = $1
+              GROUP BY LOWER(COALESCE(data->>'buyer', data->>'seller'))
+           ) v ON v.trader = b.wallet
+          WHERE b.referrer = $1
+          ORDER BY b.bound_ms DESC`,
+        [owner]
+      ),
+      // Reverse-chronological feed of individual payouts (cap 50).
+      pool.query(
+        `SELECT e.tx_digest, e.timestamp_ms, e.curve_id,
+                LOWER(COALESCE(e.data->>'buyer', e.data->>'seller')) AS trader,
+                (e.data->>'referral_fee')::numeric AS fee_mist,
+                c.symbol
+           FROM events e
+           LEFT JOIN curves c ON c.curve_id = e.curve_id
+          WHERE ${TRADE}
+            AND LOWER(e.data->>'referral') = $1
+            AND (e.data->>'referral_fee') IS NOT NULL
+            AND (e.data->>'referral_fee')::numeric > 0
+          ORDER BY e.timestamp_ms DESC
+          LIMIT 50`,
+        [owner]
+      ),
+    ]);
+
+    const referred = referredRes.rows.map(r => ({
+      wallet:          r.wallet,
+      bound_ms:        r.bound_ms != null ? Number(r.bound_ms) : null,
+      volume_sui:      Number(r.volume_mist) / MIST,
+      fees_earned_sui: Number(r.fees_mist) / MIST,
+    }));
+    const recent_payments = recentRes.rows.map(r => ({
+      wallet:       r.trader,
+      curve_id:     r.curve_id,
+      token_symbol: r.symbol ?? null,
+      earned_sui:   Number(r.fee_mist) / MIST,
+      ts_ms:        r.timestamp_ms != null ? Number(r.timestamp_ms) : null,
+      tx_digest:    r.tx_digest,
+    }));
+
+    res.json({
+      code:             codeRes.rows[0]?.code ?? null,
+      referral_count:   referred.length,
+      total_volume_sui: Number(totalsRes.rows[0]?.volume_mist ?? 0) / MIST,
+      total_earned_sui: Number(totalsRes.rows[0]?.earned_mist ?? 0) / MIST,
+      referred,
+      recent_payments,
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.get('/token/:curveId/ohlc', async (req, res) => {
   try {
     const result = await pool.query(`SELECT data, timestamp_ms, event_type, e.curve_id, c.package_id FROM events e LEFT JOIN curves c ON c.curve_id = e.curve_id WHERE e.curve_id = $1 AND (e.event_type LIKE '%TokensPurchased' OR e.event_type LIKE '%TokensBought' OR e.event_type LIKE '%TokensSold') ORDER BY timestamp_ms ASC`, [req.params.curveId]);
