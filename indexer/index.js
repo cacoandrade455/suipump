@@ -20,6 +20,8 @@ import { startGraduationWatcher } from './auto_graduate.js';
 import { startPricePublisher } from './price_publisher.js';
 import { startCtoReclaimSweeper } from './cto_reclaim_sweeper.js';
 import { startApi } from './api.js';
+import { startBountyPoller } from './bounty.js';
+import { xProviderConfigured } from './x_provider.js';
 
 // -- Config --------------------------------------------------------------------
 
@@ -517,6 +519,17 @@ async function main() {
     console.log('  [cto-sweep] reclaim sweeper dormant (set SUIPUMP_V13_PACKAGE + SUI_PRIVATE_KEY to arm)');
   }
 
+  // Content bounty tracker arming, same dormant-by-default posture. Needs the X
+  // provider key (X_PROVIDER default twitterapi_io -> TWITTERAPI_IO_KEY) and a
+  // configured contest end (BOUNTY_END_MS). Missing either is NORMAL: the worker
+  // runs fine without it, and the poller/routes degrade to a clear "not
+  // configured" state. The poller is fully self-contained (its own bounty_*
+  // tables) and never touches existing indexer work.
+  const bountyArmed = Boolean(xProviderConfigured() && Number(process.env.BOUNTY_END_MS) > 0);
+  if (!bountyArmed) {
+    console.log('  [bounty] poller dormant (set TWITTERAPI_IO_KEY + BOUNTY_START_MS/BOUNTY_END_MS to arm)');
+  }
+
   await initSchema();
   startApi();
 
@@ -548,6 +561,15 @@ async function main() {
   if (ctoSweeperArmed) {
     startCtoReclaimSweeper(graphqlClient, pool).catch(err =>
       console.error('CTO reclaim sweeper crashed:', err.message)
+    );
+  }
+
+  // Same fire-and-forget containment as the watchers above. The poller loops
+  // internally with contained ticks; a crash is logged and never takes the
+  // indexer down. Off unless armed.
+  if (bountyArmed) {
+    startBountyPoller().catch(err =>
+      console.error('Bounty poller crashed:', err.message)
     );
   }
 

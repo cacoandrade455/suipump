@@ -9,6 +9,7 @@ import { ArrowLeft, Trophy } from 'lucide-react';
 import { ALL_PACKAGE_IDS } from './constants.js';
 import { useTokenList } from './useTokenList.js';
 import { t } from './i18n.js';
+import BountyBoard from './BountyBoard.jsx';
 
 const INDEXER_URL = import.meta.env.VITE_INDEXER_URL || '';
 const MIST_PER_SUI = 1e9;
@@ -199,6 +200,7 @@ export default function LeaderboardPage({ onBack, lang = 'en' }) {
               { id: 'points',  label: 'AIRDROP POINTS' },
               { id: 'tokens',  label: 'TOP TOKENS' },
               { id: 'traders', label: 'TOP TRADERS' },
+              { id: 'bounty',  label: 'CONTENT BOUNTY' },
             ].map(tb => (
               <button
                 key={tb.id}
@@ -214,7 +216,9 @@ export default function LeaderboardPage({ onBack, lang = 'en' }) {
             ))}
           </div>
 
-          {loading ? (
+          {tab === 'bounty' ? (
+            <BountyBoard />
+          ) : loading ? (
             <div className="py-12 text-center text-xs font-mono text-white/25">Loading…</div>
           ) : tab === 'points' ? (
             <div>

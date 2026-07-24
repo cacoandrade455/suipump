@@ -14,6 +14,7 @@ import { mountGameProgress } from './game_progress.js';
 import { mountTakeover } from './takeover_api.js';
 import { mountAgentSession } from './agent_session_api.js';
 import { mountBundles } from './bundles.js';
+import { mountBounty } from './bounty.js';
 
 const PORT = parseInt(process.env.PORT || '3001');
 const app  = express();
@@ -57,6 +58,13 @@ mountAgentSession(app, pool);
 // lives in bundles.js. Its wallet_funders table is created by db.js
 // initSchema. Adds GET /token/:curveId/bundles.
 mountBundles(app, pool);
+
+// Content bounty tracker -- self-contained module; owns its OWN four bounty_*
+// tables (created in bounty.js, never in db.js) and reads the twitterapi.io
+// provider behind x_provider.js. Adds GET /bounty/leaderboard,
+// GET /bounty/post/:postId, POST /bounty/submit, GET /bounty/status. The poller
+// runs separately in the worker (index.js startBountyPoller).
+mountBounty(app);
 
 // -- Virtual reserves per package -- must match frontend constants.js ---------
 const MIST = 1_000_000_000;
