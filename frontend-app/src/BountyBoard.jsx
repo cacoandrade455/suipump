@@ -183,6 +183,7 @@ export default function BountyBoard() {
       <div className="text-[10px] font-mono font-semibold text-white/45">Post not showing up?</div>
       <div className="text-[9.5px] font-mono text-white/30 mt-0.5 mb-2 leading-relaxed">
         Posts are found automatically every few hours. Submit here only if yours has not appeared.
+        The post must mention SuiPump or tag <span className="text-white/45">@SuiPump_SUMP</span> to be counted.
       </div>
       <div className="flex flex-col sm:flex-row gap-2">
         <input

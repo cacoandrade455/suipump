@@ -55,6 +55,12 @@ function num(name, dflt) {
 function cfg() {
   return {
     query:               (process.env.BOUNTY_QUERY ?? 'suipump OR @SuiPump_SUMP').trim(),
+    // Relevance terms enforced on MANUAL submissions (case-insensitive, OR
+    // semantics). Mirrors BOUNTY_QUERY so the submit path cannot drift from what
+    // discovery finds. Discovery needs no such check -- its results match the
+    // search query by construction.
+    requiredTerms:       (process.env.BOUNTY_REQUIRED_TERMS ?? 'suipump,@SuiPump_SUMP')
+                           .split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
     discoveryIntervalMs: num('BOUNTY_DISCOVERY_INTERVAL_MS', 6 * 3600_000),
     pollTickMs:          num('BOUNTY_POLL_TICK_MS', 3600_000),
     // Tier boundaries by post age, and the refresh interval within each tier.
@@ -174,6 +180,18 @@ function baseTierInterval(ageMs, c) {
 function tierInterval(ageMs, mode, c) {
   const base = baseTierInterval(ageMs, c);
   return (mode === 'slow' || mode === 'discovery_paused') ? base * c.slowFactor : base;
+}
+
+// Relevance check for manual submissions: does the post TEXT contain at least
+// one required term (case-insensitive)? Text only -- never URLs, quoted posts,
+// or media, since the rule is stated publicly and must be simple and
+// predictable. Empty/missing text (media-only post) returns false and is
+// rejected. An empty terms list (operator cleared it) disables the gate.
+function mentionsRequiredTerms(text, terms) {
+  if (!terms || terms.length === 0) return true;
+  if (!text) return false;
+  const hay = String(text).toLowerCase();
+  return terms.some(t => hay.includes(t));
 }
 
 // -- Scoring + suspicious -----------------------------------------------------
@@ -599,6 +617,16 @@ export function mountBounty(app) {
       if (post.createdMs == null) return res.status(400).json({ error: 'could not determine post time' });
       if (!inWindow(post.createdMs, c)) {
         return res.status(400).json({ error: 'post is outside the contest window', created_ms: post.createdMs });
+      }
+
+      // Relevance gate: the post TEXT must mention SuiPump (same terms discovery
+      // uses). A media-only post with no text fails this too. The provider read
+      // above is already billed; we simply persist nothing on rejection, so a
+      // rejected submit costs the user no future attempt.
+      if (!mentionsRequiredTerms(post.text, c.requiredTerms)) {
+        return res.status(400).json({
+          error: 'That post does not mention SuiPump. Posts must mention SuiPump or tag @SuiPump_SUMP to be counted.',
+        });
       }
 
       await upsertPost(post, 'submitted', now);
