@@ -164,6 +164,10 @@ export default function BountyBoard() {
 
   const contest = data?.contest ?? null;
   const entries = data?.entries ?? [];
+  // When the metrics were last polled from X (freshest real snapshot on the
+  // board) -- NOT the browser fetch time. Falls back to updated_ms for an older
+  // indexer that predates data_updated_ms.
+  const metricsMs = data?.data_updated_ms ?? data?.updated_ms ?? null;
   const reachable = !error && !!data;
   // Pre-launch: the board loaded fine but no contest window is configured yet
   // (BOUNTY_END_MS unset -> end_ms is 0/absent). Distinct from "unreachable".
@@ -183,6 +187,7 @@ export default function BountyBoard() {
       <div className="text-[10px] font-mono font-semibold text-white/45">Post not showing up?</div>
       <div className="text-[9.5px] font-mono text-white/30 mt-0.5 mb-2 leading-relaxed">
         Posts are found automatically every few hours. Submit here only if yours has not appeared.
+        The post must mention SuiPump or tag <span className="text-white/45">@SuiPump_SUMP</span> to be counted.
       </div>
       <div className="flex flex-col sm:flex-row gap-2">
         <input
@@ -284,14 +289,27 @@ export default function BountyBoard() {
         </div>
       ) : (
         <>
-          {/* Last updated + manual refresh */}
-          <div className="flex items-center justify-between px-1">
-            <div className="text-[9.5px] font-mono text-white/30">
-              LAST UPDATED <span className={data?.updated_ms ? 'text-white/50' : 'text-white/30'}>{data?.updated_ms ? ago(data.updated_ms) : 'never'}</span>
+          {/* Metrics age (when the numbers were last polled from X -- NOT the
+              browser fetch time) + an honest manual refresh */}
+          <div className="px-1">
+            <div className="flex items-center justify-between">
+              <div className="text-[9.5px] font-mono text-white/30">
+                METRICS UPDATED{' '}
+                {metricsMs
+                  ? <span className="text-white/50">{ago(metricsMs)}</span>
+                  : <span className="text-white/30">NO DATA YET</span>}
+              </div>
+              <button
+                onClick={load}
+                title="Reloads the board from the indexer. It does not re-poll X -- metrics are collected automatically every couple of hours."
+                className="inline-flex items-center gap-1 text-[9.5px] font-mono text-white/30 hover:text-lime-400 transition-colors"
+              >
+                <RefreshCw size={10} /> REFRESH
+              </button>
             </div>
-            <button onClick={load} className="inline-flex items-center gap-1 text-[9.5px] font-mono text-white/30 hover:text-lime-400 transition-colors">
-              <RefreshCw size={10} /> REFRESH
-            </button>
+            <div className="text-[8.5px] font-mono text-white/25 mt-0.5 leading-relaxed">
+              Metrics refresh automatically every couple of hours. REFRESH just reloads the board -- it does not re-poll X.
+            </div>
           </div>
 
           {/* Final-standings banner once the contest has ended */}

@@ -55,11 +55,22 @@ function num(name, dflt) {
 function cfg() {
   return {
     query:               (process.env.BOUNTY_QUERY ?? 'suipump OR @SuiPump_SUMP').trim(),
-    discoveryIntervalMs: num('BOUNTY_DISCOVERY_INTERVAL_MS', 6 * 3600_000),
+    // Relevance terms enforced on MANUAL submissions (case-insensitive, OR
+    // semantics). Mirrors BOUNTY_QUERY so the submit path cannot drift from what
+    // discovery finds. Discovery needs no such check -- its results match the
+    // search query by construction.
+    requiredTerms:       (process.env.BOUNTY_REQUIRED_TERMS ?? 'suipump,@SuiPump_SUMP')
+                           .split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
+    // Discovery every 3h (not hourly): hourly at 3 pages/sweep would cost up to
+    // ~1,440 reads/day and drain the budget within days, for no practical
+    // freshness gain. Because search returns metrics INLINE, each sweep also
+    // refreshes every recent post it returns at no extra cost -- so tightening
+    // discovery improves freshness more cheaply than tightening the refresh tiers.
+    discoveryIntervalMs: num('BOUNTY_DISCOVERY_INTERVAL_MS', 3 * 3600_000),
     pollTickMs:          num('BOUNTY_POLL_TICK_MS', 3600_000),
     // Tier boundaries by post age, and the refresh interval within each tier.
     tier1MaxMs:          num('BOUNTY_TIER1_MAX_MS', 1 * 86_400_000),
-    tier1IntervalMs:     num('BOUNTY_TIER1_INTERVAL_MS', 6 * 3600_000),
+    tier1IntervalMs:     num('BOUNTY_TIER1_INTERVAL_MS', 2 * 3600_000),
     tier2MaxMs:          num('BOUNTY_TIER2_MAX_MS', 3 * 86_400_000),
     tier2IntervalMs:     num('BOUNTY_TIER2_INTERVAL_MS', 12 * 3600_000),
     tier3MaxMs:          num('BOUNTY_TIER3_MAX_MS', 7 * 86_400_000),
@@ -68,7 +79,7 @@ function cfg() {
     batchSize:           Math.max(1, num('BOUNTY_BATCH_SIZE', 20)),
     maxDiscoveryPages:   Math.max(1, num('BOUNTY_MAX_DISCOVERY_PAGES', 3)),
     maxRefreshPerTick:   Math.max(1, num('BOUNTY_MAX_REFRESH_PER_TICK', 200)),
-    monthlyBudget:       Math.max(0, num('BOUNTY_MONTHLY_TWEET_BUDGET', 5000)),
+    monthlyBudget:       Math.max(0, num('BOUNTY_MONTHLY_TWEET_BUDGET', 8000)),
     govSlowPct:          num('BOUNTY_GOV_SLOW_PCT', 0.70),
     govPausePct:         num('BOUNTY_GOV_PAUSE_PCT', 0.85),
     slowFactor:          Math.max(1, num('BOUNTY_SLOW_FACTOR', 2)),
@@ -174,6 +185,18 @@ function baseTierInterval(ageMs, c) {
 function tierInterval(ageMs, mode, c) {
   const base = baseTierInterval(ageMs, c);
   return (mode === 'slow' || mode === 'discovery_paused') ? base * c.slowFactor : base;
+}
+
+// Relevance check for manual submissions: does the post TEXT contain at least
+// one required term (case-insensitive)? Text only -- never URLs, quoted posts,
+// or media, since the rule is stated publicly and must be simple and
+// predictable. Empty/missing text (media-only post) returns false and is
+// rejected. An empty terms list (operator cleared it) disables the gate.
+function mentionsRequiredTerms(text, terms) {
+  if (!terms || terms.length === 0) return true;
+  if (!text) return false;
+  const hay = String(text).toLowerCase();
+  return terms.some(t => hay.includes(t));
 }
 
 // -- Scoring + suspicious -----------------------------------------------------
@@ -500,8 +523,30 @@ export function mountBounty(app) {
       entries.sort((a, b) => b.score - a.score || b.snapshot_ts_ms - a.snapshot_ts_ms);
       const ranked = entries.slice(0, limit).map((e, i) => ({ rank: i + 1, ...e }));
 
+      // data_updated_ms is the freshest REAL snapshot on the board (max ts_ms
+      // across non-disqualified posts) -- i.e. when the metrics were last polled
+      // from X, NOT when this response was built. updated_ms is kept as an alias
+      // for existing consumers. null when there are no snapshots yet.
+      const dataUpdatedMs = updatedMs || null;
+
+      // next_poll_estimate_ms: the next SCHEDULED discovery sweep
+      // (last_discovery_ms + discoveryIntervalMs). Discovery is the primary
+      // freshness driver -- each sweep re-snapshots every recent post it returns
+      // inline. Derived cheaply from persisted poller state; null (omitted as a
+      // guess) unless the poller has run at least once and the contest is live.
+      // The governor can defer it under budget pressure, so it is an estimate.
+      const now = Date.now();
+      const live = c.endMs > 0 && now <= c.endMs + c.settleGraceMs && now >= (c.startMs > 0 ? c.startMs : 0);
+      let nextPollEstimateMs = null;
+      if (live) {
+        const lastDisc = Number(await getState('last_discovery_ms')) || 0;
+        if (lastDisc > 0) nextPollEstimateMs = lastDisc + c.discoveryIntervalMs;
+      }
+
       res.json({
-        updated_ms: updatedMs || null,
+        updated_ms: dataUpdatedMs,
+        data_updated_ms: dataUpdatedMs,
+        next_poll_estimate_ms: nextPollEstimateMs,
         contest: contestBlock(c),
         entries: ranked,
       });
@@ -599,6 +644,16 @@ export function mountBounty(app) {
       if (post.createdMs == null) return res.status(400).json({ error: 'could not determine post time' });
       if (!inWindow(post.createdMs, c)) {
         return res.status(400).json({ error: 'post is outside the contest window', created_ms: post.createdMs });
+      }
+
+      // Relevance gate: the post TEXT must mention SuiPump (same terms discovery
+      // uses). A media-only post with no text fails this too. The provider read
+      // above is already billed; we simply persist nothing on rejection, so a
+      // rejected submit costs the user no future attempt.
+      if (!mentionsRequiredTerms(post.text, c.requiredTerms)) {
+        return res.status(400).json({
+          error: 'That post does not mention SuiPump. Posts must mention SuiPump or tag @SuiPump_SUMP to be counted.',
+        });
       }
 
       await upsertPost(post, 'submitted', now);
